@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amianto Editor - Login</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/normalize.css@8.0.1/normalize.css">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="CSS/main.css" rel="stylesheet">
+  <!-- CodeMirror (editor Lua) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/dracula.min.css">
+  <!-- CodeMirror core + Lua mode -->
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
+  <!-- Jailed (JS sandbox) -->
+  <script src="https://cdn.jsdelivr.net/npm/jailed/lib/jailed.min.js"></script>
+</head>
+<body>
+  <!-- Login Header -->
+  <div id="loginHeader" class="header-container py-4" style="background-color: #111; position: relative; overflow: hidden;">
+    <!-- Background image spanning the header with bottom fade -->
+    <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
+    <div class="container-fluid d-flex align-items-center" style="position: relative; z-index: 1;">
+      <!-- Immagine di copertina / icona -->
+      <img src="img/cover.png" alt="Amianto Editor Icon"
+           style="width: 120px; height: 120px; margin-right: 20px; flex-shrink: 0;">
+
+      <!-- Contenuto testuale -->
+      <div class="flex-grow-1">
+        <!-- Titolo principale -->
+        <img src="img/logo.png" alt="Amianto Editor" style="height: 60px; margin: 0; vertical-align: middle;">
+
+        <!-- Sottotitolo -->
+        <p style="color: #eee; font-size: 1rem; margin: 5px 0 0 0;">
+          Create your own point-and-click adventure directly in your browser
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dashboard Header -->
+  <div id="dashboardHeader" class="header-container py-4" style="background-color: #111; position: relative; overflow: visible; z-index: 2000; display: none;">
+    <!-- Background image spanning the header with bottom fade -->
+    <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
+    <div class="container-fluid d-flex align-items-center justify-content-between" style="position: relative; z-index: 1;">
+      <!-- Immagine di copertina / icona -->
+      <div class="d-flex align-items-center">
+        <img src="img/cover.png" alt="Amianto Editor Icon"
+             style="width: 80px; height: 80px; margin-right: 15px; flex-shrink: 0;">
+
+        <!-- Contenuto testuale -->
+        <div>
+          <!-- Titolo principale -->
+          <img src="img/logo.png" alt="Amianto Editor" style="height: 40px; margin: 0; vertical-align: middle;">
+          <p style="color: #eee; font-size: 0.9rem; margin: 2px 0 0 0;">
+            <span id="currentUserName">User</span>'s Projects
+          </p>
+        </div>
+      </div>
+
+      <!-- User menu -->
+      <div class="dropdown">
+        <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
+          <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+          <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
+          <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Login Page -->
+  <div id="loginPage" class="container-fluid">
+    <div class="row justify-content-center align-items-center min-vh-100">
+      <div class="col-md-6 col-lg-4">
+        <div class="card bg-dark text-light border-secondary">
+          <div class="card-body p-5">
+            <div class="text-center mb-4">
+              <img src="img/logo.png" alt="Amianto Editor" style="height: 60px;">
+              <h2 class="mt-3">Welcome Back</h2>
+              <p class="text-muted">Sign in to your account</p>
+            </div>
+
+            <div id="loginAlert" class="alert alert-danger d-none" role="alert"></div>
+
+            <form id="loginForm">
+              <div class="mb-3">
+                <label for="loginUsername" class="form-label">Username</label>
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="loginUsername" required>
+              </div>
+
+              <div class="mb-3">
+                <label for="loginPassword" class="form-label">Password</label>
+                <input type="password" class="form-control bg-secondary text-light border-secondary" id="loginPassword" required>
+              </div>
+
+              <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="rememberMe">
+                <label class="form-check-label" for="rememberMe">Remember me</label>
+              </div>
+
+              <button type="submit" class="btn btn-success w-100 mb-3">
+                <i class="fas fa-sign-in-alt"></i> Sign In
+              </button>
+            </form>
+
+            <div class="text-center">
+              <button type="button" class="btn btn-outline-light" onclick="showRegistration()">
+                <i class="fas fa-user-plus"></i> Create Account
+              </button>
+            </div>
+
+            <div class="text-center mt-3">
+              <small class="text-muted">
+                <a href="#" onclick="showForgotPassword()" class="text-decoration-none">Forgot password?</a>
+              </small>
+            </div>
+
+            <div class="text-center mt-4 p-3 bg-secondary bg-opacity-25 rounded">
+              <small class="text-muted">
+                <strong>Demo Account:</strong><br>
+                Username: <code>demo</code><br>
+                Password: <code>demo123</code>
+              </small>
+            </div>
+
+            <div class="text-center mt-3">
+              <button type="button" class="btn btn-sm btn-outline-warning" onclick="resetDemoUser()">
+                <i class="fas fa-redo"></i> Reset Demo Account
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-info" onclick="debugAuth()">
+                <i class="fas fa-bug"></i> Debug Auth
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-danger" onclick="forceResetAuth()">
+                <i class="fas fa-exclamation-triangle"></i> Force Reset All
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registration Modal -->
+  <div class="modal fade" id="registerModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content bg-dark text-light border-secondary">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Account</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div id="registerAlert" class="alert alert-danger d-none" role="alert"></div>
+          <form id="registerForm">
+            <div class="mb-3">
+              <label for="registerUsername" class="form-label">Username</label>
+              <input type="text" class="form-control bg-secondary text-light border-secondary" id="registerUsername" required>
+            </div>
+
+            <div class="mb-3">
+              <label for="registerEmail" class="form-label">Email</label>
+              <input type="email" class="form-control bg-secondary text-light border-secondary" id="registerEmail" required>
+            </div>
+
+            <div class="mb-3">
+              <label for="registerPassword" class="form-label">Password</label>
+              <input type="password" class="form-control bg-secondary text-light border-secondary" id="registerPassword" required>
+            </div>
+
+            <div class="mb-3">
+              <label for="registerConfirmPassword" class="form-label">Confirm Password</label>
+              <input type="password" class="form-control bg-secondary text-light border-secondary" id="registerConfirmPassword" required>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-success" onclick="registerUser()">Create Account</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Dashboard (hidden by default) -->
+  <div id="mainDashboard" style="display: none;">
+    <!-- Menu inline -->
+    <nav class="navbar navbar-expand-lg navbar-custom">
+      <div class="container-fluid d-flex justify-content-center">
+
+        <!-- File dropdown inline -->
+        <div class="dropdown d-inline-block me-2">
+          <button class="section-btn dropdown-toggle" type="button" id="fileDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+            File
+          </button>
+          <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="fileDropdown">
+            <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
+            <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
+            <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
+            <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
+            <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
+          </ul>
+        </div>
+
+
+        <button class="section-btn active-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)">Rooms</button>
+        <button class="section-btn" data-section="objects" aria-label="Manage game objects" title="Manage game objects (Ctrl+2)">Objects</button>
+        <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+3)">Characters</button>
+        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+4)">GUI</button>
+        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+5)">Scripts</button>
+        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+6)">PLAY</button>
+      </div>
+    </nav>
+
+  <!-- Container principale -->
+  <div class="container-fluid p-0">
+    <div class="row m-0">
+      <!-- Canvas -->
+      <div class="col-md-9">
+        <!-- Canvas Info -->
+        <div class="canvas-info">
+          <span style="color: #39ff14;">Game Viewport: <span id="viewportSize">800×600</span></span>
+          <span style="color: #666; margin-left: 15px;">Editor Zoom: <span id="zoomLevel">100%</span></span>
+          <span style="color: #888; margin-left: 15px; font-size: 12px;">Mouse wheel: zoom | Ctrl+Click: pan | Click: drag objects | Arrow keys: pan</span>
+        </div>
+        
+        <!-- Canvas Controls -->
+        <div class="canvas-controls mb-2">
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-outline-light" onclick="zoomOut()" title="Zoom Out">-</button>
+            <button class="btn btn-outline-light" onclick="resetEditorZoom()" title="Reset Zoom">100%</button>
+            <button class="btn btn-outline-light" onclick="zoomIn()" title="Zoom In">+</button>
+            <button class="btn btn-outline-light" onclick="fitToScreen()" title="Fit to Screen">Fit</button>
+            <button class="btn btn-outline-light" onclick="centerView()" title="Center View">Center</button>
+          </div>
+        </div>
+        
+        <!-- Canvas Container -->
+        <div id="canvasContainer" style="overflow: auto; text-align: center; background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
+          <canvas id="editorCanvas"></canvas>
+        </div>
+      </div>
+      <!-- Sidebar -->
+      <div class="col-md-3 sidebar p-3">
+        <div id="rooms" class="section active">
+      <h3>Rooms</h3>
+
+      <!-- Rooms Manager -->
+      <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="m-0" style="color:#eee">Rooms Manager</h6>
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-outline-light" onclick="createRoom()">New</button>
+            <button class="btn btn-outline-light" onclick="renameRoom()">Rename</button>
+            <button class="btn btn-outline-danger" onclick="deleteRoom()">Delete</button>
+          </div>
+        </div>
+        <select class="form-select form-select-sm" id="rooms-selector" onchange="selectRoom(this.value)"></select>
+      </div>
+
+      <!-- Bottoni per aggiungere immagini -->
+      <button id="btn-add-bg" class="btn btn-success btn-sm w-100 mb-2 mt-3">Add Background</button>
+      <button id="btn-add-fg" class="btn btn-success btn-sm w-100 mb-2">Add Foreground Layer</button>
+
+      <!-- Lista dei foreground layers -->
+      <div id="foreground-list-container" class="mt-2"></div>
+
+      <!-- Scene Objects Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Scene Objects</h5>
+        
+        <div class="mb-3">
+          <button class="btn btn-info btn-sm w-100 mb-2" onclick="addSceneObject()">
+            <i class="fas fa-plus"></i> Add Scene Object
+          </button>
+          <input type="file" id="scene-object-upload" accept="image/*" style="display: none;" onchange="uploadSceneObject(this)">
+        </div>
+        
+        <div class="mb-3">
+          <label class="form-label text-light">Filter scene objects:</label>
+          <input type="text" class="form-control form-control-sm" id="scene-object-filter" placeholder="Search scene objects..." onkeyup="filterSceneObjects(this.value)">
+        </div>
+        
+        <div class="alert alert-info" role="alert">
+          <small>
+            <strong>💡 Tip:</strong> Click and drag objects directly on the canvas to move them. Use Ctrl+Click to pan the view instead.
+          </small>
+        </div>
+        
+        <div id="scene-objects-list" class="list-group">
+          <!-- Scene objects will be dynamically added here -->
+        </div>
+      </div>
+
+      <!-- Walkable Area Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Walkable Area</h5>
+        <div class="btn-group w-100 mb-2" role="group">
+          <button class="btn btn-outline-light btn-sm" onclick="startWalkableDrawing()">Start Drawing</button>
+          <button class="btn btn-outline-success btn-sm" onclick="finishWalkableDrawing()">Finish</button>
+          <button class="btn btn-outline-danger btn-sm" onclick="clearWalkableArea()">Clear</button>
+          <button class="btn btn-outline-warning btn-sm" onclick="toggleWalkableVisibility()">Show/Hide</button>
+        </div>
+        <small class="text-muted d-block">Click sul canvas per aggiungere vertici. Finish per chiudere il poligono. Clicca un vertice per selezionarlo, trascina per spostarlo, o elimina con il bottone sotto.</small>
+        <div class="d-grid gap-2 mb-2">
+          <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedWalkableVertex()">Delete Selected Vertex</button>
+        </div>
+      </div>
+
+      <!-- Hotspots Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Hotspots</h5>
+        <div class="btn-group w-100 mb-2" role="group">
+          <button class="btn btn-outline-light btn-sm" onclick="addHotspot()">New Hotspot</button>
+          <button class="btn btn-outline-light btn-sm" onclick="startHotspotDrawing()">Start Drawing</button>
+          <button class="btn btn-outline-success btn-sm" onclick="finishHotspotDrawing()">Finish</button>
+          <button class="btn btn-outline-danger btn-sm" onclick="clearActiveHotspot()">Clear Points</button>
+          <button class="btn btn-outline-warning btn-sm" onclick="toggleHotspotsVisibility()">Show/Hide All</button>
+        </div>
+        <small class="text-muted d-block mb-2">
+          <strong>Editing Hotspot:</strong> Seleziona un hotspot e clicca sul canvas per aggiungere vertici. Finish per chiudere.<br>
+          <strong>Vertici:</strong> Click su un vertice per selezionarlo, trascina per spostarlo. Click su un bordo per aggiungere un nuovo vertice.<br>
+          <strong>Tasti:</strong> Delete/Backspace per eliminare vertice selezionato, Escape per deselezionare.
+        </small>
+        <div class="d-grid gap-2 mb-2">
+          <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedHotspotVertex()">Delete Selected Vertex</button>
+        </div>
+        <div id="hotspots-list" class="list-group"></div>
+      </div>
+    </div>
+
+        <div id="objects" class="section">
+          <h3>Inventory Objects</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <button class="btn btn-success btn-sm w-100 mb-2" onclick="addInventoryObject()">
+                <i class="fas fa-plus"></i> Add Inventory Item
+              </button>
+              <input type="file" id="inventory-upload" accept="image/*" style="display: none;" onchange="uploadInventoryObject(this)">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Filter inventory items:</label>
+              <input type="text" class="form-control form-control-sm" id="inventory-filter" placeholder="Search inventory..." onkeyup="filterInventoryObjects(this.value)">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Inventory size:</label>
+              <div class="row">
+                <div class="col-6">
+                  <input type="number" class="form-control form-control-sm" id="inventory-width" value="6" min="1" max="10" placeholder="Width">
+                </div>
+                <div class="col-6">
+                  <input type="number" class="form-control form-control-sm" id="inventory-height" value="4" min="1" max="8" placeholder="Height">
+                </div>
+              </div>
+            </div>
+            
+            <div id="inventory-list" class="list-group">
+              <!-- Inventory objects will be dynamically added here -->
+            </div>
+          </div>
+        </div>
+
+        <div id="characters" class="section">
+          <h3>Characters</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <button class="btn btn-success btn-sm w-100 mb-2" onclick="addCharacter()">
+                <i class="fas fa-plus"></i> Add Character
+              </button>
+            </div>
+            
+            <!-- Character Animation Frames -->
+            <div class="mb-3">
+              <label class="form-label text-light">Select character:</label>
+              <select class="form-select form-select-sm" id="character-selector" onchange="loadCharacterDirections()"></select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-light">Select direction (8 directions):</label>
+              <select class="form-select form-select-sm" id="direction-selector" onchange="changeCharacterDirection()">
+                <option value="north">North (↑)</option>
+                <option value="northeast">Northeast (↗)</option>
+                <option value="east">East (→)</option>
+                <option value="southeast">Southeast (↘)</option>
+                <option value="south" selected>South (↓)</option>
+                <option value="southwest">Southwest (↙)</option>
+                <option value="west">West (←)</option>
+                <option value="northwest">Northwest (↖)</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-light">Animation frames for selected direction:</label>
+              <input type="file" id="character-frames-upload" class="form-control form-control-sm" accept="image/*" multiple onchange="uploadCharacterFrames(this)">
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-light">FPS for selected direction:</label>
+              <div class="input-group input-group-sm">
+                <input type="number" class="form-control form-control-sm bg-secondary text-light border-secondary" id="character-fps" value="8" min="1" max="60">
+                <button class="btn btn-outline-light btn-sm" onclick="updateCharacterFPS()">Update</button>
+              </div>
+            </div>
+            <div class="mb-3">
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-outline-light btn-sm" onclick="startCharacterPreview()">Start Preview</button>
+                <button class="btn btn-outline-warning btn-sm" onclick="stopCharacterPreview()">Stop Preview</button>
+                <button class="btn btn-outline-info btn-sm" onclick="clearCharacterFrames()">Clear Frames</button>
+              </div>
+            </div>
+            
+            
+            <!-- Animation Frames Preview -->
+            <div class="mb-3">
+              <h6 class="text-light">Animation Frames:</h6>
+              <div id="frames-preview" class="frames-container">
+                <!-- Frames will be dynamically added here -->
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Character status:</label>
+              <select class="form-select form-select-sm" id="character-state">
+                <option value="all">All</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+
+            <!-- Game Start Configuration -->
+            <div class="mb-3">
+              <h6 class="text-light">Game Start</h6>
+              <small class="text-muted d-block mb-2">Seleziona il personaggio giocante iniziale e la stanza/posizione di partenza.</small>
+
+              <label class="form-label text-light">Personaggio giocante iniziale:</label>
+              <div id="starting-player-list" class="list-group mb-2">
+                <!-- Radio list caricata dinamicamente -->
+              </div>
+
+              <div class="row g-2 align-items-end">
+                <div class="col-12">
+                  <label class="form-label text-light">Stanza di partenza:</label>
+                  <select class="form-select form-select-sm" id="start-room-selector"></select>
+                </div>
+                <div class="col-6">
+                  <label for="start-x" class="form-label text-light">Posizione X</label>
+                  <input type="number" class="form-control form-control-sm" id="start-x" value="0">
+                </div>
+                <div class="col-6">
+                  <label for="start-y" class="form-label text-light">Posizione Y</label>
+                  <input type="number" class="form-control form-control-sm" id="start-y" value="0">
+                </div>
+              </div>
+            </div>
+            
+            <div id="characters-list" class="list-group">
+              <!-- Characters will be dynamically added here -->
+            </div>
+          </div>
+        </div>
+
+        <div id="gui" class="section">
+          <h3>GUI</h3>
+          <div class="section-content">
+            <!-- GUI Manager -->
+            <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="m-0" style="color:#eee">GUI Manager</h6>
+                <div class="btn-group btn-group-sm" role="group">
+                  <button class="btn btn-outline-light" onclick="createGUI()">New GUI</button>
+                  <button class="btn btn-outline-light" onclick="renameGUI()">Rename</button>
+                  <button class="btn btn-outline-danger" onclick="deleteGUI()">Delete</button>
+                </div>
+              </div>
+              <select class="form-select form-select-sm" id="gui-selector" onchange="selectGUI(this.value)"></select>
+            </div>
+
+            <div class="mb-3">
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-success btn-sm" id="btn-add-gui-bg">Add GUI Background</button>
+                <button class="btn btn-primary btn-sm" id="btn-new-gui-button">Draw Button</button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-delete-gui-button">Delete Selected</button>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="alert alert-info" role="alert">
+                <small>
+                  Disegna pulsanti come rettangoli sul canvas (GUI overlay). Seleziona con click, trascina per spostare. Usa Delete Selected per rimuovere.
+                </small>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <h6 class="text-light">Buttons list</h6>
+              <div id="gui-buttons-list" class="list-group"></div>
+            </div>
+
+            <!-- Cursor Manager -->
+            <div class="mt-4">
+              <h5 style="color: #39ff14; margin-bottom: 15px;">Contextual Cursors</h5>
+              
+              <div class="mb-3">
+                <div class="btn-group w-100 mb-2" role="group">
+                  <button class="btn btn-success btn-sm" onclick="createCursor()">New Cursor</button>
+                  <button class="btn btn-outline-light btn-sm" onclick="editCursor()">Edit Selected</button>
+                  <button class="btn btn-outline-danger btn-sm" onclick="deleteCursor()">Delete Selected</button>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-light">Target Type:</label>
+                <select class="form-select form-select-sm" id="cursor-target-type" onchange="updateCursorTargets()">
+                  <option value="hotspot">Hotspot</option>
+                  <option value="character">Character</option>
+                  <option value="scene-object">Scene Object</option>
+                </select>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-light">Target Object:</label>
+                <select class="form-select form-select-sm" id="cursor-target-selector">
+                  <option value="">Select target...</option>
+                </select>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-light">Cursor Image:</label>
+                <div class="input-group input-group-sm">
+                  <input type="file" class="form-control" id="cursor-image-upload" accept="image/*" onchange="uploadCursorImage(this)">
+                  <button class="btn btn-outline-light" onclick="document.getElementById('cursor-image-upload').click()">Browse</button>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-light">Action Text (optional):</label>
+                <input type="text" class="form-control form-control-sm" id="cursor-action-text" placeholder="e.g., 'Look at', 'Talk to', 'Use'">
+              </div>
+
+              <div class="alert alert-info" role="alert">
+                <small>
+                  <strong>💡 Tip:</strong> Cursors will automatically change when hovering over the specified target. Upload a cursor image (recommended 32x32px) and optionally add action text. Scripts can be attached from the Scripts tab.
+                </small>
+              </div>
+
+              <div class="mb-3">
+                <h6 class="text-light">Active Cursors:</h6>
+                <div id="cursors-list" class="list-group">
+                  <!-- Cursors will be dynamically added here -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="scripts" class="section">
+          <h3>Scripts (JavaScript)</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-success btn-sm" onclick="newScript()">New Script</button>
+                <button class="btn btn-primary btn-sm" onclick="saveScript()">Save</button>
+                <button class="btn btn-info btn-sm" onclick="runScript()">Run</button>
+                <button class="btn btn-warning btn-sm" onclick="stopScript()">Stop</button>
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Available scripts:</label>
+              <select class="form-select form-select-sm mb-2" id="script-selector" onchange="loadScript(this.value)">
+                <option value="">Select a script...</option>
+                <option value="startup">Startup Game</option>
+                <option value="room-change">Room Change</option>
+                <option value="object-interaction">Object Interaction</option>
+              </select>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Script Editor (JavaScript):</label>
+              <textarea class="form-control" id="script-editor" rows="14" style="background-color: #1e1e1e; color: #f0f0f0; border: 1px solid #444; font-family: 'Courier New', monospace; font-size: 12px;" placeholder="// Scrivi il tuo script JavaScript qui...&#10;// API disponibili: print(...), show_message(text), move_object(id, x, y)&#10;&#10;function on_game_start(){&#10;  print('Game started!');&#10;}&#10;&#10;function on_object_click(object_id){&#10;  if (object_id === 'door') {&#10;    show_message('The door is locked.');&#10;  }&#10;}"></textarea>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Attach script to room:</label>
+              <div class="input-group input-group-sm mb-2">
+                <select class="form-select form-select-sm" id="room-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToRoom()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to scene object:</label>
+              <div class="input-group input-group-sm mb-2">
+                <select class="form-select form-select-sm" id="scene-object-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToSceneObject()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to character:</label>
+              <div class="input-group input-group-sm mb-2">
+                <select class="form-select form-select-sm" id="character-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToCharacter()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to inventory object:</label>
+              <div class="input-group input-group-sm">
+                <select class="form-select form-select-sm" id="inventory-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToInventory()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to GUI button:</label>
+              <div class="input-group input-group-sm mt-1">
+                <select class="form-select form-select-sm" id="gui-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToGUI()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to Hotspot:</label>
+              <div class="input-group input-group-sm mt-1">
+                <select class="form-select form-select-sm" id="script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToHotspot()">Attach</button>
+              </div>
+              <label class="form-label text-light mt-2">Attach script to Contextual Cursor:</label>
+              <div class="input-group input-group-sm mt-1">
+                <select class="form-select form-select-sm" id="cursor-script-target"></select>
+                <button class="btn btn-outline-light" onclick="attachScriptToCursor()">Attach</button>
+              </div>
+            </div>
+            
+            <div class="alert alert-info" role="alert">
+              <small>
+                <strong>Tip:</strong> Usa Ctrl+S per salvare. Linguaggio: JavaScript in sandbox (Jailed). API: print, show_message(text), move_object(id, x, y).
+              </small>
+            </div>
+          </div>
+        </div>
+
+        <div id="play" class="section">
+          <h3>Play Test</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <div class="alert alert-info" role="alert">
+                <strong>Test Mode:</strong> Here you can test your game in real time while developing it.
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-success btn-sm" onclick="startPlayTest()">
+                  <i class="fas fa-play"></i> Start Test
+                </button>
+                <button class="btn btn-warning btn-sm" onclick="pausePlayTest()">
+                  <i class="fas fa-pause"></i> Pause
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="stopPlayTest()">
+                  <i class="fas fa-stop"></i> Stop
+                </button>
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Game status:</label>
+              <div class="form-control form-control-sm bg-dark text-light" id="game-status" readonly>
+                Ready for testing
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Debug console:</label>
+              <div class="form-control bg-dark text-light" id="debug-console" style="height: 150px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
+                [INFO] Editor loaded and ready
+                [INFO] Tab system initialized
+                [INFO] Canvas ready for rendering
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <h6 class="text-light">Test controls:</h6>
+              <div class="row">
+                <div class="col-6">
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testRoomChange()">Test Room Change</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testObjectInteraction()">Test Interaction</button>
+                </div>
+                <div class="col-6">
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterDialog()">Test Dialogs</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testHotspotInteraction()">Test Hotspot</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="clearDebugConsole()">Clear Console</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div> <!-- Close mainDashboard -->
+
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="JS/main.js"></script>
+</body>
+</html>
