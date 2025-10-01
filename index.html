@@ -243,6 +243,11 @@
           </div>
         </div>
         
+        <!-- Code Editor Container (Scripts tab) -->
+        <div id="codeEditorContainer" style="display: none; text-align: left; background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
+          <textarea id="script-editor-large" style="width: 100%; height: 70vh;"></textarea>
+        </div>
+        
         <!-- Canvas Container -->
         <div id="canvasContainer" style="overflow: auto; text-align: center; background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
           <canvas id="editorCanvas"></canvas>
@@ -582,7 +587,7 @@
               </select>
             </div>
             
-            <div class="mb-3">
+            <div class="mb-3" style="display: none;">
               <label class="form-label text-light">Script Editor (JavaScript):</label>
               <textarea class="form-control" id="script-editor" rows="14" style="background-color: #1e1e1e; color: #f0f0f0; border: 1px solid #444; font-family: 'Courier New', monospace; font-size: 12px;" placeholder="// Scrivi il tuo script JavaScript qui...&#10;// API disponibili: print(...), show_message(text), move_object(id, x, y)&#10;&#10;function on_game_start(){&#10;  print('Game started!');&#10;}&#10;&#10;function on_object_click(object_id){&#10;  if (object_id === 'door') {&#10;    show_message('The door is locked.');&#10;  }&#10;}"></textarea>
             </div>

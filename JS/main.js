@@ -2691,6 +2691,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // JS sandbox runtime (Jailed) e editor
   let codeMirrorEditor = null;
+  let largeCodeMirrorEditor = null;
   let currentScriptName = 'startup';
   const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
@@ -2706,6 +2707,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const ta = document.getElementById('script-editor');
     if (!ta || typeof CodeMirror === 'undefined') return;
     codeMirrorEditor = CodeMirror.fromTextArea(ta, {
+      mode: 'javascript',
+      theme: 'dracula',
+      lineNumbers: true,
+      indentUnit: 2,
+      tabSize: 2,
+      lineWrapping: true,
+    });
+  }
+
+  // Editor grande nel pannello principale (area canvas)
+  function ensureLargeScriptEditor() {
+    if (largeCodeMirrorEditor) return;
+    const ta = document.getElementById('script-editor-large');
+    if (!ta || typeof CodeMirror === 'undefined') return;
+    largeCodeMirrorEditor = CodeMirror.fromTextArea(ta, {
       mode: 'javascript',
       theme: 'dracula',
       lineNumbers: true,
@@ -2733,16 +2749,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.newScript = function() {
     if (confirm('Do you want to create a new script? The current content will be lost.')) {
+      ensureLargeScriptEditor();
       ensureScriptEditor();
-      if (codeMirrorEditor) codeMirrorEditor.setValue('');
-      else document.getElementById('script-editor').value = '';
+      const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
+      if (editors.length) {
+        editors.forEach(ed => ed.setValue(''));
+      } else {
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+      }
       showNotification('New script created!', 'info');
     }
   };
 
   window.saveScript = function() {
+    ensureLargeScriptEditor();
     ensureScriptEditor();
-    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('script-editor').value;
+    let content = '';
+    if (largeCodeMirrorEditor) {
+      content = largeCodeMirrorEditor.getValue();
+    } else if (codeMirrorEditor) {
+      content = codeMirrorEditor.getValue();
+    } else {
+      const taLarge = document.getElementById('script-editor-large');
+      const taSmall = document.getElementById('script-editor');
+      content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
+    }
     const selector = document.getElementById('script-selector');
     const selectedScript = selector.value || 'new-script';
     
@@ -2756,8 +2790,9 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   window.runScript = function() {
+    ensureLargeScriptEditor();
     ensureScriptEditor();
-    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('script-editor').value;
+    const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
     // Ferma eventuale plugin attivo prima di avviarne uno nuovo
     if (activePlugin && typeof activePlugin.disconnect === 'function') {
       try { activePlugin.disconnect(); } catch(_) {}
@@ -2815,9 +2850,17 @@ document.addEventListener("DOMContentLoaded", () => {
     
     const savedScript = localStorage.getItem(`script-${scriptName}`);
     if (savedScript) {
+      ensureLargeScriptEditor();
       ensureScriptEditor();
-      if (codeMirrorEditor) codeMirrorEditor.setValue(savedScript);
-      else document.getElementById('script-editor').value = savedScript;
+      if (largeCodeMirrorEditor) {
+        largeCodeMirrorEditor.setValue(savedScript);
+      }
+      if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(savedScript);
+      } else {
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = savedScript;
+      }
       showNotification(`Script "${scriptName}" loaded!`, 'info');
     } else {
       showNotification(`Script "${scriptName}" not found!`, 'warning');
@@ -3040,14 +3083,28 @@ document.addEventListener("DOMContentLoaded", () => {
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
   };
 
-  // On tab change to scripts, ensure editor exists and dropdown is fresh
+  // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
+      const canvasContainer = document.getElementById('canvasContainer');
+      const codeEditorContainer = document.getElementById('codeEditorContainer');
+      if (canvasContainer) canvasContainer.style.display = 'none';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'block';
+      ensureLargeScriptEditor();
       ensureScriptEditor();
+      // sync values small->large if small has content and large is empty
+      if (codeMirrorEditor && largeCodeMirrorEditor && !largeCodeMirrorEditor.getValue()) {
+        largeCodeMirrorEditor.setValue(codeMirrorEditor.getValue());
+      }
       refreshSceneObjectScriptTargets();
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
+    } else {
+      const canvasContainer = document.getElementById('canvasContainer');
+      const codeEditorContainer = document.getElementById('codeEditorContainer');
+      if (canvasContainer) canvasContainer.style.display = 'block';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'none';
     }
   });
 
@@ -3071,11 +3128,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 3000);
   }
 
-  // Support for Ctrl+S in script textarea
+  // Support for Ctrl+S in script editors
   document.addEventListener('keydown', function(e) {
     if (e.ctrlKey && e.key === 's') {
       const activeElement = document.activeElement;
-      if (activeElement && activeElement.id === 'script-editor') {
+      const isEditorFocused = (activeElement && (activeElement.id === 'script-editor' || activeElement.id === 'script-editor-large'))
+        || (largeCodeMirrorEditor && largeCodeMirrorEditor.hasFocus && largeCodeMirrorEditor.hasFocus())
+        || (codeMirrorEditor && codeMirrorEditor.hasFocus && codeMirrorEditor.hasFocus());
+      if (isEditorFocused) {
         e.preventDefault();
         saveScript();
       }

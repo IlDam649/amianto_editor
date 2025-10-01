@@ -149,6 +149,20 @@ header {
   max-height: 70vh;
 }
 
+/* Code editor container shown in Scripts tab */
+#codeEditorContainer {
+  background-color: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+/* CodeMirror sizing inside the large editor area */
+#codeEditorContainer .CodeMirror {
+  height: 70vh;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 /* Canvas Info */
 .canvas-info {
   background-color: #2a2a2a;
