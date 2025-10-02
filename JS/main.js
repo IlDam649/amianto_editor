@@ -1749,6 +1749,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnAddGuiBg = document.getElementById('btn-add-gui-bg');
   const btnNewGuiButton = document.getElementById('btn-new-gui-button');
   const btnDeleteGuiButton = document.getElementById('btn-delete-gui-button');
+  const guiTypeSelect = document.getElementById('gui-type-select');
+  const guiSettingsContainer = document.getElementById('gui-settings-container');
 
   if (btnAddGuiBg) {
     btnAddGuiBg.addEventListener('click', () => {
@@ -1775,6 +1777,219 @@ document.addEventListener("DOMContentLoaded", () => {
       guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
       showNotification('Click and drag on canvas to draw a GUI button', 'info');
     });
+  }
+  if (guiTypeSelect) {
+    guiTypeSelect.addEventListener('change', () => {
+      const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+      const newType = guiTypeSelect.value || 'MainInterface';
+      const existingSettings = gui && gui.settings ? gui.settings : {};
+      renderGuiSettingsPanel(newType, existingSettings);
+      if (gui) {
+        gui.type = newType;
+        gui.settings = collectGuiSettingsFromUI(newType);
+        saveCurrentGUI();
+      }
+    });
+  }
+  if (guiSettingsContainer) {
+    const onChange = () => {
+      const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+      const type = (guiTypeSelect && guiTypeSelect.value) ? guiTypeSelect.value : (gui && gui.type) || 'MainInterface';
+      const settings = collectGuiSettingsFromUI(type);
+      if (gui) {
+        gui.settings = settings;
+        saveCurrentGUI();
+      }
+    };
+    guiSettingsContainer.addEventListener('input', onChange);
+    guiSettingsContainer.addEventListener('change', onChange);
+  }
+
+  function renderGuiSettingsPanel(type, settings) {
+    if (!guiSettingsContainer) return;
+    guiSettingsContainer.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    const makeInput = (label, id, typeAttr = 'text', value = '', extra = {}) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const inp = document.createElement('input');
+      inp.className = 'form-control form-control-sm';
+      inp.id = id;
+      inp.type = typeAttr;
+      if (value !== undefined) inp.value = value;
+      Object.assign(inp, extra);
+      wrap.appendChild(lab);
+      wrap.appendChild(inp);
+      return wrap;
+    };
+    const makeTextarea = (label, id, value = '') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const ta = document.createElement('textarea');
+      ta.className = 'form-control form-control-sm';
+      ta.id = id;
+      ta.rows = 3;
+      ta.value = value || '';
+      wrap.appendChild(lab);
+      wrap.appendChild(ta);
+      return wrap;
+    };
+    const makeSelect = (label, id, options, value = '') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const sel = document.createElement('select');
+      sel.className = 'form-select form-select-sm';
+      sel.id = id;
+      options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (opt.value === value) o.selected = true;
+        sel.appendChild(o);
+      });
+      wrap.appendChild(lab);
+      wrap.appendChild(sel);
+      return wrap;
+    };
+
+    switch(type) {
+      case 'DialogBox': {
+        frag.appendChild(makeInput('Posizione X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Posizione Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeInput('Larghezza', 'gui-set-w', 'number', settings.w ?? 300));
+        frag.appendChild(makeInput('Altezza', 'gui-set-h', 'number', settings.h ?? 150));
+        frag.appendChild(makeInput('Background (css color o data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
+        frag.appendChild(makeInput('Font CSS', 'gui-set-font', 'text', settings.font || '16px Arial'));
+        frag.appendChild(makeInput('Ritratto (data URL opzionale)', 'gui-set-portrait', 'text', settings.portrait || ''));
+        frag.appendChild(makeSelect('Comportamento comparsa', 'gui-set-appear', [
+          {value:'instant', label:'Istantaneo'},
+          {value:'fade', label:'Fade'},
+          {value:'slide', label:'Slide'}
+        ], settings.appear || 'instant'));
+        break;
+      }
+      case 'Inventory': {
+        frag.appendChild(makeInput('Righe', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
+        frag.appendChild(makeInput('Colonne', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
+        frag.appendChild(makeSelect('Stile slot', 'gui-set-slot-style', [
+          {value:'square', label:'Quadrato'},
+          {value:'rounded', label:'Arrotondato'},
+          {value:'circle', label:'Cerchio'}
+        ], settings.slotStyle || 'square'));
+        frag.appendChild(makeInput('Background', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.5)'));
+        frag.appendChild(makeSelect('Animazione apertura', 'gui-set-open-anim', [
+          {value:'none', label:'Nessuna'},
+          {value:'scale', label:'Scala'},
+          {value:'fade', label:'Fade'}
+        ], settings.openAnim || 'none'));
+        break;
+      }
+      case 'VerbGUI': {
+        frag.appendChild(makeTextarea('Lista verbi (uno per riga)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        frag.appendChild(makeInput('Posizione X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Posizione Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeSelect('Stile', 'gui-set-style', [
+          {value:'icons', label:'Icone'},
+          {value:'text', label:'Testo'}
+        ], settings.style || 'text'));
+        break;
+      }
+      case 'Menu': {
+        frag.appendChild(makeTextarea('Voci menu (una per riga)', 'gui-set-menu-items', Array.isArray(settings.items) ? settings.items.join('\n') : 'Start\nLoad\nOptions\nQuit'));
+        frag.appendChild(makeSelect('Layout', 'gui-set-menu-layout', [
+          {value:'vertical', label:'Verticale'},
+          {value:'horizontal', label:'Orizzontale'},
+          {value:'grid', label:'Griglia'}
+        ], settings.layout || 'vertical'));
+        frag.appendChild(makeSelect('Stile pulsanti', 'gui-set-btn-style', [
+          {value:'primary', label:'Primary'},
+          {value:'outline', label:'Outline'},
+          {value:'ghost', label:'Ghost'}
+        ], settings.buttonStyle || 'primary'));
+        break;
+      }
+      case 'VerbCoin': {
+        frag.appendChild(makeTextarea('Lista verbi coin (uno per riga)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        break;
+      }
+      case 'OverlayCustom': {
+        frag.appendChild(makeTextarea('Note/JSON custom (opzionale)', 'gui-set-custom', settings.custom || ''));
+        break;
+      }
+      case 'MainInterface':
+      default: {
+        // MainInterface: nessun campo obbligatorio
+        frag.appendChild(makeInput('Descrizione (opzionale)', 'gui-set-desc', 'text', settings.desc || ''));
+        break;
+      }
+    }
+    guiSettingsContainer.appendChild(frag);
+  }
+
+  function collectGuiSettingsFromUI(type) {
+    const get = (id) => {
+      const el = document.getElementById(id);
+      return el ? (el.type === 'number' ? Number(el.value || 0) : el.value) : undefined;
+    };
+    switch(type) {
+      case 'DialogBox':
+        return {
+          x: get('gui-set-x') || 0,
+          y: get('gui-set-y') || 0,
+          w: get('gui-set-w') || 300,
+          h: get('gui-set-h') || 150,
+          background: get('gui-set-bg') || 'rgba(0,0,0,0.6)',
+          font: get('gui-set-font') || '16px Arial',
+          portrait: get('gui-set-portrait') || '',
+          appear: get('gui-set-appear') || 'instant'
+        };
+      case 'Inventory':
+        return {
+          rows: get('gui-set-rows') || 3,
+          cols: get('gui-set-cols') || 5,
+          slotStyle: get('gui-set-slot-style') || 'square',
+          background: get('gui-set-bg') || 'rgba(0,0,0,0.5)',
+          openAnim: get('gui-set-open-anim') || 'none'
+        };
+      case 'VerbGUI': {
+        const verbsStr = get('gui-set-verbs') || '';
+        const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return {
+          verbs,
+          x: get('gui-set-x') || 0,
+          y: get('gui-set-y') || 0,
+          style: get('gui-set-style') || 'text'
+        };
+      }
+      case 'Menu': {
+        const itemsStr = get('gui-set-menu-items') || '';
+        const items = String(itemsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return {
+          items,
+          layout: get('gui-set-menu-layout') || 'vertical',
+          buttonStyle: get('gui-set-btn-style') || 'primary'
+        };
+      }
+      case 'VerbCoin': {
+        const verbsStr = get('gui-set-verbs') || '';
+        const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return { verbs };
+      }
+      case 'OverlayCustom':
+        return { custom: get('gui-set-custom') || '' };
+      case 'MainInterface':
+      default:
+        return { desc: get('gui-set-desc') || '' };
+    }
   }
 
   if (btnDeleteGuiButton) {
@@ -3995,6 +4210,8 @@ document.addEventListener("DOMContentLoaded", () => {
     return Array.isArray(guis) ? guis.map(g => ({
       id: g.id,
       name: g.name,
+      type: g.type || 'MainInterface',
+      settings: serializeGuiSettings(g.settings, g.type),
       background: g.background ? imageToDataURL(g.background) : null,
       buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
         id: b.id,
@@ -4007,6 +4224,15 @@ document.addEventListener("DOMContentLoaded", () => {
         backgroundImage: b.backgroundImage ? imageToDataURL(b.backgroundImage) : null
       })) : []
     })) : [];
+  }
+
+  function serializeGuiSettings(settings, type) {
+    try {
+      // Ensure JSON-safe clone
+      return JSON.parse(JSON.stringify(settings || {}));
+    } catch (_) {
+      return {};
+    }
   }
 
   function collectCharacterNames() {
@@ -4360,6 +4586,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const newGui = {
       id: uid('gui'),
       name: name,
+      type: 'MainInterface',
+      settings: {},
       background: null,
       buttons: []
     };
@@ -4434,6 +4662,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update selector
     const selector = document.getElementById('gui-selector');
     if (selector) selector.value = guiId;
+    // Update type selector and render settings
+    const typeSel = document.getElementById('gui-type-select');
+    if (typeSel) typeSel.value = gui.type || 'MainInterface';
+    renderGuiSettingsPanel(gui.type || 'MainInterface', gui.settings || {});
     
     redraw();
     refreshGUIButtonsList();
@@ -4471,6 +4703,11 @@ document.addEventListener("DOMContentLoaded", () => {
     
     gui.background = guiBackground;
     gui.buttons = [...guiButtons];
+    // Persist type and settings from UI if present
+    const typeSel = document.getElementById('gui-type-select');
+    if (typeSel) gui.type = typeSel.value || gui.type || 'MainInterface';
+    const collected = collectGuiSettingsFromUI(gui.type || 'MainInterface');
+    gui.settings = collected;
   }
 
   // Initialize default GUI
@@ -4479,6 +4716,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const defaultGui = {
         id: uid('gui'),
         name: 'Main GUI',
+        type: 'MainInterface',
+        settings: {},
         background: null,
         buttons: []
       };
@@ -4490,6 +4729,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize GUI system
   initializeDefaultGUI();
+  // Initialize GUI type & settings panel for current GUI
+  try {
+    const typeSelInit = document.getElementById('gui-type-select');
+    if (typeSelInit && currentGuiId) {
+      const g = guis.find(x => x.id === currentGuiId);
+      if (g) {
+        typeSelInit.value = g.type || 'MainInterface';
+        renderGuiSettingsPanel(g.type || 'MainInterface', g.settings || {});
+      }
+    }
+  } catch(_) {}
 
   // Contextual cursors management functions
   window.createCursor = function() {
