@@ -1074,7 +1074,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnSelect = document.createElement('button');
       btnSelect.className = 'btn btn-sm btn-outline-light me-1';
-      btnSelect.title = 'Seleziona';
+      btnSelect.title = 'Select';
       btnSelect.textContent = '✔';
       btnSelect.addEventListener('click', () => {
         activeHotspotId = hs.id;
@@ -1086,10 +1086,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
-      btnEdit.title = 'Rinomina';
+      btnEdit.title = 'Rename';
       btnEdit.textContent = '✏️';
       btnEdit.addEventListener('click', () => {
-        const newName = prompt('Nome hotspot:', hs.name || 'Hotspot');
+        const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
           const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
@@ -1100,7 +1100,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnToggle = document.createElement('button');
       btnToggle.className = 'btn btn-sm btn-outline-warning me-1';
-      btnToggle.title = 'Mostra/Nascondi';
+      btnToggle.title = 'Show/Hide';
       btnToggle.textContent = '👁️';
       btnToggle.addEventListener('click', () => {
         hs.visible = hs.visible === false ? true : false;
@@ -1123,10 +1123,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
-      btnDelete.title = 'Elimina';
+      btnDelete.title = 'Delete';
       btnDelete.textContent = '🗑️';
       btnDelete.addEventListener('click', () => {
-        if (!confirm('Eliminare questo hotspot?')) return;
+        if (!confirm('Delete this hotspot?')) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
         if (activeHotspotId === hs.id) activeHotspotId = hotspots[0] ? hotspots[0].id : null;
@@ -1168,7 +1168,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   window.addHotspot = function() {
-    const name = prompt('Nome hotspot:', `Hotspot ${hotspots.length + 1}`);
+    const name = prompt('Hotspot name:', `Hotspot ${hotspots.length + 1}`);
     const hs = {
       id: uid('hotspot'),
       name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
@@ -1185,7 +1185,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.startHotspotDrawing = function() {
     if (!activeHotspotId) {
-      showNotification('Nessun hotspot selezionato. Creane uno prima.', 'warning');
+      showNotification('No hotspot selected. Create one first.', 'warning');
       return;
     }
     isDrawingWalkable = false; // ensure mutually exclusive
@@ -1863,54 +1863,54 @@ document.addEventListener("DOMContentLoaded", () => {
 
     switch(type) {
       case 'DialogBox': {
-        frag.appendChild(makeInput('Posizione X', 'gui-set-x', 'number', settings.x ?? 0));
-        frag.appendChild(makeInput('Posizione Y', 'gui-set-y', 'number', settings.y ?? 0));
-        frag.appendChild(makeInput('Larghezza', 'gui-set-w', 'number', settings.w ?? 300));
-        frag.appendChild(makeInput('Altezza', 'gui-set-h', 'number', settings.h ?? 150));
-        frag.appendChild(makeInput('Background (css color o data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
+        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeInput('Width', 'gui-set-w', 'number', settings.w ?? 300));
+        frag.appendChild(makeInput('Height', 'gui-set-h', 'number', settings.h ?? 150));
+        frag.appendChild(makeInput('Background (CSS color or data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
         frag.appendChild(makeInput('Font CSS', 'gui-set-font', 'text', settings.font || '16px Arial'));
-        frag.appendChild(makeInput('Ritratto (data URL opzionale)', 'gui-set-portrait', 'text', settings.portrait || ''));
-        frag.appendChild(makeSelect('Comportamento comparsa', 'gui-set-appear', [
-          {value:'instant', label:'Istantaneo'},
+        frag.appendChild(makeInput('Portrait (optional data URL)', 'gui-set-portrait', 'text', settings.portrait || ''));
+        frag.appendChild(makeSelect('Appear behavior', 'gui-set-appear', [
+          {value:'instant', label:'Instant'},
           {value:'fade', label:'Fade'},
           {value:'slide', label:'Slide'}
         ], settings.appear || 'instant'));
         break;
       }
       case 'Inventory': {
-        frag.appendChild(makeInput('Righe', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
-        frag.appendChild(makeInput('Colonne', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
-        frag.appendChild(makeSelect('Stile slot', 'gui-set-slot-style', [
-          {value:'square', label:'Quadrato'},
-          {value:'rounded', label:'Arrotondato'},
-          {value:'circle', label:'Cerchio'}
+        frag.appendChild(makeInput('Rows', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
+        frag.appendChild(makeInput('Columns', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
+        frag.appendChild(makeSelect('Slot style', 'gui-set-slot-style', [
+          {value:'square', label:'Square'},
+          {value:'rounded', label:'Rounded'},
+          {value:'circle', label:'Circle'}
         ], settings.slotStyle || 'square'));
         frag.appendChild(makeInput('Background', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.5)'));
-        frag.appendChild(makeSelect('Animazione apertura', 'gui-set-open-anim', [
-          {value:'none', label:'Nessuna'},
-          {value:'scale', label:'Scala'},
+        frag.appendChild(makeSelect('Open animation', 'gui-set-open-anim', [
+          {value:'none', label:'None'},
+          {value:'scale', label:'Scale'},
           {value:'fade', label:'Fade'}
         ], settings.openAnim || 'none'));
         break;
       }
       case 'VerbGUI': {
-        frag.appendChild(makeTextarea('Lista verbi (uno per riga)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
-        frag.appendChild(makeInput('Posizione X', 'gui-set-x', 'number', settings.x ?? 0));
-        frag.appendChild(makeInput('Posizione Y', 'gui-set-y', 'number', settings.y ?? 0));
-        frag.appendChild(makeSelect('Stile', 'gui-set-style', [
-          {value:'icons', label:'Icone'},
-          {value:'text', label:'Testo'}
+        frag.appendChild(makeTextarea('Verb list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeSelect('Style', 'gui-set-style', [
+          {value:'icons', label:'Icons'},
+          {value:'text', label:'Text'}
         ], settings.style || 'text'));
         break;
       }
       case 'Menu': {
-        frag.appendChild(makeTextarea('Voci menu (una per riga)', 'gui-set-menu-items', Array.isArray(settings.items) ? settings.items.join('\n') : 'Start\nLoad\nOptions\nQuit'));
+        frag.appendChild(makeTextarea('Menu entries (one per line)', 'gui-set-menu-items', Array.isArray(settings.items) ? settings.items.join('\n') : 'Start\nLoad\nOptions\nQuit'));
         frag.appendChild(makeSelect('Layout', 'gui-set-menu-layout', [
-          {value:'vertical', label:'Verticale'},
-          {value:'horizontal', label:'Orizzontale'},
-          {value:'grid', label:'Griglia'}
+          {value:'vertical', label:'Vertical'},
+          {value:'horizontal', label:'Horizontal'},
+          {value:'grid', label:'Grid'}
         ], settings.layout || 'vertical'));
-        frag.appendChild(makeSelect('Stile pulsanti', 'gui-set-btn-style', [
+        frag.appendChild(makeSelect('Buttons style', 'gui-set-btn-style', [
           {value:'primary', label:'Primary'},
           {value:'outline', label:'Outline'},
           {value:'ghost', label:'Ghost'}
@@ -1918,7 +1918,7 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
       }
       case 'VerbCoin': {
-        frag.appendChild(makeTextarea('Lista verbi coin (uno per riga)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        frag.appendChild(makeTextarea('Verb coin list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
         break;
       }
       case 'OverlayCustom': {
@@ -2363,13 +2363,13 @@ document.addEventListener("DOMContentLoaded", () => {
     newCharacter.innerHTML = `
       <div>
         <strong>${name}</strong>
-        <br><small>Nuovo personaggio</small>
-        <span class="badge bg-success ms-2">Attivo</span>
+        <br><small>New character</small>
+        <span class="badge bg-success ms-2">Active</span>
       </div>
       <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Modifica">✏️</button>
-        <button class="btn btn-sm btn-outline-warning me-1" title="Dialoghi">💬</button>
-        <button class="btn btn-sm btn-outline-danger" title="Elimina" onclick="removeCharacter(this)">🗑️</button>
+        <button class="btn btn-sm btn-outline-light me-1" title="Edit">✏️</button>
+        <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs">💬</button>
+        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
       </div>
     `;
     
@@ -2380,7 +2380,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Aggiorna la UI del giocatore iniziale
     refreshStartingPlayerUI();
     
-    // Seleziona automaticamente il nuovo personaggio
+    // Automatically select the new character
     const characterSelector = document.getElementById('character-selector');
     if (characterSelector) {
       characterSelector.value = name;
@@ -2402,7 +2402,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Aggiorna la UI del giocatore iniziale
       refreshStartingPlayerUI();
       
-      // Se il personaggio eliminato era selezionato, deseleziona
+    // If the deleted character was selected, deselect
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === characterName) {
         characterSelector.value = '';
@@ -2430,7 +2430,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Aggiorna la UI del giocatore iniziale
       refreshStartingPlayerUI();
       
-      // Se il personaggio modificato era selezionato, aggiorna la selezione
+    // If the edited character was selected, update selection
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
@@ -3014,7 +3014,7 @@ document.addEventListener("DOMContentLoaded", () => {
       activePlugin = null;
     }
     if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') {
-      showNotification('Jailed non caricato. Controlla l\'include.', 'danger');
+      showNotification('Jailed not loaded. Check the include.', 'danger');
       return;
     }
     // Wrappa il codice utente per esporre funzioni previste

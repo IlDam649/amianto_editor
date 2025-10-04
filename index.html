@@ -314,7 +314,7 @@
           <button class="btn btn-outline-danger btn-sm" onclick="clearWalkableArea()">Clear</button>
           <button class="btn btn-outline-warning btn-sm" onclick="toggleWalkableVisibility()">Show/Hide</button>
         </div>
-        <small class="text-muted d-block">Click sul canvas per aggiungere vertici. Finish per chiudere il poligono. Clicca un vertice per selezionarlo, trascina per spostarlo, o elimina con il bottone sotto.</small>
+        <small class="text-muted d-block">Click on the canvas to add vertices. Click Finish to close the polygon. Click a vertex to select it, drag to move it, or delete it with the button below.</small>
         <div class="d-grid gap-2 mb-2">
           <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedWalkableVertex()">Delete Selected Vertex</button>
         </div>
@@ -331,9 +331,9 @@
           <button class="btn btn-outline-warning btn-sm" onclick="toggleHotspotsVisibility()">Show/Hide All</button>
         </div>
         <small class="text-muted d-block mb-2">
-          <strong>Editing Hotspot:</strong> Seleziona un hotspot e clicca sul canvas per aggiungere vertici. Finish per chiudere.<br>
-          <strong>Vertici:</strong> Click su un vertice per selezionarlo, trascina per spostarlo. Click su un bordo per aggiungere un nuovo vertice.<br>
-          <strong>Tasti:</strong> Delete/Backspace per eliminare vertice selezionato, Escape per deselezionare.
+          <strong>Editing Hotspot:</strong> Select a hotspot and click on the canvas to add vertices. Click Finish to close.<br>
+          <strong>Vertices:</strong> Click a vertex to select it, drag to move it. Click an edge to add a new vertex.<br>
+          <strong>Keys:</strong> Delete/Backspace to remove the selected vertex, Escape to deselect.
         </small>
         <div class="d-grid gap-2 mb-2">
           <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedHotspotVertex()">Delete Selected Vertex</button>
@@ -430,24 +430,24 @@
             <!-- Game Start Configuration -->
             <div class="mb-3">
               <h6 class="text-light">Game Start</h6>
-              <small class="text-muted d-block mb-2">Seleziona il personaggio giocante iniziale e la stanza/posizione di partenza.</small>
+              <small class="text-muted d-block mb-2">Select the initial player character and the starting room/position.</small>
 
-              <label class="form-label text-light">Personaggio giocante iniziale:</label>
+              <label class="form-label text-light">Initial player character:</label>
               <div id="starting-player-list" class="list-group mb-2">
-                <!-- Radio list caricata dinamicamente -->
+                <!-- Radio list dynamically populated -->
               </div>
 
               <div class="row g-2 align-items-end">
                 <div class="col-12">
-                  <label class="form-label text-light">Stanza di partenza:</label>
+                  <label class="form-label text-light">Starting room:</label>
                   <select class="form-select form-select-sm" id="start-room-selector"></select>
                 </div>
                 <div class="col-6">
-                  <label for="start-x" class="form-label text-light">Posizione X</label>
+                  <label for="start-x" class="form-label text-light">Position X</label>
                   <input type="number" class="form-control form-control-sm" id="start-x" value="0">
                 </div>
                 <div class="col-6">
-                  <label for="start-y" class="form-label text-light">Posizione Y</label>
+                  <label for="start-y" class="form-label text-light">Position Y</label>
                   <input type="number" class="form-control form-control-sm" id="start-y" value="0">
                 </div>
               </div>
@@ -505,7 +505,7 @@
             <div class="mb-3">
               <div class="alert alert-info" role="alert">
                 <small>
-                  Disegna pulsanti come rettangoli sul canvas (GUI overlay). Seleziona con click, trascina per spostare. Usa Delete Selected per rimuovere.
+                  Draw buttons as rectangles on the canvas (GUI overlay). Click to select, drag to move. Use Delete Selected to remove.
                 </small>
               </div>
             </div>
@@ -596,7 +596,7 @@
             
             <div class="mb-3" style="display: none;">
               <label class="form-label text-light">Script Editor (JavaScript):</label>
-              <textarea class="form-control" id="script-editor" rows="14" style="background-color: #1e1e1e; color: #f0f0f0; border: 1px solid #444; font-family: 'Courier New', monospace; font-size: 12px;" placeholder="// Scrivi il tuo script JavaScript qui...&#10;// API disponibili: print(...), show_message(text), move_object(id, x, y)&#10;&#10;function on_game_start(){&#10;  print('Game started!');&#10;}&#10;&#10;function on_object_click(object_id){&#10;  if (object_id === 'door') {&#10;    show_message('The door is locked.');&#10;  }&#10;}"></textarea>
+              <textarea class="form-control" id="script-editor" rows="14" style="background-color: #1e1e1e; color: #f0f0f0; border: 1px solid #444; font-family: 'Courier New', monospace; font-size: 12px;" placeholder="// Write your JavaScript script here...&#10;// Available APIs: print(...), show_message(text), move_object(id, x, y)&#10;&#10;function on_game_start(){&#10;  print('Game started!');&#10;}&#10;&#10;function on_object_click(object_id){&#10;  if (object_id === 'door') {&#10;    show_message('The door is locked.');&#10;  }&#10;}"></textarea>
             </div>
 
             <div class="mb-3">
@@ -639,7 +639,7 @@
             
             <div class="alert alert-info" role="alert">
               <small>
-                <strong>Tip:</strong> Usa Ctrl+S per salvare. Linguaggio: JavaScript in sandbox (Jailed). API: print, show_message(text), move_object(id, x, y).
+                <strong>Tip:</strong> Use Ctrl+S to save. Language: JavaScript in sandbox (Jailed). APIs: print, show_message(text), move_object(id, x, y).
               </small>
             </div>
           </div>
