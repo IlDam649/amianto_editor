@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+<meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Amianto Editor - Login</title>
+  <meta name="description" content="Amianto Editor - Create point-and-click adventure games. Desktop experience recommended for best results.">
+  <meta name="theme-color" content="#1e1e1e">
+  <title>Amianto Editor - Desktop Game Development</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/normalize.css@8.0.1/normalize.css">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -510,10 +512,35 @@
               </div>
             </div>
 
-            <div class="mb-3">
-              <h6 class="text-light">Buttons list</h6>
-              <div id="gui-buttons-list" class="list-group"></div>
-            </div>
+<div class="mb-3">
+              <h6 class="text-light">Test controls:</h6>
+              <div class="row">
+                <div class="col-6">
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testRoomChange()">Test Room Change</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testObjectInteraction()">Test Interaction</button>
+                </div>
+                <div class="col-6">
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterInteraction()">Test Character Click</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterDialog()">Test Dialogs</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testHotspotInteraction()">Test Hotspot</button>
+                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="clearDebugConsole()">Clear Console</button>
+                </div>
+              </div>
+              
+              <h6 class="text-light mt-3">Firebase tests:</h6>
+              <div class="row">
+                <div class="col-6">
+                  <button class="btn btn-outline-info btn-sm w-100 mb-1" onclick="testFirebaseConnection()">🔥 Test Firebase</button>
+                  <button class="btn btn-outline-success btn-sm w-100 mb-1" onclick="testFirebaseRegistration()">📧 Test Registration</button>
+                </div>
+                <div class="col-6">
+                  <div class="alert alert-info alert-sm mb-1" style="font-size: 11px;">
+                    <strong>Firebase Status:</strong><br>
+                    Online: <span id="firebase-status">Checking...</span><br>
+                    User: <span id="firebase-user">None</span>
+                  </div>
+                </div>
+              </div>
 
             <!-- Cursor Manager -->
             <div class="mt-4">
@@ -654,18 +681,20 @@
               </div>
             </div>
             
-            <div class="mb-3">
-              <div class="btn-group w-100" role="group">
+<div class="mb-3">
+              <label class="form-label text-light">Testing Options:</label>
+              <div class="btn-group w-100 mb-2" role="group">
                 <button class="btn btn-success btn-sm" onclick="startPlayTest()">
-                  <i class="fas fa-play"></i> Start Test
+                  <i class="fas fa-external-link-alt"></i> Open Runtime Window
                 </button>
-                <button class="btn btn-warning btn-sm" onclick="pausePlayTest()">
-                  <i class="fas fa-pause"></i> Pause
-                </button>
-                <button class="btn btn-danger btn-sm" onclick="stopPlayTest()">
-                  <i class="fas fa-stop"></i> Stop
+                <button class="btn btn-info btn-sm" onclick="window.RuntimeManager?.start()">
+                  <i class="fas fa-desktop"></i> Test in Tab
                 </button>
               </div>
+              <small class="text-muted d-block mb-2">
+                <strong>Open Runtime Window:</strong> Opens game in separate browser tab (full testing)<br>
+                <strong>Test in Tab:</strong> Quick integrated testing within editor
+              </small>
             </div>
             
             <div class="mb-3">
@@ -675,7 +704,7 @@
               </div>
             </div>
             
-            <div class="mb-3">
+<div class="mb-3">
               <label class="form-label text-light">Debug console:</label>
               <div class="form-control bg-dark text-light" id="debug-console" style="height: 150px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
                 [INFO] Editor loaded and ready
@@ -684,18 +713,62 @@
               </div>
             </div>
             
+<div class="mb-3">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="form-label text-light mb-0">Player Inventory:</label>
+                <button class="btn btn-outline-danger btn-sm" onclick="testClearInventory()">Clear All</button>
+              </div>
+              <div class="form-control bg-dark text-light" id="inventory-display" style="height: 120px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
+                [INFO] Inventory empty
+              </div>
+            </div>
+            
+            <!-- Integrated Runtime Section -->
             <div class="mb-3">
-              <h6 class="text-light">Test controls:</h6>
-              <div class="row">
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testRoomChange()">Test Room Change</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testObjectInteraction()">Test Interaction</button>
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="text-light mb-0">Integrated Runtime <span class="badge bg-success" id="runtime-status" style="display: none;">RUNNING</span></h6>
+                <div class="btn-group btn-group-sm" role="group">
+                  <button class="btn btn-outline-success" id="btn-runtime-play" title="Start Runtime Test">
+                    <i class="fas fa-play"></i> Play
+                  </button>
+                  <button class="btn btn-outline-warning" id="btn-runtime-pause" title="Pause Runtime" disabled>
+                    <i class="fas fa-pause"></i> Pause
+                  </button>
+                  <button class="btn btn-outline-danger" id="btn-runtime-stop" title="Stop Runtime" disabled>
+                    <i class="fas fa-stop"></i> Stop
+                  </button>
+                  <button class="btn btn-outline-info" id="btn-runtime-restart" title="Restart Runtime" disabled>
+                    <i class="fas fa-redo"></i> Restart
+                  </button>
                 </div>
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterInteraction()">Test Character Click</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterDialog()">Test Dialogs</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testHotspotInteraction()">Test Hotspot</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="clearDebugConsole()">Clear Console</button>
+              </div>
+              
+              <!-- Runtime Canvas Container -->
+              <div class="card bg-dark border-secondary mb-2">
+                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                  <small class="text-light">Game View</small>
+                  <small class="text-info" id="runtime-project-name"></small>
+                </div>
+                <div class="card-body p-2">
+                  <div class="runtime-canvas-container" style="position: relative; background: #000; border: 1px solid #444; overflow: hidden;">
+                    <canvas id="runtime-canvas" width="800" height="600" style="width: 100%; height: auto; max-height: 400px; object-fit: contain;"></canvas>
+                    <div id="runtime-overlay" style="position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 5px 10px; border-radius: 3px; font-size: 12px; display: none;">
+                      Runtime Mode
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Runtime Console -->
+              <div class="card bg-dark border-secondary">
+                <div class="card-header py-2">
+                  <small class="text-light">Runtime Console</small>
+                  <button class="btn btn-outline-light btn-sm float-end" onclick="clearRuntimeConsole()" title="Clear Runtime Console">Clear</button>
+                </div>
+                <div class="card-body p-2">
+                  <div id="runtime-console" class="form-control bg-black text-success" style="height: 120px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 11px; white-space: pre-wrap;" readonly>
+                    [Runtime] Ready for integrated testing...
+                  </div>
                 </div>
               </div>
             </div>
@@ -706,8 +779,17 @@
   </div>
   </div> <!-- Close mainDashboard -->
 
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+  
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  
+  <script src="JS/device-detector.js"></script>
+  <script src="JS/firebase-config.js"></script>
+  <script src="JS/firebase-usage.js"></script>
   <script src="JS/main.js"></script>
 </body>
 </html>

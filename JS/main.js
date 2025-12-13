@@ -2998,13 +2998,357 @@ window.selectRoom = function(roomId) {
   let codeMirrorEditor = null;
   let largeCodeMirrorEditor = null;
   let currentScriptName = 'startup';
-  const jsScripts = new Map(); // name -> content
+const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
   const roomScripts = new Map(); // roomId -> scriptName
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
   let activePlugin = null; // istanza di jailed.DynamicPlugin
+
+  // Inventory System: Game state for player inventory
+  // Structure: Map<itemId, {name: string, quantity: number, data: any}>
+  let gameInventory = new Map();
+
+  // Demo Project Protection
+  let isDemoMode = false;
+  let isDemoUser = false;
+
+  // Firebase Integration
+  window.FirebaseManager = {
+    isOnline: navigator.onLine,
+    syncInProgress: false,
+    
+    // Initialize Firebase connection
+    async init() {
+      if (!window.firebaseAuth || !window.firebaseDB) {
+        console.warn('Firebase not available, using localStorage only');
+        return false;
+      }
+      
+      // Listen for auth state changes
+      window.firebaseAuth.onAuthStateChanged((user) => {
+        if (user) {
+          console.log('Firebase user authenticated:', user.email);
+          this.handleFirebaseUser(user);
+        } else {
+          console.log('Firebase user signed out');
+        }
+      });
+      
+      // Listen for online/offline status
+      window.addEventListener('online', () => {
+        this.isOnline = true;
+        console.log('Connection restored - syncing with Firebase');
+        this.syncLocalToFirebase();
+      });
+      
+      window.addEventListener('offline', () => {
+        this.isOnline = false;
+        console.log('Connection lost - using offline mode');
+      });
+      
+      return true;
+    },
+    
+    // Handle Firebase authentication
+    async handleFirebaseUser(firebaseUser) {
+      // Check if we have local user with same email
+      const localUser = Array.from(users.values()).find(u => u.email === firebaseUser.email);
+      
+      if (localUser) {
+        // Link Firebase user to local user
+        localUser.firebaseUid = firebaseUser.uid;
+        localUser.emailVerified = firebaseUser.emailVerified;
+        users.set(localUser.username, localUser);
+        
+        // Sync projects from Firebase
+        await this.syncProjectsFromFirebase(localUser);
+        
+        // Login as local user
+        loginUser(localUser);
+        showNotification(`Welcome back, ${localUser.username}! Firebase sync active.`, 'success');
+      } else {
+        // Create new local user from Firebase
+        const username = firebaseUser.email.split('@')[0];
+        const newUser = {
+          username: username,
+          email: firebaseUser.email,
+          password: null, // No password needed for Firebase users
+          firebaseUid: firebaseUser.uid,
+          emailVerified: firebaseUser.emailVerified,
+          createdAt: new Date().toISOString(),
+          lastLogin: new Date().toISOString()
+        };
+        
+        users.set(username, newUser);
+        loginUser(newUser);
+        showNotification(`Welcome to Amianto Editor, ${username}!`, 'success');
+      }
+    },
+    
+    // Register new user with Firebase
+    async registerUser(email, password, username) {
+      try {
+        const result = await window.firebaseAuth.createUserWithEmailAndPassword(email, password);
+        
+        // Update profile with username
+        await result.user.updateProfile({
+          displayName: username
+        });
+        
+        // Send email verification
+        await result.user.sendEmailVerification();
+        
+        showNotification('Registration successful! Please check your email for verification.', 'success');
+        return true;
+      } catch (error) {
+        console.error('Firebase registration error:', error);
+        showNotification(this.getFirebaseErrorMessage(error), 'error');
+        return false;
+      }
+    },
+    
+    // Login with Firebase
+    async loginUser(email, password) {
+      try {
+        const result = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
+        return true;
+      } catch (error) {
+        console.error('Firebase login error:', error);
+        showNotification(this.getFirebaseErrorMessage(error), 'error');
+        return false;
+      }
+    },
+    
+    // Sync projects from Firebase to local storage
+    async syncProjectsFromFirebase(user) {
+      if (!user.firebaseUid) return;
+      
+      try {
+        const snapshot = await window.firebaseDB
+          .collection('users')
+          .doc(user.firebaseUid)
+          .collection('projects')
+          .get();
+        
+        const projects = [];
+        snapshot.forEach(doc => {
+          projects.push({
+            id: doc.id,
+            ...doc.data()
+          });
+        });
+        
+        // Save to localStorage
+        localStorage.setItem(`amiantoProjects_${user.username}`, JSON.stringify(projects));
+        console.log(`Synced ${projects.length} projects from Firebase for ${user.username}`);
+        
+        return projects;
+      } catch (error) {
+        console.error('Error syncing projects from Firebase:', error);
+        return [];
+      }
+    },
+    
+    // Save project to Firebase
+    async saveProjectToFirebase(projectData, projectId = null) {
+      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) {
+        return false;
+      }
+      
+      try {
+        this.syncInProgress = true;
+        
+        const projectRef = window.firebaseDB
+          .collection('users')
+          .doc(currentUser.firebaseUid)
+          .collection('projects')
+          .doc(projectId || projectData.settings.name);
+        
+        await projectRef.set({
+          ...projectData,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          syncVersion: Date.now()
+        });
+        
+        console.log('Project saved to Firebase:', projectData.settings.name);
+        return true;
+      } catch (error) {
+        console.error('Error saving project to Firebase:', error);
+        showNotification('Firebase sync failed - project saved locally only', 'warning');
+        return false;
+      } finally {
+        this.syncInProgress = false;
+      }
+    },
+    
+    // Sync local data to Firebase
+    async syncLocalToFirebase() {
+      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) return;
+      
+      console.log('Starting sync to Firebase...');
+      
+      // Sync all local projects
+      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      
+      for (const project of localProjects) {
+        await this.saveProjectToFirebase(project, project.id);
+      }
+      
+      showNotification('Projects synced with Firebase!', 'success');
+    },
+    
+    // Get user-friendly error messages
+    getFirebaseErrorMessage(error) {
+      const errorMessages = {
+        'auth/email-already-in-use': 'Email already registered. Try logging in.',
+        'auth/user-not-found': 'No account found with this email.',
+        'auth/wrong-password': 'Incorrect password.',
+        'auth/weak-password': 'Password should be at least 6 characters.',
+        'auth/invalid-email': 'Please enter a valid email address.',
+        'auth/too-many-requests': 'Too many attempts. Please try again later.',
+        'auth/network-request-failed': 'Network error. Please check your connection.'
+      };
+      
+      return errorMessages[error.code] || error.message || 'An error occurred. Please try again.';
+    }
+  };
+
+  // Demo Mode Management
+  function enableDemoMode() {
+    isDemoMode = true;
+    updateSaveButtonStates();
+    addDemoIndicator();
+  }
+
+  function disableDemoMode() {
+    isDemoMode = false;
+    updateSaveButtonStates();
+    removeDemoIndicator();
+  }
+
+  function addDemoIndicator() {
+    // Add demo badge to header
+    const userDisplay = document.getElementById('userDisplayName');
+    if (userDisplay && !userDisplay.querySelector('.demo-badge')) {
+      const badge = document.createElement('span');
+      badge.className = 'demo-badge ms-2 badge bg-warning text-dark';
+      badge.textContent = 'DEMO';
+      badge.title = 'Demo Mode - Register to save projects';
+      userDisplay.appendChild(badge);
+    }
+
+    // Add demo warning to project settings
+    const settingsCard = document.querySelector('.card-header:has(h5:contains("Project Settings"))');
+    if (settingsCard && !settingsCard.querySelector('.demo-warning')) {
+      const warning = document.createElement('div');
+      warning.className = 'demo-warning alert alert-warning alert-sm mt-2 mb-0';
+      warning.innerHTML = '<small><strong>Demo Mode:</strong> Project modifications cannot be saved. <a href="#" onclick="showRegistration()" class="alert-link">Register for free</a> to enable saving.</small>';
+      settingsCard.appendChild(warning);
+    }
+  }
+
+  function removeDemoIndicator() {
+    // Remove demo badge
+    const badge = document.querySelector('.demo-badge');
+    if (badge) badge.remove();
+
+    // Remove demo warning
+    const warning = document.querySelector('.demo-warning');
+    if (warning) warning.remove();
+  }
+
+  function updateSaveButtonStates() {
+    const saveBtn = document.querySelector('a[onclick="saveCurrentProject()"]');
+    const saveSettingsBtn = document.querySelector('button[onclick="saveProjectSettings()"]');
+    
+    if (isDemoMode) {
+      // Disable save buttons
+      if (saveBtn) {
+        saveBtn.classList.add('disabled');
+        saveBtn.setAttribute('onclick', 'showDemoSaveWarning()');
+        saveBtn.setAttribute('title', 'Demo mode - Register to save projects');
+      }
+      
+      if (saveSettingsBtn) {
+        saveSettingsBtn.disabled = true;
+        saveSettingsBtn.setAttribute('onclick', 'showDemoSaveWarning()');
+        saveSettingsBtn.setAttribute('title', 'Demo mode - Register to save projects');
+      }
+    } else {
+      // Enable save buttons
+      if (saveBtn) {
+        saveBtn.classList.remove('disabled');
+        saveBtn.setAttribute('onclick', 'saveCurrentProject()');
+        saveBtn.removeAttribute('title');
+      }
+      
+      if (saveSettingsBtn) {
+        saveSettingsBtn.disabled = false;
+        saveSettingsBtn.setAttribute('onclick', 'saveProjectSettings()');
+        saveSettingsBtn.removeAttribute('title');
+      }
+    }
+  }
+
+  window.showDemoSaveWarning = function() {
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.innerHTML = `
+      <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">🔒 Demo Mode - Save Restricted</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p>You're using the <strong>Amianto Editor Demo</strong>. While you can explore all features and create amazing projects, saving is restricted to registered users.</p>
+            
+            <div class="alert alert-info">
+              <h6><i class="fas fa-lightbulb"></i> What you can do in Demo Mode:</h6>
+              <ul class="mb-0">
+                <li>✅ Create and edit rooms</li>
+                <li>✅ Add scene objects and characters</li>
+                <li>✅ Draw walkable areas and hotspots</li>
+                <li>✅ Write and test JavaScript scripts</li>
+                <li>✅ Test your game with integrated runtime</li>
+                <li>✅ Export your game to run locally</li>
+              </ul>
+            </div>
+            
+            <div class="alert alert-warning">
+              <h6><i class="fas fa-lock"></i> What requires registration:</h6>
+              <ul class="mb-0">
+                <li>🔒 Save projects to your account</li>
+                <li>🔒 Access projects from any device</li>
+                <li>🔒 Collaborate with other users</li>
+                <li>🔒 Future cloud features</li>
+              </ul>
+            </div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Continue in Demo Mode</button>
+            <button type="button" class="btn btn-success" onclick="registerFromDemo(); bootstrap.Modal.getInstance(this.closest('.modal')).hide();">
+              <i class="fas fa-user-plus"></i> Register for Free
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    
+    modal.addEventListener('hidden.bs.modal', () => {
+      document.body.removeChild(modal);
+    });
+  };
+
+  window.registerFromDemo = function() {
+    showRegistration();
+  };
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -3079,14 +3423,87 @@ window.selectRoom = function(roomId) {
         addDebugMessage('Character click handler registered', 'info');
       }
     },
-    on_hotspot_click: function(handler) {
+on_hotspot_click: function(handler) {
       if (typeof handler === 'function') {
         window.gameEventHandlers = window.gameEventHandlers || {};
         window.gameEventHandlers.hotspot_click = handler;
         addDebugMessage('Hotspot click handler registered', 'info');
       }
+    },
+    // Inventory System APIs
+    add_to_inventory: function(itemId, quantity) {
+      quantity = Number(quantity) || 1;
+      if (quantity <= 0) {
+        addDebugMessage('Quantity must be positive', 'warning');
+        return false;
+      }
+      
+      const existing = gameInventory.get(String(itemId));
+      if (existing) {
+        existing.quantity += quantity;
+      } else {
+        gameInventory.set(String(itemId), {
+          name: String(itemId),
+          quantity: quantity,
+          data: null
+        });
+      }
+      
+      addDebugMessage(`Added ${quantity}x ${itemId} to inventory`, 'info');
+      updateInventoryDisplay();
+      return true;
+    },
+    remove_from_inventory: function(itemId, quantity) {
+      quantity = Number(quantity) || 1;
+      if (quantity <= 0) {
+        addDebugMessage('Quantity must be positive', 'warning');
+        return false;
+      }
+      
+      const item = gameInventory.get(String(itemId));
+      if (!item) {
+        addDebugMessage(`Item ${itemId} not found in inventory`, 'warning');
+        return false;
+      }
+      
+      if (item.quantity <= quantity) {
+        gameInventory.delete(String(itemId));
+        addDebugMessage(`Removed all ${itemId} from inventory`, 'info');
+      } else {
+        item.quantity -= quantity;
+        addDebugMessage(`Removed ${quantity}x ${itemId} from inventory`, 'info');
+      }
+      
+      updateInventoryDisplay();
+      return true;
+    },
+    has_item: function(itemId) {
+      return gameInventory.has(String(itemId));
+    },
+    get_item_count: function(itemId) {
+      const item = gameInventory.get(String(itemId));
+      return item ? item.quantity : 0;
+    },
+    get_inventory_items: function() {
+      const items = [];
+      gameInventory.forEach((item, id) => {
+        items.push({
+          id: id,
+          name: item.name,
+          quantity: item.quantity,
+          data: item.data
+        });
+      });
+      return items;
+    },
+    clear_inventory: function() {
+      const count = gameInventory.size;
+      gameInventory.clear();
+      addDebugMessage(`Cleared inventory (${count} items removed)`, 'info');
+      updateInventoryDisplay();
+      return true;
     }
-};
+  };
 
   // Event System: Global trigger functions
   window.gameEventHandlers = window.gameEventHandlers || {};
@@ -3136,6 +3553,12 @@ const wrapped = `
       var on_object_click = application.remote.on_object_click;
       var on_character_click = application.remote.on_character_click;
       var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var get_inventory_items = application.remote.get_inventory_items;
+      var clear_inventory = application.remote.clear_inventory;
       try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({});
       try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
@@ -3212,6 +3635,12 @@ const wrapped = `
       var on_object_click = application.remote.on_object_click;
       var on_character_click = application.remote.on_character_click;
       var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var get_inventory_items = application.remote.get_inventory_items;
+      var clear_inventory = application.remote.clear_inventory;
       try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({
         on_object_click: function(object_id, x, y){
@@ -3791,12 +4220,315 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Debug console cleared', 'info');
   };
 
-  function updateGameStatus(status) {
+function updateGameStatus(status) {
     const statusElement = document.getElementById('game-status');
     if (statusElement) {
       statusElement.textContent = status;
     }
   }
+
+  // Inventory display functions
+  function updateInventoryDisplay() {
+    const displayEl = document.getElementById('inventory-display');
+    if (!displayEl) return;
+    
+    if (gameInventory.size === 0) {
+      displayEl.innerHTML = '[INFO] Inventory empty';
+      return;
+    }
+    
+    let html = '';
+    gameInventory.forEach((item, id) => {
+      html += `[ITEM] ${item.name} x${item.quantity}\n`;
+    });
+    
+    displayEl.textContent = html.trim();
+  }
+
+  window.testClearInventory = function() {
+    clear_inventory();
+    updateInventoryDisplay();
+    showNotification('Inventory cleared!', 'info');
+  };
+
+  // Test functions for inventory
+  window.testAddItem = function(itemId, quantity) {
+    itemId = itemId || 'test_item';
+    quantity = quantity || 1;
+    add_to_inventory(itemId, quantity);
+    updateInventoryDisplay();
+  };
+
+  window.testRemoveItem = function(itemId, quantity) {
+    itemId = itemId || 'test_item';
+    quantity = quantity || 1;
+    remove_from_inventory(itemId, quantity);
+    updateInventoryDisplay();
+  };
+
+// Integrated Runtime Manager
+  window.RuntimeManager = {
+    isRunning: false,
+    isPaused: false,
+    gameData: null,
+    currentRoomIndex: 0,
+    loadedImagesCache: new Map(),
+    animationFrame: null,
+    
+    // Canvas elements
+    runtimeCanvas: null,
+    runtimeCtx: null,
+    editorCanvas: null,
+    editorCtx: null,
+    
+    init() {
+      this.runtimeCanvas = document.getElementById('runtime-canvas');
+      this.runtimeCtx = this.runtimeCanvas ? this.runtimeCanvas.getContext('2d') : null;
+      this.editorCanvas = document.getElementById('canvas');
+      this.editorCtx = this.editorCanvas ? this.editorCanvas.getContext('2d') : null;
+      
+      this.setupEventListeners();
+      this.runtimeLog('Runtime Manager initialized');
+    },
+    
+    setupEventListeners() {
+      document.getElementById('btn-runtime-play')?.addEventListener('click', () => this.start());
+      document.getElementById('btn-runtime-pause')?.addEventListener('click', () => this.pause());
+      document.getElementById('btn-runtime-stop')?.addEventListener('click', () => this.stop());
+      document.getElementById('btn-runtime-restart')?.addEventListener('click', () => this.restart());
+    },
+    
+    async start() {
+      if (this.isRunning && !this.isPaused) return;
+      
+      if (!this.isPaused) {
+        // Load fresh game data
+        const jsonString = window.serializeProjectToJsonString(true);
+        try {
+          this.gameData = JSON.parse(jsonString);
+        } catch (e) {
+          this.runtimeLog('Failed to load project data: ' + e, 'error');
+          return;
+        }
+      }
+      
+      this.isRunning = true;
+      this.isPaused = false;
+      
+      // Set canvas size from game settings
+      const w = (this.gameData && this.gameData.settings && this.gameData.settings.canvasWidth) || 800;
+      const h = (this.gameData && this.gameData.settings && this.gameData.settings.canvasHeight) || 600;
+      this.setCanvasSize(w, h);
+      
+      // Find start room
+      this.currentRoomIndex = 0;
+      if (this.gameData && this.gameData.settings && this.gameData.settings.startRoomId) {
+        const idx = (this.gameData.rooms || []).findIndex(r => r && (r.id === this.gameData.settings.startRoomId || r.name === this.gameData.settings.startRoomId));
+        if (idx >= 0) this.currentRoomIndex = idx;
+      }
+      
+      this.updateUI(true);
+      this.runtimeLog(`Runtime started - Room: ${this.currentRoomIndex + 1}/${(this.gameData.rooms || []).length}`);
+      
+      // Trigger game start event
+      triggerGameStart();
+      
+      // Start rendering
+      this.render();
+    },
+    
+    pause() {
+      if (!this.isRunning || this.isPaused) return;
+      this.isPaused = true;
+      this.updateUI(false);
+      this.runtimeLog('Runtime paused');
+    },
+    
+    stop() {
+      this.isRunning = false;
+      this.isPaused = false;
+      if (this.animationFrame) {
+        cancelAnimationFrame(this.animationFrame);
+        this.animationFrame = null;
+      }
+      this.updateUI(false);
+      this.clearRuntimeCanvas();
+      this.runtimeLog('Runtime stopped');
+    },
+    
+    restart() {
+      this.stop();
+      setTimeout(() => this.start(), 100);
+    },
+    
+    setCanvasSize(w, h) {
+      if (this.runtimeCanvas) {
+        this.runtimeCanvas.width = w;
+        this.runtimeCanvas.height = h;
+      }
+    },
+    
+    async loadImage(src) {
+      if (!src) return null;
+      if (this.loadedImagesCache.has(src)) return this.loadedImagesCache.get(src);
+      
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => { 
+          this.loadedImagesCache.set(src, img); 
+          resolve(img); 
+        };
+        img.onerror = () => resolve(null);
+        img.src = src;
+      });
+    },
+    
+    async loadRoomAssets(room) {
+      const out = { background: null, foregrounds: [], objects: [] };
+      out.background = await this.loadImage(room.background);
+      
+      if (Array.isArray(room.foregrounds)) {
+        for (const f of room.foregrounds) {
+          const img = await this.loadImage(f.image);
+          out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
+        }
+      }
+      
+      if (Array.isArray(room.sceneObjects)) {
+        for (const o of room.sceneObjects) {
+          const img = await this.loadImage(o.image);
+          out.objects.push({ 
+            id: o.id, 
+            name: o.name, 
+            type: o.type||'Interactive', 
+            x: Number(o.x)||0, 
+            y: Number(o.y)||0, 
+            img 
+          });
+        }
+      }
+      
+      return out;
+    },
+    
+    async render() {
+      if (!this.isRunning || this.isPaused) return;
+      
+      const room = (this.gameData && this.gameData.rooms && this.gameData.rooms[this.currentRoomIndex]);
+      if (!room) return;
+      
+      const assets = await this.loadRoomAssets(room);
+      const ctx = this.runtimeCtx;
+      const canvas = this.runtimeCanvas;
+      
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw background
+      if (assets.background) {
+        ctx.drawImage(assets.background, 0, 0);
+      }
+      
+      // Draw scene objects
+      for (const o of assets.objects) {
+        if (o.img) {
+          ctx.drawImage(o.img, o.x, o.y);
+        }
+      }
+      
+      // Draw foregrounds
+      for (const f of assets.foregrounds) {
+        if (f.img) {
+          ctx.drawImage(f.img, f.offsetX || 0, f.offsetY || 0);
+        }
+      }
+      
+      // Draw starting position marker
+      if (this.gameData && this.gameData.settings) {
+        const s = this.gameData.settings;
+        if (s.startRoomId) {
+          const targetRoomIndex = (this.gameData.rooms || []).findIndex(r => r && (r.id === s.startRoomId || r.name === s.startRoomId));
+          if (targetRoomIndex === this.currentRoomIndex) {
+            const px = Number(s.startX) || 0;
+            const py = Number(s.startY) || 0;
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
+            ctx.beginPath();
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+      
+      // Continue rendering
+      this.animationFrame = requestAnimationFrame(() => this.render());
+    },
+    
+    clearRuntimeCanvas() {
+      if (this.runtimeCtx && this.runtimeCanvas) {
+        this.runtimeCtx.clearRect(0, 0, this.runtimeCanvas.width, this.runtimeCanvas.height);
+      }
+    },
+    
+    updateUI(isRunning) {
+      const playBtn = document.getElementById('btn-runtime-play');
+      const pauseBtn = document.getElementById('btn-runtime-pause');
+      const stopBtn = document.getElementById('btn-runtime-stop');
+      const restartBtn = document.getElementById('btn-runtime-restart');
+      const status = document.getElementById('runtime-status');
+      const overlay = document.getElementById('runtime-overlay');
+      const projectName = document.getElementById('runtime-project-name');
+      
+      if (isRunning) {
+        playBtn.disabled = true;
+        pauseBtn.disabled = false;
+        stopBtn.disabled = false;
+        restartBtn.disabled = false;
+        if (status) status.style.display = 'inline-block';
+        if (overlay) overlay.style.display = 'block';
+        if (projectName && this.gameData && this.gameData.settings && this.gameData.settings.name) {
+          projectName.textContent = this.gameData.settings.name;
+        }
+      } else {
+        playBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        restartBtn.disabled = true;
+        if (status) status.style.display = 'none';
+        if (overlay) overlay.style.display = 'none';
+        if (projectName) projectName.textContent = '';
+      }
+    },
+    
+    runtimeLog(message, type = 'info') {
+      const console = document.getElementById('runtime-console');
+      if (!console) return;
+      
+      const timestamp = new Date().toLocaleTimeString();
+      const typeIcon = {
+        'info': '[INFO]',
+        'success': '[OK]',
+        'warning': '[WARN]',
+        'error': '[ERR]'
+      }[type] || '[INFO]';
+      
+      const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
+      console.textContent += newMessage;
+      console.scrollTop = console.scrollHeight;
+    }
+  };
+
+  // Runtime console utilities
+  window.clearRuntimeConsole = function() {
+    const console = document.getElementById('runtime-console');
+    if (console) {
+      console.textContent = '[Runtime] Console cleared...\n';
+    }
+  };
 
   function addDebugMessage(message, type = 'info') {
     const console = document.getElementById('debug-console');
@@ -3917,7 +4649,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Save project settings function
-  window.saveProjectSettings = function() {
+window.saveProjectSettings = function() {
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
+      return;
+    }
+    
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
     
@@ -4162,7 +4900,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Handle login
+// Handle login
   function handleLogin() {
     const username = document.getElementById('loginUsername').value.trim();
     const password = document.getElementById('loginPassword').value;
@@ -4176,6 +4914,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
+    // Check if it's an email (Firebase login)
+    if (username.includes('@')) {
+      // Try Firebase login first
+      if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+        window.FirebaseManager.loginUser(username, password);
+        return;
+      } else {
+        showLoginError('Firebase not available. Please check your connection.');
+        return;
+      }
+    }
+
+    // Local user login (existing system)
     const user = users.get(username);
     console.log('User found:', user);
 
@@ -4196,11 +4947,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     loginUser(user, rememberMe);
   }
 
-  // Login user
+// Login user
   function loginUser(user, rememberMe = false) {
     currentUser = user;
     localStorage.setItem('amiantoCurrentUser', user.username);
 
+    // Check if this is demo user
+    isDemoUser = (user.username === 'demo');
+    
     if (rememberMe) {
       localStorage.setItem('amiantoRememberUser', user.username);
     } else {
@@ -4208,7 +4962,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     showDashboard();
-    showNotification(`Welcome back, ${user.username}!`, 'success');
+    
+    if (isDemoUser) {
+      showNotification('Welcome to Amianto Editor Demo! You can explore all features but need to register to save projects.', 'info');
+      enableDemoMode();
+    } else {
+      showNotification(`Welcome back, ${user.username}!`, 'success');
+      disableDemoMode();
+    }
   }
 
   // Show login error
@@ -4242,7 +5003,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Register new user
+// Register new user
   window.registerUser = function() {
     const username = document.getElementById('registerUsername').value.trim();
     const email = document.getElementById('registerEmail').value.trim();
@@ -4265,32 +5026,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
-    // Check if username already exists
+    // Check if username already exists locally
     if (users.has(username)) {
       showRegisterError('Username already exists');
       return;
     }
 
-    // Create new user
-    const newUser = {
-      username: username,
-      email: email,
-      password: password, // In production, hash this
-      createdAt: new Date().toISOString(),
-      projects: []
-    };
-
-    users.set(username, newUser);
-    saveUsers();
-
-    // Auto-login after registration
-    loginUser(newUser);
-
-    // Close modal
-    const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
-    modal.hide();
-
-    showNotification('Account created successfully!', 'success');
+    // Try Firebase registration first
+    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+      window.FirebaseManager.registerUser(email, password, username)
+        .then((success) => {
+          if (success) {
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
+            modal.hide();
+          }
+        });
+    } else {
+      // Fallback to local registration
+      showRegisterError('Firebase not available. Please check your connection.');
+    }
   };
 
   // Show registration error
@@ -4328,16 +5083,78 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Reset demo user (for debugging)
-  window.resetDemoUser = function() {
+window.resetDemoUser = function() {
     console.log('Resetting demo user...');
-
-    // Clear all auth-related localStorage
-    localStorage.removeItem('amiantoUsers');
+    // Clear all localStorage
+    localStorage.clear();
+    // Clear all users map
+    users.clear();
+    // Recreate demo user
+    createDemoUser();
+    
+    // Logout current user
+    currentUser = null;
     localStorage.removeItem('amiantoCurrentUser');
-    localStorage.removeItem('amiantoRememberUser');
-
+    
     // Reload the page to recreate demo user
-    location.reload();
+    window.location.reload();
+  };
+
+  // Debug Firebase connection
+  window.testFirebaseConnection = async function() {
+    if (!window.firebaseAuth || !window.firebaseDB) {
+      showNotification('Firebase not loaded!', 'error');
+      return;
+    }
+
+    try {
+      // Test auth state
+      const user = window.firebaseAuth.currentUser;
+      console.log('Current Firebase user:', user);
+      
+      // Test database connection
+      const testDoc = {
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        test: true,
+        userAgent: navigator.userAgent
+      };
+      
+      await window.firebaseDB.collection('test').doc('connection-test').set(testDoc);
+      
+      // Try to read it back
+      const doc = await window.firebaseDB.collection('test').doc('connection-test').get();
+      
+      if (doc.exists) {
+        showNotification('✅ Firebase connection successful!', 'success');
+        console.log('Firebase test data:', doc.data());
+      } else {
+        showNotification('⚠️ Firebase write failed', 'warning');
+      }
+      
+    } catch (error) {
+      console.error('Firebase test error:', error);
+      showNotification(`❌ Firebase error: ${error.message}`, 'error');
+    }
+  };
+
+  // Test Firebase registration
+  window.testFirebaseRegistration = async function() {
+    if (!window.FirebaseManager || !window.FirebaseManager.isOnline) {
+      showNotification('Firebase not available offline', 'warning');
+      return;
+    }
+
+    const testEmail = `test-${Date.now()}@amianto.test`;
+    const testPassword = 'password123';
+    const testUsername = `testuser${Date.now()}`;
+
+    console.log('Testing Firebase registration with:', testEmail);
+    
+    const success = await window.FirebaseManager.registerUser(testEmail, testPassword, testUsername);
+    
+    if (success) {
+      showNotification(`✅ Test registration successful! Check email: ${testEmail}`, 'success');
+    }
   };
 
   // Debug authentication system
@@ -4681,12 +5498,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Save current project for current user
+// Save current project for current user
   function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
       return;
     }
+    
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
+      return;
+    }
+    
     const jsonString = window.serializeProjectToJsonString(true);
     // Mirror in localStorage (used by runtime)
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
@@ -4695,20 +5519,47 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const projectObj = window.serializeProject();
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectObj.settings.name);
-    const entry = { settings: projectObj.settings, updatedAt: new Date().toISOString() };
+    const entry = { 
+      settings: projectObj.settings, 
+      updatedAt: new Date().toISOString(),
+      id: projectObj.settings.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+    };
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+
+    // Try to sync with Firebase
+    let firebaseSaved = false;
+    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+      window.FirebaseManager.saveProjectToFirebase(projectObj)
+        .then((saved) => {
+          firebaseSaved = saved;
+        });
+    }
 
     // Persist to OPFS (silent) and also offer a regular file save (may prompt the user)
     saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name);
     saveProjectJsonToFile(jsonString, projectObj.settings && projectObj.settings.name);
-    showNotification('Project saved successfully!', 'success');
+    
+    // Show appropriate message
+    if (firebaseSaved) {
+      showNotification('Project saved locally and synced to Firebase!', 'success');
+    } else if (window.FirebaseManager && !window.FirebaseManager.isOnline) {
+      showNotification('Project saved locally. Will sync when online.', 'warning');
+    } else {
+      showNotification('Project saved successfully!', 'success');
+    }
   }
 
-  // Create new project
+// Create new project
   window.createNewProject = function() {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
+      return;
+    }
+
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
       return;
     }
 
@@ -5290,7 +6141,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     updateCursorTargets();
   }
 
-  initializeCursorSystem();
+initializeCursorSystem();
+
+  // Initialize Device Detector (must be first)
+  if (window.DeviceDetector) {
+    window.DeviceDetector.init();
+  }
+
+  // Initialize Integrated Runtime Manager
+  if (window.RuntimeManager) {
+    window.RuntimeManager.init();
+  }
+
+  // Initialize Firebase Manager
+  if (window.FirebaseManager) {
+    window.FirebaseManager.init();
+  }
 
   // Expose global functions
   window.showNotification = showNotification;
