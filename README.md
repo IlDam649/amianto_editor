@@ -42,7 +42,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Upload cursor image, optional action text; list active cursors
 - Scripting (JavaScript, Jailed sandbox)
   - Built‑in editor (CodeMirror) with syntax highlighting
-  - Exposed APIs: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
+  - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
   - Save/Load scripts, Run/Stop sandbox
 - Play Test Panel
@@ -58,6 +59,44 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Auto-try `game.json` at startup; shows runtime logs
 - Theming
   - Acid dark + neon UI across forms, buttons, lists, dropdowns
+
+## Current API Status
+
+The JavaScript scripting system currently provides **8 working APIs**:
+
+### Basic APIs
+- **`print(...)`** - Outputs messages to the debug console
+- **`show_message(text)`** - Shows notification messages to the user
+- **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
+
+### Event System APIs (NEW!)
+- **`on_game_start(handler)`** - Registers a function to call when the game starts
+- **`on_room_change(handler)`** - Registers a function to call when changing rooms (receives oldRoomId, newRoomId)
+- **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y)
+- **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId)
+- **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId)
+
+### Usage Examples
+```javascript
+// Game start event
+on_game_start(function() {
+    print("Game started!");
+    show_message("Welcome to my adventure game!");
+});
+
+// Room change event
+on_room_change(function(oldRoom, newRoom) {
+    print("Changed from room " + oldRoom + " to " + newRoom);
+});
+
+// Object click event
+on_object_click(function(objectId, x, y) {
+    print("Clicked object " + objectId + " at position " + x + "," + y);
+    show_message("You clicked on " + objectId);
+});
+```
+
+All other APIs listed in the extension roadmap are planned for future implementation.
 
 ## Quick Start
 
@@ -92,7 +131,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 ### 🚀 JavaScript API Roadmap
 
 #### **Phase 1 - Core Systems (High Priority)**
-- **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
+- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETED)**
 - **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
 - **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
 - **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
@@ -197,7 +236,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Upload immagine cursore, testo azione opzionale; lista cursori attivi
 - Scripting (JavaScript, sandbox Jailed)
   - Editor JavaScript integrato (CodeMirror)
-  - API esposte: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
+  - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
   - Salva/Carica script, Esegui/Stop sandbox
 - Play Test
@@ -213,6 +253,44 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Tentativo automatico di caricare `game.json` all’avvio; log runtime
 - Tema
   - Interfaccia acid dark + neon uniforme (form, pulsanti, liste, menu)
+
+## Stato Corrente delle API
+
+Il sistema di scripting JavaScript fornisce attualmente **8 API funzionanti**:
+
+### API Base
+- **`print(...)`** - Invia messaggi alla console di debug
+- **`show_message(text)`** - Mostra notifiche all'utente
+- **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
+
+### API Sistema Eventi (NUOVE!)
+- **`on_game_start(handler)`** - Registra una funzione da chiamare all'avvio del gioco
+- **`on_room_change(handler)`** - Registra una funzione da chiamare al cambio stanza (riceve oldRoomId, newRoomId)
+- **`on_object_click(handler)`** - Registra una funzione da chiamare al click sugli oggetti (riceve objectId, x, y)
+- **`on_character_click(handler)`** - Registra una funzione da chiamare al click sui personaggi (riceve characterId)
+- **`on_hotspot_click(handler)`** - Registra una funzione da chiamare al click sugli hotspot (riceve hotspotId)
+
+### Esempi di Utilizzo
+```javascript
+// Evento di avvio gioco
+on_game_start(function() {
+    print("Gioco avviato!");
+    show_message("Benvenuto nella mia avventura!");
+});
+
+// Evento di cambio stanza
+on_room_change(function(oldRoom, newRoom) {
+    print("Cambiato dalla stanza " + oldRoom + " alla " + newRoom);
+});
+
+// Evento di click oggetto
+on_object_click(function(objectId, x, y) {
+    print("Cliccato oggetto " + objectId + " alla posizione " + x + "," + y);
+    show_message("Hai cliccato su " + objectId);
+});
+```
+
+Tutte le altre API elencate nella roadmap sono pianificate per implementazioni future.
 
 ## Avvio Rapido
 
@@ -247,7 +325,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 ### 🚀 Roadmap JavaScript API
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
-- **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
+- ✅ **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETATO)**
 - **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
 - **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
 - **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`

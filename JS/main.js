@@ -968,6 +968,45 @@ document.addEventListener("DOMContentLoaded", () => {
         redraw();
       }
     }
+
+if (playTestState && playTestState.isRunning) {
+      const obj = getObjectAtPoint(x, y);
+      if (obj && !isDraggingObject) {
+        // Trigger global object click event
+        triggerObjectClick(obj.id, Math.round(x), Math.round(y));
+        
+        try {
+          if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
+            activePlugin.remote.on_object_click(obj.id, Math.round(x), Math.round(y));
+          }
+        } catch(_) {}
+        const scriptName = objectScripts.get(obj.id);
+        if (scriptName) {
+          const content = jsScripts.get(scriptName);
+          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)]);
+        }
+        return;
+      }
+for (const hs of hotspots) {
+        if (!hs || hs.visible === false) continue;
+        if (isPointInPolygon(hs.points || [], x, y)) {
+          // Trigger global hotspot click event
+          triggerHotspotClick(hs.id);
+          
+          try {
+            if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
+              activePlugin.remote.on_hotspot_click(hs.id);
+            }
+          } catch(_) {}
+          const hScript = hotspotScripts.get(hs.id);
+          if (hScript) {
+            const hContent = jsScripts.get(hScript);
+            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id]);
+          }
+          break;
+        }
+      }
+    }
   });
 
   // ===== Walkable vertex interactions =====
@@ -1053,6 +1092,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== Hotspots controls & UI =====
   const hotspotsListContainer = document.getElementById('hotspots-list');
+
+  function isPointInPolygon(points, px, py){
+    if (!Array.isArray(points) || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x, yi = points[i].y;
+      const xj = points[j].x, yj = points[j].y;
+      const intersect = ((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
 
   function refreshHotspotsListUI() {
     if (!hotspotsListContainer) return;
@@ -1632,11 +1683,22 @@ document.addEventListener("DOMContentLoaded", () => {
     const name = prompt('Room name:', `Room ${rooms.size + 1}`);
     if (!name) return;
     const rid = uid('room');
+    const prevRoomId = currentRoomId;
     rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
     currentRoomId = rid;
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, rid);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(rid);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+    }
   };
 
   window.renameRoom = function() {
@@ -1650,6 +1712,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.deleteRoom = function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
     if (!confirm('Delete current room?')) return;
+    const prevRoomId = currentRoomId;
     rooms.delete(currentRoomId);
     // pick another existing room
     const first = rooms.keys().next().value;
@@ -1657,14 +1720,41 @@ document.addEventListener("DOMContentLoaded", () => {
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, first);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(first);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+    }
   };
 
-  window.selectRoom = function(roomId) {
+window.selectRoom = function(roomId) {
     if (!rooms.has(roomId)) return;
+    const prevRoomId = currentRoomId;
     currentRoomId = roomId;
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    
+    // Trigger global room change event
+    if (prevRoomId !== roomId) {
+      triggerRoomChange(prevRoomId, roomId);
+    }
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, roomId);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(roomId);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, roomId]);
+    }
   };
 
   // Util helper to create unique id
@@ -2946,7 +3036,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // API esposte al sandbox
+// API esposte al sandbox
   const sandboxApi = {
     print: function() {
       const msg = Array.from(arguments).map(v => String(v)).join(' ');
@@ -2959,8 +3049,103 @@ document.addEventListener("DOMContentLoaded", () => {
       const obj = sceneObjects.find(o => o.id === String(id));
       if (!obj) { addDebugMessage(`Object ${id} not found`, 'warning'); return; }
       obj.x = Number(x)||0; obj.y = Number(y)||0; redraw();
+    },
+    // Event System APIs
+    on_game_start: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.game_start = handler;
+        addDebugMessage('Game start handler registered', 'info');
+      }
+    },
+    on_room_change: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.room_change = handler;
+        addDebugMessage('Room change handler registered', 'info');
+      }
+    },
+    on_object_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.object_click = handler;
+        addDebugMessage('Object click handler registered', 'info');
+      }
+    },
+    on_character_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.character_click = handler;
+        addDebugMessage('Character click handler registered', 'info');
+      }
+    },
+    on_hotspot_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.hotspot_click = handler;
+        addDebugMessage('Hotspot click handler registered', 'info');
+      }
     }
+};
+
+  // Event System: Global trigger functions
+  window.gameEventHandlers = window.gameEventHandlers || {};
+
+  function triggerGameEvent(eventName, ...args) {
+    if (window.gameEventHandlers[eventName]) {
+      try {
+        window.gameEventHandlers[eventName](...args);
+        addDebugMessage(`Event triggered: ${eventName}(${args.join(', ')})`, 'info');
+      } catch(e) {
+        addDebugMessage(`Event handler error for ${eventName}: ${e.message}`, 'error');
+      }
+    }
+  }
+
+  // Specific event trigger functions
+  window.triggerGameStart = function() {
+    triggerGameEvent('game_start');
   };
+
+  window.triggerRoomChange = function(oldRoomId, newRoomId) {
+    triggerGameEvent('room_change', oldRoomId, newRoomId);
+  };
+
+  window.triggerObjectClick = function(objectId, x, y) {
+    triggerGameEvent('object_click', objectId, x, y);
+  };
+
+  window.triggerCharacterClick = function(characterId) {
+    triggerGameEvent('character_click', characterId);
+  };
+
+  window.triggerHotspotClick = function(hotspotId) {
+    triggerGameEvent('hotspot_click', hotspotId);
+  };
+
+  function executeScriptHandler(scriptContent, handlerName, argsArray){
+    if (!scriptContent || !handlerName) return;
+    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') return;
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+const wrapped = `
+      var print = application.remote.print;
+      var show_message = application.remote.show_message;
+      var move_object = application.remote.move_object;
+      var on_game_start = application.remote.on_game_start;
+      var on_room_change = application.remote.on_room_change;
+      var on_object_click = application.remote.on_object_click;
+      var on_character_click = application.remote.on_character_click;
+      var on_hotspot_click = application.remote.on_hotspot_click;
+      try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
+      application.setInterface({});
+      try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
+      catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+    `;
+    try {
+      const plugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
+      plugin.whenConnected(function(){ plugin.disconnect(); });
+    } catch(_) {}
+  }
 
   window.newScript = function() {
     if (confirm('Do you want to create a new script? The current content will be lost.')) {
@@ -3018,23 +3203,38 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     // Wrappa il codice utente per esporre funzioni previste
-    const wrapped = `
+const wrapped = `
       var print = application.remote.print;
       var show_message = application.remote.show_message;
       var move_object = application.remote.move_object;
+      var on_game_start = application.remote.on_game_start;
+      var on_room_change = application.remote.on_room_change;
+      var on_object_click = application.remote.on_object_click;
+      var on_character_click = application.remote.on_character_click;
+      var on_hotspot_click = application.remote.on_hotspot_click;
       try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
-      // Espone metodi invocabili dall'host
       application.setInterface({
-        on_object_click: function(object_id){
-          try { if (typeof on_object_click === 'function') { return on_object_click(object_id); } }
+        on_object_click: function(object_id, x, y){
+          try { if (typeof on_object_click === 'function') { return on_object_click(object_id, x, y); } }
           catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_game_start: function(){
           try { if (typeof on_game_start === 'function') { return on_game_start(); } }
           catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_room_change: function(oldRoomId, newRoomId){
+          try { if (typeof on_room_change === 'function') { return on_room_change(oldRoomId, newRoomId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_character_click: function(characterId){
+          try { if (typeof on_character_click === 'function') { return on_character_click(characterId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_hotspot_click: function(hotspotId){
+          try { if (typeof on_hotspot_click === 'function') { return on_hotspot_click(hotspotId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
         }
       });
-      // Chiama on_game_start automaticamente se presente
       if (typeof on_game_start === 'function') { on_game_start(); }
     `;
     try {
@@ -3411,11 +3611,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const runtimeUrl = 'runtime.html';
     window.open(runtimeUrl, '_blank');
 
-    playTestState.isRunning = true;
+playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
     addDebugMessage('Runtime opened in new tab', 'success');
+    
+    // Trigger global game start event
+    triggerGameStart();
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
+        activePlugin.remote.on_game_start();
+      }
+    } catch(_) {}
   };
 
   window.pausePlayTest = function() {
@@ -3454,11 +3663,22 @@ document.addEventListener("DOMContentLoaded", () => {
       showNotification('Start the game test first!', 'warning');
       return;
     }
-    
-    addDebugMessage('Simulating room change...', 'info');
-    setTimeout(() => {
-      addDebugMessage('Room change completed', 'success');
-    }, 500);
+    const prevRoomId = currentRoomId;
+    const ids = Array.from(rooms.keys());
+    const idx = ids.indexOf(prevRoomId);
+    const nextId = ids.length > 0 ? ids[(idx + 1) % ids.length] : prevRoomId;
+    addDebugMessage(`Simulating room change: ${prevRoomId} -> ${nextId}`, 'info');
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, nextId);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(nextId);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+    }
+    setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
   };
 
   window.testObjectInteraction = function() {
@@ -3478,6 +3698,37 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
+    }
+  };
+
+  window.testCharacterInteraction = function() {
+    if (!playTestState.isRunning) {
+      showNotification('Start the game test first!', 'warning');
+      return;
+    }
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
+    
+    // Trigger global character click event
+    if (who) {
+      triggerCharacterClick(who);
+    }
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_character_click === 'function') {
+        activePlugin.remote.on_character_click(who);
+        addDebugMessage('Character click tested via JS sandbox', 'success');
+      }
+    } catch (err) {
+      addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
+    }
+    if (who) {
+      const scriptName = characterScripts.get(who);
+      if (scriptName) {
+        const content = jsScripts.get(scriptName);
+        executeScriptHandler(content, 'on_character_click', [who]);
+      }
     }
   };
 
@@ -3506,47 +3757,18 @@ document.addEventListener("DOMContentLoaded", () => {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
     }
-    
-    // Execute the hotspot script
     try {
-      const scriptContent = jsScripts.get(scriptName);
-      if (!scriptContent) {
-        addDebugMessage(`Script "${scriptName}" not found`, 'error');
-        return;
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
+        activePlugin.remote.on_hotspot_click(activeHotspotId);
       }
-      
-      // Create a new plugin instance for this hotspot interaction
-      const hotspotPlugin = new jailed.DynamicPlugin(scriptContent, {
-        print: (...args) => {
-          const message = args.map(arg => String(arg)).join(' ');
-          addDebugMessage(`[Hotspot ${hotspot.name}] ${message}`, 'info');
-        },
-        show_message: (text) => {
-          showNotification(String(text), 'info');
-        },
-        move_object: (id, x, y) => {
-          const obj = sceneObjects.find(o => o.id === id);
-          if (obj) {
-            obj.x = x;
-            obj.y = y;
-            redraw();
-            addDebugMessage(`Moved object ${id} to (${x}, ${y})`, 'success');
-          }
-        }
-      });
-      
-      hotspotPlugin.whenReady(() => {
-        addDebugMessage(`Hotspot script "${scriptName}" executed successfully`, 'success');
-        hotspotPlugin.disconnect();
-      });
-      
-      hotspotPlugin.whenFailed((err) => {
-        addDebugMessage(`Hotspot script error: ${err}`, 'error');
-      });
-      
-    } catch (err) {
-      addDebugMessage(`Hotspot interaction error: ${err && err.message ? err.message : err}`, 'error');
+    } catch(_) {}
+    const scriptContent = jsScripts.get(scriptName);
+    if (!scriptContent) {
+      addDebugMessage(`Script "${scriptName}" not found`, 'error');
+      return;
     }
+    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId]);
+    addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
   };
 
   window.testCharacterDialog = function() {
