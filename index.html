@@ -621,7 +621,7 @@
               </select>
             </div>
             
-            <div class="mb-3" style="display: none;">
+            <div class="mb-3">
               <label class="form-label text-light">Script Editor (JavaScript):</label>
               <textarea class="form-control" id="script-editor" rows="14" style="background-color: #1e1e1e; color: #f0f0f0; border: 1px solid #444; font-family: 'Courier New', monospace; font-size: 12px;" placeholder="// Write your JavaScript script here...&#10;// Available APIs: print(...), show_message(text), move_object(id, x, y)&#10;&#10;function on_game_start(){&#10;  print('Game started!');&#10;}&#10;&#10;function on_object_click(object_id){&#10;  if (object_id === 'door') {&#10;    show_message('The door is locked.');&#10;  }&#10;}"></textarea>
             </div>
@@ -789,6 +789,7 @@
   
   <script src="JS/device-detector.js"></script>
   <script src="JS/firebase-config.js"></script>
+  <script src="JS/firebase-verify.js"></script>
   <script src="JS/firebase-usage.js"></script>
   <script src="JS/main.js"></script>
 </body>
