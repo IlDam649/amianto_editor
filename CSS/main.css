@@ -149,6 +149,20 @@ header {
   max-height: 70vh;
 }
 
+/* Code editor container shown in Scripts tab */
+#codeEditorContainer {
+  background-color: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+/* CodeMirror sizing inside the large editor area */
+#codeEditorContainer .CodeMirror {
+  height: 70vh;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 /* Canvas Info */
 .canvas-info {
   background-color: #2a2a2a;
@@ -589,4 +603,258 @@ header {
 
 .frame-delete:hover {
   background: #ff6666;
+}
+
+/* Demo Mode Styles */
+.demo-badge {
+  font-size: 0.7em;
+  font-weight: bold;
+  animation: pulse-demo 2s infinite;
+  margin-left: 8px;
+}
+
+@keyframes pulse-demo {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+.demo-warning {
+  border-left: 4px solid #ffc107 !important;
+}
+
+.demo-warning .alert-link {
+  color: #ffc107 !important;
+  text-decoration: underline;
+}
+
+/* Disabled save buttons in demo mode */
+.disabled[onclick*="save"] {
+  opacity: 0.6;
+  cursor: not-allowed !important;
+}
+
+.disabled[onclick*="save"]:hover {
+  background-color: inherit !important;
+}
+
+/* Mobile/Small Screen Detection - Acid Dark Theme */
+.mobile-blocker {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #1e1e1e;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #f0f0f0;
+  text-align: center;
+  padding: 20px;
+  box-sizing: border-box;
+  border: 2px solid #39ff14;
+}
+
+.mobile-blocker-content {
+  max-width: 450px;
+  background: #1a1a1a;
+  padding: 30px;
+  border-radius: 8px;
+  border: 2px solid #39ff14;
+  box-shadow: 
+    0 0 20px rgba(57, 255, 20, 0.2);
+}
+
+.mobile-blocker h1 {
+  font-size: 2rem;
+  margin-bottom: 20px;
+  color: #39ff14;
+  text-shadow: 
+    0 0 10px #39ff14,
+    0 0 20px #39ff14,
+    0 0 30px #39ff14;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.mobile-blocker p {
+  font-size: 1.1rem;
+  margin-bottom: 15px;
+  line-height: 1.5;
+  color: #f0f0f0;
+}
+
+.mobile-blocker .requirements {
+  background: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  margin: 20px 0;
+  border: 1px solid #39ff14;
+  box-shadow: 
+    0 0 15px rgba(57, 255, 20, 0.2),
+    inset 0 0 10px rgba(57, 255, 20, 0.1);
+}
+
+.mobile-blocker .requirements h3 {
+  margin-bottom: 10px;
+  color: #39ff14;
+  text-shadow: 0 0 8px #39ff14;
+  font-size: 1.2rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.mobile-blocker .requirements ul {
+  text-align: left;
+  list-style: none;
+  padding: 0;
+}
+
+.mobile-blocker .requirements li {
+  margin-bottom: 8px;
+  padding-left: 25px;
+  position: relative;
+  color: #f0f0f0;
+  font-size: 0.95rem;
+}
+
+.mobile-blocker .requirements li:before {
+  content: "▶";
+  position: absolute;
+  left: 0;
+  color: #39ff14;
+  font-size: 0.8rem;
+  top: 2px;
+}
+
+.mobile-blocker .device-info {
+  background: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  margin-top: 20px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #ff00ff;
+  box-shadow: 0 0 10px rgba(255, 0, 255, 0.3);
+  color: #ff00ff;
+  text-shadow: 0 0 5px #ff00ff;
+}
+
+.mobile-blocker .continue-btn {
+  background: #1a1a1a;
+  color: #39ff14;
+  border: 2px solid #39ff14;
+  padding: 12px 30px;
+  border-radius: 0;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  margin-top: 20px;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-family: 'Courier New', monospace;
+  box-shadow: 
+    0 0 15px rgba(57, 255, 20, 0.3),
+    inset 0 0 10px rgba(57, 255, 20, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+
+.mobile-blocker .continue-btn::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(57, 255, 20, 0.3), transparent);
+  transition: left 0.5s ease;
+}
+
+.mobile-blocker .continue-btn:hover {
+  background: #39ff14;
+  color: #1a1a1a;
+  text-shadow: 0 0 10px #1a1a1a;
+  transform: translateY(-2px);
+  box-shadow: 
+    0 5px 20px rgba(57, 255, 20, 0.5),
+    0 0 30px rgba(57, 255, 20, 0.3),
+    inset 0 0 15px rgba(57, 255, 20, 0.2);
+}
+
+.mobile-blocker .continue-btn:hover::before {
+  left: 100%;
+}
+
+.mobile-blocker .continue-btn:active {
+  transform: translateY(0);
+  box-shadow: 
+    0 2px 10px rgba(57, 255, 20, 0.5),
+    inset 0 0 10px rgba(57, 255, 20, 0.3);
+}
+
+/* Hide main content when blocker is active */
+.mobile-blocker-active {
+  overflow: hidden;
+}
+
+.mobile-blocker-active body > *:not(.mobile-blocker) {
+  display: none !important;
+}
+
+/* Responsive overrides for very small screens */
+@media only screen and (max-width: 480px) {
+  .mobile-blocker-content {
+    margin: 10px;
+    padding: 20px;
+    border: 1px solid #39ff14;
+  }
+  
+  .mobile-blocker h1 {
+    font-size: 1.5rem;
+    letter-spacing: 1px;
+  }
+  
+  .mobile-blocker p {
+    font-size: 1rem;
+  }
+  
+  .mobile-blocker .continue-btn {
+    padding: 10px 20px;
+    font-size: 0.9rem;
+  }
+}
+
+@media only screen and (max-height: 600px) {
+  .mobile-blocker {
+    padding: 10px;
+  }
+  
+  .mobile-blocker-content {
+    max-height: 90vh;
+    overflow-y: auto;
+    border: 1px solid #39ff14;
+  }
+  
+  .mobile-blocker-content::-webkit-scrollbar {
+    width: 8px;
+  }
+  
+  .mobile-blocker-content::-webkit-scrollbar-track {
+    background: #1a1a1a;
+  }
+  
+  .mobile-blocker-content::-webkit-scrollbar-thumb {
+    background: #39ff14;
+    border-radius: 0;
+  }
+  
+  .mobile-blocker-content::-webkit-scrollbar-thumb:hover {
+    background: #32cc11;
+  }
 }

@@ -125,7 +125,7 @@
     await startRuntimeFromData(data);
   };
 
-  async function pickJsonFileAndStart() {
+async function pickJsonFileAndStart() {
     try {
       if (window.showOpenFilePicker) {
         const [handle] = await window.showOpenFilePicker({ types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }] });
@@ -135,9 +135,14 @@
         return;
       }
     } catch (e) {
-      log('File open cancelled or failed: ' + e);
+      // Check if the user cancelled the operation
+      if (e.name === 'AbortError' || e.message.includes('User canceled') || e.message.includes('abort')) {
+        log('File selection cancelled');
+        return; // Don't show fallback input if user cancelled
+      }
+      log('File picker failed: ' + e);
     }
-    // Fallback input
+    // Fallback input - only show if File System Access API is not available or failed for other reasons
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'application/json';

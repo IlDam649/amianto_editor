@@ -968,6 +968,45 @@ document.addEventListener("DOMContentLoaded", () => {
         redraw();
       }
     }
+
+if (playTestState && playTestState.isRunning) {
+      const obj = getObjectAtPoint(x, y);
+      if (obj && !isDraggingObject) {
+        // Trigger global object click event
+        triggerObjectClick(obj.id, Math.round(x), Math.round(y));
+        
+        try {
+          if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
+            activePlugin.remote.on_object_click(obj.id, Math.round(x), Math.round(y));
+          }
+        } catch(_) {}
+        const scriptName = objectScripts.get(obj.id);
+        if (scriptName) {
+          const content = jsScripts.get(scriptName);
+          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)]);
+        }
+        return;
+      }
+for (const hs of hotspots) {
+        if (!hs || hs.visible === false) continue;
+        if (isPointInPolygon(hs.points || [], x, y)) {
+          // Trigger global hotspot click event
+          triggerHotspotClick(hs.id);
+          
+          try {
+            if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
+              activePlugin.remote.on_hotspot_click(hs.id);
+            }
+          } catch(_) {}
+          const hScript = hotspotScripts.get(hs.id);
+          if (hScript) {
+            const hContent = jsScripts.get(hScript);
+            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id]);
+          }
+          break;
+        }
+      }
+    }
   });
 
   // ===== Walkable vertex interactions =====
@@ -1054,6 +1093,18 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===== Hotspots controls & UI =====
   const hotspotsListContainer = document.getElementById('hotspots-list');
 
+  function isPointInPolygon(points, px, py){
+    if (!Array.isArray(points) || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x, yi = points[i].y;
+      const xj = points[j].x, yj = points[j].y;
+      const intersect = ((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
   function refreshHotspotsListUI() {
     if (!hotspotsListContainer) return;
     hotspotsListContainer.innerHTML = '';
@@ -1074,7 +1125,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnSelect = document.createElement('button');
       btnSelect.className = 'btn btn-sm btn-outline-light me-1';
-      btnSelect.title = 'Seleziona';
+      btnSelect.title = 'Select';
       btnSelect.textContent = '✔';
       btnSelect.addEventListener('click', () => {
         activeHotspotId = hs.id;
@@ -1086,10 +1137,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
-      btnEdit.title = 'Rinomina';
+      btnEdit.title = 'Rename';
       btnEdit.textContent = '✏️';
       btnEdit.addEventListener('click', () => {
-        const newName = prompt('Nome hotspot:', hs.name || 'Hotspot');
+        const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
           const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
@@ -1100,7 +1151,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnToggle = document.createElement('button');
       btnToggle.className = 'btn btn-sm btn-outline-warning me-1';
-      btnToggle.title = 'Mostra/Nascondi';
+      btnToggle.title = 'Show/Hide';
       btnToggle.textContent = '👁️';
       btnToggle.addEventListener('click', () => {
         hs.visible = hs.visible === false ? true : false;
@@ -1123,10 +1174,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
-      btnDelete.title = 'Elimina';
+      btnDelete.title = 'Delete';
       btnDelete.textContent = '🗑️';
       btnDelete.addEventListener('click', () => {
-        if (!confirm('Eliminare questo hotspot?')) return;
+        if (!confirm('Delete this hotspot?')) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
         if (activeHotspotId === hs.id) activeHotspotId = hotspots[0] ? hotspots[0].id : null;
@@ -1168,7 +1219,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   window.addHotspot = function() {
-    const name = prompt('Nome hotspot:', `Hotspot ${hotspots.length + 1}`);
+    const name = prompt('Hotspot name:', `Hotspot ${hotspots.length + 1}`);
     const hs = {
       id: uid('hotspot'),
       name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
@@ -1185,7 +1236,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.startHotspotDrawing = function() {
     if (!activeHotspotId) {
-      showNotification('Nessun hotspot selezionato. Creane uno prima.', 'warning');
+      showNotification('No hotspot selected. Create one first.', 'warning');
       return;
     }
     isDrawingWalkable = false; // ensure mutually exclusive
@@ -1632,11 +1683,22 @@ document.addEventListener("DOMContentLoaded", () => {
     const name = prompt('Room name:', `Room ${rooms.size + 1}`);
     if (!name) return;
     const rid = uid('room');
+    const prevRoomId = currentRoomId;
     rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
     currentRoomId = rid;
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, rid);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(rid);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+    }
   };
 
   window.renameRoom = function() {
@@ -1650,6 +1712,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.deleteRoom = function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
     if (!confirm('Delete current room?')) return;
+    const prevRoomId = currentRoomId;
     rooms.delete(currentRoomId);
     // pick another existing room
     const first = rooms.keys().next().value;
@@ -1657,14 +1720,41 @@ document.addEventListener("DOMContentLoaded", () => {
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, first);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(first);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+    }
   };
 
-  window.selectRoom = function(roomId) {
+window.selectRoom = function(roomId) {
     if (!rooms.has(roomId)) return;
+    const prevRoomId = currentRoomId;
     currentRoomId = roomId;
     bindRoomRefs();
     refreshRoomsSelector();
     redraw();
+    
+    // Trigger global room change event
+    if (prevRoomId !== roomId) {
+      triggerRoomChange(prevRoomId, roomId);
+    }
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, roomId);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(roomId);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, roomId]);
+    }
   };
 
   // Util helper to create unique id
@@ -1749,6 +1839,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnAddGuiBg = document.getElementById('btn-add-gui-bg');
   const btnNewGuiButton = document.getElementById('btn-new-gui-button');
   const btnDeleteGuiButton = document.getElementById('btn-delete-gui-button');
+  const guiTypeSelect = document.getElementById('gui-type-select');
+  const guiSettingsContainer = document.getElementById('gui-settings-container');
 
   if (btnAddGuiBg) {
     btnAddGuiBg.addEventListener('click', () => {
@@ -1775,6 +1867,219 @@ document.addEventListener("DOMContentLoaded", () => {
       guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
       showNotification('Click and drag on canvas to draw a GUI button', 'info');
     });
+  }
+  if (guiTypeSelect) {
+    guiTypeSelect.addEventListener('change', () => {
+      const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+      const newType = guiTypeSelect.value || 'MainInterface';
+      const existingSettings = gui && gui.settings ? gui.settings : {};
+      renderGuiSettingsPanel(newType, existingSettings);
+      if (gui) {
+        gui.type = newType;
+        gui.settings = collectGuiSettingsFromUI(newType);
+        saveCurrentGUI();
+      }
+    });
+  }
+  if (guiSettingsContainer) {
+    const onChange = () => {
+      const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+      const type = (guiTypeSelect && guiTypeSelect.value) ? guiTypeSelect.value : (gui && gui.type) || 'MainInterface';
+      const settings = collectGuiSettingsFromUI(type);
+      if (gui) {
+        gui.settings = settings;
+        saveCurrentGUI();
+      }
+    };
+    guiSettingsContainer.addEventListener('input', onChange);
+    guiSettingsContainer.addEventListener('change', onChange);
+  }
+
+  function renderGuiSettingsPanel(type, settings) {
+    if (!guiSettingsContainer) return;
+    guiSettingsContainer.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    const makeInput = (label, id, typeAttr = 'text', value = '', extra = {}) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const inp = document.createElement('input');
+      inp.className = 'form-control form-control-sm';
+      inp.id = id;
+      inp.type = typeAttr;
+      if (value !== undefined) inp.value = value;
+      Object.assign(inp, extra);
+      wrap.appendChild(lab);
+      wrap.appendChild(inp);
+      return wrap;
+    };
+    const makeTextarea = (label, id, value = '') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const ta = document.createElement('textarea');
+      ta.className = 'form-control form-control-sm';
+      ta.id = id;
+      ta.rows = 3;
+      ta.value = value || '';
+      wrap.appendChild(lab);
+      wrap.appendChild(ta);
+      return wrap;
+    };
+    const makeSelect = (label, id, options, value = '') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const sel = document.createElement('select');
+      sel.className = 'form-select form-select-sm';
+      sel.id = id;
+      options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (opt.value === value) o.selected = true;
+        sel.appendChild(o);
+      });
+      wrap.appendChild(lab);
+      wrap.appendChild(sel);
+      return wrap;
+    };
+
+    switch(type) {
+      case 'DialogBox': {
+        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeInput('Width', 'gui-set-w', 'number', settings.w ?? 300));
+        frag.appendChild(makeInput('Height', 'gui-set-h', 'number', settings.h ?? 150));
+        frag.appendChild(makeInput('Background (CSS color or data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
+        frag.appendChild(makeInput('Font CSS', 'gui-set-font', 'text', settings.font || '16px Arial'));
+        frag.appendChild(makeInput('Portrait (optional data URL)', 'gui-set-portrait', 'text', settings.portrait || ''));
+        frag.appendChild(makeSelect('Appear behavior', 'gui-set-appear', [
+          {value:'instant', label:'Instant'},
+          {value:'fade', label:'Fade'},
+          {value:'slide', label:'Slide'}
+        ], settings.appear || 'instant'));
+        break;
+      }
+      case 'Inventory': {
+        frag.appendChild(makeInput('Rows', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
+        frag.appendChild(makeInput('Columns', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
+        frag.appendChild(makeSelect('Slot style', 'gui-set-slot-style', [
+          {value:'square', label:'Square'},
+          {value:'rounded', label:'Rounded'},
+          {value:'circle', label:'Circle'}
+        ], settings.slotStyle || 'square'));
+        frag.appendChild(makeInput('Background', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.5)'));
+        frag.appendChild(makeSelect('Open animation', 'gui-set-open-anim', [
+          {value:'none', label:'None'},
+          {value:'scale', label:'Scale'},
+          {value:'fade', label:'Fade'}
+        ], settings.openAnim || 'none'));
+        break;
+      }
+      case 'VerbGUI': {
+        frag.appendChild(makeTextarea('Verb list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
+        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
+        frag.appendChild(makeSelect('Style', 'gui-set-style', [
+          {value:'icons', label:'Icons'},
+          {value:'text', label:'Text'}
+        ], settings.style || 'text'));
+        break;
+      }
+      case 'Menu': {
+        frag.appendChild(makeTextarea('Menu entries (one per line)', 'gui-set-menu-items', Array.isArray(settings.items) ? settings.items.join('\n') : 'Start\nLoad\nOptions\nQuit'));
+        frag.appendChild(makeSelect('Layout', 'gui-set-menu-layout', [
+          {value:'vertical', label:'Vertical'},
+          {value:'horizontal', label:'Horizontal'},
+          {value:'grid', label:'Grid'}
+        ], settings.layout || 'vertical'));
+        frag.appendChild(makeSelect('Buttons style', 'gui-set-btn-style', [
+          {value:'primary', label:'Primary'},
+          {value:'outline', label:'Outline'},
+          {value:'ghost', label:'Ghost'}
+        ], settings.buttonStyle || 'primary'));
+        break;
+      }
+      case 'VerbCoin': {
+        frag.appendChild(makeTextarea('Verb coin list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
+        break;
+      }
+      case 'OverlayCustom': {
+        frag.appendChild(makeTextarea('Note/JSON custom (opzionale)', 'gui-set-custom', settings.custom || ''));
+        break;
+      }
+      case 'MainInterface':
+      default: {
+        // MainInterface: nessun campo obbligatorio
+        frag.appendChild(makeInput('Descrizione (opzionale)', 'gui-set-desc', 'text', settings.desc || ''));
+        break;
+      }
+    }
+    guiSettingsContainer.appendChild(frag);
+  }
+
+  function collectGuiSettingsFromUI(type) {
+    const get = (id) => {
+      const el = document.getElementById(id);
+      return el ? (el.type === 'number' ? Number(el.value || 0) : el.value) : undefined;
+    };
+    switch(type) {
+      case 'DialogBox':
+        return {
+          x: get('gui-set-x') || 0,
+          y: get('gui-set-y') || 0,
+          w: get('gui-set-w') || 300,
+          h: get('gui-set-h') || 150,
+          background: get('gui-set-bg') || 'rgba(0,0,0,0.6)',
+          font: get('gui-set-font') || '16px Arial',
+          portrait: get('gui-set-portrait') || '',
+          appear: get('gui-set-appear') || 'instant'
+        };
+      case 'Inventory':
+        return {
+          rows: get('gui-set-rows') || 3,
+          cols: get('gui-set-cols') || 5,
+          slotStyle: get('gui-set-slot-style') || 'square',
+          background: get('gui-set-bg') || 'rgba(0,0,0,0.5)',
+          openAnim: get('gui-set-open-anim') || 'none'
+        };
+      case 'VerbGUI': {
+        const verbsStr = get('gui-set-verbs') || '';
+        const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return {
+          verbs,
+          x: get('gui-set-x') || 0,
+          y: get('gui-set-y') || 0,
+          style: get('gui-set-style') || 'text'
+        };
+      }
+      case 'Menu': {
+        const itemsStr = get('gui-set-menu-items') || '';
+        const items = String(itemsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return {
+          items,
+          layout: get('gui-set-menu-layout') || 'vertical',
+          buttonStyle: get('gui-set-btn-style') || 'primary'
+        };
+      }
+      case 'VerbCoin': {
+        const verbsStr = get('gui-set-verbs') || '';
+        const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        return { verbs };
+      }
+      case 'OverlayCustom':
+        return { custom: get('gui-set-custom') || '' };
+      case 'MainInterface':
+      default:
+        return { desc: get('gui-set-desc') || '' };
+    }
   }
 
   if (btnDeleteGuiButton) {
@@ -2148,13 +2453,13 @@ document.addEventListener("DOMContentLoaded", () => {
     newCharacter.innerHTML = `
       <div>
         <strong>${name}</strong>
-        <br><small>Nuovo personaggio</small>
-        <span class="badge bg-success ms-2">Attivo</span>
+        <br><small>New character</small>
+        <span class="badge bg-success ms-2">Active</span>
       </div>
       <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Modifica">✏️</button>
-        <button class="btn btn-sm btn-outline-warning me-1" title="Dialoghi">💬</button>
-        <button class="btn btn-sm btn-outline-danger" title="Elimina" onclick="removeCharacter(this)">🗑️</button>
+        <button class="btn btn-sm btn-outline-light me-1" title="Edit">✏️</button>
+        <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs">💬</button>
+        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
       </div>
     `;
     
@@ -2165,7 +2470,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Aggiorna la UI del giocatore iniziale
     refreshStartingPlayerUI();
     
-    // Seleziona automaticamente il nuovo personaggio
+    // Automatically select the new character
     const characterSelector = document.getElementById('character-selector');
     if (characterSelector) {
       characterSelector.value = name;
@@ -2187,7 +2492,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Aggiorna la UI del giocatore iniziale
       refreshStartingPlayerUI();
       
-      // Se il personaggio eliminato era selezionato, deseleziona
+    // If the deleted character was selected, deselect
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === characterName) {
         characterSelector.value = '';
@@ -2215,7 +2520,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Aggiorna la UI del giocatore iniziale
       refreshStartingPlayerUI();
       
-      // Se il personaggio modificato era selezionato, aggiorna la selezione
+    // If the edited character was selected, update selection
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
@@ -2691,14 +2996,359 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // JS sandbox runtime (Jailed) e editor
   let codeMirrorEditor = null;
+  let largeCodeMirrorEditor = null;
   let currentScriptName = 'startup';
-  const jsScripts = new Map(); // name -> content
+const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
   const roomScripts = new Map(); // roomId -> scriptName
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
   let activePlugin = null; // istanza di jailed.DynamicPlugin
+
+  // Inventory System: Game state for player inventory
+  // Structure: Map<itemId, {name: string, quantity: number, data: any}>
+  let gameInventory = new Map();
+
+  // Demo Project Protection
+  let isDemoMode = false;
+  let isDemoUser = false;
+
+  // Firebase Integration
+  window.FirebaseManager = {
+    isOnline: navigator.onLine,
+    syncInProgress: false,
+    
+    // Initialize Firebase connection
+    async init() {
+      if (!window.firebaseAuth || !window.firebaseDB) {
+        console.warn('Firebase not available, using localStorage only');
+        return false;
+      }
+      
+      // Listen for auth state changes
+      window.firebaseAuth.onAuthStateChanged((user) => {
+        if (user) {
+          console.log('Firebase user authenticated:', user.email);
+          this.handleFirebaseUser(user);
+        } else {
+          console.log('Firebase user signed out');
+        }
+      });
+      
+      // Listen for online/offline status
+      window.addEventListener('online', () => {
+        this.isOnline = true;
+        console.log('Connection restored - syncing with Firebase');
+        this.syncLocalToFirebase();
+      });
+      
+      window.addEventListener('offline', () => {
+        this.isOnline = false;
+        console.log('Connection lost - using offline mode');
+      });
+      
+      return true;
+    },
+    
+    // Handle Firebase authentication
+    async handleFirebaseUser(firebaseUser) {
+      // Check if we have local user with same email
+      const localUser = Array.from(users.values()).find(u => u.email === firebaseUser.email);
+      
+      if (localUser) {
+        // Link Firebase user to local user
+        localUser.firebaseUid = firebaseUser.uid;
+        localUser.emailVerified = firebaseUser.emailVerified;
+        users.set(localUser.username, localUser);
+        
+        // Sync projects from Firebase
+        await this.syncProjectsFromFirebase(localUser);
+        
+        // Login as local user
+        loginUser(localUser);
+        showNotification(`Welcome back, ${localUser.username}! Firebase sync active.`, 'success');
+      } else {
+        // Create new local user from Firebase
+        const username = firebaseUser.email.split('@')[0];
+        const newUser = {
+          username: username,
+          email: firebaseUser.email,
+          password: null, // No password needed for Firebase users
+          firebaseUid: firebaseUser.uid,
+          emailVerified: firebaseUser.emailVerified,
+          createdAt: new Date().toISOString(),
+          lastLogin: new Date().toISOString()
+        };
+        
+        users.set(username, newUser);
+        loginUser(newUser);
+        showNotification(`Welcome to Amianto Editor, ${username}!`, 'success');
+      }
+    },
+    
+    // Register new user with Firebase
+    async registerUser(email, password, username) {
+      try {
+        const result = await window.firebaseAuth.createUserWithEmailAndPassword(email, password);
+        
+        // Update profile with username
+        await result.user.updateProfile({
+          displayName: username
+        });
+        
+        // Send email verification
+        await result.user.sendEmailVerification();
+        
+        showNotification('Registration successful! Please check your email for verification.', 'success');
+        return true;
+      } catch (error) {
+        console.error('Firebase registration error:', error);
+        showNotification(this.getFirebaseErrorMessage(error), 'error');
+        return false;
+      }
+    },
+    
+    // Login with Firebase
+    async loginUser(email, password) {
+      try {
+        const result = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
+        return true;
+      } catch (error) {
+        console.error('Firebase login error:', error);
+        showNotification(this.getFirebaseErrorMessage(error), 'error');
+        return false;
+      }
+    },
+    
+    // Sync projects from Firebase to local storage
+    async syncProjectsFromFirebase(user) {
+      if (!user.firebaseUid) return;
+      
+      try {
+        const snapshot = await window.firebaseDB
+          .collection('users')
+          .doc(user.firebaseUid)
+          .collection('projects')
+          .get();
+        
+        const projects = [];
+        snapshot.forEach(doc => {
+          projects.push({
+            id: doc.id,
+            ...doc.data()
+          });
+        });
+        
+        // Save to localStorage
+        localStorage.setItem(`amiantoProjects_${user.username}`, JSON.stringify(projects));
+        console.log(`Synced ${projects.length} projects from Firebase for ${user.username}`);
+        
+        return projects;
+      } catch (error) {
+        console.error('Error syncing projects from Firebase:', error);
+        return [];
+      }
+    },
+    
+    // Save project to Firebase
+    async saveProjectToFirebase(projectData, projectId = null) {
+      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) {
+        return false;
+      }
+      
+      try {
+        this.syncInProgress = true;
+        
+        const projectRef = window.firebaseDB
+          .collection('users')
+          .doc(currentUser.firebaseUid)
+          .collection('projects')
+          .doc(projectId || projectData.settings.name);
+        
+        await projectRef.set({
+          ...projectData,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          syncVersion: Date.now()
+        });
+        
+        console.log('Project saved to Firebase:', projectData.settings.name);
+        return true;
+      } catch (error) {
+        console.error('Error saving project to Firebase:', error);
+        showNotification('Firebase sync failed - project saved locally only', 'warning');
+        return false;
+      } finally {
+        this.syncInProgress = false;
+      }
+    },
+    
+    // Sync local data to Firebase
+    async syncLocalToFirebase() {
+      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) return;
+      
+      console.log('Starting sync to Firebase...');
+      
+      // Sync all local projects
+      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      
+      for (const project of localProjects) {
+        await this.saveProjectToFirebase(project, project.id);
+      }
+      
+      showNotification('Projects synced with Firebase!', 'success');
+    },
+    
+    // Get user-friendly error messages
+    getFirebaseErrorMessage(error) {
+      const errorMessages = {
+        'auth/email-already-in-use': 'Email already registered. Try logging in.',
+        'auth/user-not-found': 'No account found with this email.',
+        'auth/wrong-password': 'Incorrect password.',
+        'auth/weak-password': 'Password should be at least 6 characters.',
+        'auth/invalid-email': 'Please enter a valid email address.',
+        'auth/too-many-requests': 'Too many attempts. Please try again later.',
+        'auth/network-request-failed': 'Network error. Please check your connection.'
+      };
+      
+      return errorMessages[error.code] || error.message || 'An error occurred. Please try again.';
+    }
+  };
+
+  // Demo Mode Management
+  function enableDemoMode() {
+    isDemoMode = true;
+    updateSaveButtonStates();
+    addDemoIndicator();
+  }
+
+  function disableDemoMode() {
+    isDemoMode = false;
+    updateSaveButtonStates();
+    removeDemoIndicator();
+  }
+
+  function addDemoIndicator() {
+    // Add demo badge to header
+    const userDisplay = document.getElementById('userDisplayName');
+    if (userDisplay && !userDisplay.querySelector('.demo-badge')) {
+      const badge = document.createElement('span');
+      badge.className = 'demo-badge ms-2 badge bg-warning text-dark';
+      badge.textContent = 'DEMO';
+      badge.title = 'Demo Mode - Register to save projects';
+      userDisplay.appendChild(badge);
+    }
+
+    // Add demo warning to project settings
+    const settingsCard = document.querySelector('.card-header:has(h5:contains("Project Settings"))');
+    if (settingsCard && !settingsCard.querySelector('.demo-warning')) {
+      const warning = document.createElement('div');
+      warning.className = 'demo-warning alert alert-warning alert-sm mt-2 mb-0';
+      warning.innerHTML = '<small><strong>Demo Mode:</strong> Project modifications cannot be saved. <a href="#" onclick="showRegistration()" class="alert-link">Register for free</a> to enable saving.</small>';
+      settingsCard.appendChild(warning);
+    }
+  }
+
+  function removeDemoIndicator() {
+    // Remove demo badge
+    const badge = document.querySelector('.demo-badge');
+    if (badge) badge.remove();
+
+    // Remove demo warning
+    const warning = document.querySelector('.demo-warning');
+    if (warning) warning.remove();
+  }
+
+  function updateSaveButtonStates() {
+    const saveBtn = document.querySelector('a[onclick="saveCurrentProject()"]');
+    const saveSettingsBtn = document.querySelector('button[onclick="saveProjectSettings()"]');
+    
+    if (isDemoMode) {
+      // Disable save buttons
+      if (saveBtn) {
+        saveBtn.classList.add('disabled');
+        saveBtn.setAttribute('onclick', 'showDemoSaveWarning()');
+        saveBtn.setAttribute('title', 'Demo mode - Register to save projects');
+      }
+      
+      if (saveSettingsBtn) {
+        saveSettingsBtn.disabled = true;
+        saveSettingsBtn.setAttribute('onclick', 'showDemoSaveWarning()');
+        saveSettingsBtn.setAttribute('title', 'Demo mode - Register to save projects');
+      }
+    } else {
+      // Enable save buttons
+      if (saveBtn) {
+        saveBtn.classList.remove('disabled');
+        saveBtn.setAttribute('onclick', 'saveCurrentProject()');
+        saveBtn.removeAttribute('title');
+      }
+      
+      if (saveSettingsBtn) {
+        saveSettingsBtn.disabled = false;
+        saveSettingsBtn.setAttribute('onclick', 'saveProjectSettings()');
+        saveSettingsBtn.removeAttribute('title');
+      }
+    }
+  }
+
+  window.showDemoSaveWarning = function() {
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.innerHTML = `
+      <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">🔒 Demo Mode - Save Restricted</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p>You're using the <strong>Amianto Editor Demo</strong>. While you can explore all features and create amazing projects, saving is restricted to registered users.</p>
+            
+            <div class="alert alert-info">
+              <h6><i class="fas fa-lightbulb"></i> What you can do in Demo Mode:</h6>
+              <ul class="mb-0">
+                <li>✅ Create and edit rooms</li>
+                <li>✅ Add scene objects and characters</li>
+                <li>✅ Draw walkable areas and hotspots</li>
+                <li>✅ Write and test JavaScript scripts</li>
+                <li>✅ Test your game with integrated runtime</li>
+                <li>✅ Export your game to run locally</li>
+              </ul>
+            </div>
+            
+            <div class="alert alert-warning">
+              <h6><i class="fas fa-lock"></i> What requires registration:</h6>
+              <ul class="mb-0">
+                <li>🔒 Save projects to your account</li>
+                <li>🔒 Access projects from any device</li>
+                <li>🔒 Collaborate with other users</li>
+                <li>🔒 Future cloud features</li>
+              </ul>
+            </div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Continue in Demo Mode</button>
+            <button type="button" class="btn btn-success" onclick="registerFromDemo(); bootstrap.Modal.getInstance(this.closest('.modal')).hide();">
+              <i class="fas fa-user-plus"></i> Register for Free
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    
+    modal.addEventListener('hidden.bs.modal', () => {
+      document.body.removeChild(modal);
+    });
+  };
+
+  window.registerFromDemo = function() {
+    showRegistration();
+  };
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -2715,7 +3365,22 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // API esposte al sandbox
+  // Editor grande nel pannello principale (area canvas)
+  function ensureLargeScriptEditor() {
+    if (largeCodeMirrorEditor) return;
+    const ta = document.getElementById('script-editor-large');
+    if (!ta || typeof CodeMirror === 'undefined') return;
+    largeCodeMirrorEditor = CodeMirror.fromTextArea(ta, {
+      mode: 'javascript',
+      theme: 'dracula',
+      lineNumbers: true,
+      indentUnit: 2,
+      tabSize: 2,
+      lineWrapping: true,
+    });
+  }
+
+// API esposte al sandbox
   const sandboxApi = {
     print: function() {
       const msg = Array.from(arguments).map(v => String(v)).join(' ');
@@ -2728,21 +3393,213 @@ document.addEventListener("DOMContentLoaded", () => {
       const obj = sceneObjects.find(o => o.id === String(id));
       if (!obj) { addDebugMessage(`Object ${id} not found`, 'warning'); return; }
       obj.x = Number(x)||0; obj.y = Number(y)||0; redraw();
+    },
+    // Event System APIs
+    on_game_start: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.game_start = handler;
+        addDebugMessage('Game start handler registered', 'info');
+      }
+    },
+    on_room_change: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.room_change = handler;
+        addDebugMessage('Room change handler registered', 'info');
+      }
+    },
+    on_object_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.object_click = handler;
+        addDebugMessage('Object click handler registered', 'info');
+      }
+    },
+    on_character_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.character_click = handler;
+        addDebugMessage('Character click handler registered', 'info');
+      }
+    },
+on_hotspot_click: function(handler) {
+      if (typeof handler === 'function') {
+        window.gameEventHandlers = window.gameEventHandlers || {};
+        window.gameEventHandlers.hotspot_click = handler;
+        addDebugMessage('Hotspot click handler registered', 'info');
+      }
+    },
+    // Inventory System APIs
+    add_to_inventory: function(itemId, quantity) {
+      quantity = Number(quantity) || 1;
+      if (quantity <= 0) {
+        addDebugMessage('Quantity must be positive', 'warning');
+        return false;
+      }
+      
+      const existing = gameInventory.get(String(itemId));
+      if (existing) {
+        existing.quantity += quantity;
+      } else {
+        gameInventory.set(String(itemId), {
+          name: String(itemId),
+          quantity: quantity,
+          data: null
+        });
+      }
+      
+      addDebugMessage(`Added ${quantity}x ${itemId} to inventory`, 'info');
+      updateInventoryDisplay();
+      return true;
+    },
+    remove_from_inventory: function(itemId, quantity) {
+      quantity = Number(quantity) || 1;
+      if (quantity <= 0) {
+        addDebugMessage('Quantity must be positive', 'warning');
+        return false;
+      }
+      
+      const item = gameInventory.get(String(itemId));
+      if (!item) {
+        addDebugMessage(`Item ${itemId} not found in inventory`, 'warning');
+        return false;
+      }
+      
+      if (item.quantity <= quantity) {
+        gameInventory.delete(String(itemId));
+        addDebugMessage(`Removed all ${itemId} from inventory`, 'info');
+      } else {
+        item.quantity -= quantity;
+        addDebugMessage(`Removed ${quantity}x ${itemId} from inventory`, 'info');
+      }
+      
+      updateInventoryDisplay();
+      return true;
+    },
+    has_item: function(itemId) {
+      return gameInventory.has(String(itemId));
+    },
+    get_item_count: function(itemId) {
+      const item = gameInventory.get(String(itemId));
+      return item ? item.quantity : 0;
+    },
+    get_inventory_items: function() {
+      const items = [];
+      gameInventory.forEach((item, id) => {
+        items.push({
+          id: id,
+          name: item.name,
+          quantity: item.quantity,
+          data: item.data
+        });
+      });
+      return items;
+    },
+    clear_inventory: function() {
+      const count = gameInventory.size;
+      gameInventory.clear();
+      addDebugMessage(`Cleared inventory (${count} items removed)`, 'info');
+      updateInventoryDisplay();
+      return true;
     }
   };
 
+  // Event System: Global trigger functions
+  window.gameEventHandlers = window.gameEventHandlers || {};
+
+  function triggerGameEvent(eventName, ...args) {
+    if (window.gameEventHandlers[eventName]) {
+      try {
+        window.gameEventHandlers[eventName](...args);
+        addDebugMessage(`Event triggered: ${eventName}(${args.join(', ')})`, 'info');
+      } catch(e) {
+        addDebugMessage(`Event handler error for ${eventName}: ${e.message}`, 'error');
+      }
+    }
+  }
+
+  // Specific event trigger functions
+  window.triggerGameStart = function() {
+    triggerGameEvent('game_start');
+  };
+
+  window.triggerRoomChange = function(oldRoomId, newRoomId) {
+    triggerGameEvent('room_change', oldRoomId, newRoomId);
+  };
+
+  window.triggerObjectClick = function(objectId, x, y) {
+    triggerGameEvent('object_click', objectId, x, y);
+  };
+
+  window.triggerCharacterClick = function(characterId) {
+    triggerGameEvent('character_click', characterId);
+  };
+
+  window.triggerHotspotClick = function(hotspotId) {
+    triggerGameEvent('hotspot_click', hotspotId);
+  };
+
+  function executeScriptHandler(scriptContent, handlerName, argsArray){
+    if (!scriptContent || !handlerName) return;
+    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') return;
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+const wrapped = `
+      var print = application.remote.print;
+      var show_message = application.remote.show_message;
+      var move_object = application.remote.move_object;
+      var on_game_start = application.remote.on_game_start;
+      var on_room_change = application.remote.on_room_change;
+      var on_object_click = application.remote.on_object_click;
+      var on_character_click = application.remote.on_character_click;
+      var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var get_inventory_items = application.remote.get_inventory_items;
+      var clear_inventory = application.remote.clear_inventory;
+      try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
+      application.setInterface({});
+      try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
+      catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+    `;
+    try {
+      const plugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
+      plugin.whenConnected(function(){ plugin.disconnect(); });
+    } catch(_) {}
+  }
+
   window.newScript = function() {
     if (confirm('Do you want to create a new script? The current content will be lost.')) {
+      ensureLargeScriptEditor();
       ensureScriptEditor();
-      if (codeMirrorEditor) codeMirrorEditor.setValue('');
-      else document.getElementById('script-editor').value = '';
+      const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
+      if (editors.length) {
+        editors.forEach(ed => ed.setValue(''));
+      } else {
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+      }
       showNotification('New script created!', 'info');
     }
   };
 
   window.saveScript = function() {
+    ensureLargeScriptEditor();
     ensureScriptEditor();
-    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('script-editor').value;
+    let content = '';
+    if (largeCodeMirrorEditor) {
+      content = largeCodeMirrorEditor.getValue();
+    } else if (codeMirrorEditor) {
+      content = codeMirrorEditor.getValue();
+    } else {
+      const taLarge = document.getElementById('script-editor-large');
+      const taSmall = document.getElementById('script-editor');
+      content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
+    }
     const selector = document.getElementById('script-selector');
     const selectedScript = selector.value || 'new-script';
     
@@ -2756,35 +3613,57 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   window.runScript = function() {
+    ensureLargeScriptEditor();
     ensureScriptEditor();
-    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('script-editor').value;
+    const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
     // Ferma eventuale plugin attivo prima di avviarne uno nuovo
     if (activePlugin && typeof activePlugin.disconnect === 'function') {
       try { activePlugin.disconnect(); } catch(_) {}
       activePlugin = null;
     }
     if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') {
-      showNotification('Jailed non caricato. Controlla l\'include.', 'danger');
+      showNotification('Jailed not loaded. Check the include.', 'danger');
       return;
     }
     // Wrappa il codice utente per esporre funzioni previste
-    const wrapped = `
+const wrapped = `
       var print = application.remote.print;
       var show_message = application.remote.show_message;
       var move_object = application.remote.move_object;
+      var on_game_start = application.remote.on_game_start;
+      var on_room_change = application.remote.on_room_change;
+      var on_object_click = application.remote.on_object_click;
+      var on_character_click = application.remote.on_character_click;
+      var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var get_inventory_items = application.remote.get_inventory_items;
+      var clear_inventory = application.remote.clear_inventory;
       try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
-      // Espone metodi invocabili dall'host
       application.setInterface({
-        on_object_click: function(object_id){
-          try { if (typeof on_object_click === 'function') { return on_object_click(object_id); } }
+        on_object_click: function(object_id, x, y){
+          try { if (typeof on_object_click === 'function') { return on_object_click(object_id, x, y); } }
           catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_game_start: function(){
           try { if (typeof on_game_start === 'function') { return on_game_start(); } }
           catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_room_change: function(oldRoomId, newRoomId){
+          try { if (typeof on_room_change === 'function') { return on_room_change(oldRoomId, newRoomId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_character_click: function(characterId){
+          try { if (typeof on_character_click === 'function') { return on_character_click(characterId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+        },
+        on_hotspot_click: function(hotspotId){
+          try { if (typeof on_hotspot_click === 'function') { return on_hotspot_click(hotspotId); } }
+          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
         }
       });
-      // Chiama on_game_start automaticamente se presente
       if (typeof on_game_start === 'function') { on_game_start(); }
     `;
     try {
@@ -2815,9 +3694,17 @@ document.addEventListener("DOMContentLoaded", () => {
     
     const savedScript = localStorage.getItem(`script-${scriptName}`);
     if (savedScript) {
+      ensureLargeScriptEditor();
       ensureScriptEditor();
-      if (codeMirrorEditor) codeMirrorEditor.setValue(savedScript);
-      else document.getElementById('script-editor').value = savedScript;
+      if (largeCodeMirrorEditor) {
+        largeCodeMirrorEditor.setValue(savedScript);
+      }
+      if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(savedScript);
+      } else {
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = savedScript;
+      }
       showNotification(`Script "${scriptName}" loaded!`, 'info');
     } else {
       showNotification(`Script "${scriptName}" not found!`, 'warning');
@@ -3040,14 +3927,28 @@ document.addEventListener("DOMContentLoaded", () => {
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
   };
 
-  // On tab change to scripts, ensure editor exists and dropdown is fresh
+  // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
+      const canvasContainer = document.getElementById('canvasContainer');
+      const codeEditorContainer = document.getElementById('codeEditorContainer');
+      if (canvasContainer) canvasContainer.style.display = 'none';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'block';
+      ensureLargeScriptEditor();
       ensureScriptEditor();
+      // sync values small->large if small has content and large is empty
+      if (codeMirrorEditor && largeCodeMirrorEditor && !largeCodeMirrorEditor.getValue()) {
+        largeCodeMirrorEditor.setValue(codeMirrorEditor.getValue());
+      }
       refreshSceneObjectScriptTargets();
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
+    } else {
+      const canvasContainer = document.getElementById('canvasContainer');
+      const codeEditorContainer = document.getElementById('codeEditorContainer');
+      if (canvasContainer) canvasContainer.style.display = 'block';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'none';
     }
   });
 
@@ -3071,11 +3972,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 3000);
   }
 
-  // Support for Ctrl+S in script textarea
+  // Support for Ctrl+S in script editors
   document.addEventListener('keydown', function(e) {
     if (e.ctrlKey && e.key === 's') {
       const activeElement = document.activeElement;
-      if (activeElement && activeElement.id === 'script-editor') {
+      const isEditorFocused = (activeElement && (activeElement.id === 'script-editor' || activeElement.id === 'script-editor-large'))
+        || (largeCodeMirrorEditor && largeCodeMirrorEditor.hasFocus && largeCodeMirrorEditor.hasFocus())
+        || (codeMirrorEditor && codeMirrorEditor.hasFocus && codeMirrorEditor.hasFocus());
+      if (isEditorFocused) {
         e.preventDefault();
         saveScript();
       }
@@ -3136,11 +4040,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const runtimeUrl = 'runtime.html';
     window.open(runtimeUrl, '_blank');
 
-    playTestState.isRunning = true;
+playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
     addDebugMessage('Runtime opened in new tab', 'success');
+    
+    // Trigger global game start event
+    triggerGameStart();
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
+        activePlugin.remote.on_game_start();
+      }
+    } catch(_) {}
   };
 
   window.pausePlayTest = function() {
@@ -3179,11 +4092,22 @@ document.addEventListener("DOMContentLoaded", () => {
       showNotification('Start the game test first!', 'warning');
       return;
     }
-    
-    addDebugMessage('Simulating room change...', 'info');
-    setTimeout(() => {
-      addDebugMessage('Room change completed', 'success');
-    }, 500);
+    const prevRoomId = currentRoomId;
+    const ids = Array.from(rooms.keys());
+    const idx = ids.indexOf(prevRoomId);
+    const nextId = ids.length > 0 ? ids[(idx + 1) % ids.length] : prevRoomId;
+    addDebugMessage(`Simulating room change: ${prevRoomId} -> ${nextId}`, 'info');
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
+        activePlugin.remote.on_room_change(prevRoomId, nextId);
+      }
+    } catch(_) {}
+    const roomScript = roomScripts.get(nextId);
+    if (roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+    }
+    setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
   };
 
   window.testObjectInteraction = function() {
@@ -3203,6 +4127,37 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
+    }
+  };
+
+  window.testCharacterInteraction = function() {
+    if (!playTestState.isRunning) {
+      showNotification('Start the game test first!', 'warning');
+      return;
+    }
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
+    
+    // Trigger global character click event
+    if (who) {
+      triggerCharacterClick(who);
+    }
+    
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_character_click === 'function') {
+        activePlugin.remote.on_character_click(who);
+        addDebugMessage('Character click tested via JS sandbox', 'success');
+      }
+    } catch (err) {
+      addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
+    }
+    if (who) {
+      const scriptName = characterScripts.get(who);
+      if (scriptName) {
+        const content = jsScripts.get(scriptName);
+        executeScriptHandler(content, 'on_character_click', [who]);
+      }
     }
   };
 
@@ -3231,47 +4186,18 @@ document.addEventListener("DOMContentLoaded", () => {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
     }
-    
-    // Execute the hotspot script
     try {
-      const scriptContent = jsScripts.get(scriptName);
-      if (!scriptContent) {
-        addDebugMessage(`Script "${scriptName}" not found`, 'error');
-        return;
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
+        activePlugin.remote.on_hotspot_click(activeHotspotId);
       }
-      
-      // Create a new plugin instance for this hotspot interaction
-      const hotspotPlugin = new jailed.DynamicPlugin(scriptContent, {
-        print: (...args) => {
-          const message = args.map(arg => String(arg)).join(' ');
-          addDebugMessage(`[Hotspot ${hotspot.name}] ${message}`, 'info');
-        },
-        show_message: (text) => {
-          showNotification(String(text), 'info');
-        },
-        move_object: (id, x, y) => {
-          const obj = sceneObjects.find(o => o.id === id);
-          if (obj) {
-            obj.x = x;
-            obj.y = y;
-            redraw();
-            addDebugMessage(`Moved object ${id} to (${x}, ${y})`, 'success');
-          }
-        }
-      });
-      
-      hotspotPlugin.whenReady(() => {
-        addDebugMessage(`Hotspot script "${scriptName}" executed successfully`, 'success');
-        hotspotPlugin.disconnect();
-      });
-      
-      hotspotPlugin.whenFailed((err) => {
-        addDebugMessage(`Hotspot script error: ${err}`, 'error');
-      });
-      
-    } catch (err) {
-      addDebugMessage(`Hotspot interaction error: ${err && err.message ? err.message : err}`, 'error');
+    } catch(_) {}
+    const scriptContent = jsScripts.get(scriptName);
+    if (!scriptContent) {
+      addDebugMessage(`Script "${scriptName}" not found`, 'error');
+      return;
     }
+    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId]);
+    addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
   };
 
   window.testCharacterDialog = function() {
@@ -3294,12 +4220,315 @@ document.addEventListener("DOMContentLoaded", () => {
     showNotification('Debug console cleared', 'info');
   };
 
-  function updateGameStatus(status) {
+function updateGameStatus(status) {
     const statusElement = document.getElementById('game-status');
     if (statusElement) {
       statusElement.textContent = status;
     }
   }
+
+  // Inventory display functions
+  function updateInventoryDisplay() {
+    const displayEl = document.getElementById('inventory-display');
+    if (!displayEl) return;
+    
+    if (gameInventory.size === 0) {
+      displayEl.innerHTML = '[INFO] Inventory empty';
+      return;
+    }
+    
+    let html = '';
+    gameInventory.forEach((item, id) => {
+      html += `[ITEM] ${item.name} x${item.quantity}\n`;
+    });
+    
+    displayEl.textContent = html.trim();
+  }
+
+  window.testClearInventory = function() {
+    clear_inventory();
+    updateInventoryDisplay();
+    showNotification('Inventory cleared!', 'info');
+  };
+
+  // Test functions for inventory
+  window.testAddItem = function(itemId, quantity) {
+    itemId = itemId || 'test_item';
+    quantity = quantity || 1;
+    add_to_inventory(itemId, quantity);
+    updateInventoryDisplay();
+  };
+
+  window.testRemoveItem = function(itemId, quantity) {
+    itemId = itemId || 'test_item';
+    quantity = quantity || 1;
+    remove_from_inventory(itemId, quantity);
+    updateInventoryDisplay();
+  };
+
+// Integrated Runtime Manager
+  window.RuntimeManager = {
+    isRunning: false,
+    isPaused: false,
+    gameData: null,
+    currentRoomIndex: 0,
+    loadedImagesCache: new Map(),
+    animationFrame: null,
+    
+    // Canvas elements
+    runtimeCanvas: null,
+    runtimeCtx: null,
+    editorCanvas: null,
+    editorCtx: null,
+    
+    init() {
+      this.runtimeCanvas = document.getElementById('runtime-canvas');
+      this.runtimeCtx = this.runtimeCanvas ? this.runtimeCanvas.getContext('2d') : null;
+      this.editorCanvas = document.getElementById('canvas');
+      this.editorCtx = this.editorCanvas ? this.editorCanvas.getContext('2d') : null;
+      
+      this.setupEventListeners();
+      this.runtimeLog('Runtime Manager initialized');
+    },
+    
+    setupEventListeners() {
+      document.getElementById('btn-runtime-play')?.addEventListener('click', () => this.start());
+      document.getElementById('btn-runtime-pause')?.addEventListener('click', () => this.pause());
+      document.getElementById('btn-runtime-stop')?.addEventListener('click', () => this.stop());
+      document.getElementById('btn-runtime-restart')?.addEventListener('click', () => this.restart());
+    },
+    
+    async start() {
+      if (this.isRunning && !this.isPaused) return;
+      
+      if (!this.isPaused) {
+        // Load fresh game data
+        const jsonString = window.serializeProjectToJsonString(true);
+        try {
+          this.gameData = JSON.parse(jsonString);
+        } catch (e) {
+          this.runtimeLog('Failed to load project data: ' + e, 'error');
+          return;
+        }
+      }
+      
+      this.isRunning = true;
+      this.isPaused = false;
+      
+      // Set canvas size from game settings
+      const w = (this.gameData && this.gameData.settings && this.gameData.settings.canvasWidth) || 800;
+      const h = (this.gameData && this.gameData.settings && this.gameData.settings.canvasHeight) || 600;
+      this.setCanvasSize(w, h);
+      
+      // Find start room
+      this.currentRoomIndex = 0;
+      if (this.gameData && this.gameData.settings && this.gameData.settings.startRoomId) {
+        const idx = (this.gameData.rooms || []).findIndex(r => r && (r.id === this.gameData.settings.startRoomId || r.name === this.gameData.settings.startRoomId));
+        if (idx >= 0) this.currentRoomIndex = idx;
+      }
+      
+      this.updateUI(true);
+      this.runtimeLog(`Runtime started - Room: ${this.currentRoomIndex + 1}/${(this.gameData.rooms || []).length}`);
+      
+      // Trigger game start event
+      triggerGameStart();
+      
+      // Start rendering
+      this.render();
+    },
+    
+    pause() {
+      if (!this.isRunning || this.isPaused) return;
+      this.isPaused = true;
+      this.updateUI(false);
+      this.runtimeLog('Runtime paused');
+    },
+    
+    stop() {
+      this.isRunning = false;
+      this.isPaused = false;
+      if (this.animationFrame) {
+        cancelAnimationFrame(this.animationFrame);
+        this.animationFrame = null;
+      }
+      this.updateUI(false);
+      this.clearRuntimeCanvas();
+      this.runtimeLog('Runtime stopped');
+    },
+    
+    restart() {
+      this.stop();
+      setTimeout(() => this.start(), 100);
+    },
+    
+    setCanvasSize(w, h) {
+      if (this.runtimeCanvas) {
+        this.runtimeCanvas.width = w;
+        this.runtimeCanvas.height = h;
+      }
+    },
+    
+    async loadImage(src) {
+      if (!src) return null;
+      if (this.loadedImagesCache.has(src)) return this.loadedImagesCache.get(src);
+      
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => { 
+          this.loadedImagesCache.set(src, img); 
+          resolve(img); 
+        };
+        img.onerror = () => resolve(null);
+        img.src = src;
+      });
+    },
+    
+    async loadRoomAssets(room) {
+      const out = { background: null, foregrounds: [], objects: [] };
+      out.background = await this.loadImage(room.background);
+      
+      if (Array.isArray(room.foregrounds)) {
+        for (const f of room.foregrounds) {
+          const img = await this.loadImage(f.image);
+          out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
+        }
+      }
+      
+      if (Array.isArray(room.sceneObjects)) {
+        for (const o of room.sceneObjects) {
+          const img = await this.loadImage(o.image);
+          out.objects.push({ 
+            id: o.id, 
+            name: o.name, 
+            type: o.type||'Interactive', 
+            x: Number(o.x)||0, 
+            y: Number(o.y)||0, 
+            img 
+          });
+        }
+      }
+      
+      return out;
+    },
+    
+    async render() {
+      if (!this.isRunning || this.isPaused) return;
+      
+      const room = (this.gameData && this.gameData.rooms && this.gameData.rooms[this.currentRoomIndex]);
+      if (!room) return;
+      
+      const assets = await this.loadRoomAssets(room);
+      const ctx = this.runtimeCtx;
+      const canvas = this.runtimeCanvas;
+      
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw background
+      if (assets.background) {
+        ctx.drawImage(assets.background, 0, 0);
+      }
+      
+      // Draw scene objects
+      for (const o of assets.objects) {
+        if (o.img) {
+          ctx.drawImage(o.img, o.x, o.y);
+        }
+      }
+      
+      // Draw foregrounds
+      for (const f of assets.foregrounds) {
+        if (f.img) {
+          ctx.drawImage(f.img, f.offsetX || 0, f.offsetY || 0);
+        }
+      }
+      
+      // Draw starting position marker
+      if (this.gameData && this.gameData.settings) {
+        const s = this.gameData.settings;
+        if (s.startRoomId) {
+          const targetRoomIndex = (this.gameData.rooms || []).findIndex(r => r && (r.id === s.startRoomId || r.name === s.startRoomId));
+          if (targetRoomIndex === this.currentRoomIndex) {
+            const px = Number(s.startX) || 0;
+            const py = Number(s.startY) || 0;
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
+            ctx.beginPath();
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+      
+      // Continue rendering
+      this.animationFrame = requestAnimationFrame(() => this.render());
+    },
+    
+    clearRuntimeCanvas() {
+      if (this.runtimeCtx && this.runtimeCanvas) {
+        this.runtimeCtx.clearRect(0, 0, this.runtimeCanvas.width, this.runtimeCanvas.height);
+      }
+    },
+    
+    updateUI(isRunning) {
+      const playBtn = document.getElementById('btn-runtime-play');
+      const pauseBtn = document.getElementById('btn-runtime-pause');
+      const stopBtn = document.getElementById('btn-runtime-stop');
+      const restartBtn = document.getElementById('btn-runtime-restart');
+      const status = document.getElementById('runtime-status');
+      const overlay = document.getElementById('runtime-overlay');
+      const projectName = document.getElementById('runtime-project-name');
+      
+      if (isRunning) {
+        playBtn.disabled = true;
+        pauseBtn.disabled = false;
+        stopBtn.disabled = false;
+        restartBtn.disabled = false;
+        if (status) status.style.display = 'inline-block';
+        if (overlay) overlay.style.display = 'block';
+        if (projectName && this.gameData && this.gameData.settings && this.gameData.settings.name) {
+          projectName.textContent = this.gameData.settings.name;
+        }
+      } else {
+        playBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        restartBtn.disabled = true;
+        if (status) status.style.display = 'none';
+        if (overlay) overlay.style.display = 'none';
+        if (projectName) projectName.textContent = '';
+      }
+    },
+    
+    runtimeLog(message, type = 'info') {
+      const console = document.getElementById('runtime-console');
+      if (!console) return;
+      
+      const timestamp = new Date().toLocaleTimeString();
+      const typeIcon = {
+        'info': '[INFO]',
+        'success': '[OK]',
+        'warning': '[WARN]',
+        'error': '[ERR]'
+      }[type] || '[INFO]';
+      
+      const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
+      console.textContent += newMessage;
+      console.scrollTop = console.scrollHeight;
+    }
+  };
+
+  // Runtime console utilities
+  window.clearRuntimeConsole = function() {
+    const console = document.getElementById('runtime-console');
+    if (console) {
+      console.textContent = '[Runtime] Console cleared...\n';
+    }
+  };
 
   function addDebugMessage(message, type = 'info') {
     const console = document.getElementById('debug-console');
@@ -3420,7 +4649,13 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // Save project settings function
-  window.saveProjectSettings = function() {
+window.saveProjectSettings = function() {
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
+      return;
+    }
+    
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
     
@@ -3665,7 +4900,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Handle login
+// Handle login
   function handleLogin() {
     const username = document.getElementById('loginUsername').value.trim();
     const password = document.getElementById('loginPassword').value;
@@ -3679,6 +4914,19 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    // Check if it's an email (Firebase login)
+    if (username.includes('@')) {
+      // Try Firebase login first
+      if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+        window.FirebaseManager.loginUser(username, password);
+        return;
+      } else {
+        showLoginError('Firebase not available. Please check your connection.');
+        return;
+      }
+    }
+
+    // Local user login (existing system)
     const user = users.get(username);
     console.log('User found:', user);
 
@@ -3699,11 +4947,14 @@ document.addEventListener("DOMContentLoaded", () => {
     loginUser(user, rememberMe);
   }
 
-  // Login user
+// Login user
   function loginUser(user, rememberMe = false) {
     currentUser = user;
     localStorage.setItem('amiantoCurrentUser', user.username);
 
+    // Check if this is demo user
+    isDemoUser = (user.username === 'demo');
+    
     if (rememberMe) {
       localStorage.setItem('amiantoRememberUser', user.username);
     } else {
@@ -3711,7 +4962,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     showDashboard();
-    showNotification(`Welcome back, ${user.username}!`, 'success');
+    
+    if (isDemoUser) {
+      showNotification('Welcome to Amianto Editor Demo! You can explore all features but need to register to save projects.', 'info');
+      enableDemoMode();
+    } else {
+      showNotification(`Welcome back, ${user.username}!`, 'success');
+      disableDemoMode();
+    }
   }
 
   // Show login error
@@ -3745,7 +5003,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Register new user
+// Register new user
   window.registerUser = function() {
     const username = document.getElementById('registerUsername').value.trim();
     const email = document.getElementById('registerEmail').value.trim();
@@ -3768,32 +5026,26 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Check if username already exists
+    // Check if username already exists locally
     if (users.has(username)) {
       showRegisterError('Username already exists');
       return;
     }
 
-    // Create new user
-    const newUser = {
-      username: username,
-      email: email,
-      password: password, // In production, hash this
-      createdAt: new Date().toISOString(),
-      projects: []
-    };
-
-    users.set(username, newUser);
-    saveUsers();
-
-    // Auto-login after registration
-    loginUser(newUser);
-
-    // Close modal
-    const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
-    modal.hide();
-
-    showNotification('Account created successfully!', 'success');
+    // Try Firebase registration first
+    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+      window.FirebaseManager.registerUser(email, password, username)
+        .then((success) => {
+          if (success) {
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
+            modal.hide();
+          }
+        });
+    } else {
+      // Fallback to local registration
+      showRegisterError('Firebase not available. Please check your connection.');
+    }
   };
 
   // Show registration error
@@ -3831,16 +5083,78 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // Reset demo user (for debugging)
-  window.resetDemoUser = function() {
+window.resetDemoUser = function() {
     console.log('Resetting demo user...');
-
-    // Clear all auth-related localStorage
-    localStorage.removeItem('amiantoUsers');
+    // Clear all localStorage
+    localStorage.clear();
+    // Clear all users map
+    users.clear();
+    // Recreate demo user
+    createDemoUser();
+    
+    // Logout current user
+    currentUser = null;
     localStorage.removeItem('amiantoCurrentUser');
-    localStorage.removeItem('amiantoRememberUser');
-
+    
     // Reload the page to recreate demo user
-    location.reload();
+    window.location.reload();
+  };
+
+  // Debug Firebase connection
+  window.testFirebaseConnection = async function() {
+    if (!window.firebaseAuth || !window.firebaseDB) {
+      showNotification('Firebase not loaded!', 'error');
+      return;
+    }
+
+    try {
+      // Test auth state
+      const user = window.firebaseAuth.currentUser;
+      console.log('Current Firebase user:', user);
+      
+      // Test database connection
+      const testDoc = {
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        test: true,
+        userAgent: navigator.userAgent
+      };
+      
+      await window.firebaseDB.collection('test').doc('connection-test').set(testDoc);
+      
+      // Try to read it back
+      const doc = await window.firebaseDB.collection('test').doc('connection-test').get();
+      
+      if (doc.exists) {
+        showNotification('✅ Firebase connection successful!', 'success');
+        console.log('Firebase test data:', doc.data());
+      } else {
+        showNotification('⚠️ Firebase write failed', 'warning');
+      }
+      
+    } catch (error) {
+      console.error('Firebase test error:', error);
+      showNotification(`❌ Firebase error: ${error.message}`, 'error');
+    }
+  };
+
+  // Test Firebase registration
+  window.testFirebaseRegistration = async function() {
+    if (!window.FirebaseManager || !window.FirebaseManager.isOnline) {
+      showNotification('Firebase not available offline', 'warning');
+      return;
+    }
+
+    const testEmail = `test-${Date.now()}@amianto.test`;
+    const testPassword = 'password123';
+    const testUsername = `testuser${Date.now()}`;
+
+    console.log('Testing Firebase registration with:', testEmail);
+    
+    const success = await window.FirebaseManager.registerUser(testEmail, testPassword, testUsername);
+    
+    if (success) {
+      showNotification(`✅ Test registration successful! Check email: ${testEmail}`, 'success');
+    }
   };
 
   // Debug authentication system
@@ -3935,6 +5249,8 @@ document.addEventListener("DOMContentLoaded", () => {
     return Array.isArray(guis) ? guis.map(g => ({
       id: g.id,
       name: g.name,
+      type: g.type || 'MainInterface',
+      settings: serializeGuiSettings(g.settings, g.type),
       background: g.background ? imageToDataURL(g.background) : null,
       buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
         id: b.id,
@@ -3947,6 +5263,15 @@ document.addEventListener("DOMContentLoaded", () => {
         backgroundImage: b.backgroundImage ? imageToDataURL(b.backgroundImage) : null
       })) : []
     })) : [];
+  }
+
+  function serializeGuiSettings(settings, type) {
+    try {
+      // Ensure JSON-safe clone
+      return JSON.parse(JSON.stringify(settings || {}));
+    } catch (_) {
+      return {};
+    }
   }
 
   function collectCharacterNames() {
@@ -4173,12 +5498,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Save current project for current user
+// Save current project for current user
   function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
       return;
     }
+    
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
+      return;
+    }
+    
     const jsonString = window.serializeProjectToJsonString(true);
     // Mirror in localStorage (used by runtime)
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
@@ -4187,20 +5519,47 @@ document.addEventListener("DOMContentLoaded", () => {
     const projectObj = window.serializeProject();
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectObj.settings.name);
-    const entry = { settings: projectObj.settings, updatedAt: new Date().toISOString() };
+    const entry = { 
+      settings: projectObj.settings, 
+      updatedAt: new Date().toISOString(),
+      id: projectObj.settings.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+    };
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+
+    // Try to sync with Firebase
+    let firebaseSaved = false;
+    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
+      window.FirebaseManager.saveProjectToFirebase(projectObj)
+        .then((saved) => {
+          firebaseSaved = saved;
+        });
+    }
 
     // Persist to OPFS (silent) and also offer a regular file save (may prompt the user)
     saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name);
     saveProjectJsonToFile(jsonString, projectObj.settings && projectObj.settings.name);
-    showNotification('Project saved successfully!', 'success');
+    
+    // Show appropriate message
+    if (firebaseSaved) {
+      showNotification('Project saved locally and synced to Firebase!', 'success');
+    } else if (window.FirebaseManager && !window.FirebaseManager.isOnline) {
+      showNotification('Project saved locally. Will sync when online.', 'warning');
+    } else {
+      showNotification('Project saved successfully!', 'success');
+    }
   }
 
-  // Create new project
+// Create new project
   window.createNewProject = function() {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
+      return;
+    }
+
+    // Check if demo user
+    if (isDemoUser) {
+      showDemoSaveWarning();
       return;
     }
 
@@ -4300,6 +5659,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const newGui = {
       id: uid('gui'),
       name: name,
+      type: 'MainInterface',
+      settings: {},
       background: null,
       buttons: []
     };
@@ -4374,6 +5735,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update selector
     const selector = document.getElementById('gui-selector');
     if (selector) selector.value = guiId;
+    // Update type selector and render settings
+    const typeSel = document.getElementById('gui-type-select');
+    if (typeSel) typeSel.value = gui.type || 'MainInterface';
+    renderGuiSettingsPanel(gui.type || 'MainInterface', gui.settings || {});
     
     redraw();
     refreshGUIButtonsList();
@@ -4411,6 +5776,11 @@ document.addEventListener("DOMContentLoaded", () => {
     
     gui.background = guiBackground;
     gui.buttons = [...guiButtons];
+    // Persist type and settings from UI if present
+    const typeSel = document.getElementById('gui-type-select');
+    if (typeSel) gui.type = typeSel.value || gui.type || 'MainInterface';
+    const collected = collectGuiSettingsFromUI(gui.type || 'MainInterface');
+    gui.settings = collected;
   }
 
   // Initialize default GUI
@@ -4419,6 +5789,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const defaultGui = {
         id: uid('gui'),
         name: 'Main GUI',
+        type: 'MainInterface',
+        settings: {},
         background: null,
         buttons: []
       };
@@ -4430,6 +5802,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize GUI system
   initializeDefaultGUI();
+  // Initialize GUI type & settings panel for current GUI
+  try {
+    const typeSelInit = document.getElementById('gui-type-select');
+    if (typeSelInit && currentGuiId) {
+      const g = guis.find(x => x.id === currentGuiId);
+      if (g) {
+        typeSelInit.value = g.type || 'MainInterface';
+        renderGuiSettingsPanel(g.type || 'MainInterface', g.settings || {});
+      }
+    }
+  } catch(_) {}
 
   // Contextual cursors management functions
   window.createCursor = function() {
@@ -4758,7 +6141,22 @@ document.addEventListener("DOMContentLoaded", () => {
     updateCursorTargets();
   }
 
-  initializeCursorSystem();
+initializeCursorSystem();
+
+  // Initialize Device Detector (must be first)
+  if (window.DeviceDetector) {
+    window.DeviceDetector.init();
+  }
+
+  // Initialize Integrated Runtime Manager
+  if (window.RuntimeManager) {
+    window.RuntimeManager.init();
+  }
+
+  // Initialize Firebase Manager
+  if (window.FirebaseManager) {
+    window.FirebaseManager.init();
+  }
 
   // Expose global functions
   window.showNotification = showNotification;
