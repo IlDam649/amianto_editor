@@ -43,21 +43,14 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Scripting (JavaScript, Jailed sandbox)
   - Built‑in editor (CodeMirror) with syntax highlighting
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-  - **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `get_inventory_items()`, `clear_inventory()`
   - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
   - Save/Load scripts, Run/Stop sandbox
-  - Real-time inventory display in Play Test tab
 - Play Test Panel
-  - **Dual Testing Modes**: Open runtime in separate window OR test integrated in editor tab
   - Start/Pause/Stop test session; debug console; quick test actions
-  - **Integrated Runtime**: Real-time game preview with Play/Pause/Stop/Restart controls
-  - Runtime canvas with game rendering, console output, and project info display
 - Authentication & Projects
   - Login/logout, registration modal, persistent sessions, demo account
-  - **Demo Mode Protection**: Demo users can explore all features but cannot save projects
   - Per-user project storage, debug tools (Reset Demo, Debug Auth, Force Reset)
-  - **Visual demo indicators** and informative save restrictions
 - File Menu
   - New/Open/Save/Export, Project Settings, Delete Project
 - Standalone Runtime
@@ -69,27 +62,19 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 ## Current API Status
 
-The JavaScript scripting system currently provides **15 working APIs**:
+The JavaScript scripting system currently provides **8 working APIs**:
 
 ### Basic APIs
 - **`print(...)`** - Outputs messages to the debug console
 - **`show_message(text)`** - Shows notification messages to the user
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
-### Event System APIs ✅
+### Event System APIs (NEW!)
 - **`on_game_start(handler)`** - Registers a function to call when the game starts
 - **`on_room_change(handler)`** - Registers a function to call when changing rooms (receives oldRoomId, newRoomId)
 - **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y)
 - **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId)
 - **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId)
-
-### Inventory System APIs (NEW!)
-- **`add_to_inventory(itemId, quantity)`** - Adds items to inventory (default quantity: 1)
-- **`remove_from_inventory(itemId, quantity)`** - Removes items from inventory (default quantity: 1)
-- **`has_item(itemId)`** - Returns true if item exists in inventory
-- **`get_item_count(itemId)`** - Returns the quantity of a specific item (0 if not found)
-- **`get_inventory_items()`** - Returns array of all inventory items with properties
-- **`clear_inventory()`** - Removes all items from inventory
 
 ### Usage Examples
 ```javascript
@@ -109,59 +94,12 @@ on_object_click(function(objectId, x, y) {
     print("Clicked object " + objectId + " at position " + x + "," + y);
     show_message("You clicked on " + objectId);
 });
-
-// Inventory system examples
-add_to_inventory("key", 1);           // Add 1 key
-add_to_inventory("coin", 10);          // Add 10 coins
-
-if (has_item("key")) {
-    print("Player has the key!");
-    show_message("You can now open the locked door.");
-}
-
-remove_from_inventory("key", 1);       // Remove 1 key
-print("Coins remaining: " + get_item_count("coin"));
-
-// Display all inventory items
-const items = get_inventory_items();
-items.forEach(item => {
-    print(item.name + " x" + item.quantity);
-});
 ```
 
 All other APIs listed in the extension roadmap are planned for future implementation.
 
-## Demo Mode
-
-The Amianto Editor offers a **free demo mode** that allows anyone to explore all features without registration:
-
-### **What you can do in Demo Mode:**
-- ✅ Create and edit rooms with backgrounds and foregrounds
-- ✅ Add and position scene objects 
-- ✅ Draw walkable areas and create interactive hotspots
-- ✅ Design characters with animations
-- ✅ Write JavaScript scripts with full API access
-- ✅ Test your game with the integrated runtime
-- ✅ Export your game to run locally
-- ✅ Explore all editor features without limitations
-
-### **What requires registration:**
-- 🔒 Save projects to your account
-- 🔒 Access projects from multiple devices
-- 🔒 Future cloud collaboration features
-
-### **Demo Account:**
-- **Username:** `demo`
-- **Password:** `demo123`
-
-The demo mode provides full access to all editing and testing capabilities, ensuring you can evaluate the complete feature set before deciding to register.
-
 ## Quick Start
 
-### **Option 1: Play Online (Easiest)**
-🌐 Visit the live demo: `https://amianto-editor.web.app`
-
-### **Option 2: Local Development**
 1. Open `index.html` in a modern browser.
 2. Rooms → Rooms Manager: create/select a room.
 3. Add a Background and optional Foreground Layers.
@@ -194,7 +132,7 @@ The demo mode provides full access to all editing and testing capabilities, ensu
 
 #### **Phase 1 - Core Systems (High Priority)**
 - ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETED)**
-- ✅ **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `get_inventory_items()`, `clear_inventory()` **(COMPLETED)**
+- **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
 - **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
 - **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
 
@@ -299,21 +237,14 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Scripting (JavaScript, sandbox Jailed)
   - Editor JavaScript integrato (CodeMirror)
   - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-  - **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `get_inventory_items()`, `clear_inventory()`
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
   - Salva/Carica script, Esegui/Stop sandbox
-  - Visualizzazione inventario in tempo reale nella scheda Play Test
 - Play Test
-  - **Modalità di Test Duali**: Apri runtime in finestra separata OPPURA test integrato nella scheda editor
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
-  - **Runtime Integrato**: Anteprima gioco in tempo reale con controlli Play/Pausa/Stop/Restart
-  - Canvas runtime con rendering gioco, output console e info progetto
 - Autenticazione & Progetti
   - Login/logout, registrazione, sessioni persistenti, utente demo
-  - **Protezione Modalità Demo**: Gli utenti demo possono esplorare tutte le funzionalità ma non salvare progetti
   - Progetti per utente, strumenti di debug (Reset Demo, Debug Auth, Force Reset)
-  - **Indicatori demo visivi** e restrizioni salvataggio informative
 - Menu File
   - Nuovo/Apri/Salva/Export, Impostazioni Progetto, Elimina Progetto
 - Runtime Standalone
@@ -325,27 +256,19 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 ## Stato Corrente delle API
 
-Il sistema di scripting JavaScript fornisce attualmente **15 API funzionanti**:
+Il sistema di scripting JavaScript fornisce attualmente **8 API funzionanti**:
 
 ### API Base
 - **`print(...)`** - Invia messaggi alla console di debug
 - **`show_message(text)`** - Mostra notifiche all'utente
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
-### API Sistema Eventi ✅
+### API Sistema Eventi (NUOVE!)
 - **`on_game_start(handler)`** - Registra una funzione da chiamare all'avvio del gioco
 - **`on_room_change(handler)`** - Registra una funzione da chiamare al cambio stanza (riceve oldRoomId, newRoomId)
 - **`on_object_click(handler)`** - Registra una funzione da chiamare al click sugli oggetti (riceve objectId, x, y)
 - **`on_character_click(handler)`** - Registra una funzione da chiamare al click sui personaggi (riceve characterId)
 - **`on_hotspot_click(handler)`** - Registra una funzione da chiamare al click sugli hotspot (riceve hotspotId)
-
-### API Sistema Inventario (NUOVE!)
-- **`add_to_inventory(itemId, quantity)`** - Aggiunge oggetti all'inventario (quantità predefinita: 1)
-- **`remove_from_inventory(itemId, quantity)`** - Rimuove oggetti dall'inventario (quantità predefinita: 1)
-- **`has_item(itemId)`** - Restituisce true se l'oggetto esiste nell'inventario
-- **`get_item_count(itemId)`** - Restituisce la quantità di un oggetto specifico (0 se non trovato)
-- **`get_inventory_items()`** - Restituisce array di tutti gli oggetti dell'inventario con proprietà
-- **`clear_inventory()`** - Rimuove tutti gli oggetti dall'inventario
 
 ### Esempi di Utilizzo
 ```javascript
@@ -364,24 +287,6 @@ on_room_change(function(oldRoom, newRoom) {
 on_object_click(function(objectId, x, y) {
     print("Cliccato oggetto " + objectId + " alla posizione " + x + "," + y);
     show_message("Hai cliccato su " + objectId);
-});
-
-// Esempi sistema inventario
-add_to_inventory("chiave", 1);        // Aggiungi 1 chiave
-add_to_inventory("moneta", 10);       // Aggiungi 10 monete
-
-if (has_item("chiave")) {
-    print("Il giocatore ha la chiave!");
-    show_message("Ora puoi aprire la porta bloccata.");
-}
-
-remove_from_inventory("chiave", 1);   // Rimuovi 1 chiave
-print("Monete rimanenti: " + get_item_count("moneta"));
-
-// Mostra tutti gli oggetti dell'inventario
-const items = get_inventory_items();
-items.forEach(item => {
-    print(item.name + " x" + item.quantity);
 });
 ```
 
@@ -421,7 +326,7 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
 - ✅ **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETATO)**
-- ✅ **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `get_inventory_items()`, `clear_inventory()` **(COMPLETATO)**
+- **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
 - **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
 - **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
 
