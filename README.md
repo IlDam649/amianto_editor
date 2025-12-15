@@ -132,9 +132,9 @@ All other APIs listed in the extension roadmap are planned for future implementa
 
 #### **Phase 1 - Core Systems (High Priority)**
 - ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETED)**
-- **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
-- **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
-- **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
+- ✅ **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETED)**
+- ✅ **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETED)**
+- ✅ **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETED)**
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
 - **Dialogue System**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
@@ -326,9 +326,9 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
 - ✅ **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETATO)**
-- **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
-- **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
-- **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
+- ✅ **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETATO)**
+- ✅ **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETATO)**
+- ✅ **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETATO)**
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
 - **Sistema Dialoghi**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
@@ -377,7 +377,7 @@ window.gameAPI = {
 
 ### 📋 Checklist Implementazione
 
-- [ ] **Fase 1**: Sistema eventi base e inventario
+- [x] **Fase 1**: Sistema eventi base e inventario
 - [ ] **Fase 1**: Gestione oggetti e stanze avanzata  
 - [ ] **Fase 2**: Sistema dialoghi e audio
 - [ ] **Fase 2**: Gestione personaggi e effetti visivi

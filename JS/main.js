@@ -460,12 +460,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Draw scene objects at their positions
     for (let obj of sceneObjects) {
-      if (obj.img) {
+      if (obj && obj.img) {
+        if (obj.visible === false) continue;
         const objX = (obj.x || 0);
         const objY = (obj.y || 0);
-        
-        // Draw object
-        drawImageAtOriginalSize(obj.img, objX, objY);
+        const rot = Number(obj.rotationRad || 0);
+        const sx = (typeof obj.scaleX === 'number') ? obj.scaleX : 1;
+        const sy = (typeof obj.scaleY === 'number') ? obj.scaleY : 1;
+
+        if (rot !== 0 || sx !== 1 || sy !== 1) {
+          ctx.save();
+          ctx.translate(objX, objY);
+          if (rot !== 0) ctx.rotate(rot);
+          if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
+          // draw image at origin with its natural size
+          ctx.drawImage(obj.img, 0, 0, obj.img.width, obj.img.height);
+          ctx.restore();
+        } else {
+          // Draw object without transforms
+          drawImageAtOriginalSize(obj.img, objX, objY);
+        }
         
         // Draw selection outline if this is the dragged object
         if (isDraggingObject && draggedObject && draggedObject.id === obj.id) {
@@ -2326,7 +2340,11 @@ window.selectRoom = function(roomId) {
         img: img,
         x: 100 + Math.random() * 200, // Random position for demo
         y: 100 + Math.random() * 200,
-        type: "Interactive"
+        type: "Interactive",
+        rotationRad: 0,
+        scaleX: 1,
+        scaleY: 1,
+        visible: true
       };
       
       // Add to scene objects array (room-scoped)
@@ -3004,6 +3022,32 @@ window.selectRoom = function(roomId) {
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
+  // Runtime game inventory store: itemId (string) -> count (integer >= 0)
+  const gameInventory = new Map();
+
+  // Inventory persistence helpers
+  function persistInventory() {
+    try {
+      const obj = {};
+      for (const [k, v] of gameInventory.entries()) obj[String(k)] = Number(v) || 0;
+      localStorage.setItem('amiantoGameInventory', JSON.stringify(obj));
+    } catch (_) {}
+  }
+  function loadInventoryFromStorage() {
+    try {
+      const raw = localStorage.getItem('amiantoGameInventory');
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      gameInventory.clear();
+      if (obj && typeof obj === 'object') {
+        for (const key of Object.keys(obj)) {
+          const count = Math.max(0, Number(obj[key]) || 0);
+          if (count > 0) gameInventory.set(String(key), count);
+        }
+      }
+    } catch (_) {}
+  }
+  loadInventoryFromStorage();
   let activePlugin = null; // istanza di jailed.DynamicPlugin
 
   // Initialize CodeMirror when scripts tab is opened the first time
@@ -3085,6 +3129,246 @@ window.selectRoom = function(roomId) {
         window.gameEventHandlers.hotspot_click = handler;
         addDebugMessage('Hotspot click handler registered', 'info');
       }
+    },
+    // Inventory APIs
+    add_to_inventory: function(itemId, quantity) {
+      const id = String(itemId || '').trim();
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!id) { addDebugMessage('add_to_inventory: invalid itemId', 'warning'); return 0; }
+      const current = Number(gameInventory.get(id) || 0);
+      const next = current + q;
+      gameInventory.set(id, next);
+      persistInventory();
+      showNotification(`Added ${q} × "${id}" to inventory (total: ${next})`, 'success');
+      return next;
+    },
+    remove_from_inventory: function(itemId, quantity) {
+      const id = String(itemId || '').trim();
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!id) { addDebugMessage('remove_from_inventory: invalid itemId', 'warning'); return 0; }
+      const current = Number(gameInventory.get(id) || 0);
+      const next = Math.max(0, current - q);
+      if (next <= 0) gameInventory.delete(id); else gameInventory.set(id, next);
+      persistInventory();
+      showNotification(`Removed ${q} × "${id}" from inventory (total: ${next})`, 'info');
+      return next;
+    },
+    has_item: function(itemId) {
+      const id = String(itemId || '').trim();
+      if (!id) return false;
+      return (Number(gameInventory.get(id) || 0) > 0);
+    },
+    get_item_count: function(itemId) {
+      const id = String(itemId || '').trim();
+      if (!id) return 0;
+      return Number(gameInventory.get(id) || 0);
+    },
+    clear_inventory: function() {
+      gameInventory.clear();
+      persistInventory();
+      showNotification('Inventory cleared', 'warning');
+      return true;
+    },
+
+    // Room System APIs
+    load_room: function(roomIdOrName) {
+      const key = String(roomIdOrName || '').trim();
+      if (!key) { addDebugMessage('load_room: missing room id/name', 'warning'); return false; }
+      let targetId = null;
+      if (rooms.has(key)) {
+        targetId = key;
+      } else {
+        rooms.forEach((r) => { if (!targetId && (r.name === key)) targetId = r.id; });
+      }
+      if (!targetId) { addDebugMessage(`load_room: room "${key}" not found`, 'warning'); return false; }
+      try {
+        window.selectRoom(targetId);
+        return true;
+      } catch (e) {
+        addDebugMessage(`load_room error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+    get_current_room: function() {
+      return currentRoomId || null;
+    },
+    get_room_objects: function() {
+      const r = rooms.get(currentRoomId);
+      if (!r || !Array.isArray(r.sceneObjects)) return [];
+      return r.sceneObjects.map(o => ({
+        id: String(o.id || ''),
+        name: String(o.name || ''),
+        type: String(o.type || 'Interactive'),
+        x: Number(o.x) || 0,
+        y: Number(o.y) || 0,
+        rotation: Number(o.rotationRad ? (o.rotationRad * 180 / Math.PI) : 0),
+        scaleX: Number((typeof o.scaleX === 'number') ? o.scaleX : 1),
+        scaleY: Number((typeof o.scaleY === 'number') ? o.scaleY : 1),
+        visible: (o.visible !== false)
+      }));
+    },
+    set_room_background: function(imageUrlOrDataUrl) {
+      const r = rooms.get(currentRoomId);
+      if (!r) { addDebugMessage('set_room_background: no current room', 'warning'); return false; }
+      const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
+      if (!url) {
+        r.background = null;
+        background = null;
+        redraw();
+        showNotification('Room background cleared', 'info');
+        return true;
+      }
+      try {
+        const img = new Image();
+        img.onload = () => {
+          r.background = img;
+          background = img;
+          redraw();
+          showNotification(`Room background set (${img.width}×${img.height})`, 'success');
+        };
+        img.onerror = () => {
+          addDebugMessage('set_room_background: failed to load image', 'error');
+          showNotification('Failed to load background image', 'danger');
+        };
+        img.src = url;
+        return true;
+      } catch (e) {
+        addDebugMessage(`set_room_background error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+
+    // Object System APIs
+    spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
+      const name = String(objectNameOrId || '').trim() || 'Object';
+      const objX = Number(x) || 0;
+      const objY = Number(y) || 0;
+
+      function addObjectWithImage(img) {
+        const newObj = {
+          id: uid('scene'),
+          name,
+          img,
+          x: objX,
+          y: objY,
+          type: 'Interactive',
+          rotationRad: 0,
+          scaleX: 1,
+          scaleY: 1,
+          visible: true
+        };
+        sceneObjects.push(newObj);
+        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+
+        // Add to UI list
+        try {
+          const list = document.getElementById('scene-objects-list');
+          if (list) {
+            const item = document.createElement('div');
+            item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+            item.dataset.objectId = newObj.id;
+            item.innerHTML = `
+              <div>
+                <strong>${newObj.name}</strong>
+                <br><small>Scene object</small>
+                <br><span class="badge bg-warning">Interactive</span>
+                <br><small style="color: #888;">Position: ${Math.round(newObj.x)}, ${Math.round(newObj.y)}</small>
+              </div>
+              <div>
+                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
+                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
+              </div>
+            `;
+            list.appendChild(item);
+          }
+        } catch (_) {}
+
+        redraw();
+        showNotification(`Spawned object "${newObj.name}"`, 'success');
+        return newObj.id;
+      }
+
+      try {
+        const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
+        if (!url) {
+          // Create a simple placeholder image (32x32)
+          const c = document.createElement('canvas');
+          c.width = 32; c.height = 32;
+          const t = c.getContext('2d');
+          t.fillStyle = '#cc3333'; t.fillRect(0, 0, 32, 32);
+          t.fillStyle = '#ffffff'; t.fillRect(4, 4, 24, 24);
+          const img = new Image();
+          img.onload = () => { addObjectWithImage(img); };
+          img.src = c.toDataURL('image/png');
+          return true;
+        } else {
+          const img = new Image();
+          img.onload = () => { addObjectWithImage(img); };
+          img.onerror = () => {
+            addDebugMessage('spawn_object: failed to load image', 'error');
+            showNotification('Failed to load object image', 'danger');
+          };
+          img.src = url;
+          return true;
+        }
+      } catch (e) {
+        addDebugMessage(`spawn_object error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+    despawn_object: function(objectId) {
+      const id = String(objectId || '').trim();
+      if (!id) { addDebugMessage('despawn_object: invalid id', 'warning'); return false; }
+      const before = sceneObjects.length;
+      sceneObjects = sceneObjects.filter(o => String(o.id) !== id);
+      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      // Remove from UI
+      try {
+        const el = document.querySelector(`[data-object-id="${id}"]`);
+        if (el) el.remove();
+      } catch (_) {}
+      const removed = (before !== sceneObjects.length);
+      if (removed) {
+        redraw();
+        showNotification(`Despawned object "${id}"`, 'info');
+      } else {
+        addDebugMessage(`despawn_object: object "${id}" not found`, 'warning');
+      }
+      return removed;
+    },
+    rotate_object: function(objectId, degrees) {
+      const id = String(objectId || '').trim();
+      const deg = Number(degrees) || 0;
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`rotate_object: object "${id}" not found`, 'warning'); return false; }
+      const rad = deg * Math.PI / 180;
+      obj.rotationRad = rad;
+      redraw();
+      return true;
+    },
+    scale_object: function(objectId, sx, sy) {
+      const id = String(objectId || '').trim();
+      let scaleX = Number(sx);
+      let scaleY = (typeof sy === 'undefined' || sy === null) ? scaleX : Number(sy);
+      if (!isFinite(scaleX)) scaleX = 1;
+      if (!isFinite(scaleY)) scaleY = 1;
+      scaleX = Math.max(0.01, scaleX);
+      scaleY = Math.max(0.01, scaleY);
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`scale_object: object "${id}" not found`, 'warning'); return false; }
+      obj.scaleX = scaleX;
+      obj.scaleY = scaleY;
+      redraw();
+      return true;
+    },
+    set_object_visible: function(objectId, visible) {
+      const id = String(objectId || '').trim();
+      const v = !!visible;
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`set_object_visible: object "${id}" not found`, 'warning'); return false; }
+      obj.visible = v;
+      redraw();
+      return true;
     }
 };
 
@@ -3136,6 +3420,20 @@ const wrapped = `
       var on_object_click = application.remote.on_object_click;
       var on_character_click = application.remote.on_character_click;
       var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var clear_inventory = application.remote.clear_inventory;
+      var load_room = application.remote.load_room;
+      var get_current_room = application.remote.get_current_room;
+      var get_room_objects = application.remote.get_room_objects;
+      var set_room_background = application.remote.set_room_background;
+      var spawn_object = application.remote.spawn_object;
+      var despawn_object = application.remote.despawn_object;
+      var rotate_object = application.remote.rotate_object;
+      var scale_object = application.remote.scale_object;
+      var set_object_visible = application.remote.set_object_visible;
       try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({});
       try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
@@ -3212,6 +3510,20 @@ const wrapped = `
       var on_object_click = application.remote.on_object_click;
       var on_character_click = application.remote.on_character_click;
       var on_hotspot_click = application.remote.on_hotspot_click;
+      var add_to_inventory = application.remote.add_to_inventory;
+      var remove_from_inventory = application.remote.remove_from_inventory;
+      var has_item = application.remote.has_item;
+      var get_item_count = application.remote.get_item_count;
+      var clear_inventory = application.remote.clear_inventory;
+      var load_room = application.remote.load_room;
+      var get_current_room = application.remote.get_current_room;
+      var get_room_objects = application.remote.get_room_objects;
+      var set_room_background = application.remote.set_room_background;
+      var spawn_object = application.remote.spawn_object;
+      var despawn_object = application.remote.despawn_object;
+      var rotate_object = application.remote.rotate_object;
+      var scale_object = application.remote.scale_object;
+      var set_object_visible = application.remote.set_object_visible;
       try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({
         on_object_click: function(object_id, x, y){
@@ -3993,7 +4305,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // User management variables
   let currentUser = null;
-  let users = new Map(); // In-memory user storage (normally would be server-side)
 
   // Firebase auth (v9) integration via CDN
   let __fbApp = null;
@@ -4055,73 +4366,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
   }
 
-  // Load users from localStorage
-  function loadUsers() {
-    const usersData = localStorage.getItem('amiantoUsers');
-    console.log('Loading users from localStorage:', usersData);
-
-    if (usersData) {
-      try {
-        const usersArray = JSON.parse(usersData);
-
-        // Validate users array structure
-        if (!Array.isArray(usersArray)) {
-          console.error('Users data is not an array, resetting...');
-          createDemoUser();
-          return;
-        }
-
-        users.clear();
-        let validUsers = 0;
-
-        usersArray.forEach((user, index) => {
-          // Validate user object structure
-          if (user && typeof user === 'object' && user.username && user.password) {
-            users.set(user.username, user);
-            validUsers++;
-          } else {
-            console.warn(`Invalid user at index ${index}:`, user);
-          }
-        });
-
-        console.log(`Loaded ${validUsers} valid users:`, Array.from(users.keys()));
-
-        // Ensure demo user exists
-        if (!users.has('demo')) {
-          console.log('Demo user not found, creating...');
-          createDemoUser();
-        }
-      } catch (e) {
-        console.error('Error parsing users data:', e);
-        console.log('Resetting users due to parse error...');
-        createDemoUser();
-      }
-    } else {
-      console.log('No users found, creating demo user...');
-      // Create demo user if no users exist
-      createDemoUser();
-    }
-
-    console.log('Final users map:', Array.from(users.entries()));
-  }
-
-  // Create demo user for testing
-  function createDemoUser() {
-    console.log('Creating demo user...');
-    const demoUser = {
-      username: 'demo',
-      email: 'demo@amianto.com',
-      password: 'demo123',
-      createdAt: new Date().toISOString(),
-      projects: []
-    };
-
-    users.set('demo', demoUser);
-    saveUsers();
-    console.log('Demo user created:', demoUser);
-  }
-
-  // Force reset all auth data (emergency function)
+  // Force reset all auth data (emergency function) — demo user removed
   window.forceResetAuth = function() {
     console.log('FORCE RESETTING ALL AUTH DATA');
 
@@ -4138,22 +4383,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.log('Removed:', key);
     });
 
-    // Clear current user and users map
+    // Clear current user
     currentUser = null;
-    users.clear();
-
-    // Recreate demo user
-    createDemoUser();
 
     // Reload page
     location.reload();
   };
-
-  // Save users to localStorage
-  function saveUsers() {
-    const usersArray = Array.from(users.values());
-    localStorage.setItem('amiantoUsers', JSON.stringify(usersArray));
-  }
 
   // Show login page
   function showLoginPage() {
@@ -4211,40 +4446,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         });
       });
     }
-  }
-
-  // Handle login
-  function handleLogin() {
-    const username = document.getElementById('loginUsername').value.trim();
-    const password = document.getElementById('loginPassword').value;
-    const rememberMe = document.getElementById('rememberMe').checked;
-
-    console.log('Login attempt:', { username, password: '***', rememberMe });
-    console.log('Available users:', Array.from(users.keys()));
-
-    if (!username || !password) {
-      showLoginError('Please enter both username and password');
-      return;
-    }
-
-    const user = users.get(username);
-    console.log('User found:', user);
-
-    if (!user) {
-      showLoginError('Invalid username or password');
-      return;
-    }
-
-    // Simple password check (in production, use proper hashing)
-    console.log('Password check:', user.password, 'vs', password);
-    if (user.password !== password) {
-      showLoginError('Invalid username or password');
-      return;
-    }
-
-    // Login successful
-    console.log('Login successful for user:', username);
-    loginUser(user, rememberMe);
   }
 
   // Login user
@@ -4369,37 +4570,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Password recovery feature coming soon!', 'info');
   };
 
-  // Reset demo user (for debugging)
-  window.resetDemoUser = function() {
-    console.log('Resetting demo user...');
-
-    // Clear all auth-related localStorage
-    localStorage.removeItem('amiantoUsers');
-    localStorage.removeItem('amiantoCurrentUser');
-    localStorage.removeItem('amiantoRememberUser');
-
-    // Reload the page to recreate demo user
-    location.reload();
-  };
-
-  // Debug authentication system
+  // Debug authentication system (simplified — demo user removed)
   window.debugAuth = function() {
     console.log('=== AUTH DEBUG INFO ===');
     console.log('Current user:', currentUser);
-    console.log('Users map:', Array.from(users.entries()));
     console.log('localStorage amiantoUsers:', localStorage.getItem('amiantoUsers'));
     console.log('localStorage amiantoCurrentUser:', localStorage.getItem('amiantoCurrentUser'));
     console.log('localStorage amiantoRememberUser:', localStorage.getItem('amiantoRememberUser'));
-
-    // Try to find demo user
-    const demoUser = users.get('demo');
-    if (demoUser) {
-      console.log('Demo user found:', demoUser);
-      console.log('Demo password:', demoUser.password);
-    } else {
-      console.log('Demo user NOT found!');
-    }
-
     showNotification('Check console for debug info', 'info');
   };
 
