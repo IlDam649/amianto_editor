@@ -997,6 +997,7 @@ if (playTestState && playTestState.isRunning) {
         const scriptName = objectScripts.get(obj.id);
         if (scriptName) {
           const content = jsScripts.get(scriptName);
+          addDebugMessage(`[Object:onClick] ${obj.id}`, 'info');
           executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)]);
         }
         return;
@@ -1015,6 +1016,7 @@ for (const hs of hotspots) {
           const hScript = hotspotScripts.get(hs.id);
           if (hScript) {
             const hContent = jsScripts.get(hScript);
+            addDebugMessage(`[Hotspot:onClick] ${hs.id}`, 'info');
             executeScriptHandler(hContent, 'on_hotspot_click', [hs.id]);
           }
           break;
@@ -3015,7 +3017,7 @@ window.selectRoom = function(roomId) {
   // JS sandbox runtime (Jailed) e editor
   let codeMirrorEditor = null;
   let largeCodeMirrorEditor = null;
-  let currentScriptName = 'startup';
+  let currentScriptName = 'Global:main';
   const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
   const roomScripts = new Map(); // roomId -> scriptName
@@ -3077,7 +3079,362 @@ window.selectRoom = function(roomId) {
       indentUnit: 2,
       tabSize: 2,
       lineWrapping: true,
+      extraKeys: { 'Ctrl-Space': 'autocomplete' },
+      hintOptions: { hint: cmGameApiHint }
     });
+  }
+
+  // Game API completions for CodeMirror
+  const GAME_API_COMPLETIONS = [
+    'print', 'show_message', 'move_object',
+    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
+    'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
+    'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
+    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible'
+  ];
+
+  function cmGameApiHint(cm) {
+    const cursor = cm.getCursor();
+    const token = cm.getTokenAt(cursor);
+    const start = token.start;
+    const end = cursor.ch;
+    const currentWord = token.string || '';
+    const list = GAME_API_COMPLETIONS.filter(name => name.toLowerCase().startsWith(currentWord.toLowerCase()));
+    return {
+      list: list.length ? list : GAME_API_COMPLETIONS,
+      from: CodeMirror.Pos(cursor.line, start),
+      to: CodeMirror.Pos(cursor.line, end)
+    };
+  }
+
+  // Events per scope: id = handler name in runtime, label = human-readable
+  const SCRIPT_EVENTS = {
+    Global: [{ id: 'on_game_start', label: 'onGameStart' }],
+    Room: [{ id: 'on_room_change', label: 'onEnter' }],
+    Object: [{ id: 'on_object_click', label: 'onClick' }],
+    GUI: [{ id: 'on_gui_click', label: 'onClick' }] // runtime non ancora collegato
+  };
+
+  function populateEventsForScope(scope) {
+    const sel = document.getElementById('script-event');
+    if (!sel) return;
+    sel.innerHTML = '';
+    const defs = SCRIPT_EVENTS[scope] || [];
+    defs.forEach(ev => {
+      const opt = document.createElement('option');
+      opt.value = ev.id;
+      opt.textContent = ev.label;
+      sel.appendChild(opt);
+    });
+  }
+
+  function populateTargetsForScope(scope) {
+    const sel = document.getElementById('script-target');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    if (scope === 'Global') {
+      sel.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = 'main';
+      opt.textContent = 'Global (project-wide)';
+      sel.appendChild(opt);
+      return;
+    }
+
+    sel.disabled = false;
+    const addPlaceholder = (text) => {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = text;
+      sel.appendChild(opt);
+    };
+
+    if (scope === 'Room') {
+      addPlaceholder('Select room...');
+      rooms.forEach((room) => {
+        const opt = document.createElement('option');
+        opt.value = room.id;
+        opt.textContent = room.name || room.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Object') {
+      addPlaceholder('Select scene object...');
+      (sceneObjects || []).forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.id;
+        opt.textContent = o.name || o.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'GUI') {
+      addPlaceholder('Select GUI button...');
+      (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.name || b.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+  }
+
+  function initScriptsUI() {
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
+    if (!scopeSel || !targetSel || !eventSel) return;
+
+    // Initialize once per tab open
+    populateEventsForScope(scopeSel.value || 'Global');
+    populateTargetsForScope(scopeSel.value || 'Global');
+
+    scopeSel.addEventListener('change', () => {
+      populateEventsForScope(scopeSel.value);
+      populateTargetsForScope(scopeSel.value);
+    });
+  }
+
+  function extractHandlersFromScript(content) {
+    if (!content) return new Set();
+    const handlers = new Set();
+    [
+      'on_game_start',
+      'on_room_change',
+      'on_object_click',
+      'on_character_click',
+      'on_hotspot_click',
+      'on_gui_click'
+    ].forEach(h => {
+      const re = new RegExp(`function\\s+${h}\\s*\\(`);
+      if (re.test(content)) handlers.add(h);
+    });
+    return handlers;
+  }
+
+  function rebuildScriptsTree() {
+    const tree = document.getElementById('scripts-tree');
+    if (!tree) return;
+    tree.innerHTML = '';
+
+    const container = document.createElement('div');
+
+    // Helper to build a group
+    const buildGroup = (title, items) => {
+      const group = document.createElement('div');
+      group.className = 'mb-2';
+      const h = document.createElement('div');
+      h.textContent = title;
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      group.appendChild(h);
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+
+      items.forEach(it => {
+        const li = document.createElement('li');
+        li.style.margin = '4px 0';
+        const label = document.createElement('span');
+        label.textContent = it.label;
+        label.style.cursor = 'pointer';
+        label.onclick = () => openScriptFromTree(it.scope, it.target, null);
+        li.appendChild(label);
+
+        if (it.events && it.events.length) {
+          const sub = document.createElement('ul');
+          sub.style.paddingLeft = '16px';
+          it.events.forEach(ev => {
+            const evLi = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = '#';
+            a.textContent = ev.label;
+            a.onclick = (e) => { e.preventDefault(); openScriptFromTree(it.scope, it.target, ev.id); };
+            evLi.appendChild(a);
+            sub.appendChild(evLi);
+          });
+          li.appendChild(sub);
+        }
+        ul.appendChild(li);
+      });
+      group.appendChild(ul);
+      container.appendChild(group);
+    };
+
+    // Global (single)
+    const globalKey = 'Global:main';
+    let globalContent = jsScripts.get(globalKey) || localStorage.getItem(`script-${globalKey}`) || '';
+    const globalHandlers = extractHandlersFromScript(globalContent);
+    const globalEvents = [];
+    SCRIPT_EVENTS.Global.forEach(def => { if (globalHandlers.has(def.id)) globalEvents.push(def); });
+
+    if (globalContent && globalEvents.length) {
+      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: globalEvents }]);
+    } else if (globalContent) {
+      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: [] }]);
+    }
+
+    // Rooms attached
+    const roomItems = [];
+    rooms.forEach((r) => {
+      const key = roomScripts.get(r.id) || `Room:${r.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !roomScripts.get(r.id)) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.Room.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      roomItems.push({ scope: 'Room', target: r.id, label: `Room: ${r.name || r.id}`, events });
+    });
+    if (roomItems.length) buildGroup('Room', roomItems);
+
+    // Objects attached
+    const objectItems = [];
+    (sceneObjects || []).forEach(o => {
+      const key = objectScripts.get(o.id) || `Object:${o.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !objectScripts.get(o.id)) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.Object.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      objectItems.push({ scope: 'Object', target: o.id, label: `Object: ${o.name || o.id}`, events });
+    });
+    if (objectItems.length) buildGroup('Object', objectItems);
+
+    // GUI attached
+    const guiItems = [];
+    (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
+      const key = (typeof guiScripts !== 'undefined' && guiScripts.get) ? (guiScripts.get(b.id) || `GUI:${b.id}`) : `GUI:${b.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !(typeof guiScripts !== 'undefined' && guiScripts.get && guiScripts.get(b.id))) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.GUI.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, events });
+    });
+    if (guiItems.length) buildGroup('GUI', guiItems);
+
+    tree.appendChild(container);
+  }
+
+  function openScriptFromTree(scope, target, handlerId) {
+    ensureLargeScriptEditor();
+    ensureScriptEditor();
+    const key = `${scope}:${target}`;
+    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+    if (!content) {
+      showNotification('Script not found', 'warning');
+      return;
+    }
+    currentScriptName = key;
+    if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
+    if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+
+    // Reflect dropdowns and optionally lock
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    if (scopeSel && targetSel) {
+      scopeSel.value = scope;
+      populateTargetsForScope(scope);
+      if (targetSel.querySelector(`option[value="${target}"]`)) targetSel.value = target;
+      const lock = document.getElementById('lock-script-scope');
+      if (lock && lock.checked) {
+        targetSel.disabled = (scope !== 'Global');
+        scopeSel.disabled = true;
+      }
+    }
+
+    // Scroll to handler if provided
+    if (handlerId && largeCodeMirrorEditor) {
+      const re = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+      for (let i = 0; i < largeCodeMirrorEditor.lineCount(); i++) {
+        if (re.test(largeCodeMirrorEditor.getLine(i))) {
+          largeCodeMirrorEditor.setCursor({ line: i, ch: 0 });
+          largeCodeMirrorEditor.focus();
+          break;
+        }
+      }
+    }
+  }
+
+  window.createScriptFromDropdown = function() {
+    ensureLargeScriptEditor();
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
+    if (!scopeSel || !targetSel || !eventSel) return;
+
+    const scope = scopeSel.value || 'Global';
+    const target = (scope === 'Global') ? 'main' : (targetSel.value || '').trim();
+    if (!target) { showNotification('Select a valid target', 'warning'); return; }
+    const handlerId = eventSel.value || 'on_game_start';
+    const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
+
+    const key = `${scope}:${target}`;
+    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+
+    // Ensure header
+    if (!content) {
+      const header = [
+        `// Scope: ${scope}`,
+        `// Target: ${target}`,
+        ''
+      ].join('\n');
+      content = header;
+    }
+
+    // Insert handler skeleton if missing
+    const handlerRegex = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+    if (!handlerRegex.test(content)) {
+      let skeleton = '\n';
+      skeleton += `// Event: ${eventDef.label}\n`;
+      if (handlerId === 'on_game_start') {
+        skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
+      } else if (handlerId === 'on_room_change') {
+        skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_object_click') {
+        skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_character_click') {
+        skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_hotspot_click') {
+        skeleton += `function on_hotspot_click(hotspotId){\n  // your code here\n}\n`;
+      } else {
+        skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
+      }
+      content = content.replace(/\s*$/, '') + '\n' + skeleton;
+    }
+
+    // Save and attach
+    jsScripts.set(key, content);
+    try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
+    currentScriptName = key;
+
+    if (scope === 'Room') {
+      roomScripts.set(target, key);
+    } else if (scope === 'Object') {
+      objectScripts.set(target, key);
+    } else if (scope === 'GUI') {
+      if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+    }
+
+    if (largeCodeMirrorEditor) {
+      largeCodeMirrorEditor.setValue(content);
+      // Move cursor to handler
+      const re = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+      for (let i = 0; i < largeCodeMirrorEditor.lineCount(); i++) {
+        if (re.test(largeCodeMirrorEditor.getLine(i))) {
+          largeCodeMirrorEditor.setCursor({ line: i, ch: 0 });
+          break;
+        }
+      }
+      largeCodeMirrorEditor.focus();
+    }
+
+    rebuildScriptsTree();
+    showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
   }
 
 // API esposte al sandbox
@@ -3475,16 +3832,20 @@ const wrapped = `
       const taSmall = document.getElementById('script-editor');
       content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
     }
-    const selector = document.getElementById('script-selector');
-    const selectedScript = selector.value || 'new-script';
-    
-    // Simulate save
-    localStorage.setItem(`script-${selectedScript}`, content);
-    jsScripts.set(selectedScript, content);
-    showNotification(`Script "${selectedScript}" saved!`, 'success');
+    // Determine current key (scope/target) or fallback to legacy selector
+    let key = currentScriptName && String(currentScriptName);
+    if (!key) {
+      const selector = document.getElementById('script-selector');
+      key = (selector && selector.value) || 'new-script';
+    }
+
+    try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
+    jsScripts.set(key, content);
+    showNotification(`Script "${key}" saved!`, 'success');
 
     // refresh attach targets
     refreshSceneObjectScriptTargets();
+    rebuildScriptsTree();
   };
 
   window.runScript = function() {
@@ -3819,6 +4180,8 @@ const wrapped = `
       if (codeEditorContainer) codeEditorContainer.style.display = 'block';
       ensureLargeScriptEditor();
       ensureScriptEditor();
+      initScriptsUI();
+      rebuildScriptsTree();
       // sync values small->large if small has content and large is empty
       if (codeMirrorEditor && largeCodeMirrorEditor && !largeCodeMirrorEditor.getValue()) {
         largeCodeMirrorEditor.setValue(codeMirrorEditor.getValue());
@@ -3988,6 +4351,7 @@ playTestState.isRunning = true;
     const roomScript = roomScripts.get(nextId);
     if (roomScript) {
       const content = jsScripts.get(roomScript);
+      addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
       executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
     }
     setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
@@ -4039,6 +4403,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const scriptName = characterScripts.get(who);
       if (scriptName) {
         const content = jsScripts.get(scriptName);
+        addDebugMessage(`[Character:onClick] ${who}`, 'info');
         executeScriptHandler(content, 'on_character_click', [who]);
       }
     }
