@@ -604,3 +604,14 @@ header {
 .frame-delete:hover {
   background: #ff6666;
 }
+
+/* Ensure Bootstrap modals appear above the editor header (which uses high z-index) */
+.modal {
+  z-index: 3000 !important;
+}
+.modal-backdrop {
+  z-index: 2990 !important;
+}
+.modal-dialog {
+  z-index: 3001;
+}

@@ -4305,6 +4305,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // User management variables
   let currentUser = null;
+  let isDemoMode = false;
 
   // Firebase auth (v9) integration via CDN
   let __fbApp = null;
@@ -4350,8 +4351,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     setupLoginForm();
     setupRegistrationModal();
 
+    // Restore demo mode if previously set for this session
+    if (sessionStorage.getItem('amiantoDemoMode') === '1') {
+      isDemoMode = true;
+      setTimeout(() => {
+        if (typeof window.enterDemoMode === 'function') {
+          window.enterDemoMode();
+        }
+      }, 0);
+    }
+
     // Observe Firebase auth state
     fbObserveAuthState(function(user){
+      // In demo mode, ignore Firebase auth state transitions
+      if (isDemoMode) {
+        return;
+      }
       if (user) {
         currentUser = {
           username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
@@ -4544,6 +4559,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Logout user
   window.logout = function() {
+    // If in demo mode, just exit demo without calling Firebase
+    if (isDemoMode) {
+      isDemoMode = false;
+      sessionStorage.removeItem('amiantoDemoMode');
+      currentUser = null;
+      localStorage.removeItem('amiantoCurrentUser');
+      localStorage.removeItem('amiantoRememberUser');
+      showLoginPage();
+      showNotification('Hai lasciato la Demo Mode', 'info');
+      return;
+    }
+
     if (confirm('Are you sure you want to logout?')) {
       fbSignOut().catch(()=>{}).finally(() => {
         currentUser = null;
@@ -4553,6 +4580,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         showNotification('Logged out successfully', 'info');
       });
     }
+  };
+
+  // Enter demo mode (no account required)
+  window.enterDemoMode = function() {
+    isDemoMode = true;
+    sessionStorage.setItem('amiantoDemoMode', '1');
+    currentUser = {
+      username: 'Demo',
+      email: '',
+      uid: 'demo'
+    };
+    showDashboard();
+    showNotification('Demo Mode attiva: stai usando l’editor senza account', 'info');
   };
 
   // Show user profile (placeholder)
@@ -4918,6 +4958,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
 
+    // Store full JSON per progetto come backup locale per apertura rapida
+    try {
+      const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      localStorage.setItem(projectKey, jsonString);
+      localStorage.setItem('amiantoActiveProjectName', projectName);
+      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    } catch (_) {}
+
     // Persist to OPFS (silent) and also offer a regular file save (may prompt the user)
     saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name);
     saveProjectJsonToFile(jsonString, projectObj.settings && projectObj.settings.name);
@@ -4952,21 +5001,514 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`Project "${projectName}" created!`, 'success');
   };
 
-  // Show project list
+  // Helpers per file name sicuro in OPFS
+  function sanitizeProjectFileName(name) {
+    const safe = (name && String(name).trim() !== '' ? String(name).trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
+    return `${safe}.amianto.json`;
+  }
+
+  async function loadProjectJsonFromOPFS(projectName) {
+    try {
+      if (!navigator.storage || !navigator.storage.getDirectory) return null;
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
+      const fileHandle = await dir.getFileHandle(sanitizeProjectFileName(projectName), { create: false });
+      const file = await fileHandle.getFile();
+      return await file.text();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function deleteProjectFileFromOPFS(projectName) {
+    try {
+      if (!navigator.storage || !navigator.storage.getDirectory) return false;
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
+      // FileSystemDirectoryHandle.removeEntry è disponibile su alcuni browser
+      if (dir.removeEntry) {
+        await dir.removeEntry(sanitizeProjectFileName(projectName));
+        return true;
+      }
+      // Fallback: non disponibile
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function createImageFromDataUrl(url) {
+    return new Promise((resolve) => {
+      if (!url) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  async function applyProjectObject(projectObj) {
+    try {
+      // Settings / viewport
+      if (projectObj && projectObj.settings) {
+        const s = projectObj.settings;
+        // aggiorna viewport
+        if (s.canvasWidth && s.canvasHeight) {
+          gameViewport.width = Number(s.canvasWidth) || gameViewport.width;
+          gameViewport.height = Number(s.canvasHeight) || gameViewport.height;
+          canvas.width = gameViewport.width;
+          canvas.height = gameViewport.height;
+          updateEditorDisplay();
+        }
+        // persisti impostazioni progetto
+        localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+      }
+
+      // Rooms
+      rooms = new Map();
+      currentRoomId = null;
+      // converte stanze
+      if (Array.isArray(projectObj.rooms)) {
+        // Precarica immagini in parallelo
+        for (const r of projectObj.rooms) {
+          const roomId = r.id || uid('room');
+          const roomVal = {
+            id: roomId,
+            name: r.name || roomId,
+            background: null,
+            foregrounds: [],
+            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
+              id: o.id || uid('scene'),
+              name: o.name || 'Object',
+              type: o.type || 'Interactive',
+              x: Number(o.x) || 0,
+              y: Number(o.y) || 0,
+              img: null
+            })) : [],
+            walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
+              id: h.id || uid('hotspot'),
+              name: h.name || 'Hotspot',
+              points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+              visible: (typeof h.visible === 'boolean') ? h.visible : true
+            })) : []
+          };
+          rooms.set(roomId, roomVal);
+          // carica immagini async (background, foregrounds, scene objects)
+          Promise.resolve().then(async () => {
+            if (r.background) {
+              roomVal.background = await createImageFromDataUrl(r.background);
+              redraw();
+            }
+            if (Array.isArray(r.foregrounds)) {
+              const out = [];
+              for (const f of r.foregrounds) {
+                out.push({
+                  id: f.id || uid('fg'),
+                  name: f.name || 'Layer',
+                  img: f.image ? await createImageFromDataUrl(f.image) : null,
+                  offsetX: Number(f.offsetX)||0,
+                  offsetY: Number(f.offsetY)||0
+                });
+              }
+              roomVal.foregrounds = out;
+              refreshForegroundListUI();
+              redraw();
+            }
+            if (Array.isArray(r.sceneObjects)) {
+              for (let i = 0; i < r.sceneObjects.length; i++) {
+                const src = r.sceneObjects[i];
+                const dst = roomVal.sceneObjects[i];
+                if (src && src.image) {
+                  dst.img = await createImageFromDataUrl(src.image);
+                }
+              }
+              // ricrea lista oggetti
+              const list = document.getElementById('scene-objects-list');
+              if (list) {
+                list.innerHTML = '';
+                roomVal.sceneObjects.forEach(obj => {
+                  const item = document.createElement('div');
+                  item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+                  item.dataset.objectId = obj.id;
+                  item.innerHTML = `
+        <div>
+          <strong>${obj.name}</strong>
+          <br><small>Scene object</small>
+          <br><span class="badge bg-warning">Interactive</span>
+          <br><small style="color: #888;">Position: ${Math.round(obj.x)}, ${Math.round(obj.y)}</small>
+        </div>
+        <div>
+          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
+        </div>
+                  `;
+                  list.appendChild(item);
+                });
+              }
+              redraw();
+            }
+            refreshHotspotsListUI();
+          });
+        }
+      } else {
+        // assicura almeno una stanza
+        const rid = uid('room');
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [] });
+      }
+      // Seleziona prima stanza e sincronizza riferimenti
+      const firstRoom = rooms.keys().next().value;
+      currentRoomId = firstRoom;
+      bindRoomRefs();
+      refreshRoomsSelector();
+      try { refreshStartRoomSelector(); } catch(_) {}
+      redraw();
+
+      // GUI
+      guis = Array.isArray(projectObj.guis) ? projectObj.guis.map(g => ({
+        id: g.id || uid('gui'),
+        name: g.name || 'GUI',
+        type: g.type || 'MainInterface',
+        settings: g.settings || {},
+        background: g.background ? null : null, // background immagine opzionale, non serializzato ora
+        buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
+          id: b.id || uid('btn'),
+          name: b.name || 'Button',
+          x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
+          text: b.text || '',
+          backgroundImage: null
+        })) : []
+      })) : [];
+      if (guis.length === 0) {
+        const defaultGui = { id: uid('gui'), name: 'Main GUI', type: 'MainInterface', settings: {}, background: null, buttons: [] };
+        guis.push(defaultGui);
+      }
+      currentGuiId = guis[0].id;
+      refreshGUISelector();
+      try {
+        const typeSel = document.getElementById('gui-type-select');
+        if (typeSel) {
+          typeSel.value = guis[0].type || 'MainInterface';
+        }
+        renderGuiSettingsPanel(guis[0].type || 'MainInterface', guis[0].settings || {});
+        refreshGuiButtonsList();
+      } catch(_) {}
+
+      // Characters frames (Map)
+      try {
+        characterFrames.clear();
+        if (Array.isArray(projectObj.characters)) {
+          for (const ch of projectObj.characters) {
+            const directions = {};
+            if (ch && ch.directions) {
+              for (const [dir, data] of Object.entries(ch.directions)) {
+                const frames = Array.isArray(data.frames) ? await Promise.all(data.frames.map(f => createImageFromDataUrl(f))) : [];
+                directions[dir] = { fps: Number(data.fps) || 8, frames: frames.filter(Boolean) };
+              }
+            }
+            characterFrames.set(ch.name || uid('char'), { directions, currentFrame: 0 });
+          }
+        }
+        refreshCharacterSelector();
+        refreshStartingPlayerUI();
+      } catch(_) {}
+
+      // Inventory UI (lista DOM)
+      try {
+        const inv = Array.isArray(projectObj.inventory) ? projectObj.inventory : [];
+        const list = document.getElementById('inventory-list');
+        if (list) {
+          list.innerHTML = '';
+          inv.forEach(item => {
+            const el = document.createElement('div');
+            el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+            el.innerHTML = `
+              <div>
+                <strong>${item.name || 'Item'}</strong>
+                <br><small>Inventory item</small>
+              </div>
+              <div>
+                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
+                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
+              </div>
+            `;
+            list.appendChild(el);
+          });
+        }
+        refreshInventoryScriptTargets();
+      } catch(_) {}
+
+      // Scripts
+      try {
+        jsScripts.clear();
+        const selector = document.getElementById('script-selector');
+        if (selector) {
+          // reset, mantieni placeholder
+          selector.innerHTML = '';
+          const opt0 = document.createElement('option');
+          opt0.value = ''; opt0.textContent = 'Select a script...';
+          selector.appendChild(opt0);
+        }
+        if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+          Object.entries(projectObj.scripts).forEach(([name, content]) => {
+            if (!name) return;
+            jsScripts.set(String(name), String(content || ''));
+            localStorage.setItem(`script-${name}`, String(content || ''));
+            if (selector) {
+              const o = document.createElement('option');
+              o.value = name; o.textContent = name;
+              selector.appendChild(o);
+            }
+          });
+        }
+        // ri-aggiungi alcuni script di default se mancanti
+        const defaults = ['startup','room-change','object-interaction'];
+        defaults.forEach(d => {
+          if (!jsScripts.has(d)) {
+            jsScripts.set(d, '');
+            if (selector) {
+              const o = document.createElement('option');
+              o.value = d; o.textContent = d === 'startup' ? 'Startup Game' : (d.replace('-', ' '));
+              selector.appendChild(o);
+            }
+          }
+        });
+        refreshSceneObjectScriptTargets();
+        refreshRoomScriptTargets();
+        refreshCharacterScriptTargets();
+        refreshInventoryScriptTargets();
+        try { refreshGuiScriptTargets(); } catch(_) {}
+        try { refreshHotspotScriptTargets(); } catch(_) {}
+        try { refreshCursorScriptTargets(); } catch(_) {}
+      } catch(_) {}
+
+      // Attachments (mappe)
+      try {
+        objectScripts.clear();
+        roomScripts.clear();
+        characterScripts.clear();
+        inventoryScripts.clear();
+        hotspotScripts.clear();
+        if (projectObj.attachments && typeof projectObj.attachments === 'object') {
+          const A = projectObj.attachments;
+          if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
+          if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
+          if (A.characterScripts && typeof A.characterScripts === 'object') Object.entries(A.characterScripts).forEach(([k,v]) => { if (k && v) characterScripts.set(String(k), String(v)); });
+          if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
+          if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
+          if (A.hotspotScripts && typeof A.hotspotScripts === 'object') Object.entries(A.hotspotScripts).forEach(([k,v]) => { if (k && v) hotspotScripts.set(String(k), String(v)); });
+        }
+      } catch(_) {}
+
+      // Cursors contestuali
+      try {
+        contextualCursors = Array.isArray(projectObj.cursors) ? projectObj.cursors.map(c => ({
+          id: c.id || uid('cursor'),
+          targetType: c.targetType || 'hotspot',
+          targetId: c.targetId || '',
+          cursorImage: null, // immagine non serializzata
+          actionText: c.actionText || '',
+          scriptName: c.scriptName || ''
+        })) : [];
+        refreshCursorsList();
+      } catch(_) {}
+
+      redraw();
+      showNotification('Project loaded', 'success');
+    } catch (err) {
+      addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
+      showNotification('Errore nel caricamento del progetto', 'danger');
+    }
+  }
+
+  window.importProjectFromJson = async function(jsonString) {
+    try {
+      const obj = JSON.parse(jsonString);
+      await applyProjectObject(obj);
+    } catch (err) {
+      addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
+      showNotification('JSON progetto non valido', 'danger');
+    }
+  };
+
+  async function openProjectByName(projectName) {
+    if (!currentUser) { showNotification('Please login to open projects', 'warning'); return; }
+    if (!projectName) return;
+    // prova OPFS
+    let json = await loadProjectJsonFromOPFS(projectName);
+    if (!json) {
+      // backup locale
+      const key = `amiantoProject_${currentUser.username}:${projectName}`;
+      json = localStorage.getItem(key);
+    }
+    if (!json) {
+      // fallback: crea progetto vuoto con solo settings
+      const fresh = {
+        format: 'amianto-game',
+        version: 1,
+        settings: { name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
+        rooms: [],
+        guis: [],
+        characters: [],
+        inventory: [],
+        scripts: {},
+        attachments: {},
+        cursors: [],
+        variables: {}
+      };
+      await applyProjectObject(fresh);
+    } else {
+      await importProjectFromJson(json);
+    }
+    localStorage.setItem('amiantoActiveProjectName', projectName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+  }
+
+  async function deleteProjectByName(projectName) {
+    if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
+    if (!projectName) return;
+    if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
+    const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
+    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
+    // rimuovi backup locale
+    try { localStorage.removeItem(`amiantoProject_${currentUser.username}:${projectName}`); } catch(_) {}
+    // rimuovi file OPFS se possibile
+    try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
+    showNotification('Progetto eliminato', 'success');
+  }
+
+  // Show project list (modal)
   window.showProjectList = function() {
     if (!currentUser) {
       showNotification('Please login to view projects', 'warning');
       return;
     }
-
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    if (userProjects.length === 0) {
-      showNotification('No projects found. Create a new project first!', 'info');
-      return;
-    }
-
-    // Show project selection modal (placeholder)
-    showNotification(`${userProjects.length} projects available`, 'info');
+    // Crea modale
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = 'projectListModal';
+    modal.setAttribute('tabindex', '-1');
+    modal.setAttribute('aria-labelledby', 'projectListModalLabel');
+    modal.setAttribute('aria-hidden', 'true');
+    const count = userProjects.length;
+    const itemsHtml = count === 0 ? `
+      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu File.</div>
+    ` : userProjects.map((p, i) => {
+      const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
+      const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
+      const updatedShort = updated ? new Date(updated).toLocaleString() : '';
+      return `
+        <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center">
+          <div>
+            <strong>${name}</strong>
+            ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button class="btn btn-success" data-name="${name}" data-action="open">Open</button>
+            <button class="btn btn-outline-danger" data-name="${name}" data-action="delete">Delete</button>
+          </div>
+        </li>
+      `;
+    }).join('');
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title" id="projectListModalLabel">My Projects</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <div><span class="badge bg-info">${count}</span> projects</div>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-light" id="btn-new-project">New Project</button>
+                <button class="btn btn-outline-light" id="btn-import-json">Import JSON</button>
+              </div>
+            </div>
+            <ul class="list-group">
+              ${itemsHtml}
+            </ul>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    modal.addEventListener('hidden.bs.modal', function () { modal.remove(); });
+    // Bind azioni
+    modal.addEventListener('click', async (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      const action = t.getAttribute('data-action');
+      const name = t.getAttribute('data-name');
+      if (action === 'open' && name) {
+        await openProjectByName(name);
+        const inst = bootstrap.Modal.getInstance(modal);
+        if (inst) inst.hide();
+      }
+      if (action === 'delete' && name) {
+        await deleteProjectByName(name);
+        // aggiorna lista nel modale senza ricrearlo
+        const li = t.closest('li');
+        if (li) li.remove();
+      }
+    });
+    // New / Import
+    modal.querySelector('#btn-new-project')?.addEventListener('click', () => {
+      const projectName = prompt('Enter project name:');
+      if (!projectName) return;
+      const newProject = {
+        settings: { name: projectName, canvasWidth: 800, canvasHeight: 600 },
+        rooms: [],
+        createdAt: new Date().toISOString()
+      };
+      const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      arr.push(newProject);
+      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
+      showNotification(`Project "${projectName}" created!`, 'success');
+      // refresh rapido: riapri il modale
+      const inst = bootstrap.Modal.getInstance(modal);
+      if (inst) inst.hide();
+      setTimeout(() => showProjectList(), 0);
+    });
+    modal.querySelector('#btn-import-json')?.addEventListener('click', async () => {
+      try {
+        if (!window.showOpenFilePicker) { showNotification('Import non supportato su questo browser', 'warning'); return; }
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'Amianto Project JSON', accept: { 'application/json': ['.json'] } }],
+          multiple: false
+        });
+        const file = await handle.getFile();
+        const text = await file.text();
+        await importProjectFromJson(text);
+        const nameGuess = (() => {
+          try { const o = JSON.parse(text); return (o && o.settings && o.settings.name) ? o.settings.name : null; } catch (_) { return null; }
+        })();
+        if (nameGuess) {
+          // aggiungi alla lista utente se manca
+          const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+          if (!arr.find(p => p && p.settings && p.settings.name === nameGuess)) {
+            arr.push({ settings: { name: nameGuess, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height }, createdAt: new Date().toISOString() });
+            localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
+          }
+          localStorage.setItem(`amiantoProject_${currentUser.username}:${nameGuess}`, text);
+          localStorage.setItem('amiantoActiveProjectName', nameGuess);
+          localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        }
+        const inst = bootstrap.Modal.getInstance(modal);
+        if (inst) inst.hide();
+        showNotification('Progetto importato', 'success');
+      } catch (err) {
+        addDebugMessage('Import failed: ' + (err && err.message ? err.message : err), 'error');
+        showNotification('Import fallito', 'danger');
+      }
+    });
   };
 
   // Delete current project
