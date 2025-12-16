@@ -3064,7 +3064,10 @@ window.selectRoom = function(roomId) {
       indentUnit: 2,
       tabSize: 2,
       lineWrapping: true,
+      extraKeys: { 'Ctrl-Space': 'autocomplete' },
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
     });
+    attachAutoHint(codeMirrorEditor, 'small');
   }
 
   // Editor grande nel pannello principale (area canvas)
@@ -3080,8 +3083,9 @@ window.selectRoom = function(roomId) {
       tabSize: 2,
       lineWrapping: true,
       extraKeys: { 'Ctrl-Space': 'autocomplete' },
-      hintOptions: { hint: cmGameApiHint }
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
     });
+    attachAutoHint(largeCodeMirrorEditor, 'large');
   }
 
   // Game API completions for CodeMirror
@@ -3107,12 +3111,48 @@ window.selectRoom = function(roomId) {
     };
   }
 
+  // Attach auto-hint on typing for CodeMirror editors
+  let autoHintAttachedToSmall = false;
+  let autoHintAttachedToLarge = false;
+  function attachAutoHint(cm, which = 'small') {
+    if (!cm || typeof cm.on !== 'function') return;
+    if (which === 'large') {
+      if (autoHintAttachedToLarge) return;
+      autoHintAttachedToLarge = true;
+    } else {
+      if (autoHintAttachedToSmall) return;
+      autoHintAttachedToSmall = true;
+    }
+    cm.on('inputRead', function(editor, change) {
+      if (!change) return;
+      // Ignore programmatic changes and bulk edits
+      if (change.origin === 'setValue' || change.origin === 'paste' || change.origin === 'undo' || change.origin === 'redo') return;
+      // If a completion is already active, don't re-trigger
+      if (editor.state && editor.state.completionActive) return;
+      const inserted = Array.isArray(change.text) ? change.text.join('\n') : String(change.text || '');
+      if (!inserted) return;
+      // Trigger only for word characters to avoid noise
+      if (!/^[A-Za-z0-9_]$/.test(inserted)) return;
+      if (typeof editor.showHint === 'function') {
+        editor.showHint({ hint: cmGameApiHint, completeSingle: false });
+      }
+    });
+  }
+
   // Events per scope: id = handler name in runtime, label = human-readable
   const SCRIPT_EVENTS = {
-    Global: [{ id: 'on_game_start', label: 'onGameStart' }],
-    Room: [{ id: 'on_room_change', label: 'onEnter' }],
+    Global: [
+      { id: 'on_game_start', label: 'onGameStart' },
+      { id: 'on_room_change', label: 'onRoomChange' }
+    ],
+    Room: [
+      // Anche disponibile a livello globale; mantenuto qui per comodità UI
+      { id: 'on_room_change', label: 'onRoomChange' }
+    ],
     Object: [{ id: 'on_object_click', label: 'onClick' }],
-    GUI: [{ id: 'on_gui_click', label: 'onClick' }] // runtime non ancora collegato
+    Character: [{ id: 'on_character_click', label: 'onClick' }],
+    Hotspot: [{ id: 'on_hotspot_click', label: 'onClick' }]
+    // Nessun evento GUI: runtime non ancora collegato
   };
 
   function populateEventsForScope(scope) {
@@ -3167,6 +3207,29 @@ window.selectRoom = function(roomId) {
         const opt = document.createElement('option');
         opt.value = o.id;
         opt.textContent = o.name || o.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Character') {
+      addPlaceholder('Select character...');
+      document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
+        const name = s.textContent.trim();
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Hotspot') {
+      addPlaceholder('Select hotspot...');
+      (Array.isArray(hotspots) ? hotspots : []).forEach(hs => {
+        const opt = document.createElement('option');
+        opt.value = `hotspot:${hs.id}`;
+        opt.textContent = hs.name || hs.id;
         sel.appendChild(opt);
       });
       return;
@@ -4100,6 +4163,10 @@ const wrapped = `
   function refreshHotspotScriptTargets() {
     const sel = document.getElementById('script-target');
     if (!sel) return;
+
+    // Update only when Hotspot scope is active
+    const scopeSel = document.getElementById('script-scope');
+    if (scopeSel && scopeSel.value !== 'Hotspot') return;
     
     // Add hotspot options if not already present
     const existingHotspotOptions = sel.querySelectorAll('option[value^="hotspot:"]');
