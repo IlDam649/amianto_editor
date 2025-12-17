@@ -3668,12 +3668,82 @@ window.selectRoom = function(roomId) {
   };
 
 // API esposte al sandbox
+  // Funzione helper standalone per serializzare valori in modo leggibile
+  // Deve essere standalone perché viene usata in contesti diversi (sandbox)
+  function serializeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
+  }
+
   const sandboxApi = {
+    // Funzione print() globale per gli script utente
+    // Accetta qualsiasi numero di argomenti e li serializza correttamente
+    // Centralizza tutto l'output degli script nello Script Log
     print: function() {
-      const msg = Array.from(arguments).map(v => String(v)).join(' ');
-      // Log solo nella console script, per separare l'output di gioco dal log di sistema
-      console.log('[PRINT]', msg); // Debug: anche nella console browser per troubleshooting
-      addScriptLogMessage(msg, 'info');
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3692',message:'print() ENTRY',data:{argsCount:arguments.length,args:Array.from(arguments).slice(0,3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      try {
+        const args = Array.from(arguments);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3696',message:'print() args extracted',data:{argsLength:args.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        if (args.length === 0) {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3698',message:'print() empty args path',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
+          addScriptLogMessage('', 'info');
+          return;
+        }
+        
+        // Serializza ogni argomento e uniscili con spazi
+        const messages = args.map(arg => serializeValue(arg));
+        const msg = messages.join(' ');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3705',message:'print() BEFORE addScriptLogMessage',data:{serializedMsg:msg.substring(0,100)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        
+        // Log nello Script Log panel (non usa console.log come output principale)
+        addScriptLogMessage(msg, 'info');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3708',message:'print() AFTER addScriptLogMessage',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+      } catch (e) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3710',message:'print() EXCEPTION',data:{error:e.message||String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        // Fallback in caso di errore nella serializzazione
+        addScriptLogMessage(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
+      }
+    },
+    
+    // Funzione error() per log di errori nello Script Log
+    // Supporta livelli di log separati (error vs info)
+    error: function() {
+      try {
+        const args = Array.from(arguments);
+        if (args.length === 0) {
+          addScriptLogMessage('', 'error');
+          return;
+        }
+        
+        const messages = args.map(arg => serializeValue(arg));
+        const msg = messages.join(' ');
+        
+        addScriptLogMessage(msg, 'error');
+      } catch (e) {
+        addScriptLogMessage(`[Error Log Error] ${e && e.message ? e.message : String(e)}`, 'error');
+      }
     },
     show_message: function(text){
       showNotification(String(text), 'info');
@@ -4041,7 +4111,13 @@ window.selectRoom = function(roomId) {
         }
         
         // Definisci tutte le API
+        // #region agent log
+        var remoteExists = typeof application !== 'undefined' && application.remote;
+        var printExists = remoteExists && typeof application.remote.print === 'function';
+        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:4096',message:'Wrapper: application.remote check',data:{remoteExists,printExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         var print = application.remote.print;
+        var error = application.remote.error;
         var show_message = application.remote.show_message;
         var move_object = application.remote.move_object;
         var on_game_start = application.remote.on_game_start;
@@ -4075,7 +4151,8 @@ window.selectRoom = function(roomId) {
           ${scriptContent}\n; 
         } catch(e){ 
           // Errori di sintassi/Runtime nello script utente
-          application.remote.print('Script error: ' + (e && e.message ? e.message : e)); 
+          // Usa error() invece di print() per distinguere gli errori
+          application.remote.error('Script error: ' + (e && e.message ? e.message : e)); 
         }
         
         application.setInterface({});
@@ -4186,7 +4263,13 @@ window.selectRoom = function(roomId) {
     }
     // Wrappa il codice utente per esporre funzioni previste
 const wrapped = `
+      // #region agent log
+      var remoteExists = typeof application !== 'undefined' && application.remote;
+      var printExists = remoteExists && typeof application.remote.print === 'function';
+      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runScript wrapper',message:'runScript: application.remote check',data:{remoteExists,printExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       var print = application.remote.print;
+      var error = application.remote.error;
       var show_message = application.remote.show_message;
       var move_object = application.remote.move_object;
       var on_game_start = application.remote.on_game_start;
@@ -4214,27 +4297,27 @@ const wrapped = `
         hasVar: application.remote.has_var,
         toggleVar: application.remote.toggle_var
       };
-      try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
+      try { ${content}\n; } catch(e){ application.remote.error('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({
         on_object_click: function(object_id, x, y){
           try { if (typeof on_object_click === 'function') { return on_object_click(object_id, x, y); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_game_start: function(){
           try { if (typeof on_game_start === 'function') { return on_game_start(); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_room_change: function(oldRoomId, newRoomId){
           try { if (typeof on_room_change === 'function') { return on_room_change(oldRoomId, newRoomId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_character_click: function(characterId){
           try { if (typeof on_character_click === 'function') { return on_character_click(characterId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
         },
         on_hotspot_click: function(hotspotId){
           try { if (typeof on_hotspot_click === 'function') { return on_hotspot_click(hotspotId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
         }
       });
       if (typeof on_game_start === 'function') { on_game_start(); }
@@ -5027,6 +5110,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Debug consoles cleared', 'info');
   };
 
+  // Funzione per pulire solo lo Script Log
+  window.clearScriptConsole = function() {
+    const scriptConsole = document.getElementById('script-console');
+    if (scriptConsole) {
+      scriptConsole.textContent = '[INFO] Script console cleared\n';
+      scriptConsole.scrollTop = 0;
+    }
+    showNotification('Script Log cleared', 'info');
+  };
+
   function updateGameStatus(status) {
     const statusElement = document.getElementById('game-status');
     if (statusElement) {
@@ -5051,10 +5144,67 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     console.scrollTop = console.scrollHeight;
   }
 
+  // ============================================
+  // SISTEMA DI COMUNICAZIONE EDITOR ↔ RUNTIME
+  // ============================================
+  // Listener per messaggi dal runtime (postMessage)
+  // Gestisce solo messaggi con type === "script-log"
+  window.addEventListener('message', function(event) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5152',message:'message event RECEIVED',data:{hasData:!!event.data,dataType:event.data?.type,origin:event.origin},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    // TODO: Per sicurezza, verificare event.origin === location.origin
+    // Attualmente accettiamo tutti gli origin per sviluppo
+    // In produzione: if (event.origin !== location.origin) return;
+    
+    if (!event.data || event.data.type !== 'script-log') {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5158',message:'message event IGNORED',data:{dataType:event.data?.type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
+      return; // Ignora messaggi non relativi allo script log
+    }
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5162',message:'message event PROCESSING script-log',data:{message:event.data.message?.substring(0,50),level:event.data.level},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    
+    // Estrai dati dal messaggio
+    const message = event.data.message || '';
+    const level = event.data.level || 'info';
+    
+    // Mostra il messaggio nel pannello Script Log
+    appendToScriptLog(message, level);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5170',message:'message event AFTER appendToScriptLog',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+  });
+
+  // Funzione appendToScriptLog: aggiunge messaggi al pannello Script Log
+  // Supporta livelli: info, warning, error
+  // NON usa console.log come output finale
+  function appendToScriptLog(message, level = 'info') {
+    addScriptLogMessage(message, level);
+  }
+
   // Script console: mostra solo output degli script (print, errori handler, ecc.)
+  // Centralizza tutto l'output degli script in un'unica funzione
   function addScriptLogMessage(message, type = 'info') {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5121',message:'addScriptLogMessage() ENTRY',data:{message:message.substring(0,50),type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     const console = document.getElementById('script-console');
-    if (!console) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5124',message:'addScriptLogMessage() element check',data:{elementExists:!!console,elementId:console?console.id:'null'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    if (!console) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5126',message:'addScriptLogMessage() ELEMENT NOT FOUND',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      // Fallback: se il pannello non esiste, usa console.log
+      console.warn('[Script Log] Panel not found, using console.log');
+      console.log(`[${type.toUpperCase()}] ${message}`);
+      return;
+    }
     
     const timestamp = new Date().toLocaleTimeString();
     const typeIcon = {
@@ -5064,9 +5214,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       'error': '[ERR]'
     }[type] || '[INFO]';
     
+    // Costruisci il messaggio con timestamp e tipo
     const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
+    
+    // #region agent log
+    const beforeContent = console.textContent;
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5140',message:'addScriptLogMessage() BEFORE update',data:{beforeLength:beforeContent.length,newMessageLength:newMessage.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    
+    // Aggiungi il messaggio al contenuto
     console.textContent += newMessage;
+    
+    // #region agent log
+    const afterContent = console.textContent;
+    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5145',message:'addScriptLogMessage() AFTER update',data:{afterLength:afterContent.length,scrollTop:console.scrollTop,scrollHeight:console.scrollHeight},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    
+    // Auto-scroll verso il basso per mostrare l'ultimo messaggio
     console.scrollTop = console.scrollHeight;
+    
+    // Aggiorna il colore del testo in base al tipo (se supportato)
+    // Nota: il colore è già gestito dal CSS (text-success), ma possiamo aggiungere logica per errori
+    if (type === 'error' && console.style) {
+      // Per errori, potremmo cambiare temporaneamente il colore
+      // Ma per ora manteniamo il colore CSS globale
+    }
   }
 
   // Simulate notifications for tabs (example) - DISABLED

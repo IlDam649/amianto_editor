@@ -681,8 +681,13 @@
             </div>
 
             <div class="mb-3">
-              <label class="form-label text-light">Script console (print, errori script):</label>
-              <div class="form-control bg-dark text-success" id="script-console" style="height: 110px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <label class="form-label text-light mb-0">Script console (print, errori script):</label>
+                <button class="btn btn-outline-warning btn-sm" onclick="clearScriptConsole()" title="Clear Script Log">
+                  <i class="fas fa-trash"></i> Clear
+                </button>
+              </div>
+              <div class="form-control bg-dark text-success" id="script-console" style="height: 110px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre-wrap;" readonly>
                 [INFO] Script console ready
               </div>
             </div>
