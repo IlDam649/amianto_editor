@@ -13,6 +13,8 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/dracula.min.css">
   <!-- CodeMirror hints (autocomplete) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.css">
+  <!-- Override tema hints CodeMirror in verde acido -->
+  <link rel="stylesheet" href="CSS/codemirror-hints-override.css">
   <!-- CodeMirror core + Lua mode -->
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
@@ -33,7 +35,7 @@
       <!-- Contenuto testuale -->
       <div class="flex-grow-1">
         <!-- Titolo principale -->
-        <img src="img/logo.png" alt="Amianto Editor" style="height: 60px; margin: 0; vertical-align: middle;">
+        <img src="img/logo.png" alt="Amianto Editor" class="logo-main">
 
         <!-- Sottotitolo -->
         <p style="color: #eee; font-size: 1rem; margin: 5px 0 0 0;">
@@ -56,7 +58,7 @@
         <!-- Contenuto testuale -->
         <div>
           <!-- Titolo principale -->
-          <img src="img/logo.png" alt="Amianto Editor" style="height: 40px; margin: 0; vertical-align: middle;">
+          <img src="img/logo.png" alt="Amianto Editor" class="logo-dashboard">
           <p style="color: #eee; font-size: 0.9rem; margin: 2px 0 0 0;">
             <span id="currentUserName">User</span>'s Projects
           </p>
@@ -86,7 +88,7 @@
         <div class="card bg-dark text-light border-secondary">
           <div class="card-body p-5">
             <div class="text-center mb-4">
-              <img src="img/logo.png" alt="Amianto Editor" style="height: 60px;">
+              <img src="img/logo.png" alt="Amianto Editor" class="logo-auth">
               <h2 class="mt-3">Welcome Back</h2>
               <p class="text-muted">Sign in to your account</p>
             </div>
@@ -611,6 +613,20 @@
               <div id="scripts-tree" class="text-light" style="max-height: 35vh; overflow:auto;"></div>
             </div>
 
+            <!-- Game Variables Section -->
+            <div class="mt-3 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="m-0" style="color:#eee">Game Variables</h6>
+                <button class="btn btn-outline-success btn-sm" onclick="addGameVariable()">+ Add Variable</button>
+              </div>
+              <div id="variables-list" class="list-group">
+                <!-- Variables will be dynamically added here -->
+              </div>
+              <small class="text-muted d-block mt-2">
+                Variables persist across rooms and can be used in conditions and scripts via <code>Game.getVar()</code> and <code>Game.setVar()</code>.
+              </small>
+            </div>
+
             <div class="alert alert-info mt-3" role="alert">
               <small>
                 <strong>Tip:</strong> Editor unico con Ctrl+S per salvare. Autocomplete: Ctrl+Space (API di gioco).
@@ -641,6 +657,12 @@
                 </button>
               </div>
             </div>
+
+            <div class="mb-3">
+              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Esegui gli script on_game_start senza aprire il runtime">
+                <i class="fas fa-rocket"></i> Test Game Start
+              </button>
+            </div>
             
             <div class="mb-3">
               <label class="form-label text-light">Game status:</label>
@@ -650,11 +672,18 @@
             </div>
             
             <div class="mb-3">
-              <label class="form-label text-light">Debug console:</label>
-              <div class="form-control bg-dark text-light" id="debug-console" style="height: 150px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
+              <label class="form-label text-light">Engine log:</label>
+              <div class="form-control bg-dark text-light" id="debug-console" style="height: 110px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
                 [INFO] Editor loaded and ready
                 [INFO] Tab system initialized
                 [INFO] Canvas ready for rendering
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Script console (print, errori script):</label>
+              <div class="form-control bg-dark text-success" id="script-console" style="height: 110px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;" readonly>
+                [INFO] Script console ready
               </div>
             </div>
             

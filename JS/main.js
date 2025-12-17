@@ -997,8 +997,10 @@ if (playTestState && playTestState.isRunning) {
         const scriptName = objectScripts.get(obj.id);
         if (scriptName) {
           const content = jsScripts.get(scriptName);
+          const eventConditions = objectEventConditions.get(obj.id);
+          const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
           addDebugMessage(`[Object:onClick] ${obj.id}`, 'info');
-          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)]);
+          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)], conditions);
         }
         return;
       }
@@ -1016,8 +1018,10 @@ for (const hs of hotspots) {
           const hScript = hotspotScripts.get(hs.id);
           if (hScript) {
             const hContent = jsScripts.get(hScript);
+            const eventConditions = hotspotEventConditions.get(hs.id);
+            const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
             addDebugMessage(`[Hotspot:onClick] ${hs.id}`, 'info');
-            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id]);
+            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id], conditions);
           }
           break;
         }
@@ -3026,6 +3030,13 @@ window.selectRoom = function(roomId) {
   const hotspotScripts = new Map(); // hotspotId -> scriptName
   // Runtime game inventory store: itemId (string) -> count (integer >= 0)
   const gameInventory = new Map();
+  
+  // Event conditions storage
+  const objectEventConditions = new Map(); // sceneObjectId -> { onClick: [conditions], onUse: [conditions], ... }
+  const hotspotEventConditions = new Map(); // hotspotId -> { onClick: [conditions], onUse: [conditions], ... }
+  const characterEventConditions = new Map(); // characterName -> { onClick: [conditions], onUse: [conditions], ... }
+  const guiButtonEventConditions = new Map(); // buttonId -> { onClick: [conditions], ... }
+  const inventoryEventConditions = new Map(); // itemName -> { onClick: [conditions], onUse: [conditions], ... }
 
   // Inventory persistence helpers
   function persistInventory() {
@@ -3500,11 +3511,169 @@ window.selectRoom = function(roomId) {
     showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
   }
 
+  // ============================================
+  // GAME STATE SYSTEM - Variabili di gioco globali
+  // ============================================
+  window.Game = window.Game || {};
+  
+  // Stato interno (non accessibile direttamente)
+  const _gameState = {};
+  
+  // Definizioni delle variabili (per editor UI e validazione)
+  window.gameVariableDefinitions = window.gameVariableDefinitions || [];
+  
+  // API Game State
+  window.Game.setVar = function(key, value) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.setVar] Invalid key:', key);
+      return false;
+    }
+    // Validazione tipo se definito
+    const def = gameVariableDefinitions.find(v => v.name === key);
+    if (def) {
+      const expectedType = def.type;
+      if (expectedType === 'boolean' && typeof value !== 'boolean') {
+        console.warn(`[Game.setVar] Variable "${key}" should be boolean, got ${typeof value}`);
+        value = !!value; // Coerce to boolean
+      } else if (expectedType === 'number' && typeof value !== 'number') {
+        console.warn(`[Game.setVar] Variable "${key}" should be number, got ${typeof value}`);
+        value = Number(value) || 0;
+      } else if (expectedType === 'string' && typeof value !== 'string') {
+        console.warn(`[Game.setVar] Variable "${key}" should be string, got ${typeof value}`);
+        value = String(value);
+      }
+    }
+    _gameState[key] = value;
+    return true;
+  };
+  
+  window.Game.getVar = function(key) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.getVar] Invalid key:', key);
+      return undefined;
+    }
+    if (!(key in _gameState)) {
+      // Se la variabile è definita ma non ancora impostata, restituisci il valore iniziale
+      const def = gameVariableDefinitions.find(v => v.name === key);
+      if (def && 'initialValue' in def) {
+        return def.initialValue;
+      }
+      console.warn(`[Game.getVar] Variable "${key}" not found`);
+      return undefined;
+    }
+    return _gameState[key];
+  };
+  
+  window.Game.hasVar = function(key) {
+    if (!key || typeof key !== 'string') return false;
+    return key in _gameState;
+  };
+  
+  window.Game.toggleVar = function(key) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.toggleVar] Invalid key:', key);
+      return false;
+    }
+    const current = Game.getVar(key);
+    if (typeof current === 'boolean') {
+      Game.setVar(key, !current);
+      return true;
+    } else {
+      // Se non è boolean, inizializza a true
+      Game.setVar(key, true);
+      return true;
+    }
+  };
+  
+  // Funzione per ottenere tutto lo stato (per serializzazione)
+  window.Game.getState = function() {
+    return JSON.parse(JSON.stringify(_gameState));
+  };
+  
+  // Funzione per impostare tutto lo stato (per deserializzazione)
+  window.Game.setState = function(state) {
+    if (!state || typeof state !== 'object') return false;
+    Object.keys(_gameState).forEach(key => delete _gameState[key]);
+    Object.keys(state).forEach(key => {
+      _gameState[key] = state[key];
+    });
+    return true;
+  };
+  
+  // ============================================
+  // CONDITION SYSTEM - Sistema di condizioni
+  // ============================================
+  window.Condition = window.Condition || {};
+  
+  window.Condition.evaluate = function(conditionObject) {
+    if (!conditionObject || typeof conditionObject !== 'object') {
+      console.warn('[Condition.evaluate] Invalid condition object');
+      return false;
+    }
+    
+    const { var: varName, operator, value: expectedValue } = conditionObject;
+    
+    if (!varName || typeof varName !== 'string') {
+      console.warn('[Condition.evaluate] Invalid variable name');
+      return false;
+    }
+    
+    if (!operator || typeof operator !== 'string') {
+      console.warn('[Condition.evaluate] Invalid operator');
+      return false;
+    }
+    
+    // Ottieni valore corrente della variabile
+    const currentValue = Game.getVar(varName);
+    const varExists = Game.hasVar(varName);
+    
+    // Operatore "exists" - verifica solo esistenza
+    if (operator === 'exists') {
+      return varExists;
+    }
+    
+    // Se la variabile non esiste e l'operatore non è "exists", fallisce
+    if (!varExists) {
+      console.warn(`[Condition.evaluate] Variable "${varName}" does not exist`);
+      return false;
+    }
+    
+    // Valutazione condizioni
+    switch (operator) {
+      case '==':
+        return currentValue == expectedValue; // Usa == per permettere type coercion
+      case '!=':
+        return currentValue != expectedValue;
+      case '>':
+        return Number(currentValue) > Number(expectedValue);
+      case '<':
+        return Number(currentValue) < Number(expectedValue);
+      case '>=':
+        return Number(currentValue) >= Number(expectedValue);
+      case '<=':
+        return Number(currentValue) <= Number(expectedValue);
+      default:
+        console.warn(`[Condition.evaluate] Unknown operator: ${operator}`);
+        return false;
+    }
+  };
+  
+  window.Condition.evaluateAll = function(conditions) {
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      return true; // Nessuna condizione = sempre vero
+    }
+    
+    // Tutte le condizioni devono essere vere (AND logic)
+    return conditions.every(cond => Condition.evaluate(cond));
+  };
+
 // API esposte al sandbox
   const sandboxApi = {
     print: function() {
       const msg = Array.from(arguments).map(v => String(v)).join(' ');
-      addDebugMessage(msg, 'info');
+      // Log solo nella console script, per separare l'output di gioco dal log di sistema
+      console.log('[PRINT]', msg); // Debug: anche nella console browser per troubleshooting
+      addScriptLogMessage(msg, 'info');
     },
     show_message: function(text){
       showNotification(String(text), 'info');
@@ -3789,6 +3958,26 @@ window.selectRoom = function(roomId) {
       obj.visible = v;
       redraw();
       return true;
+    },
+    // Game State API
+    get_var: function(key) {
+      return window.Game.getVar(key);
+    },
+    set_var: function(key, value) {
+      return window.Game.setVar(key, value);
+    },
+    has_var: function(key) {
+      return window.Game.hasVar(key);
+    },
+    toggle_var: function(key) {
+      return window.Game.toggleVar(key);
+    },
+    // Condition API (per uso interno, non esposto direttamente agli script)
+    evaluate_condition: function(conditionObject) {
+      return window.Condition.evaluate(conditionObject);
+    },
+    evaluate_all_conditions: function(conditions) {
+      return window.Condition.evaluateAll(conditions);
     }
 };
 
@@ -3827,42 +4016,113 @@ window.selectRoom = function(roomId) {
     triggerGameEvent('hotspot_click', hotspotId);
   };
 
-  function executeScriptHandler(scriptContent, handlerName, argsArray){
+  function executeScriptHandler(scriptContent, handlerName, argsArray, conditions){
     if (!scriptContent || !handlerName) return;
+    
+    // Valuta condizioni se presenti
+    if (conditions && Array.isArray(conditions) && conditions.length > 0) {
+      if (!Condition.evaluateAll(conditions)) {
+        addDebugMessage(`[Condition] Script handler "${handlerName}" skipped: conditions not met`, 'info');
+        return; // Condizioni non soddisfatte, non eseguire lo script
+      }
+    }
+    
     if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') return;
     const callArgs = Array.isArray(argsArray) ? argsArray : [];
-const wrapped = `
-      var print = application.remote.print;
-      var show_message = application.remote.show_message;
-      var move_object = application.remote.move_object;
-      var on_game_start = application.remote.on_game_start;
-      var on_room_change = application.remote.on_room_change;
-      var on_object_click = application.remote.on_object_click;
-      var on_character_click = application.remote.on_character_click;
-      var on_hotspot_click = application.remote.on_hotspot_click;
-      var add_to_inventory = application.remote.add_to_inventory;
-      var remove_from_inventory = application.remote.remove_from_inventory;
-      var has_item = application.remote.has_item;
-      var get_item_count = application.remote.get_item_count;
-      var clear_inventory = application.remote.clear_inventory;
-      var load_room = application.remote.load_room;
-      var get_current_room = application.remote.get_current_room;
-      var get_room_objects = application.remote.get_room_objects;
-      var set_room_background = application.remote.set_room_background;
-      var spawn_object = application.remote.spawn_object;
-      var despawn_object = application.remote.despawn_object;
-      var rotate_object = application.remote.rotate_object;
-      var scale_object = application.remote.scale_object;
-      var set_object_visible = application.remote.set_object_visible;
-      try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
-      application.setInterface({});
-      try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
-      catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
+    
+    // Wrapper che esegue lo script solo quando application.remote è disponibile
+    const wrapped = `
+      // Funzione helper per eseguire lo script quando il plugin è pronto
+      function executeWhenReady() {
+        // Verifica che application.remote sia disponibile
+        if (typeof application === 'undefined' || !application.remote) {
+          setTimeout(executeWhenReady, 10);
+          return;
+        }
+        
+        // Definisci tutte le API
+        var print = application.remote.print;
+        var show_message = application.remote.show_message;
+        var move_object = application.remote.move_object;
+        var on_game_start = application.remote.on_game_start;
+        var on_room_change = application.remote.on_room_change;
+        var on_object_click = application.remote.on_object_click;
+        var on_character_click = application.remote.on_character_click;
+        var on_hotspot_click = application.remote.on_hotspot_click;
+        var add_to_inventory = application.remote.add_to_inventory;
+        var remove_from_inventory = application.remote.remove_from_inventory;
+        var has_item = application.remote.has_item;
+        var get_item_count = application.remote.get_item_count;
+        var clear_inventory = application.remote.clear_inventory;
+        var load_room = application.remote.load_room;
+        var get_current_room = application.remote.get_current_room;
+        var get_room_objects = application.remote.get_room_objects;
+        var set_room_background = application.remote.set_room_background;
+        var spawn_object = application.remote.spawn_object;
+        var despawn_object = application.remote.despawn_object;
+        var rotate_object = application.remote.rotate_object;
+        var scale_object = application.remote.scale_object;
+        var set_object_visible = application.remote.set_object_visible;
+        var Game = {
+          getVar: application.remote.get_var,
+          setVar: application.remote.set_var,
+          hasVar: application.remote.has_var,
+          toggleVar: application.remote.toggle_var
+        };
+        
+        // Esegui il contenuto dello script
+        try { 
+          ${scriptContent}\n; 
+        } catch(e){ 
+          // Errori di sintassi/Runtime nello script utente
+          application.remote.print('Script error: ' + (e && e.message ? e.message : e)); 
+        }
+        
+        application.setInterface({});
+        
+        // Invoca l'handler richiesto, se definito come funzione globale nello script
+        if (typeof ${handlerName} === 'function') {
+          try { 
+            ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); 
+          } catch(e){ 
+            print('Handler error: ' + (e && e.message ? e.message : e)); 
+          }
+        } else {
+          // Aiuta il dev a capire perché non vede l'output
+          print('Handler "${handlerName}" non definito nello script');
+        }
+      }
+      
+      // Avvia l'esecuzione
+      executeWhenReady();
     `;
+    
     try {
       const plugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-      plugin.whenConnected(function(){ plugin.disconnect(); });
-    } catch(_) {}
+      
+      // Gestisci errori di connessione
+      if (typeof plugin.onError === 'function') {
+        plugin.onError(function(err) {
+          addDebugMessage(`Script handler error: ${err && err.message ? err.message : err}`, 'error');
+          addScriptLogMessage(`Script handler error: ${err && err.message ? err.message : err}`, 'error');
+        });
+      }
+      
+      // Non disconnettere immediatamente - aspetta che lo script finisca
+      // e che tutti i messaggi vengano processati
+      plugin.whenConnected(function(){
+        // Aspetta più tempo per permettere ai messaggi di essere processati
+        // Gli script potrebbero chiamare print() in modo asincrono o dopo l'esecuzione
+        setTimeout(function(){
+          try {
+            plugin.disconnect();
+          } catch(_) {}
+        }, 2000); // Aumentato a 2 secondi per dare più tempo ai messaggi asincroni
+      });
+    } catch(e) {
+      addDebugMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
+      addScriptLogMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
+    }
   }
 
   window.newScript = function() {
@@ -3948,6 +4208,12 @@ const wrapped = `
       var rotate_object = application.remote.rotate_object;
       var scale_object = application.remote.scale_object;
       var set_object_visible = application.remote.set_object_visible;
+      var Game = {
+        getVar: application.remote.get_var,
+        setVar: application.remote.set_var,
+        hasVar: application.remote.has_var,
+        toggleVar: application.remote.toggle_var
+      };
       try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
       application.setInterface({
         on_object_click: function(object_id, x, y){
@@ -3975,12 +4241,21 @@ const wrapped = `
     `;
     try {
       activePlugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-      activePlugin.whenConnected(function(){
-        showNotification('JS script eseguito in sandbox!', 'success');
-      });
-      activePlugin.onDisconnect(function(){
-        addDebugMessage('Sandbox disconnesso', 'info');
-      });
+
+      // Alcune versioni di "jailed" espongono metodi diversi:
+      // proteggiamo le chiamate per evitare errori di runtime.
+      if (typeof activePlugin.whenConnected === 'function') {
+        activePlugin.whenConnected(function() {
+          showNotification('JS script eseguito in sandbox!', 'success');
+        });
+      }
+
+      // onDisconnect potrebbe non essere presente: verifica prima di usarlo
+      if (typeof activePlugin.onDisconnect === 'function') {
+        activePlugin.onDisconnect(function() {
+          addDebugMessage('Sandbox disconnesso', 'info');
+        });
+      }
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
       addDebugMessage(`JS sandbox error: ${msg}`, 'error');
@@ -4017,6 +4292,143 @@ const wrapped = `
       showNotification(`Script "${scriptName}" not found!`, 'warning');
     }
   };
+
+  // ============================================
+  // GAME VARIABLES UI MANAGEMENT
+  // ============================================
+  
+  function refreshVariablesList() {
+    const list = document.getElementById('variables-list');
+    if (!list) return;
+    
+    list.innerHTML = '';
+    
+    if (gameVariableDefinitions.length === 0) {
+      list.innerHTML = '<div class="text-muted text-center py-3"><small>No variables defined. Click "+ Add Variable" to create one.</small></div>';
+      return;
+    }
+    
+    gameVariableDefinitions.forEach((varDef, index) => {
+      const item = document.createElement('div');
+      item.className = 'list-group-item bg-secondary text-light mb-2';
+      item.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <strong>${varDef.name}</strong>
+            <span class="badge bg-info ms-2">${varDef.type}</span>
+            <br><small class="text-muted">Initial: ${JSON.stringify(varDef.initialValue)}</small>
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">✏️</button>
+            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `;
+      list.appendChild(item);
+    });
+  }
+  
+  window.addGameVariable = function() {
+    const name = prompt('Variable name:');
+    if (!name || !name.trim()) return;
+    
+    const trimmedName = name.trim();
+    if (gameVariableDefinitions.find(v => v.name === trimmedName)) {
+      showNotification(`Variable "${trimmedName}" already exists`, 'warning');
+      return;
+    }
+    
+    const type = prompt('Variable type (boolean/number/string):', 'boolean');
+    if (!['boolean', 'number', 'string'].includes(type)) {
+      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
+      return;
+    }
+    
+    let initialValue;
+    if (type === 'boolean') {
+      initialValue = false;
+    } else if (type === 'number') {
+      const num = prompt('Initial value (number):', '0');
+      initialValue = Number(num) || 0;
+    } else {
+      initialValue = prompt('Initial value (string):', '');
+    }
+    
+    gameVariableDefinitions.push({
+      name: trimmedName,
+      type: type,
+      initialValue: initialValue
+    });
+    
+    // Inizializza la variabile nello stato se non esiste
+    if (!Game.hasVar(trimmedName)) {
+      Game.setVar(trimmedName, initialValue);
+    }
+    
+    refreshVariablesList();
+    showNotification(`Variable "${trimmedName}" added`, 'success');
+  };
+  
+  window.editGameVariable = function(index) {
+    if (index < 0 || index >= gameVariableDefinitions.length) return;
+    
+    const varDef = gameVariableDefinitions[index];
+    const newName = prompt('Variable name:', varDef.name);
+    if (!newName || !newName.trim()) return;
+    
+    const trimmedName = newName.trim();
+    if (trimmedName !== varDef.name && gameVariableDefinitions.find(v => v.name === trimmedName)) {
+      showNotification(`Variable "${trimmedName}" already exists`, 'warning');
+      return;
+    }
+    
+    const type = prompt('Variable type (boolean/number/string):', varDef.type);
+    if (!['boolean', 'number', 'string'].includes(type)) {
+      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
+      return;
+    }
+    
+    let initialValue = varDef.initialValue;
+    if (type === 'boolean') {
+      initialValue = confirm('Initial value (OK = true, Cancel = false):') ? true : false;
+    } else if (type === 'number') {
+      const num = prompt('Initial value (number):', String(initialValue));
+      initialValue = Number(num) || 0;
+    } else {
+      initialValue = prompt('Initial value (string):', String(initialValue));
+    }
+    
+    // Aggiorna definizione
+    varDef.name = trimmedName;
+    varDef.type = type;
+    varDef.initialValue = initialValue;
+    
+    // Aggiorna valore nello stato se esiste
+    if (Game.hasVar(varDef.name)) {
+      Game.setVar(trimmedName, initialValue);
+    }
+    
+    refreshVariablesList();
+    showNotification(`Variable "${trimmedName}" updated`, 'success');
+  };
+  
+  window.deleteGameVariable = function(index) {
+    if (index < 0 || index >= gameVariableDefinitions.length) return;
+    
+    const varDef = gameVariableDefinitions[index];
+    if (!confirm(`Delete variable "${varDef.name}"?`)) return;
+    
+    gameVariableDefinitions.splice(index, 1);
+    refreshVariablesList();
+    showNotification(`Variable "${varDef.name}" deleted`, 'info');
+  };
+  
+  // Refresh variables list quando si carica la sezione Scripts
+  document.addEventListener('tabChanged', function(e) {
+    if (e.detail.currentTab === 'scripts') {
+      refreshVariablesList();
+    }
+  });
 
   // Attach a script to a scene object
   function refreshSceneObjectScriptTargets() {
@@ -4340,24 +4752,52 @@ const wrapped = `
     const jsonString = window.serializeProjectToJsonString(true);
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     const projectObj = window.serializeProject();
-    try { saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name); } catch(_) {}
-
+    
     // Save game.json depending on mode
     if (window.AMIANTO_PLAYTEST_MODE === 'server') {
       saveGameJsonServer(jsonString);
     } else {
+      // saveGameJsonLocal già chiama saveProjectJsonToOPFS, non duplicare
       saveGameJsonLocal(jsonString);
     }
+    
+    // Salva anche con nome progetto (non duplicare se già salvato sopra)
+    // Usa setTimeout per evitare chiamate simultanee
+    setTimeout(() => {
+      saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
+    }, 100);
 
     // Open runtime in a new tab that will auto-load game.json
     const runtimeUrl = 'runtime.html';
     window.open(runtimeUrl, '_blank');
 
-playTestState.isRunning = true;
+    playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
     addDebugMessage('Runtime opened in new tab', 'success');
+    
+    // Esegui script globali on_game_start se esistono
+    // Cerca script globali che hanno on_game_start
+    const globalScripts = Array.from(jsScripts.entries()).filter(([name, content]) => {
+      return name.startsWith('Global:') || name === 'startup' || name.includes('game_start');
+    });
+    
+    // Esegui tutti gli script globali che potrebbero avere on_game_start
+    if (globalScripts.length > 0) {
+      addScriptLogMessage(`Found ${globalScripts.length} global script(s) to execute`, 'info');
+    }
+    
+    globalScripts.forEach(([scriptName, content]) => {
+      if (content && content.trim()) {
+        addDebugMessage(`Executing global script: ${scriptName}`, 'info');
+        addScriptLogMessage(`Executing script: ${scriptName}`, 'info');
+        // Esegui con un piccolo delay per assicurarsi che la console sia pronta
+        setTimeout(() => {
+          executeScriptHandler(content, 'on_game_start', []);
+        }, 100);
+      }
+    });
     
     // Trigger global game start event
     triggerGameStart();
@@ -4398,6 +4838,50 @@ playTestState.isRunning = true;
     updateGameStatus('Test stopped');
     addDebugMessage(`Test stopped. Duration: ${durationSeconds}s`, 'info');
     showNotification(`Test stopped after ${durationSeconds} seconds`, 'info');
+  };
+
+  // Test Game Start - esegue gli script on_game_start senza aprire il runtime
+  window.testGameStart = function() {
+    addScriptLogMessage('=== Testing Game Start ===', 'info');
+    
+    // Cerca script globali che hanno on_game_start
+    const globalScripts = Array.from(jsScripts.entries()).filter(([name, content]) => {
+      return name.startsWith('Global:') || name === 'startup' || name.includes('game_start');
+    });
+    
+    if (globalScripts.length === 0) {
+      addScriptLogMessage('Nessuno script globale trovato. Crea uno script con Scope=Global, Target=main, Event=onGameStart', 'warning');
+      showNotification('Nessuno script globale trovato', 'warning');
+      return;
+    }
+    
+    addScriptLogMessage(`Trovati ${globalScripts.length} script globale/i`, 'info');
+    
+    // Esegui tutti gli script globali che potrebbero avere on_game_start
+    globalScripts.forEach(([scriptName, content]) => {
+      if (content && content.trim()) {
+        addScriptLogMessage(`Eseguendo script: ${scriptName}`, 'info');
+        executeScriptHandler(content, 'on_game_start', []);
+      } else {
+        addScriptLogMessage(`Script "${scriptName}" è vuoto`, 'warning');
+      }
+    });
+    
+    // Trigger anche gli handler registrati tramite activePlugin (se esiste)
+    try {
+      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
+        addScriptLogMessage('Eseguendo handler da activePlugin', 'info');
+        activePlugin.remote.on_game_start();
+      }
+    } catch(e) {
+      addScriptLogMessage(`Errore activePlugin: ${e && e.message ? e.message : e}`, 'error');
+    }
+    
+    // Trigger anche i global event handlers
+    triggerGameStart();
+    
+    addScriptLogMessage('=== Test Game Start completato ===', 'info');
+    showNotification('Game Start testato! Controlla la Script Console', 'success');
   };
 
   window.testRoomChange = function() {
@@ -4470,8 +4954,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const scriptName = characterScripts.get(who);
       if (scriptName) {
         const content = jsScripts.get(scriptName);
+        const eventConditions = characterEventConditions.get(who);
+        const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
         addDebugMessage(`[Character:onClick] ${who}`, 'info');
-        executeScriptHandler(content, 'on_character_click', [who]);
+        executeScriptHandler(content, 'on_character_click', [who], conditions);
       }
     }
   };
@@ -4511,7 +4997,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       addDebugMessage(`Script "${scriptName}" not found`, 'error');
       return;
     }
-    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId]);
+    const eventConditions = hotspotEventConditions.get(activeHotspotId);
+    const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId], conditions);
     addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
   };
 
@@ -4528,11 +5016,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   window.clearDebugConsole = function() {
-    const console = document.getElementById('debug-console');
-    if (console) {
-      console.innerHTML = '[INFO] Console cleared\n';
+    const engineConsole = document.getElementById('debug-console');
+    if (engineConsole) {
+      engineConsole.textContent = '[INFO] Engine console cleared\n';
     }
-    showNotification('Debug console cleared', 'info');
+    const scriptConsole = document.getElementById('script-console');
+    if (scriptConsole) {
+      scriptConsole.textContent = '[INFO] Script console cleared\n';
+    }
+    showNotification('Debug consoles cleared', 'info');
   };
 
   function updateGameStatus(status) {
@@ -4544,6 +5036,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   function addDebugMessage(message, type = 'info') {
     const console = document.getElementById('debug-console');
+    if (!console) return;
+    
+    const timestamp = new Date().toLocaleTimeString();
+    const typeIcon = {
+      'info': '[INFO]',
+      'success': '[OK]',
+      'warning': '[WARN]',
+      'error': '[ERR]'
+    }[type] || '[INFO]';
+    
+    const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
+    console.textContent += newMessage;
+    console.scrollTop = console.scrollHeight;
+  }
+
+  // Script console: mostra solo output degli script (print, errori handler, ecc.)
+  function addScriptLogMessage(message, type = 'info') {
+    const console = document.getElementById('script-console');
     if (!console) return;
     
     const timestamp = new Date().toLocaleTimeString();
@@ -5259,6 +5769,42 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return settings;
   }
 
+  function serializeVariables() {
+    return {
+      definitions: gameVariableDefinitions.map(v => ({
+        name: v.name,
+        type: v.type,
+        initialValue: v.initialValue
+      })),
+      state: Game.getState()
+    };
+  }
+  
+  function serializeEventConditions() {
+    function mapToObjectDeep(mapInstance) {
+      const obj = {};
+      try {
+        if (mapInstance && mapInstance.forEach) {
+          mapInstance.forEach((v, k) => {
+            if (v && typeof v === 'object') {
+              obj[String(k)] = JSON.parse(JSON.stringify(v));
+            } else {
+              obj[String(k)] = v;
+            }
+          });
+        }
+      } catch (_) {}
+      return obj;
+    }
+    return {
+      objects: mapToObjectDeep(objectEventConditions),
+      hotspots: mapToObjectDeep(hotspotEventConditions),
+      characters: mapToObjectDeep(characterEventConditions),
+      guiButtons: mapToObjectDeep(guiButtonEventConditions),
+      inventory: mapToObjectDeep(inventoryEventConditions)
+    };
+  }
+
   window.serializeProject = function() {
     return {
       format: 'amianto-game',
@@ -5276,7 +5822,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       scripts: serializeScripts(),
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
-      variables: {}
+      variables: serializeVariables(),
+      eventConditions: serializeEventConditions()
     };
   }
 
@@ -5299,24 +5846,61 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }, 0);
   }
 
+  // Debounce per evitare chiamate multiple OPFS in rapida successione
+  let opfsSaveTimeout = null;
+  let lastOpfsSaveTime = 0;
+  const OPFS_SAVE_DEBOUNCE_MS = 500; // Minimo 500ms tra salvataggi OPFS
+
   async function saveProjectJsonToOPFS(jsonString, projectName) {
     try {
       if (!navigator.storage || !navigator.storage.getDirectory) return null;
-      const root = await navigator.storage.getDirectory();
-      const projectDir = await root.getDirectoryHandle('amianto-projects', { create: true });
-      const safeName = (projectName && projectName.trim() !== '' ? projectName.trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
-      const fileName = `${safeName}.amianto.json`;
-      const fileHandle = await projectDir.getFileHandle(fileName, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(jsonString);
-      await writable.close();
-      const opfsPath = `amianto-projects/${fileName}`;
-      localStorage.setItem('amiantoLastProjectOPFSPath', opfsPath);
-      return opfsPath;
+      
+      // Debounce: se è passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
+      const now = Date.now();
+      const timeSinceLastSave = now - lastOpfsSaveTime;
+      
+      if (timeSinceLastSave < OPFS_SAVE_DEBOUNCE_MS) {
+        // Cancella timeout precedente se esiste
+        if (opfsSaveTimeout) {
+          clearTimeout(opfsSaveTimeout);
+        }
+        
+        // Ritarda il salvataggio
+        return new Promise((resolve) => {
+          opfsSaveTimeout = setTimeout(async () => {
+            lastOpfsSaveTime = Date.now();
+            try {
+              const result = await saveProjectJsonToOPFSInternal(jsonString, projectName);
+              resolve(result);
+            } catch (err) {
+              resolve(null); // Silently fail, OPFS is optional
+            }
+          }, OPFS_SAVE_DEBOUNCE_MS - timeSinceLastSave);
+        });
+      }
+      
+      lastOpfsSaveTime = now;
+      return await saveProjectJsonToOPFSInternal(jsonString, projectName);
     } catch (err) {
-      addDebugMessage('OPFS save failed: ' + (err && err.message ? err.message : err), 'warning');
+      // Non loggare errori OPFS come warning - è solo un fallback opzionale
+      // OPFS può fallire per vari motivi (permessi, sicurezza browser, ecc.)
       return null;
     }
+  }
+  
+  async function saveProjectJsonToOPFSInternal(jsonString, projectName) {
+    if (!navigator.storage || !navigator.storage.getDirectory) return null;
+    const root = await navigator.storage.getDirectory();
+    const projectDir = await root.getDirectoryHandle('amianto-projects', { create: true });
+    const safeName = (projectName && projectName.trim() !== '' ? projectName.trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
+    const fileName = `${safeName}.amianto.json`;
+    const fileHandle = await projectDir.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(jsonString);
+    await writable.close();
+    const opfsPath = `amianto-projects/${fileName}`;
+    localStorage.setItem('amiantoLastProjectOPFSPath', opfsPath);
+    return opfsPath;
   }
 
   async function saveProjectJsonToFile(jsonString, suggestedName) {
@@ -5729,6 +6313,72 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
           if (A.hotspotScripts && typeof A.hotspotScripts === 'object') Object.entries(A.hotspotScripts).forEach(([k,v]) => { if (k && v) hotspotScripts.set(String(k), String(v)); });
+        }
+      } catch(_) {}
+      
+      // Variables (Game State)
+      try {
+        if (projectObj.variables && typeof projectObj.variables === 'object') {
+          const vars = projectObj.variables;
+          // Carica definizioni variabili
+          if (Array.isArray(vars.definitions)) {
+            gameVariableDefinitions = vars.definitions.map(v => ({
+              name: String(v.name || ''),
+              type: String(v.type || 'string'),
+              initialValue: v.initialValue
+            }));
+          }
+          // Carica stato variabili
+          if (vars.state && typeof vars.state === 'object') {
+            Game.setState(vars.state);
+          }
+        }
+      } catch(_) {}
+      
+      // Event Conditions
+      try {
+        objectEventConditions.clear();
+        hotspotEventConditions.clear();
+        characterEventConditions.clear();
+        guiButtonEventConditions.clear();
+        inventoryEventConditions.clear();
+        if (projectObj.eventConditions && typeof projectObj.eventConditions === 'object') {
+          const ec = projectObj.eventConditions;
+          if (ec.objects && typeof ec.objects === 'object') {
+            Object.entries(ec.objects).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                objectEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.hotspots && typeof ec.hotspots === 'object') {
+            Object.entries(ec.hotspots).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                hotspotEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.characters && typeof ec.characters === 'object') {
+            Object.entries(ec.characters).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                characterEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.guiButtons && typeof ec.guiButtons === 'object') {
+            Object.entries(ec.guiButtons).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                guiButtonEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.inventory && typeof ec.inventory === 'object') {
+            Object.entries(ec.inventory).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                inventoryEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
         }
       } catch(_) {}
 

@@ -16,6 +16,29 @@ header {
   background-color: #2a2a2a;
 }
 
+/* Logo responsive */
+.logo-main,
+.logo-dashboard,
+.logo-auth {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Dimensioni di base del logo (desktop) */
+.logo-main {
+  max-height: 60px;
+}
+
+.logo-dashboard {
+  max-height: 40px;
+}
+
+.logo-auth {
+  max-height: 60px;
+  margin: 0 auto;
+}
+
 /* Header responsive */
 @media (max-width: 768px) {
   .header-container .container-fluid {
@@ -30,6 +53,13 @@ header {
   
   .header-container h1 {
     font-size: 2rem !important;
+  }
+
+  /* Riduci il logo su schermi piccoli per evitare che sia tagliato */
+  .logo-main,
+  .logo-dashboard,
+  .logo-auth {
+    max-height: 40px;
   }
 }
 
@@ -205,6 +235,12 @@ header {
   height: calc(100vh - 200px);
   min-height: 400px;
   overflow-y: auto;
+}
+
+/* Testi di help / hint nella sidebar (es. Game Variables) più leggibili */
+.sidebar .text-muted,
+#variables-list .text-muted {
+  color: #7dff7d !important; /* verde acido chiaro */
 }
 
 /* Sezioni - Animazioni smooth */

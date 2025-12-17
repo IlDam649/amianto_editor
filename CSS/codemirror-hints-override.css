@@ -1,0 +1,20 @@
+/* Override per gli hint di CodeMirror (autocomplete) in stile verde acido */
+
+.CodeMirror-hints {
+  background-color: #111 !important;
+  border: 1px solid #39ff14 !important;
+  color: #e0ffe0 !important;
+  font-size: 12px;
+}
+
+.CodeMirror-hint {
+  color: #b0ffb0 !important;
+}
+
+.CodeMirror-hint:hover,
+.CodeMirror-hint-active {
+  background-color: rgba(57, 255, 20, 0.2) !important;
+  color: #ffffff !important;
+}
+
+
