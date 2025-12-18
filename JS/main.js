@@ -3589,6 +3589,15 @@ window.selectRoom = function(roomId) {
   window.Game.getState = function() {
     return JSON.parse(JSON.stringify(_gameState));
   };
+
+  // API opzionale per mostrare testo nel gioco (usata da print(..., { showInGame: true }))
+  // L'implementazione concreta nel runtime può sovrascrivere questo metodo.
+  window.Game.showText = window.Game.showText || function(text) {
+    // Di default, in editor mostriamo una notifica non invasiva
+    try {
+      showNotification(String(text), 'info');
+    } catch (_) {}
+  };
   
   // Funzione per impostare tutto lo stato (per deserializzazione)
   window.Game.setState = function(state) {
@@ -3688,40 +3697,39 @@ window.selectRoom = function(roomId) {
   const sandboxApi = {
     // Funzione print() globale per gli script utente
     // Accetta qualsiasi numero di argomenti e li serializza correttamente
-    // Centralizza tutto l'output degli script nello Script Log
+    // Centralizza tutto l'output degli script nello Script LogService
     print: function() {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3692',message:'print() ENTRY',data:{argsCount:arguments.length,args:Array.from(arguments).slice(0,3)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       try {
         const args = Array.from(arguments);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3696',message:'print() args extracted',data:{argsLength:args.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         if (args.length === 0) {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3698',message:'print() empty args path',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-          addScriptLogMessage('', 'info');
+          ScriptLogService.print('', 'editor-sandbox');
           return;
         }
         
+        // Opzione speciale: ultimo argomento come { showInGame: true }
+        let showInGame = false;
+        const last = args[args.length - 1];
+        if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
+          if (last.showInGame === true) {
+            showInGame = true;
+          }
+          args.pop();
+        }
+
         // Serializza ogni argomento e uniscili con spazi
         const messages = args.map(arg => serializeValue(arg));
         const msg = messages.join(' ');
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3705',message:'print() BEFORE addScriptLogMessage',data:{serializedMsg:msg.substring(0,100)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         
-        // Log nello Script Log panel (non usa console.log come output principale)
-        addScriptLogMessage(msg, 'info');
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3708',message:'print() AFTER addScriptLogMessage',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
+        // Log nello Script LogService (non usa console.log come output principale)
+        ScriptLogService.print(msg, 'editor-sandbox');
+
+        // Integrazione opzionale con il gameplay tramite Game.showText()
+        if (showInGame && window.Game && typeof window.Game.showText === 'function') {
+          try {
+            window.Game.showText(msg);
+          } catch (_) {}
+        }
       } catch (e) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:3710',message:'print() EXCEPTION',data:{error:e.message||String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
         // Fallback in caso di errore nella serializzazione
         addScriptLogMessage(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
       }
@@ -4097,7 +4105,6 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') return;
     const callArgs = Array.isArray(argsArray) ? argsArray : [];
     
     // Wrapper che esegue lo script solo quando application.remote è disponibile
@@ -4111,34 +4118,30 @@ window.selectRoom = function(roomId) {
         }
         
         // Definisci tutte le API
-        // #region agent log
-        var remoteExists = typeof application !== 'undefined' && application.remote;
-        var printExists = remoteExists && typeof application.remote.print === 'function';
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:4096',message:'Wrapper: application.remote check',data:{remoteExists,printExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
+        // API di gioco esposte con prefisso per NON ombreggiare gli handler utente
         var print = application.remote.print;
         var error = application.remote.error;
         var show_message = application.remote.show_message;
         var move_object = application.remote.move_object;
-        var on_game_start = application.remote.on_game_start;
-        var on_room_change = application.remote.on_room_change;
-        var on_object_click = application.remote.on_object_click;
-        var on_character_click = application.remote.on_character_click;
-        var on_hotspot_click = application.remote.on_hotspot_click;
-        var add_to_inventory = application.remote.add_to_inventory;
-        var remove_from_inventory = application.remote.remove_from_inventory;
-        var has_item = application.remote.has_item;
-        var get_item_count = application.remote.get_item_count;
-        var clear_inventory = application.remote.clear_inventory;
-        var load_room = application.remote.load_room;
-        var get_current_room = application.remote.get_current_room;
-        var get_room_objects = application.remote.get_room_objects;
-        var set_room_background = application.remote.set_room_background;
-        var spawn_object = application.remote.spawn_object;
-        var despawn_object = application.remote.despawn_object;
-        var rotate_object = application.remote.rotate_object;
-        var scale_object = application.remote.scale_object;
-        var set_object_visible = application.remote.set_object_visible;
+        var api_on_game_start = application.remote.on_game_start;
+        var api_on_room_change = application.remote.on_room_change;
+        var api_on_object_click = application.remote.on_object_click;
+        var api_on_character_click = application.remote.on_character_click;
+        var api_on_hotspot_click = application.remote.on_hotspot_click;
+        var api_add_to_inventory = application.remote.add_to_inventory;
+        var api_remove_from_inventory = application.remote.remove_from_inventory;
+        var api_has_item = application.remote.has_item;
+        var api_get_item_count = application.remote.get_item_count;
+        var api_clear_inventory = application.remote.clear_inventory;
+        var api_load_room = application.remote.load_room;
+        var api_get_current_room = application.remote.get_current_room;
+        var api_get_room_objects = application.remote.get_room_objects;
+        var api_set_room_background = application.remote.set_room_background;
+        var api_spawn_object = application.remote.spawn_object;
+        var api_despawn_object = application.remote.despawn_object;
+        var api_rotate_object = application.remote.rotate_object;
+        var api_scale_object = application.remote.scale_object;
+        var api_set_object_visible = application.remote.set_object_visible;
         var Game = {
           getVar: application.remote.get_var,
           setVar: application.remote.set_var,
@@ -4187,15 +4190,19 @@ window.selectRoom = function(roomId) {
       
       // Non disconnettere immediatamente - aspetta che lo script finisca
       // e che tutti i messaggi vengano processati
-      plugin.whenConnected(function(){
-        // Aspetta più tempo per permettere ai messaggi di essere processati
-        // Gli script potrebbero chiamare print() in modo asincrono o dopo l'esecuzione
-        setTimeout(function(){
-          try {
-            plugin.disconnect();
-          } catch(_) {}
-        }, 2000); // Aumentato a 2 secondi per dare più tempo ai messaggi asincroni
-      });
+      // Alcune versioni di "jailed" espongono metodi diversi:
+      // proteggiamo le chiamate per evitare errori di runtime.
+      if (typeof plugin.whenConnected === 'function') {
+        plugin.whenConnected(function(){
+          // Aspetta più tempo per permettere ai messaggi di essere processati
+          // Gli script potrebbero chiamare print() in modo asincrono o dopo l'esecuzione
+          setTimeout(function(){
+            try {
+              plugin.disconnect();
+            } catch(_) {}
+          }, 2000); // Aumentato a 2 secondi per dare più tempo ai messaggi asincroni
+        });
+      }
     } catch(e) {
       addDebugMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
       addScriptLogMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
@@ -4257,40 +4264,32 @@ window.selectRoom = function(roomId) {
       try { activePlugin.disconnect(); } catch(_) {}
       activePlugin = null;
     }
-    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') {
-      showNotification('Jailed not loaded. Check the include.', 'danger');
-      return;
-    }
     // Wrappa il codice utente per esporre funzioni previste
 const wrapped = `
-      // #region agent log
-      var remoteExists = typeof application !== 'undefined' && application.remote;
-      var printExists = remoteExists && typeof application.remote.print === 'function';
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runScript wrapper',message:'runScript: application.remote check',data:{remoteExists,printExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
+      // API di gioco esposte con prefisso per NON ombreggiare gli handler utente
       var print = application.remote.print;
       var error = application.remote.error;
       var show_message = application.remote.show_message;
       var move_object = application.remote.move_object;
-      var on_game_start = application.remote.on_game_start;
-      var on_room_change = application.remote.on_room_change;
-      var on_object_click = application.remote.on_object_click;
-      var on_character_click = application.remote.on_character_click;
-      var on_hotspot_click = application.remote.on_hotspot_click;
-      var add_to_inventory = application.remote.add_to_inventory;
-      var remove_from_inventory = application.remote.remove_from_inventory;
-      var has_item = application.remote.has_item;
-      var get_item_count = application.remote.get_item_count;
-      var clear_inventory = application.remote.clear_inventory;
-      var load_room = application.remote.load_room;
-      var get_current_room = application.remote.get_current_room;
-      var get_room_objects = application.remote.get_room_objects;
-      var set_room_background = application.remote.set_room_background;
-      var spawn_object = application.remote.spawn_object;
-      var despawn_object = application.remote.despawn_object;
-      var rotate_object = application.remote.rotate_object;
-      var scale_object = application.remote.scale_object;
-      var set_object_visible = application.remote.set_object_visible;
+      var api_on_game_start = application.remote.on_game_start;
+      var api_on_room_change = application.remote.on_room_change;
+      var api_on_object_click = application.remote.on_object_click;
+      var api_on_character_click = application.remote.on_character_click;
+      var api_on_hotspot_click = application.remote.on_hotspot_click;
+      var api_add_to_inventory = application.remote.add_to_inventory;
+      var api_remove_from_inventory = application.remote.remove_from_inventory;
+      var api_has_item = application.remote.has_item;
+      var api_get_item_count = application.remote.get_item_count;
+      var api_clear_inventory = application.remote.clear_inventory;
+      var api_load_room = application.remote.load_room;
+      var api_get_current_room = application.remote.get_current_room;
+      var api_get_room_objects = application.remote.get_room_objects;
+      var api_set_room_background = application.remote.set_room_background;
+      var api_spawn_object = application.remote.spawn_object;
+      var api_despawn_object = application.remote.despawn_object;
+      var api_rotate_object = application.remote.rotate_object;
+      var api_scale_object = application.remote.scale_object;
+      var api_set_object_visible = application.remote.set_object_visible;
       var Game = {
         getVar: application.remote.get_var,
         setVar: application.remote.set_var,
@@ -4821,6 +4820,617 @@ const wrapped = `
     requestAnimationFrame(() => redraw());
   });
 
+  // ============================================
+  // RUNTIME INCORPORATO NELL'EDITOR
+  // ============================================
+  let embeddedRuntime = {
+    canvas: null,
+    ctx: null,
+    gameData: null,
+    currentRoomIndex: 0,
+    loadedImagesCache: new Map(),
+    scriptPlugins: new Map(),
+    gameState: {
+      currentRoomId: null,
+      variables: new Map()
+    },
+    isInitialized: false
+  };
+
+  // Funzione helper per serializzare valori
+  function serializeRuntimeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
+  }
+
+  // Funzione per inviare log al ScriptLogService (sostituisce postMessage)
+  function sendRuntimeLogToEditor(message, level = 'info') {
+    if (window.ScriptLogService) {
+      let mappedType = 'print';
+      if (level === 'error') mappedType = 'error';
+      else if (level === 'warning') mappedType = 'warning';
+      ScriptLogService.log({ type: mappedType, message, source: 'runtime' });
+    }
+    // Anche nel debug console
+    addDebugMessage(`[Runtime] ${message}`, level);
+  }
+
+  // API esposte agli script nel runtime incorporato
+  const embeddedRuntimeSandboxApi = {
+    print: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendRuntimeLogToEditor('', 'info');
+        return;
+      }
+      let showInGame = false;
+      const last = args[args.length - 1];
+      if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
+        if (last.showInGame === true) {
+          showInGame = true;
+        }
+        args.pop();
+      }
+      const messages = args.map(arg => serializeRuntimeValue(arg));
+      const msg = messages.join(' ');
+      sendRuntimeLogToEditor(msg, 'info');
+    },
+    
+    error: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendRuntimeLogToEditor('', 'error');
+        return;
+      }
+      const messages = args.map(arg => serializeRuntimeValue(arg));
+      const msg = messages.join(' ');
+      sendRuntimeLogToEditor(msg, 'error');
+    },
+    
+    show_message: function(text) {
+      sendRuntimeLogToEditor(`[Message] ${text}`, 'info');
+    },
+    
+    get_var: function(key) {
+      return embeddedRuntime.gameState.variables.get(key) || null;
+    },
+    
+    set_var: function(key, value) {
+      embeddedRuntime.gameState.variables.set(key, value);
+    },
+    
+    has_var: function(key) {
+      return embeddedRuntime.gameState.variables.has(key);
+    },
+    
+    toggle_var: function(key) {
+      const current = embeddedRuntime.gameState.variables.get(key);
+      const newValue = !current;
+      embeddedRuntime.gameState.variables.set(key, newValue);
+      return newValue;
+    },
+    
+    get_current_room: function() {
+      return embeddedRuntime.gameState.currentRoomId;
+    },
+    
+    load_room: function(roomIdOrName) {
+      sendRuntimeLogToEditor(`[Script] load_room(${roomIdOrName}) called`, 'info');
+      // TODO: implementare cambio stanza
+    },
+    
+    add_to_inventory: function(itemId, quantity) {
+      sendRuntimeLogToEditor(`[Script] add_to_inventory(${itemId}, ${quantity}) called`, 'info');
+    },
+    
+    remove_from_inventory: function(itemId, quantity) {
+      sendRuntimeLogToEditor(`[Script] remove_from_inventory(${itemId}, ${quantity}) called`, 'info');
+    },
+    
+    has_item: function(itemId) {
+      return false;
+    },
+    
+    get_item_count: function(itemId) {
+      return 0;
+    },
+    
+    clear_inventory: function() {
+      sendRuntimeLogToEditor(`[Script] clear_inventory() called`, 'info');
+    }
+  };
+
+  // Sandbox alternativo quando Jailed fallisce (per problemi di sicurezza con file://)
+  function executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray) {
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+    
+    // Crea un contesto isolato con solo le API necessarie
+    const sandboxContext = {
+      print: embeddedRuntimeSandboxApi.print,
+      error: embeddedRuntimeSandboxApi.error,
+      show_message: embeddedRuntimeSandboxApi.show_message,
+      get_var: embeddedRuntimeSandboxApi.get_var,
+      set_var: embeddedRuntimeSandboxApi.set_var,
+      has_var: embeddedRuntimeSandboxApi.has_var,
+      toggle_var: embeddedRuntimeSandboxApi.toggle_var,
+      get_current_room: embeddedRuntimeSandboxApi.get_current_room,
+      load_room: embeddedRuntimeSandboxApi.load_room,
+      add_to_inventory: embeddedRuntimeSandboxApi.add_to_inventory,
+      remove_from_inventory: embeddedRuntimeSandboxApi.remove_from_inventory,
+      has_item: embeddedRuntimeSandboxApi.has_item,
+      get_item_count: embeddedRuntimeSandboxApi.get_item_count,
+      clear_inventory: embeddedRuntimeSandboxApi.clear_inventory
+    };
+    
+    // Crea una funzione isolata che ha accesso solo alle API del sandbox
+    try {
+      const func = new Function(
+        ...Object.keys(sandboxContext),
+        `
+        ${scriptContent}
+        
+        // Invoca l'handler se definito
+        if (typeof ${handlerName} === 'function') {
+          ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
+        }
+        `
+      );
+      
+      // Esegui la funzione con le API del sandbox come parametri
+      func(...Object.values(sandboxContext));
+      
+      sendRuntimeLogToEditor(`[Script] ${scriptName} executed successfully (fallback mode)`, 'info');
+      
+      // Ritorna un oggetto fittizio che simula il plugin per compatibilità
+      return {
+        disconnect: function() {},
+        whenReady: function(callback) {
+          setTimeout(callback, 0);
+        }
+      };
+      
+    } catch (e) {
+      const errorMsg = `[Script] Failed to execute ${scriptName} (fallback): ${e && e.message ? e.message : e}`;
+      sendRuntimeLogToEditor(errorMsg, 'error');
+      embeddedRuntimeSandboxApi.error(errorMsg);
+      return null;
+    }
+  }
+
+  // Esegue uno script nel runtime incorporato
+  function executeEmbeddedRuntimeScript(scriptName, scriptContent, handlerName, argsArray) {
+    if (!scriptContent || !scriptContent.trim()) return;
+    
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+    
+    const wrapped = `
+      // Script: ${scriptName}
+      // Funzione helper per eseguire lo script quando il plugin è pronto
+      function executeWhenReady() {
+        // Verifica che application.remote sia disponibile
+        if (typeof application === 'undefined' || !application.remote) {
+          setTimeout(executeWhenReady, 10);
+          return;
+        }
+        
+        // Esponi tutte le API come variabili globali
+        var print = application.remote.print;
+        var error = application.remote.error;
+        var show_message = application.remote.show_message;
+        var get_var = application.remote.get_var;
+        var set_var = application.remote.set_var;
+        var has_var = application.remote.has_var;
+        var toggle_var = application.remote.toggle_var;
+        var get_current_room = application.remote.get_current_room;
+        var load_room = application.remote.load_room;
+        var add_to_inventory = application.remote.add_to_inventory;
+        var remove_from_inventory = application.remote.remove_from_inventory;
+        var has_item = application.remote.has_item;
+        var get_item_count = application.remote.get_item_count;
+        var clear_inventory = application.remote.clear_inventory;
+        
+        // Esegui il contenuto dello script
+        try {
+          ${scriptContent}
+          
+          // Invoca l'handler se definito
+          if (typeof ${handlerName} === 'function') {
+            ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
+          }
+        } catch(e) {
+          console.error('Script execution error:', e);
+          // L'errore viene gestito tramite l'API sandbox error()
+          if (typeof error === 'function') {
+            error('Script execution error: ' + (e && e.message ? e.message : e));
+          }
+        }
+        
+        application.setInterface({});
+      }
+      
+      // Avvia l'esecuzione
+      executeWhenReady();
+    `;
+    
+    let plugin = null;
+    let fallbackUsed = false;
+    let readyCalled = false;
+    
+    try {
+      // Prova a usare Jailed normalmente
+      plugin = new jailed.DynamicPlugin(wrapped, embeddedRuntimeSandboxApi);
+      embeddedRuntime.scriptPlugins.set(scriptName, plugin);
+      
+      // Timeout per rilevare se Jailed non si inizializza (probabile SecurityError)
+      const initTimeout = setTimeout(function() {
+        if (!readyCalled && !fallbackUsed) {
+          // Jailed non si è inizializzato, usa il fallback
+          fallbackUsed = true;
+          sendRuntimeLogToEditor(`[Script] Jailed initialization timeout, using fallback for ${scriptName}`, 'warning');
+          
+          // Rimuovi il plugin fallito
+          try {
+            if (plugin && typeof plugin.disconnect === 'function') {
+              plugin.disconnect();
+            }
+          } catch (_) {}
+          embeddedRuntime.scriptPlugins.delete(scriptName);
+          
+          // Usa il fallback
+          const fallbackPlugin = executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray);
+          if (fallbackPlugin) {
+            embeddedRuntime.scriptPlugins.set(scriptName, fallbackPlugin);
+          }
+        }
+      }, 500); // Timeout di 500ms per l'inizializzazione
+      
+      plugin.whenReady(function() {
+        if (!fallbackUsed) {
+          readyCalled = true;
+          clearTimeout(initTimeout);
+          sendRuntimeLogToEditor(`[Script] ${scriptName} executed successfully`, 'info');
+        }
+      });
+      
+    } catch (e) {
+      // Se è un SecurityError o altro errore di inizializzazione, usa il fallback
+      const isSecurityError = e && (e.name === 'SecurityError' || 
+                                    e.message && e.message.includes('SecurityError') ||
+                                    e.message && e.message.includes('JailedSite') ||
+                                    e.message && e.message.includes('Blocked a frame'));
+      
+      if (isSecurityError) {
+        fallbackUsed = true;
+        sendRuntimeLogToEditor(`[Script] Jailed failed (security), using fallback for ${scriptName}`, 'warning');
+        plugin = executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray);
+        if (plugin) {
+          embeddedRuntime.scriptPlugins.set(scriptName, plugin);
+        }
+      } else {
+        const errorMsg = `[Script] Failed to execute ${scriptName}: ${e && e.message ? e.message : e}`;
+        sendRuntimeLogToEditor(errorMsg, 'error');
+      }
+    }
+  }
+
+  // Listener globale per catturare SecurityError di Jailed
+  let jailedSecurityErrorHandler = null;
+  
+  function setupJailedErrorHandler() {
+    if (jailedSecurityErrorHandler) return; // Già configurato
+    
+    jailedSecurityErrorHandler = function(event) {
+      // Cattura solo SecurityError relativi a Jailed
+      if (event.error && (
+          event.error.message && event.error.message.includes('JailedSite') ||
+          event.error.message && event.error.message.includes('Blocked a frame') ||
+          event.error.name === 'SecurityError'
+        )) {
+        event.preventDefault(); // Previeni che l'errore venga loggato nella console
+        sendRuntimeLogToEditor('[Runtime] Jailed SecurityError detected, scripts will use fallback mode', 'warning');
+      }
+    };
+    
+    window.addEventListener('error', jailedSecurityErrorHandler);
+  }
+  
+  function removeJailedErrorHandler() {
+    if (jailedSecurityErrorHandler) {
+      window.removeEventListener('error', jailedSecurityErrorHandler);
+      jailedSecurityErrorHandler = null;
+    }
+  }
+
+  // Inizializza gli script del runtime
+  function initializeEmbeddedRuntimeScripts() {
+    // Configura il listener per errori di sicurezza
+    setupJailedErrorHandler();
+    
+    // Pulisci plugin esistenti
+    embeddedRuntime.scriptPlugins.forEach((plugin, name) => {
+      try {
+        if (plugin && typeof plugin.disconnect === 'function') {
+          plugin.disconnect();
+        }
+      } catch (_) {}
+    });
+    embeddedRuntime.scriptPlugins.clear();
+    
+    if (!embeddedRuntime.gameData || !embeddedRuntime.gameData.scripts) {
+      sendRuntimeLogToEditor('[Script] No scripts found in gameData', 'info');
+      return;
+    }
+    
+    const scripts = embeddedRuntime.gameData.scripts;
+    sendRuntimeLogToEditor(`[Script] Loading ${Object.keys(scripts).length} script(s)`, 'info');
+    
+    // Reset e carica variabili iniziali
+    embeddedRuntime.gameState.variables.clear();
+    if (embeddedRuntime.gameData.variables && Array.isArray(embeddedRuntime.gameData.variables)) {
+      embeddedRuntime.gameData.variables.forEach(v => {
+        if (v && v.name) {
+          embeddedRuntime.gameState.variables.set(v.name, v.initialValue || null);
+        }
+      });
+      sendRuntimeLogToEditor(`[Script] Loaded ${embeddedRuntime.gameState.variables.size} variable(s)`, 'info');
+    }
+    
+    // Esegui script globali
+    Object.keys(scripts).forEach(scriptName => {
+      if (scriptName.startsWith('Global:') || scriptName === 'startup') {
+        const content = scripts[scriptName];
+        if (content && content.trim()) {
+          sendRuntimeLogToEditor(`[Script] Executing global script: ${scriptName}`, 'info');
+          executeEmbeddedRuntimeScript(scriptName, content, 'on_game_start', []);
+        }
+      }
+    });
+    
+    // Esegui script di room
+    if (embeddedRuntime.gameState.currentRoomId) {
+      const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
+      if (scripts[roomScriptName]) {
+        sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
+        executeEmbeddedRuntimeScript(roomScriptName, scripts[roomScriptName], 'on_room_enter', []);
+      }
+    }
+  }
+
+  // Carica un'immagine nel runtime
+  function loadRuntimeImage(src) {
+    return new Promise((resolve) => {
+      if (!src) return resolve(null);
+      if (embeddedRuntime.loadedImagesCache.has(src)) return resolve(embeddedRuntime.loadedImagesCache.get(src));
+      const img = new Image();
+      img.onload = () => { 
+        embeddedRuntime.loadedImagesCache.set(src, img); 
+        resolve(img); 
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  // Carica asset di una stanza
+  async function loadRuntimeRoomAssets(room) {
+    const out = { background: null, foregrounds: [], objects: [] };
+    out.background = await loadRuntimeImage(room.background);
+    if (Array.isArray(room.foregrounds)) {
+      for (const f of room.foregrounds) {
+        const img = await loadRuntimeImage(f.image);
+        out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
+      }
+    }
+    if (Array.isArray(room.sceneObjects)) {
+      for (const o of room.sceneObjects) {
+        const img = await loadRuntimeImage(o.image);
+        out.objects.push({ 
+          id: o.id, 
+          name: o.name, 
+          type: o.type||'Interactive', 
+          x: Number(o.x)||0, 
+          y: Number(o.y)||0, 
+          img 
+        });
+      }
+    }
+    return out;
+  }
+
+  // Renderizza una stanza nel canvas del runtime
+  async function renderRuntimeRoom(index) {
+    if (!embeddedRuntime.gameData || !Array.isArray(embeddedRuntime.gameData.rooms) || 
+        index < 0 || index >= embeddedRuntime.gameData.rooms.length) return;
+    
+    const room = embeddedRuntime.gameData.rooms[index];
+    const assets = await loadRuntimeRoomAssets(room);
+
+    if (!embeddedRuntime.ctx) return;
+    
+    embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+    if (assets.background) embeddedRuntime.ctx.drawImage(assets.background, 0, 0);
+    for (const o of assets.objects) {
+      if (o.img) embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+    }
+    for (const f of assets.foregrounds) {
+      if (f.img) embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+    }
+
+    // Disegna marker posizione iniziale se questa è la stanza di start
+    try {
+      const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
+      if (s && s.startRoomId) {
+        const targetRoomIndex = (embeddedRuntime.gameData.rooms || []).findIndex(r => 
+          r && (r.id === s.startRoomId || r.name === s.startRoomId));
+        if (targetRoomIndex === index) {
+          const px = Number(s.startX) || 0;
+          const py = Number(s.startY) || 0;
+          embeddedRuntime.ctx.save();
+          embeddedRuntime.ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
+          embeddedRuntime.ctx.beginPath();
+          embeddedRuntime.ctx.arc(px, py, 6, 0, Math.PI * 2);
+          embeddedRuntime.ctx.fill();
+          embeddedRuntime.ctx.strokeStyle = 'white';
+          embeddedRuntime.ctx.lineWidth = 2;
+          embeddedRuntime.ctx.stroke();
+          embeddedRuntime.ctx.restore();
+        }
+      }
+    } catch(_) {}
+  }
+
+  // Inizializza il runtime incorporato con i dati del progetto
+  async function initializeEmbeddedRuntime(jsonData) {
+    try {
+      embeddedRuntime.gameData = (typeof jsonData === 'string') ? JSON.parse(jsonData) : jsonData;
+    } catch (e) {
+      sendRuntimeLogToEditor('Invalid JSON: ' + e, 'error');
+      return;
+    }
+
+    // Ottieni container e canvas (ora sono già presenti nell'HTML)
+    const container = document.getElementById('runtime-container');
+    if (!container) {
+      sendRuntimeLogToEditor('Runtime container not found', 'error');
+      return;
+    }
+
+    const canvas = document.getElementById('embedded-gameCanvas');
+    if (!canvas) {
+      sendRuntimeLogToEditor('Runtime canvas not found', 'error');
+      return;
+    }
+
+    embeddedRuntime.canvas = canvas;
+    embeddedRuntime.ctx = canvas.getContext('2d');
+
+    const w = (embeddedRuntime.gameData && embeddedRuntime.gameData.settings && embeddedRuntime.gameData.settings.canvasWidth) || 800;
+    const h = (embeddedRuntime.gameData && embeddedRuntime.gameData.settings && embeddedRuntime.gameData.settings.canvasHeight) || 600;
+    canvas.width = w;
+    canvas.height = h;
+
+    // Mostra il container runtime e nascondi il canvas editor
+    container.style.display = 'block';
+    const editorCanvas = document.getElementById('editorCanvas');
+    if (editorCanvas) {
+      editorCanvas.style.display = 'none';
+    }
+
+    sendRuntimeLogToEditor('Runtime initialized', 'info');
+
+    // Seleziona stanza iniziale
+    try {
+      const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
+      if (s && s.startRoomId && Array.isArray(embeddedRuntime.gameData.rooms)) {
+        const idx = embeddedRuntime.gameData.rooms.findIndex(r => 
+          r && (r.id === s.startRoomId || r.name === s.startRoomId));
+        if (idx >= 0) {
+          embeddedRuntime.currentRoomIndex = idx;
+          embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[idx].id;
+        } else {
+          embeddedRuntime.currentRoomIndex = 0;
+          embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+        }
+      } else {
+        embeddedRuntime.currentRoomIndex = 0;
+        embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+      }
+    } catch(_) {
+      embeddedRuntime.currentRoomIndex = 0;
+      embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+    }
+    
+    await renderRuntimeRoom(embeddedRuntime.currentRoomIndex);
+    sendRuntimeLogToEditor('First room rendered', 'info');
+    
+    // Esponi print() e error() globali per compatibilità con script runtime
+    // (gli script nel sandbox usano l'API, ma alcuni potrebbero chiamare direttamente print/error)
+    window._originalPrint = window.print;
+    window._originalError = window.error;
+    window.print = function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        embeddedRuntimeSandboxApi.print();
+        return;
+      }
+      embeddedRuntimeSandboxApi.print(...args);
+    };
+    window.error = function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        embeddedRuntimeSandboxApi.error();
+        return;
+      }
+      embeddedRuntimeSandboxApi.error(...args);
+    };
+    
+    // Inizializza ed esegui gli script
+    initializeEmbeddedRuntimeScripts();
+    
+    embeddedRuntime.isInitialized = true;
+    sendRuntimeLogToEditor('Runtime ready', 'info');
+  }
+
+  // Ferma e pulisce il runtime incorporato
+  function stopEmbeddedRuntime() {
+    // Rimuovi il listener di errori
+    removeJailedErrorHandler();
+    
+    // Disconnetti tutti i plugin
+    embeddedRuntime.scriptPlugins.forEach((plugin, name) => {
+      try {
+        if (plugin && typeof plugin.disconnect === 'function') {
+          plugin.disconnect();
+        }
+      } catch (_) {}
+    });
+    embeddedRuntime.scriptPlugins.clear();
+    
+    // Ripristina funzioni globali originali
+    if (window._originalPrint) {
+      window.print = window._originalPrint;
+      delete window._originalPrint;
+    }
+    if (window._originalError) {
+      window.error = window._originalError;
+      delete window._originalError;
+    }
+    
+    // Pulisci cache immagini
+    embeddedRuntime.loadedImagesCache.clear();
+    
+    // Nascondi container runtime e mostra di nuovo il canvas editor
+    const container = document.getElementById('runtime-container');
+    if (container) {
+      container.style.display = 'none';
+    }
+    const editorCanvas = document.getElementById('editorCanvas');
+    if (editorCanvas) {
+      editorCanvas.style.display = 'block';
+    }
+    
+    // Reset stato
+    embeddedRuntime.gameData = null;
+    embeddedRuntime.currentRoomIndex = 0;
+    embeddedRuntime.gameState.currentRoomId = null;
+    embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.isInitialized = false;
+    
+    if (embeddedRuntime.ctx) {
+      embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+    }
+  }
+
   // Functions for Play Test tab
   let playTestState = {
     isRunning: false,
@@ -4828,7 +5438,7 @@ const wrapped = `
     startTime: null
   };
 
-  window.startPlayTest = function() {
+  window.startPlayTest = async function() {
     if (playTestState.isRunning) return;
 
     // Ensure latest project is serialized and saved for runtime
@@ -4850,15 +5460,14 @@ const wrapped = `
       saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
     }, 100);
 
-    // Open runtime in a new tab that will auto-load game.json
-    const runtimeUrl = 'runtime.html';
-    window.open(runtimeUrl, '_blank');
+    // Inizializza il runtime incorporato invece di aprire una nuova tab
+    await initializeEmbeddedRuntime(jsonString);
 
     playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
-    addDebugMessage('Runtime opened in new tab', 'success');
+    addDebugMessage('Runtime initialized in editor', 'success');
     
     // Esegui script globali on_game_start se esistono
     // Cerca script globali che hanno on_game_start
@@ -4913,6 +5522,9 @@ const wrapped = `
     
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
     const durationSeconds = Math.round(duration / 1000);
+    
+    // Ferma il runtime incorporato
+    stopEmbeddedRuntime();
     
     playTestState.isRunning = false;
     playTestState.isPaused = false;
@@ -5112,10 +5724,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Funzione per pulire solo lo Script Log
   window.clearScriptConsole = function() {
-    const scriptConsole = document.getElementById('script-console');
-    if (scriptConsole) {
-      scriptConsole.textContent = '[INFO] Script console cleared\n';
-      scriptConsole.scrollTop = 0;
+    if (window.ScriptLogService && typeof window.ScriptLogService.clear === 'function') {
+      window.ScriptLogService.clear();
+    } else {
+      const scriptConsole = document.getElementById('script-console');
+      if (scriptConsole) {
+        scriptConsole.textContent = '[INFO] Script log cleared\n';
+        scriptConsole.scrollTop = 0;
+      }
     }
     showNotification('Script Log cleared', 'info');
   };
@@ -5145,100 +5761,170 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // ============================================
+  // ScriptLogService - servizio centrale di log script
+  // ============================================
+  const ScriptLogService = (function() {
+    const _logs = [];
+    const MAX_LOGS = 1000;
+    const PANEL_ID = 'script-console';
+
+    function mapType(rawType) {
+      if (!rawType) return 'print';
+      const t = String(rawType).toLowerCase();
+      if (t === 'error') return 'error';
+      if (t === 'warning' || t === 'warn') return 'warning';
+      if (t === 'print') return 'print';
+      // Mappa i vecchi livelli "info/success" su print
+      return 'print';
+    }
+
+    function normalizeEntry(entry) {
+      const now = Date.now();
+      const normalizedType = mapType(entry.type);
+      const msg = (typeof entry.message === 'string')
+        ? entry.message
+        : serializeValue(entry.message);
+
+      return {
+        type: normalizedType,                  // print | error | warning
+        message: msg || '',
+        timestamp: entry.timestamp || now,    // epoch ms
+        source: entry.source || 'editor'      // editor | runtime | altro
+      };
+    }
+
+    function getPanel() {
+      return document.getElementById(PANEL_ID);
+    }
+
+    function renderEntry(entry) {
+      const panel = getPanel();
+      if (!panel) return;
+
+      const ts = new Date(entry.timestamp).toLocaleTimeString();
+      const typeIcon = entry.type === 'error'
+        ? '[ERR]'
+        : (entry.type === 'warning' ? '[WARN]' : '[PRINT]');
+      const sourceTag = entry.source ? `[${entry.source}]` : '';
+      const line = `${ts} ${typeIcon} ${sourceTag} ${entry.message}\n`;
+
+      panel.textContent += line;
+      panel.scrollTop = panel.scrollHeight;
+
+      // Evidenziazione globale del pannello per errori/warning recenti
+      panel.classList.remove('script-log-error', 'script-log-warning');
+      if (entry.type === 'error') {
+        panel.classList.add('script-log-error');
+      } else if (entry.type === 'warning') {
+        panel.classList.add('script-log-warning');
+      }
+    }
+
+    return {
+      /**
+       * Registra un messaggio normalizzato.
+       * entry: { type, message, timestamp?, source? }
+       */
+      log(entry) {
+        const normalized = normalizeEntry(entry || {});
+        _logs.push(normalized);
+        if (_logs.length > MAX_LOGS) {
+          _logs.shift();
+        }
+        renderEntry(normalized);
+      },
+
+      /**
+       * API di comodo per print/error/warning da editor.
+       */
+      print(message, source = 'editor') {
+        this.log({ type: 'print', message, source });
+      },
+
+      error(message, source = 'editor') {
+        this.log({ type: 'error', message, source });
+      },
+
+      warning(message, source = 'editor') {
+        this.log({ type: 'warning', message, source });
+      },
+
+      /**
+       * Ingest da runtime tramite postMessage.
+       * payload: { type, message, timestamp?, source? }
+       */
+      ingestFromRuntime(payload) {
+        const src = payload && payload.source ? payload.source : 'runtime';
+        this.log({
+          type: payload && payload.type,
+          message: payload && payload.message,
+          timestamp: payload && payload.timestamp,
+          source: src
+        });
+      },
+
+      clear() {
+        _logs.length = 0;
+        const panel = getPanel();
+        if (panel) {
+          panel.textContent = '[INFO] Script log cleared\n';
+          panel.scrollTop = 0;
+          panel.classList.remove('script-log-error', 'script-log-warning');
+        }
+      },
+
+      getAll() {
+        return _logs.slice();
+      }
+    };
+  })();
+
+  // Esponi come singleton globale
+  window.ScriptLogService = ScriptLogService;
+  
+  // Espone print() globalmente per test/debug nell'editor
+  window.print = function() {
+    ScriptLogService.print(Array.from(arguments).join(' '), 'editor');
+  };
+
+  // ============================================
   // SISTEMA DI COMUNICAZIONE EDITOR ↔ RUNTIME
   // ============================================
-  // Listener per messaggi dal runtime (postMessage)
-  // Gestisce solo messaggi con type === "script-log"
+  // NOTA: Il runtime è ora incorporato nell'editor, quindi non serve più postMessage
+  // Mantenuto per compatibilità futura se necessario
+  /*
+  // Listener per messaggi dal runtime (postMessage) - DISABILITATO: runtime incorporato
+  // Gestisce solo messaggi con type === "SCRIPT_LOG"
   window.addEventListener('message', function(event) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5152',message:'message event RECEIVED',data:{hasData:!!event.data,dataType:event.data?.type,origin:event.origin},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     // TODO: Per sicurezza, verificare event.origin === location.origin
-    // Attualmente accettiamo tutti gli origin per sviluppo
     // In produzione: if (event.origin !== location.origin) return;
-    
-    if (!event.data || event.data.type !== 'script-log') {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5158',message:'message event IGNORED',data:{dataType:event.data?.type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
-      return; // Ignora messaggi non relativi allo script log
-    }
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5162',message:'message event PROCESSING script-log',data:{message:event.data.message?.substring(0,50),level:event.data.level},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-    
-    // Estrai dati dal messaggio
-    const message = event.data.message || '';
-    const level = event.data.level || 'info';
-    
-    // Mostra il messaggio nel pannello Script Log
-    appendToScriptLog(message, level);
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5170',message:'message event AFTER appendToScriptLog',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-  });
 
-  // Funzione appendToScriptLog: aggiunge messaggi al pannello Script Log
+    if (!event.data || event.data.type !== 'SCRIPT_LOG') {
+      return; // Ignora messaggi non relativi allo Script Log
+    }
+
+    const payload = event.data.payload || {};
+
+    if (window.ScriptLogService && typeof window.ScriptLogService.ingestFromRuntime === 'function') {
+      window.ScriptLogService.ingestFromRuntime(payload);
+    }
+  });
+  */
+
+  // Funzione di compatibilità: aggiunge messaggi al pannello Script Log
   // Supporta livelli: info, warning, error
-  // NON usa console.log come output finale
+  // NON usa console.log come output principale
   function appendToScriptLog(message, level = 'info') {
-    addScriptLogMessage(message, level);
+    let mappedType = 'print';
+    if (level === 'error') mappedType = 'error';
+    else if (level === 'warning') mappedType = 'warning';
+    ScriptLogService.log({ type: mappedType, message, source: 'runtime' });
   }
 
   // Script console: mostra solo output degli script (print, errori handler, ecc.)
-  // Centralizza tutto l'output degli script in un'unica funzione
-  function addScriptLogMessage(message, type = 'info') {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5121',message:'addScriptLogMessage() ENTRY',data:{message:message.substring(0,50),type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
-    const console = document.getElementById('script-console');
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5124',message:'addScriptLogMessage() element check',data:{elementExists:!!console,elementId:console?console.id:'null'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
-    if (!console) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5126',message:'addScriptLogMessage() ELEMENT NOT FOUND',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      // Fallback: se il pannello non esiste, usa console.log
-      console.warn('[Script Log] Panel not found, using console.log');
-      console.log(`[${type.toUpperCase()}] ${message}`);
-      return;
-    }
-    
-    const timestamp = new Date().toLocaleTimeString();
-    const typeIcon = {
-      'info': '[INFO]',
-      'success': '[OK]',
-      'warning': '[WARN]',
-      'error': '[ERR]'
-    }[type] || '[INFO]';
-    
-    // Costruisci il messaggio con timestamp e tipo
-    const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
-    
-    // #region agent log
-    const beforeContent = console.textContent;
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5140',message:'addScriptLogMessage() BEFORE update',data:{beforeLength:beforeContent.length,newMessageLength:newMessage.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-    
-    // Aggiungi il messaggio al contenuto
-    console.textContent += newMessage;
-    
-    // #region agent log
-    const afterContent = console.textContent;
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:5145',message:'addScriptLogMessage() AFTER update',data:{afterLength:afterContent.length,scrollTop:console.scrollTop,scrollHeight:console.scrollHeight},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-    
-    // Auto-scroll verso il basso per mostrare l'ultimo messaggio
-    console.scrollTop = console.scrollHeight;
-    
-    // Aggiorna il colore del testo in base al tipo (se supportato)
-    // Nota: il colore è già gestito dal CSS (text-success), ma possiamo aggiungere logica per errori
-    if (type === 'error' && console.style) {
-      // Per errori, potremmo cambiare temporaneamente il colore
-      // Ma per ora manteniamo il colore CSS globale
-    }
+  // Mantiene compatibilità con il resto del codice che chiama addScriptLogMessage
+  function addScriptLogMessage(message, type = 'print') {
+    ScriptLogService.log({ type, message, source: 'editor' });
   }
 
   // Simulate notifications for tabs (example) - DISABLED
@@ -6622,11 +7308,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
     if (!projectName) return;
     if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
+    
+    // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
+    const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+    let scriptsToRemove = [];
+    try {
+      const projectJson = localStorage.getItem(projectKey);
+      if (projectJson) {
+        const projectObj = JSON.parse(projectJson);
+        if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+          scriptsToRemove = Object.keys(projectObj.scripts);
+        }
+      }
+    } catch(_) {}
+    
+    // Rimuovi dalla lista progetti
     const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
+    
     // rimuovi backup locale
-    try { localStorage.removeItem(`amiantoProject_${currentUser.username}:${projectName}`); } catch(_) {}
+    try { localStorage.removeItem(projectKey); } catch(_) {}
+    
+    // Rimuovi tutti gli script associati al progetto da localStorage
+    scriptsToRemove.forEach(scriptName => {
+      try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+    });
+    
+    // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
+    const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (currentProjectName === projectName) {
+      jsScripts.clear();
+      // Pulisci anche le mappe di attachment
+      objectScripts.clear();
+      roomScripts.clear();
+      characterScripts.clear();
+      inventoryScripts.clear();
+      hotspotScripts.clear();
+      if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+      // Ricostruisci la lista script nell'UI
+      const selector = document.getElementById('script-selector');
+      if (selector) {
+        selector.innerHTML = '';
+        const opt0 = document.createElement('option');
+        opt0.value = ''; opt0.textContent = 'Select a script...';
+        selector.appendChild(opt0);
+      }
+      rebuildScriptsTree();
+    }
+    
     // rimuovi file OPFS se possibile
     try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
     showNotification('Progetto eliminato', 'success');
@@ -6774,9 +7504,54 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     const projectName = document.getElementById('projectName').value || 'Untitled Project';
     if (confirm(`Are you sure you want to delete project "${projectName}"?`)) {
+      // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      let scriptsToRemove = [];
+      try {
+        const projectJson = localStorage.getItem(projectKey);
+        if (projectJson) {
+          const projectObj = JSON.parse(projectJson);
+          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+            scriptsToRemove = Object.keys(projectObj.scripts);
+          }
+        }
+      } catch(_) {}
+      
+      // Rimuovi dalla lista progetti
       const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
       const filteredProjects = userProjects.filter(p => p.settings.name !== projectName);
       localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filteredProjects));
+      
+      // Rimuovi il backup locale del progetto
+      try { localStorage.removeItem(projectKey); } catch(_) {}
+      
+      // Rimuovi tutti gli script associati al progetto da localStorage
+      scriptsToRemove.forEach(scriptName => {
+        try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+      });
+      
+      // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
+      const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (currentProjectName === projectName) {
+        jsScripts.clear();
+        // Pulisci anche le mappe di attachment
+        objectScripts.clear();
+        roomScripts.clear();
+        characterScripts.clear();
+        inventoryScripts.clear();
+        hotspotScripts.clear();
+        if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+        // Ricostruisci la lista script nell'UI
+        const selector = document.getElementById('script-selector');
+        if (selector) {
+          selector.innerHTML = '';
+          const opt0 = document.createElement('option');
+          opt0.value = ''; opt0.textContent = 'Select a script...';
+          selector.appendChild(opt0);
+        }
+        rebuildScriptsTree();
+      }
+      
       showNotification('Project deleted successfully!', 'success');
     }
   };

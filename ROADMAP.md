@@ -541,6 +541,6 @@
 
 ---
 
-*Roadmap generata il: 2024*
+*Roadmap generata il: 2025*
 *Versione progetto analizzata: 0.1*
 

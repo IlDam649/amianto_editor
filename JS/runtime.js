@@ -47,14 +47,8 @@
   // Funzione print() globale per gli script del gioco nel runtime
   // NON scrive nel DOM, invia messaggi all'editor tramite postMessage
   window.print = function() {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:49',message:'window.print() ENTRY',data:{argsCount:arguments.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     try {
       const args = Array.from(arguments);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:53',message:'window.print() args extracted',data:{argsLength:args.length,firstArg:args[0]?String(args[0]).substring(0,50):null},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (args.length === 0) {
         sendScriptLogToEditor('', 'info');
         return;
@@ -63,19 +57,10 @@
       // Serializza ogni argomento e uniscili con spazi
       const messages = args.map(arg => serializeValue(arg));
       const msg = messages.join(' ');
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:63',message:'window.print() BEFORE sendScriptLogToEditor',data:{serializedMsg:msg.substring(0,100)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       
       // Invia all'editor tramite postMessage (non manipola direttamente il DOM)
       sendScriptLogToEditor(msg, 'info');
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:67',message:'window.print() AFTER sendScriptLogToEditor',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
     } catch (e) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:70',message:'window.print() EXCEPTION',data:{error:e.message||String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       // Fallback in caso di errore
       sendScriptLogToEditor(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
     }
@@ -102,37 +87,26 @@
   // Funzione helper per inviare messaggi all'editor
   // Usa window.opener se il runtime è stato aperto dall'editor
   function sendScriptLogToEditor(message, level = 'info') {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:80',message:'sendScriptLogToEditor() ENTRY',data:{message:message.substring(0,50),level,hasOpener:!!window.opener,openerClosed:window.opener?window.opener.closed:null},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     try {
       // Verifica se window.opener esiste (runtime aperto dall'editor)
       if (window.opener && !window.opener.closed) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:85',message:'sendScriptLogToEditor() BEFORE postMessage',data:{message:message.substring(0,50)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         // Invia messaggio all'editor
         // TODO: Per sicurezza, verificare event.origin === location.origin
         // Attualmente usiamo "*" per sviluppo, in produzione verificare l'origin
         window.opener.postMessage({
-          type: 'script-log',
-          level: level,
-          message: message
+          type: 'SCRIPT_LOG',
+          payload: {
+            type: (level === 'error' ? 'error' : (level === 'warning' ? 'warning' : 'print')),
+            message: message,
+            timestamp: Date.now(),
+            source: 'runtime'
+          }
         }, '*'); // ⚠️ In produzione: sostituire "*" con location.origin dell'editor
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:94',message:'sendScriptLogToEditor() AFTER postMessage',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
       } else {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:97',message:'sendScriptLogToEditor() NO OPENER - fallback',data:{hasOpener:!!window.opener},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         // Fallback: se non c'è opener, log locale (per runtime standalone)
         log(`[Script ${level.toUpperCase()}] ${message}`);
       }
     } catch (e) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:101',message:'sendScriptLogToEditor() EXCEPTION',data:{error:e.message||String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       // Fallback in caso di errore nella comunicazione
       log(`[Script Log Error] ${e && e.message ? e.message : String(e)}`);
     }
@@ -149,9 +123,27 @@
         sendScriptLogToEditor('', 'info');
         return;
       }
+
+      // Opzione speciale: ultimo argomento come { showInGame: true }
+      let showInGame = false;
+      const last = args[args.length - 1];
+      if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
+        if (last.showInGame === true) {
+          showInGame = true;
+        }
+        args.pop();
+      }
+
       const messages = args.map(arg => serializeValue(arg));
       const msg = messages.join(' ');
       sendScriptLogToEditor(msg, 'info');
+
+      // Integrazione opzionale con gameplay: Game.showText, se disponibile nel runtime
+      try {
+        if (showInGame && typeof Game !== 'undefined' && Game && typeof Game.showText === 'function') {
+          Game.showText(msg);
+        }
+      } catch (_) {}
     },
     
     error: function() {
@@ -225,108 +217,40 @@
 
   // Funzione per eseguire uno script nel runtime
   function executeRuntimeScript(scriptName, scriptContent, handlerName, argsArray) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:240',message:'executeRuntimeScript() ENTRY',data:{scriptName,hasContent:!!scriptContent,contentLength:scriptContent?.length,handlerName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-    // #endregion
     if (!scriptContent || !scriptContent.trim()) return;
-    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:243',message:'executeRuntimeScript() JAILED NOT AVAILABLE',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
-      log(`[Script] Jailed not available, cannot execute script: ${scriptName}`);
-      return;
-    }
     
     const callArgs = Array.isArray(argsArray) ? argsArray : [];
     
     const wrapped = `
-      function executeWhenReady() {
-        // #region agent log
-        var remoteExists = typeof application !== 'undefined' && application.remote;
-        var printExists = remoteExists && typeof application.remote.print === 'function';
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime wrapper',message:'executeWhenReady: application.remote check',data:{remoteExists,printExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-        // #endregion
-        if (typeof application === 'undefined' || !application.remote) {
-          setTimeout(executeWhenReady, 10);
-          return;
-        }
-        
-        // Esponi tutte le API
-        var print = application.remote.print;
-        var error = application.remote.error;
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime wrapper',message:'executeWhenReady: print assigned',data:{printType:typeof print},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-        // #endregion
-        var show_message = application.remote.show_message;
-        var get_var = application.remote.get_var;
-        var set_var = application.remote.set_var;
-        var has_var = application.remote.has_var;
-        var toggle_var = application.remote.toggle_var;
-        var get_current_room = application.remote.get_current_room;
-        var load_room = application.remote.load_room;
-        var add_to_inventory = application.remote.add_to_inventory;
-        var remove_from_inventory = application.remote.remove_from_inventory;
-        var has_item = application.remote.has_item;
-        var get_item_count = application.remote.get_item_count;
-        var clear_inventory = application.remote.clear_inventory;
-        
-        var Game = {
-          getVar: application.remote.get_var,
-          setVar: application.remote.set_var,
-          hasVar: application.remote.has_var,
-          toggleVar: application.remote.toggle_var
-        };
-        
-        // Esegui lo script
-        try {
-          ${scriptContent}
-        } catch(e) {
-          application.remote.error('Script error: ' + (e && e.message ? e.message : e));
-        }
-        
-        application.setInterface({});
+      // Script: ${scriptName}
+      try {
+        // Esegui lo script direttamente
+        ${scriptContent}
         
         // Invoca l'handler se definito
         if (typeof ${handlerName} === 'function') {
-          try {
-            ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
-          } catch(e) {
-            application.remote.error('Handler error: ' + (e && e.message ? e.message : e));
-          }
+          ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
         }
+      } catch(e) {
+        console.error('Script execution error:', e);
       }
       
-      executeWhenReady();
+      application.setInterface({});
     `;
     
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:305',message:'executeRuntimeScript() BEFORE new DynamicPlugin',data:{scriptName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
       const plugin = new jailed.DynamicPlugin(wrapped, runtimeSandboxApi);
       runtimeScriptPlugins.set(scriptName, plugin);
       
-      if (typeof plugin.whenConnected === 'function') {
-        plugin.whenConnected(function() {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:312',message:'executeRuntimeScript() PLUGIN CONNECTED',data:{scriptName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-          // #endregion
-          log(`[Script] ${scriptName} executed`);
-        });
-      }
-      
-      if (typeof plugin.onError === 'function') {
-        plugin.onError(function(err) {
-          log(`[Script Error] ${scriptName}: ${err && err.message ? err.message : err}`);
-          sendScriptLogToEditor(`Script error in ${scriptName}: ${err && err.message ? err.message : err}`, 'error');
-        });
-      }
+      plugin.whenReady(function() {
+        log(`[Script] ${scriptName} executed successfully`);
+        sendScriptLogToEditor(`[Script] ${scriptName} executed`, 'info');
+      });
       
     } catch (e) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/cdc443e6-2350-4939-b056-f00f7870d822',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'runtime.js:325',message:'executeRuntimeScript() EXCEPTION',data:{error:e.message||String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
-      log(`[Script] Failed to execute ${scriptName}: ${e && e.message ? e.message : e}`);
+      const errorMsg = `[Script] Failed to execute ${scriptName}: ${e && e.message ? e.message : e}`;
+      log(errorMsg);
+      sendScriptLogToEditor(errorMsg, 'error');
     }
   }
 
@@ -361,19 +285,25 @@
       log(`[Script] Loaded ${runtimeGameState.variables.size} variable(s)`);
     }
     
-    // Esegui script globali con on_game_start
+    // Esegui tutti gli script globali
     Object.keys(scripts).forEach(scriptName => {
       if (scriptName.startsWith('Global:') || scriptName === 'startup') {
         const content = scripts[scriptName];
         if (content && content.trim()) {
-          // Cerca se contiene on_game_start
-          if (content.includes('on_game_start') || content.includes('function on_game_start')) {
-            log(`[Script] Executing global script: ${scriptName}`);
-            executeRuntimeScript(scriptName, content, 'on_game_start', []);
-          }
+          log(`[Script] Executing global script: ${scriptName}`);
+          executeRuntimeScript(scriptName, content, 'on_game_start', []);
         }
       }
     });
+    
+    // Esegui anche script di room
+    if (runtimeGameState.currentRoomId) {
+      const roomScriptName = `Room:${runtimeGameState.currentRoomId}`;
+      if (scripts[roomScriptName]) {
+        log(`[Script] Executing room script: ${roomScriptName}`);
+        executeRuntimeScript(roomScriptName, scripts[roomScriptName], 'on_room_enter', []);
+      }
+    }
   }
 
   function setCanvasSize(w, h) {
@@ -488,8 +418,16 @@
     await renderRoom(currentRoomIndex);
     log('First room rendered');
     
+    // Test immediato per verificare comunicazione
+    sendScriptLogToEditor('Runtime initialized and ready', 'info');
+    
     // Inizializza ed esegui gli script
     initializeRuntimeScripts();
+    
+    // Test script execution
+    setTimeout(() => {
+      sendScriptLogToEditor('Script execution completed', 'info');
+    }, 500);
   }
 
   // Public API: loadGame(data)

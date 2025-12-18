@@ -651,3 +651,16 @@ header {
 .modal-dialog {
   z-index: 3001;
 }
+
+/* Script Log Panel */
+.script-log-console {
+  border-color: #444;
+}
+
+.script-log-console.script-log-warning {
+  box-shadow: 0 0 0 1px #ffc107;
+}
+
+.script-log-console.script-log-error {
+  box-shadow: 0 0 0 1px #dc3545;
+}
