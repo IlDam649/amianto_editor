@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Runtime Sandbox</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <script>
+(function() {
+  'use strict';
+
+  let gameState = {
+    currentRoomId: null,
+    objectId: null,
+    variables: new Map()
+  };
+
+  function serializeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
+  }
+
+  function sendToEditor(message) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(message, '*');
+      }
+    } catch (e) {
+      console.error('[Runtime] Failed to send message:', e);
+    }
+  }
+
+  function sendLog(message, level = 'info') {
+    sendToEditor({
+      type: 'SCRIPT_LOG',
+      message: message,
+      level: level,
+      timestamp: Date.now()
+    });
+  }
+
+  function sendError(error) {
+    sendToEditor({
+      type: 'SCRIPT_ERROR',
+      error: error,
+      timestamp: Date.now()
+    });
+  }
+
+  function sendDone() {
+    sendToEditor({
+      type: 'SCRIPT_DONE',
+      timestamp: Date.now()
+    });
+  }
+
+  const GameAPI = {
+    print: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendLog('', 'info');
+        return;
+      }
+      const messages = args.map(arg => serializeValue(arg));
+      const msg = messages.join(' ');
+      sendLog(msg, 'info');
+    },
+
+    error: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendLog('', 'error');
+        return;
+      }
+      const messages = args.map(arg => serializeValue(arg));
+      const msg = messages.join(' ');
+      sendLog(msg, 'error');
+    },
+
+    getVariable: function(name) {
+      if (typeof name !== 'string') {
+        sendError('GameAPI.getVariable: name must be a string');
+        return null;
+      }
+      return gameState.variables.get(name) || null;
+    },
+
+    setVariable: function(name, value) {
+      if (typeof name !== 'string') {
+        sendError('GameAPI.setVariable: name must be a string');
+        return;
+      }
+      gameState.variables.set(name, value);
+    },
+
+    changeRoom: function(roomId) {
+      if (typeof roomId !== 'string' && typeof roomId !== 'number') {
+        sendError('GameAPI.changeRoom: roomId must be a string or number');
+        return;
+      }
+      sendToEditor({
+        type: 'ROOM_CHANGE_REQUEST',
+        roomId: String(roomId),
+        timestamp: Date.now()
+      });
+    },
+
+    getCurrentRoom: function() {
+      return gameState.currentRoomId;
+    },
+
+    getCurrentObject: function() {
+      return gameState.objectId;
+    }
+  };
+
+  window.GameAPI = GameAPI;
+  window.print = function() {
+    GameAPI.print.apply(GameAPI, arguments);
+  };
+
+  function executeScript(code, context, handlerName, handlerArgs) {
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      sendError('Script code is empty or invalid');
+      sendDone();
+      return;
+    }
+
+    if (context) {
+      if (context.roomId !== undefined) {
+        gameState.currentRoomId = context.roomId;
+      }
+      if (context.objectId !== undefined) {
+        gameState.objectId = context.objectId;
+      }
+      if (context.variables && typeof context.variables === 'object') {
+        Object.keys(context.variables).forEach(key => {
+          gameState.variables.set(key, context.variables[key]);
+        });
+      }
+    }
+
+    try {
+      const aliases = {
+        get_var: GameAPI.getVariable,
+        set_var: GameAPI.setVariable,
+        getVariable: GameAPI.getVariable,
+        setVariable: GameAPI.setVariable,
+        Game: {
+          getVar: GameAPI.getVariable,
+          setVar: GameAPI.setVariable,
+          getVariable: GameAPI.getVariable,
+          setVariable: GameAPI.setVariable
+        }
+      };
+
+      let finalCode = code;
+      if (handlerName && typeof handlerName === 'string' && handlerName.trim()) {
+        const callArgs = Array.isArray(handlerArgs) ? handlerArgs : [];
+        const argsString = JSON.stringify(callArgs);
+        finalCode = code + '\n\nif (typeof ' + handlerName + ' === \'function\') {\n  try {\n    ' + handlerName + '.apply(null, ' + argsString + ');\n  } catch (e) {\n    GameAPI.error(\'Handler execution error: \' + (e && e.message ? e.message : String(e)));\n  }\n} else {\n  GameAPI.print(\'Handler "' + handlerName + '" non definito nello script\');\n}';
+      }
+
+      const scriptFunction = new Function('GameAPI', 'print', 'get_var', 'set_var', 'getVariable', 'setVariable', 'Game', 'try {\n' + finalCode + '\n} catch (e) {\n  GameAPI.error(\'Script execution error: \' + (e && e.message ? e.message : String(e)));\n  throw e;\n}');
+
+      scriptFunction(GameAPI, GameAPI.print, aliases.get_var, aliases.set_var, aliases.getVariable, aliases.setVariable, aliases.Game);
+
+      sendDone();
+
+    } catch (e) {
+      const errorMessage = e && e.message ? e.message : String(e);
+      sendError('Script execution failed: ' + errorMessage);
+      sendDone();
+    }
+  }
+
+  window.addEventListener('message', function(event) {
+    const message = event.data;
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    switch (message.type) {
+      case 'RUN_SCRIPT':
+        executeScript(message.code, message.context, message.handlerName, message.handlerArgs);
+        break;
+
+      case 'UPDATE_CONTEXT':
+        if (message.context) {
+          if (message.context.roomId !== undefined) {
+            gameState.currentRoomId = message.context.roomId;
+          }
+          if (message.context.objectId !== undefined) {
+            gameState.objectId = message.context.objectId;
+          }
+          if (message.context.variables && typeof message.context.variables === 'object') {
+            Object.keys(message.context.variables).forEach(key => {
+              gameState.variables.set(key, message.context.variables[key]);
+            });
+          }
+        }
+        break;
+
+      case 'RESET':
+        gameState.currentRoomId = null;
+        gameState.objectId = null;
+        gameState.variables.clear();
+        sendToEditor({
+          type: 'RUNTIME_READY',
+          timestamp: Date.now()
+        });
+        break;
+    }
+  });
+
+  sendToEditor({
+    type: 'RUNTIME_READY',
+    timestamp: Date.now()
+  });
+
+  try {
+    Object.defineProperty(window, 'fetch', {
+      value: undefined,
+      writable: false,
+      configurable: false
+    });
+  } catch (e) {
+    // Ignora errori di definizione
+  }
+
+})();
+  </script>
+</body>
+</html>

@@ -990,9 +990,7 @@ if (playTestState && playTestState.isRunning) {
         triggerObjectClick(obj.id, Math.round(x), Math.round(y));
         
         try {
-          if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
-            activePlugin.remote.on_object_click(obj.id, Math.round(x), Math.round(y));
-          }
+          // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
         } catch(_) {}
         const scriptName = objectScripts.get(obj.id);
         if (scriptName) {
@@ -1011,9 +1009,7 @@ for (const hs of hotspots) {
           triggerHotspotClick(hs.id);
           
           try {
-            if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
-              activePlugin.remote.on_hotspot_click(hs.id);
-            }
+            // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
           } catch(_) {}
           const hScript = hotspotScripts.get(hs.id);
           if (hScript) {
@@ -1710,9 +1706,7 @@ for (const hs of hotspots) {
     refreshRoomsSelector();
     redraw();
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, rid);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(rid);
     if (roomScript) {
@@ -1741,9 +1735,7 @@ for (const hs of hotspots) {
     refreshRoomsSelector();
     redraw();
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, first);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(first);
     if (roomScript) {
@@ -1766,9 +1758,7 @@ window.selectRoom = function(roomId) {
     }
     
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, roomId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(roomId);
     if (roomScript) {
@@ -3018,7 +3008,7 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  // JS sandbox runtime (Jailed) e editor
+  // JS sandbox runtime (iframe sandboxed) e editor
   let codeMirrorEditor = null;
   let largeCodeMirrorEditor = null;
   let currentScriptName = 'Global:main';
@@ -3061,7 +3051,7 @@ window.selectRoom = function(roomId) {
     } catch (_) {}
   }
   loadInventoryFromStorage();
-  let activePlugin = null; // istanza di jailed.DynamicPlugin
+  // activePlugin rimosso - ora usiamo solo iframe sandboxed
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -4105,108 +4095,25 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    const callArgs = Array.isArray(argsArray) ? argsArray : [];
-    
-    // Wrapper che esegue lo script solo quando application.remote è disponibile
-    const wrapped = `
-      // Funzione helper per eseguire lo script quando il plugin è pronto
-      function executeWhenReady() {
-        // Verifica che application.remote sia disponibile
-        if (typeof application === 'undefined' || !application.remote) {
-          setTimeout(executeWhenReady, 10);
-          return;
-        }
-        
-        // Definisci tutte le API
-        // API di gioco esposte con prefisso per NON ombreggiare gli handler utente
-        var print = application.remote.print;
-        var error = application.remote.error;
-        var show_message = application.remote.show_message;
-        var move_object = application.remote.move_object;
-        var api_on_game_start = application.remote.on_game_start;
-        var api_on_room_change = application.remote.on_room_change;
-        var api_on_object_click = application.remote.on_object_click;
-        var api_on_character_click = application.remote.on_character_click;
-        var api_on_hotspot_click = application.remote.on_hotspot_click;
-        var api_add_to_inventory = application.remote.add_to_inventory;
-        var api_remove_from_inventory = application.remote.remove_from_inventory;
-        var api_has_item = application.remote.has_item;
-        var api_get_item_count = application.remote.get_item_count;
-        var api_clear_inventory = application.remote.clear_inventory;
-        var api_load_room = application.remote.load_room;
-        var api_get_current_room = application.remote.get_current_room;
-        var api_get_room_objects = application.remote.get_room_objects;
-        var api_set_room_background = application.remote.set_room_background;
-        var api_spawn_object = application.remote.spawn_object;
-        var api_despawn_object = application.remote.despawn_object;
-        var api_rotate_object = application.remote.rotate_object;
-        var api_scale_object = application.remote.scale_object;
-        var api_set_object_visible = application.remote.set_object_visible;
-        var Game = {
-          getVar: application.remote.get_var,
-          setVar: application.remote.set_var,
-          hasVar: application.remote.has_var,
-          toggleVar: application.remote.toggle_var
-        };
-        
-        // Esegui il contenuto dello script
-        try { 
-          ${scriptContent}\n; 
-        } catch(e){ 
-          // Errori di sintassi/Runtime nello script utente
-          // Usa error() invece di print() per distinguere gli errori
-          application.remote.error('Script error: ' + (e && e.message ? e.message : e)); 
-        }
-        
-        application.setInterface({});
-        
-        // Invoca l'handler richiesto, se definito come funzione globale nello script
-        if (typeof ${handlerName} === 'function') {
-          try { 
-            ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); 
-          } catch(e){ 
-            print('Handler error: ' + (e && e.message ? e.message : e)); 
-          }
-        } else {
-          // Aiuta il dev a capire perché non vede l'output
-          print('Handler "${handlerName}" non definito nello script');
-        }
-      }
-      
-      // Avvia l'esecuzione
-      executeWhenReady();
-    `;
-    
-    try {
-      const plugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-      
-      // Gestisci errori di connessione
-      if (typeof plugin.onError === 'function') {
-        plugin.onError(function(err) {
-          addDebugMessage(`Script handler error: ${err && err.message ? err.message : err}`, 'error');
-          addScriptLogMessage(`Script handler error: ${err && err.message ? err.message : err}`, 'error');
-        });
-      }
-      
-      // Non disconnettere immediatamente - aspetta che lo script finisca
-      // e che tutti i messaggi vengano processati
-      // Alcune versioni di "jailed" espongono metodi diversi:
-      // proteggiamo le chiamate per evitare errori di runtime.
-      if (typeof plugin.whenConnected === 'function') {
-        plugin.whenConnected(function(){
-          // Aspetta più tempo per permettere ai messaggi di essere processati
-          // Gli script potrebbero chiamare print() in modo asincrono o dopo l'esecuzione
-          setTimeout(function(){
-            try {
-              plugin.disconnect();
-            } catch(_) {}
-          }, 2000); // Aumentato a 2 secondi per dare più tempo ai messaggi asincroni
-        });
-      }
-    } catch(e) {
-      addDebugMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
-      addScriptLogMessage(`executeScriptHandler error: ${e && e.message ? e.message : e}`, 'error');
+    // Se il runtime non è inizializzato, non eseguire lo script
+    if (!embeddedRuntime.isInitialized || !embeddedRuntime.sandboxIframe) {
+      addDebugMessage(`[Script] Runtime not initialized, skipping handler "${handlerName}"`, 'warning');
+      return;
     }
+    
+    // Esegui lo script nell'iframe sandboxed
+    const context = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: null,
+      variables: {}
+    };
+    
+    // Copia variabili dal gameState
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      context.variables[key] = value;
+    });
+    
+    executeScriptInSandbox(`handler_${handlerName}_${Date.now()}`, scriptContent, handlerName, argsArray, context);
   }
 
   window.newScript = function() {
@@ -4259,98 +4166,51 @@ window.selectRoom = function(roomId) {
     ensureLargeScriptEditor();
     ensureScriptEditor();
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
-    // Ferma eventuale plugin attivo prima di avviarne uno nuovo
-    if (activePlugin && typeof activePlugin.disconnect === 'function') {
-      try { activePlugin.disconnect(); } catch(_) {}
-      activePlugin = null;
+    
+    if (!content || !content.trim()) {
+      showNotification('Script vuoto!', 'warning');
+      return;
     }
-    // Wrappa il codice utente per esporre funzioni previste
-const wrapped = `
-      // API di gioco esposte con prefisso per NON ombreggiare gli handler utente
-      var print = application.remote.print;
-      var error = application.remote.error;
-      var show_message = application.remote.show_message;
-      var move_object = application.remote.move_object;
-      var api_on_game_start = application.remote.on_game_start;
-      var api_on_room_change = application.remote.on_room_change;
-      var api_on_object_click = application.remote.on_object_click;
-      var api_on_character_click = application.remote.on_character_click;
-      var api_on_hotspot_click = application.remote.on_hotspot_click;
-      var api_add_to_inventory = application.remote.add_to_inventory;
-      var api_remove_from_inventory = application.remote.remove_from_inventory;
-      var api_has_item = application.remote.has_item;
-      var api_get_item_count = application.remote.get_item_count;
-      var api_clear_inventory = application.remote.clear_inventory;
-      var api_load_room = application.remote.load_room;
-      var api_get_current_room = application.remote.get_current_room;
-      var api_get_room_objects = application.remote.get_room_objects;
-      var api_set_room_background = application.remote.set_room_background;
-      var api_spawn_object = application.remote.spawn_object;
-      var api_despawn_object = application.remote.despawn_object;
-      var api_rotate_object = application.remote.rotate_object;
-      var api_scale_object = application.remote.scale_object;
-      var api_set_object_visible = application.remote.set_object_visible;
-      var Game = {
-        getVar: application.remote.get_var,
-        setVar: application.remote.set_var,
-        hasVar: application.remote.has_var,
-        toggleVar: application.remote.toggle_var
+    
+    // Assicurati che l'iframe sandboxed sia inizializzato
+    if (!embeddedRuntime.sandboxIframe || !embeddedRuntime.isInitialized) {
+      // Inizializza l'iframe sandboxed se non è già inizializzato
+      // Usa dati minimi per il test
+      const minimalGameData = {
+        scripts: {},
+        variables: [],
+        rooms: [],
+        settings: {}
       };
-      try { ${content}\n; } catch(e){ application.remote.error('Script error: ' + (e && e.message ? e.message : e)); }
-      application.setInterface({
-        on_object_click: function(object_id, x, y){
-          try { if (typeof on_object_click === 'function') { return on_object_click(object_id, x, y); } }
-          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_game_start: function(){
-          try { if (typeof on_game_start === 'function') { return on_game_start(); } }
-          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_room_change: function(oldRoomId, newRoomId){
-          try { if (typeof on_room_change === 'function') { return on_room_change(oldRoomId, newRoomId); } }
-          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_character_click: function(characterId){
-          try { if (typeof on_character_click === 'function') { return on_character_click(characterId); } }
-          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_hotspot_click: function(hotspotId){
-          try { if (typeof on_hotspot_click === 'function') { return on_hotspot_click(hotspotId); } }
-          catch(e){ application.remote.error('Handler error: ' + (e && e.message ? e.message : e)); }
+      initializeSandboxRuntime(JSON.stringify(minimalGameData));
+      
+      // Aspetta che l'iframe sia pronto
+      const checkReady = setInterval(() => {
+        if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
+          clearInterval(checkReady);
+          // Esegui lo script
+          executeScriptInSandbox('test_script_' + Date.now(), content, null, [], {});
+          showNotification('Script eseguito in sandbox!', 'success');
         }
-      });
-      if (typeof on_game_start === 'function') { on_game_start(); }
-    `;
-    try {
-      activePlugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-
-      // Alcune versioni di "jailed" espongono metodi diversi:
-      // proteggiamo le chiamate per evitare errori di runtime.
-      if (typeof activePlugin.whenConnected === 'function') {
-        activePlugin.whenConnected(function() {
-          showNotification('JS script eseguito in sandbox!', 'success');
-        });
-      }
-
-      // onDisconnect potrebbe non essere presente: verifica prima di usarlo
-      if (typeof activePlugin.onDisconnect === 'function') {
-        activePlugin.onDisconnect(function() {
-          addDebugMessage('Sandbox disconnesso', 'info');
-        });
-      }
-    } catch (err) {
-      const msg = (err && err.message) ? err.message : String(err);
-      addDebugMessage(`JS sandbox error: ${msg}`, 'error');
-      showNotification(`JS sandbox error: ${msg}`, 'danger');
+      }, 100);
+      
+      // Timeout dopo 5 secondi
+      setTimeout(() => {
+        clearInterval(checkReady);
+        if (!embeddedRuntime.isReady) {
+          showNotification('Errore: sandbox non inizializzato', 'danger');
+        }
+      }, 5000);
+    } else {
+      // Iframe già pronto, esegui direttamente
+      executeScriptInSandbox('test_script_' + Date.now(), content, null, [], {});
+      showNotification('Script eseguito in sandbox!', 'success');
     }
   };
 
   window.stopScript = function() {
-    if (activePlugin && typeof activePlugin.disconnect === 'function') {
-      try { activePlugin.disconnect(); } catch(_) {}
-      activePlugin = null;
-      showNotification('Sandbox JS fermato', 'warning');
-    }
+    // Non serve più fermare script singoli, ma possiamo pulire lo stato se necessario
+    showNotification('Script execution stopped', 'info');
   };
 
   window.loadScript = function(scriptName) {
@@ -4821,7 +4681,7 @@ const wrapped = `
   });
 
   // ============================================
-  // RUNTIME INCORPORATO NELL'EDITOR
+  // RUNTIME SANDBOXED CON IFRAME
   // ============================================
   let embeddedRuntime = {
     canvas: null,
@@ -4829,7 +4689,9 @@ const wrapped = `
     gameData: null,
     currentRoomIndex: 0,
     loadedImagesCache: new Map(),
-    scriptPlugins: new Map(),
+    sandboxIframe: null,
+    isReady: false,
+    pendingScripts: [],
     gameState: {
       currentRoomId: null,
       variables: new Map()
@@ -4853,7 +4715,7 @@ const wrapped = `
     return String(value);
   }
 
-  // Funzione per inviare log al ScriptLogService (sostituisce postMessage)
+  // Funzione per inviare log al ScriptLogService
   function sendRuntimeLogToEditor(message, level = 'info') {
     if (window.ScriptLogService) {
       let mappedType = 'print';
@@ -4865,307 +4727,243 @@ const wrapped = `
     addDebugMessage(`[Runtime] ${message}`, level);
   }
 
-  // API esposte agli script nel runtime incorporato
-  const embeddedRuntimeSandboxApi = {
-    print: function() {
-      const args = Array.from(arguments);
-      if (args.length === 0) {
-        sendRuntimeLogToEditor('', 'info');
-        return;
-      }
-      let showInGame = false;
-      const last = args[args.length - 1];
-      if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
-        if (last.showInGame === true) {
-          showInGame = true;
-        }
-        args.pop();
-      }
-      const messages = args.map(arg => serializeRuntimeValue(arg));
-      const msg = messages.join(' ');
-      sendRuntimeLogToEditor(msg, 'info');
-    },
-    
-    error: function() {
-      const args = Array.from(arguments);
-      if (args.length === 0) {
-        sendRuntimeLogToEditor('', 'error');
-        return;
-      }
-      const messages = args.map(arg => serializeRuntimeValue(arg));
-      const msg = messages.join(' ');
-      sendRuntimeLogToEditor(msg, 'error');
-    },
-    
-    show_message: function(text) {
-      sendRuntimeLogToEditor(`[Message] ${text}`, 'info');
-    },
-    
-    get_var: function(key) {
-      return embeddedRuntime.gameState.variables.get(key) || null;
-    },
-    
-    set_var: function(key, value) {
-      embeddedRuntime.gameState.variables.set(key, value);
-    },
-    
-    has_var: function(key) {
-      return embeddedRuntime.gameState.variables.has(key);
-    },
-    
-    toggle_var: function(key) {
-      const current = embeddedRuntime.gameState.variables.get(key);
-      const newValue = !current;
-      embeddedRuntime.gameState.variables.set(key, newValue);
-      return newValue;
-    },
-    
-    get_current_room: function() {
-      return embeddedRuntime.gameState.currentRoomId;
-    },
-    
-    load_room: function(roomIdOrName) {
-      sendRuntimeLogToEditor(`[Script] load_room(${roomIdOrName}) called`, 'info');
-      // TODO: implementare cambio stanza
-    },
-    
-    add_to_inventory: function(itemId, quantity) {
-      sendRuntimeLogToEditor(`[Script] add_to_inventory(${itemId}, ${quantity}) called`, 'info');
-    },
-    
-    remove_from_inventory: function(itemId, quantity) {
-      sendRuntimeLogToEditor(`[Script] remove_from_inventory(${itemId}, ${quantity}) called`, 'info');
-    },
-    
-    has_item: function(itemId) {
-      return false;
-    },
-    
-    get_item_count: function(itemId) {
-      return 0;
-    },
-    
-    clear_inventory: function() {
-      sendRuntimeLogToEditor(`[Script] clear_inventory() called`, 'info');
-    }
-  };
-
-  // Sandbox alternativo quando Jailed fallisce (per problemi di sicurezza con file://)
-  function executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray) {
-    const callArgs = Array.isArray(argsArray) ? argsArray : [];
-    
-    // Crea un contesto isolato con solo le API necessarie
-    const sandboxContext = {
-      print: embeddedRuntimeSandboxApi.print,
-      error: embeddedRuntimeSandboxApi.error,
-      show_message: embeddedRuntimeSandboxApi.show_message,
-      get_var: embeddedRuntimeSandboxApi.get_var,
-      set_var: embeddedRuntimeSandboxApi.set_var,
-      has_var: embeddedRuntimeSandboxApi.has_var,
-      toggle_var: embeddedRuntimeSandboxApi.toggle_var,
-      get_current_room: embeddedRuntimeSandboxApi.get_current_room,
-      load_room: embeddedRuntimeSandboxApi.load_room,
-      add_to_inventory: embeddedRuntimeSandboxApi.add_to_inventory,
-      remove_from_inventory: embeddedRuntimeSandboxApi.remove_from_inventory,
-      has_item: embeddedRuntimeSandboxApi.has_item,
-      get_item_count: embeddedRuntimeSandboxApi.get_item_count,
-      clear_inventory: embeddedRuntimeSandboxApi.clear_inventory
-    };
-    
-    // Crea una funzione isolata che ha accesso solo alle API del sandbox
-    try {
-      const func = new Function(
-        ...Object.keys(sandboxContext),
-        `
-        ${scriptContent}
-        
-        // Invoca l'handler se definito
-        if (typeof ${handlerName} === 'function') {
-          ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
-        }
-        `
-      );
-      
-      // Esegui la funzione con le API del sandbox come parametri
-      func(...Object.values(sandboxContext));
-      
-      sendRuntimeLogToEditor(`[Script] ${scriptName} executed successfully (fallback mode)`, 'info');
-      
-      // Ritorna un oggetto fittizio che simula il plugin per compatibilità
-      return {
-        disconnect: function() {},
-        whenReady: function(callback) {
-          setTimeout(callback, 0);
-        }
-      };
-      
-    } catch (e) {
-      const errorMsg = `[Script] Failed to execute ${scriptName} (fallback): ${e && e.message ? e.message : e}`;
-      sendRuntimeLogToEditor(errorMsg, 'error');
-      embeddedRuntimeSandboxApi.error(errorMsg);
-      return null;
-    }
-  }
-
-  // Esegue uno script nel runtime incorporato
-  function executeEmbeddedRuntimeScript(scriptName, scriptContent, handlerName, argsArray) {
-    if (!scriptContent || !scriptContent.trim()) return;
-    
-    const callArgs = Array.isArray(argsArray) ? argsArray : [];
-    
-    const wrapped = `
-      // Script: ${scriptName}
-      // Funzione helper per eseguire lo script quando il plugin è pronto
-      function executeWhenReady() {
-        // Verifica che application.remote sia disponibile
-        if (typeof application === 'undefined' || !application.remote) {
-          setTimeout(executeWhenReady, 10);
-          return;
-        }
-        
-        // Esponi tutte le API come variabili globali
-        var print = application.remote.print;
-        var error = application.remote.error;
-        var show_message = application.remote.show_message;
-        var get_var = application.remote.get_var;
-        var set_var = application.remote.set_var;
-        var has_var = application.remote.has_var;
-        var toggle_var = application.remote.toggle_var;
-        var get_current_room = application.remote.get_current_room;
-        var load_room = application.remote.load_room;
-        var add_to_inventory = application.remote.add_to_inventory;
-        var remove_from_inventory = application.remote.remove_from_inventory;
-        var has_item = application.remote.has_item;
-        var get_item_count = application.remote.get_item_count;
-        var clear_inventory = application.remote.clear_inventory;
-        
-        // Esegui il contenuto dello script
-        try {
-          ${scriptContent}
-          
-          // Invoca l'handler se definito
-          if (typeof ${handlerName} === 'function') {
-            ${handlerName}.apply(null, ${JSON.stringify(callArgs)});
-          }
-        } catch(e) {
-          console.error('Script execution error:', e);
-          // L'errore viene gestito tramite l'API sandbox error()
-          if (typeof error === 'function') {
-            error('Script execution error: ' + (e && e.message ? e.message : e));
-          }
-        }
-        
-        application.setInterface({});
-      }
-      
-      // Avvia l'esecuzione
-      executeWhenReady();
-    `;
-    
-    let plugin = null;
-    let fallbackUsed = false;
-    let readyCalled = false;
-    
-    try {
-      // Prova a usare Jailed normalmente
-      plugin = new jailed.DynamicPlugin(wrapped, embeddedRuntimeSandboxApi);
-      embeddedRuntime.scriptPlugins.set(scriptName, plugin);
-      
-      // Timeout per rilevare se Jailed non si inizializza (probabile SecurityError)
-      const initTimeout = setTimeout(function() {
-        if (!readyCalled && !fallbackUsed) {
-          // Jailed non si è inizializzato, usa il fallback
-          fallbackUsed = true;
-          sendRuntimeLogToEditor(`[Script] Jailed initialization timeout, using fallback for ${scriptName}`, 'warning');
-          
-          // Rimuovi il plugin fallito
-          try {
-            if (plugin && typeof plugin.disconnect === 'function') {
-              plugin.disconnect();
-            }
-          } catch (_) {}
-          embeddedRuntime.scriptPlugins.delete(scriptName);
-          
-          // Usa il fallback
-          const fallbackPlugin = executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray);
-          if (fallbackPlugin) {
-            embeddedRuntime.scriptPlugins.set(scriptName, fallbackPlugin);
-          }
-        }
-      }, 500); // Timeout di 500ms per l'inizializzazione
-      
-      plugin.whenReady(function() {
-        if (!fallbackUsed) {
-          readyCalled = true;
-          clearTimeout(initTimeout);
-          sendRuntimeLogToEditor(`[Script] ${scriptName} executed successfully`, 'info');
-        }
-      });
-      
-    } catch (e) {
-      // Se è un SecurityError o altro errore di inizializzazione, usa il fallback
-      const isSecurityError = e && (e.name === 'SecurityError' || 
-                                    e.message && e.message.includes('SecurityError') ||
-                                    e.message && e.message.includes('JailedSite') ||
-                                    e.message && e.message.includes('Blocked a frame'));
-      
-      if (isSecurityError) {
-        fallbackUsed = true;
-        sendRuntimeLogToEditor(`[Script] Jailed failed (security), using fallback for ${scriptName}`, 'warning');
-        plugin = executeEmbeddedRuntimeScriptFallback(scriptName, scriptContent, handlerName, argsArray);
-        if (plugin) {
-          embeddedRuntime.scriptPlugins.set(scriptName, plugin);
-        }
-      } else {
-        const errorMsg = `[Script] Failed to execute ${scriptName}: ${e && e.message ? e.message : e}`;
-        sendRuntimeLogToEditor(errorMsg, 'error');
-      }
-    }
-  }
-
-  // Listener globale per catturare SecurityError di Jailed
-  let jailedSecurityErrorHandler = null;
+  // ============================================
+  // GESTIONE IFRAME SANDBOXED
+  // ============================================
   
-  function setupJailedErrorHandler() {
-    if (jailedSecurityErrorHandler) return; // Già configurato
-    
-    jailedSecurityErrorHandler = function(event) {
-      // Cattura solo SecurityError relativi a Jailed
-      if (event.error && (
-          event.error.message && event.error.message.includes('JailedSite') ||
-          event.error.message && event.error.message.includes('Blocked a frame') ||
-          event.error.name === 'SecurityError'
-        )) {
-        event.preventDefault(); // Previeni che l'errore venga loggato nella console
-        sendRuntimeLogToEditor('[Runtime] Jailed SecurityError detected, scripts will use fallback mode', 'warning');
-      }
-    };
-    
-    window.addEventListener('error', jailedSecurityErrorHandler);
-  }
-  
-  function removeJailedErrorHandler() {
-    if (jailedSecurityErrorHandler) {
-      window.removeEventListener('error', jailedSecurityErrorHandler);
-      jailedSecurityErrorHandler = null;
-    }
-  }
-
-  // Inizializza gli script del runtime
-  function initializeEmbeddedRuntimeScripts() {
-    // Configura il listener per errori di sicurezza
-    setupJailedErrorHandler();
-    
-    // Pulisci plugin esistenti
-    embeddedRuntime.scriptPlugins.forEach((plugin, name) => {
+  // Crea l'iframe sandboxed per l'esecuzione degli script
+  function createSandboxIframe() {
+    // Rimuovi iframe esistente se presente
+    if (embeddedRuntime.sandboxIframe) {
       try {
-        if (plugin && typeof plugin.disconnect === 'function') {
-          plugin.disconnect();
+        // Rimuovi listener precedente se presente
+        if (embeddedRuntime.sandboxIframe._messageHandler) {
+          window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
         }
-      } catch (_) {}
-    });
-    embeddedRuntime.scriptPlugins.clear();
+        embeddedRuntime.sandboxIframe.remove();
+      } catch (e) {
+        // Ignora errori di rimozione
+      }
+      embeddedRuntime.sandboxIframe = null;
+    }
+
+    // Listener per messaggi dall'iframe (deve essere configurato PRIMA di aggiungere l'iframe)
+    const messageHandler = function(event) {
+      // NOTA: In produzione, verificare event.origin per sicurezza
+      const message = event.data;
+      if (!message || typeof message !== 'object') {
+        return;
+      }
+
+      switch (message.type) {
+        case 'RUNTIME_READY':
+          embeddedRuntime.isReady = true;
+          sendRuntimeLogToEditor('Sandbox runtime ready', 'info');
+          // Esegui script in attesa
+          embeddedRuntime.pendingScripts.forEach(script => {
+            executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
+          });
+          embeddedRuntime.pendingScripts = [];
+          break;
+
+        case 'SCRIPT_LOG':
+          if (window.ScriptLogService) {
+            const level = message.level || 'info';
+            let mappedType = 'print';
+            if (level === 'error') mappedType = 'error';
+            else if (level === 'warning') mappedType = 'warning';
+            ScriptLogService.log({
+              type: mappedType,
+              message: message.message || '',
+              source: 'runtime',
+              timestamp: message.timestamp
+            });
+          }
+          break;
+
+        case 'SCRIPT_ERROR':
+          const errorMsg = message.error || 'Unknown error';
+          sendRuntimeLogToEditor(`Script error: ${errorMsg}`, 'error');
+          if (window.ScriptLogService) {
+            ScriptLogService.log({
+              type: 'error',
+              message: errorMsg,
+              source: 'runtime',
+              timestamp: message.timestamp
+            });
+          }
+          break;
+
+        case 'SCRIPT_DONE':
+          // Script completato (opzionale, per logging)
+          break;
+
+        case 'ROOM_CHANGE_REQUEST':
+          // Richiesta cambio stanza dallo script
+          sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
+          // TODO: Implementare cambio stanza se necessario
+          break;
+
+        default:
+          // Ignora messaggi sconosciuti
+          break;
+      }
+    };
+
+    // Aggiungi listener PRIMA di creare l'iframe
+    window.addEventListener('message', messageHandler);
+
+    // Crea nuovo iframe con sandbox="allow-scripts" (SENZA allow-same-origin)
+    const iframe = document.createElement('iframe');
+    iframe.id = 'sandbox-runtime-iframe';
+    iframe.style.display = 'none'; // Nascosto, serve solo per esecuzione script
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = 'none';
+    iframe.sandbox = 'allow-scripts'; // IMPORTANTE: solo allow-scripts, NO allow-same-origin
     
+    // Usa direttamente runtime.html (più affidabile)
+    // Il percorso deve essere relativo alla root o assoluto
+    const runtimePath = window.location.pathname.endsWith('/') 
+      ? 'runtime.html' 
+      : './runtime.html';
+    iframe.src = runtimePath;
+    
+    // Salva riferimento al listener per rimozione futura
+    iframe._messageHandler = messageHandler;
+
+    // Listener per errori di caricamento
+    iframe.onerror = function(e) {
+      sendRuntimeLogToEditor('Error loading sandbox iframe', 'error');
+      console.error('[Sandbox] Iframe load error:', e);
+    };
+
+    // Listener per quando l'iframe è caricato (per debug)
+    iframe.onload = function() {
+      sendRuntimeLogToEditor('Sandbox iframe loaded, waiting for initialization...', 'info');
+      
+      // Prova a verificare se ci sono errori nell'iframe
+      try {
+        // Prova ad accedere alla console dell'iframe per vedere errori (se possibile)
+        if (iframe.contentWindow && iframe.contentWindow.console) {
+          const originalError = iframe.contentWindow.console.error;
+          iframe.contentWindow.console.error = function(...args) {
+            sendRuntimeLogToEditor('Iframe error: ' + args.join(' '), 'error');
+            if (originalError) originalError.apply(iframe.contentWindow.console, args);
+          };
+        }
+      } catch (e) {
+        // Non possiamo accedere alla console dell'iframe (sandbox restriction)
+      }
+      
+      // Se dopo 2 secondi non abbiamo ricevuto RUNTIME_READY, potrebbe esserci un problema
+      setTimeout(() => {
+        if (!embeddedRuntime.isReady) {
+          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received. Check if JS/runtime.js is loading correctly.', 'warning');
+        }
+      }, 2000);
+    };
+
+    // Aggiungi iframe al DOM
+    document.body.appendChild(iframe);
+    embeddedRuntime.sandboxIframe = iframe;
+    embeddedRuntime.isReady = false;
+
+    // Timeout per rilevare se l'iframe non si carica
+    setTimeout(() => {
+      if (!embeddedRuntime.isReady) {
+        sendRuntimeLogToEditor('Warning: Sandbox iframe initialization timeout. Check if runtime.html and JS/runtime.js are accessible.', 'warning');
+        // Prova a verificare se l'iframe è caricato
+        try {
+          if (iframe.contentWindow) {
+            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'warning');
+          } else {
+            sendRuntimeLogToEditor('Iframe contentWindow not accessible (sandbox restriction)', 'warning');
+          }
+        } catch (e) {
+          sendRuntimeLogToEditor('Cannot access iframe contentWindow: ' + (e.message || e), 'warning');
+        }
+      }
+    }, 5000);
+  }
+
+  // Esegue uno script nell'iframe sandboxed
+  function executeScriptInSandbox(scriptName, scriptContent, handlerName, argsArray, context) {
+    if (!scriptContent || typeof scriptContent !== 'string' || !scriptContent.trim()) {
+      return;
+    }
+
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+    
+    // Prepara il contesto di esecuzione
+    const executionContext = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: context?.objectId || null,
+      variables: {}
+    };
+
+    // Copia variabili dal gameState
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      executionContext.variables[key] = value;
+    });
+
+    // Se l'iframe non è pronto, metti in coda
+    if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
+      embeddedRuntime.pendingScripts.push({
+        name: scriptName,
+        code: scriptContent,
+        handler: handlerName,
+        args: callArgs,
+        context: executionContext
+      });
+      return;
+    }
+
+    // Invia script all'iframe (l'handler verrà gestito dal runtime.js)
+    try {
+      embeddedRuntime.sandboxIframe.contentWindow.postMessage({
+        type: 'RUN_SCRIPT',
+        code: scriptContent,
+        context: executionContext,
+        handlerName: handlerName,
+        handlerArgs: callArgs
+      }, '*');
+      
+      sendRuntimeLogToEditor(`[Script] ${scriptName} sent to sandbox`, 'info');
+    } catch (e) {
+      const errorMsg = `Failed to execute script ${scriptName}: ${e && e.message ? e.message : e}`;
+      sendRuntimeLogToEditor(errorMsg, 'error');
+    }
+  }
+
+  // Aggiorna il contesto dell'iframe (variabili, room, etc.)
+  function updateSandboxContext() {
+    if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
+      return;
+    }
+
+    const context = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: null,
+      variables: {}
+    };
+
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      context.variables[key] = value;
+    });
+
+    try {
+      embeddedRuntime.sandboxIframe.contentWindow.postMessage({
+        type: 'UPDATE_CONTEXT',
+        context: context
+      }, '*');
+    } catch (e) {
+      // Ignora errori di comunicazione
+    }
+  }
+
+  // Inizializza gli script del runtime usando l'iframe sandboxed
+  function initializeEmbeddedRuntimeScripts() {
     if (!embeddedRuntime.gameData || !embeddedRuntime.gameData.scripts) {
       sendRuntimeLogToEditor('[Script] No scripts found in gameData', 'info');
       return;
@@ -5185,13 +4983,16 @@ const wrapped = `
       sendRuntimeLogToEditor(`[Script] Loaded ${embeddedRuntime.gameState.variables.size} variable(s)`, 'info');
     }
     
+    // Aggiorna contesto sandbox
+    updateSandboxContext();
+    
     // Esegui script globali
     Object.keys(scripts).forEach(scriptName => {
       if (scriptName.startsWith('Global:') || scriptName === 'startup') {
         const content = scripts[scriptName];
         if (content && content.trim()) {
           sendRuntimeLogToEditor(`[Script] Executing global script: ${scriptName}`, 'info');
-          executeEmbeddedRuntimeScript(scriptName, content, 'on_game_start', []);
+          executeScriptInSandbox(scriptName, content, 'on_game_start', [], {});
         }
       }
     });
@@ -5201,7 +5002,9 @@ const wrapped = `
       const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
       if (scripts[roomScriptName]) {
         sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
-        executeEmbeddedRuntimeScript(roomScriptName, scripts[roomScriptName], 'on_room_enter', []);
+        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_enter', [], {
+          roomId: embeddedRuntime.gameState.currentRoomId
+        });
       }
     }
   }
@@ -5289,8 +5092,8 @@ const wrapped = `
     } catch(_) {}
   }
 
-  // Inizializza il runtime incorporato con i dati del progetto
-  async function initializeEmbeddedRuntime(jsonData) {
+  // Inizializza solo l'iframe sandboxed per l'esecuzione degli script (senza rendering canvas)
+  function initializeSandboxRuntime(jsonData) {
     try {
       embeddedRuntime.gameData = (typeof jsonData === 'string') ? JSON.parse(jsonData) : jsonData;
     } catch (e) {
@@ -5298,35 +5101,7 @@ const wrapped = `
       return;
     }
 
-    // Ottieni container e canvas (ora sono già presenti nell'HTML)
-    const container = document.getElementById('runtime-container');
-    if (!container) {
-      sendRuntimeLogToEditor('Runtime container not found', 'error');
-      return;
-    }
-
-    const canvas = document.getElementById('embedded-gameCanvas');
-    if (!canvas) {
-      sendRuntimeLogToEditor('Runtime canvas not found', 'error');
-      return;
-    }
-
-    embeddedRuntime.canvas = canvas;
-    embeddedRuntime.ctx = canvas.getContext('2d');
-
-    const w = (embeddedRuntime.gameData && embeddedRuntime.gameData.settings && embeddedRuntime.gameData.settings.canvasWidth) || 800;
-    const h = (embeddedRuntime.gameData && embeddedRuntime.gameData.settings && embeddedRuntime.gameData.settings.canvasHeight) || 600;
-    canvas.width = w;
-    canvas.height = h;
-
-    // Mostra il container runtime e nascondi il canvas editor
-    container.style.display = 'block';
-    const editorCanvas = document.getElementById('editorCanvas');
-    if (editorCanvas) {
-      editorCanvas.style.display = 'none';
-    }
-
-    sendRuntimeLogToEditor('Runtime initialized', 'info');
+    sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
 
     // Seleziona stanza iniziale
     try {
@@ -5350,74 +5125,41 @@ const wrapped = `
       embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
     }
     
-    await renderRuntimeRoom(embeddedRuntime.currentRoomIndex);
-    sendRuntimeLogToEditor('First room rendered', 'info');
+    // Crea e inizializza l'iframe sandboxed
+    createSandboxIframe();
     
-    // Esponi print() e error() globali per compatibilità con script runtime
-    // (gli script nel sandbox usano l'API, ma alcuni potrebbero chiamare direttamente print/error)
-    window._originalPrint = window.print;
-    window._originalError = window.error;
-    window.print = function() {
-      const args = Array.from(arguments);
-      if (args.length === 0) {
-        embeddedRuntimeSandboxApi.print();
-        return;
-      }
-      embeddedRuntimeSandboxApi.print(...args);
-    };
-    window.error = function() {
-      const args = Array.from(arguments);
-      if (args.length === 0) {
-        embeddedRuntimeSandboxApi.error();
-        return;
-      }
-      embeddedRuntimeSandboxApi.error(...args);
-    };
-    
-    // Inizializza ed esegui gli script
+    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe è pronto)
     initializeEmbeddedRuntimeScripts();
     
     embeddedRuntime.isInitialized = true;
-    sendRuntimeLogToEditor('Runtime ready', 'info');
+    sendRuntimeLogToEditor('Sandbox runtime ready', 'info');
   }
 
   // Ferma e pulisce il runtime incorporato
   function stopEmbeddedRuntime() {
-    // Rimuovi il listener di errori
-    removeJailedErrorHandler();
-    
-    // Disconnetti tutti i plugin
-    embeddedRuntime.scriptPlugins.forEach((plugin, name) => {
+    // Rimuovi iframe sandboxed
+    if (embeddedRuntime.sandboxIframe) {
+      // Rimuovi listener messaggi se presente
+      if (embeddedRuntime.sandboxIframe._messageHandler) {
+        window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
+      }
+      // Revoca blob URL se presente
+      if (embeddedRuntime.sandboxIframe._blobUrl) {
+        URL.revokeObjectURL(embeddedRuntime.sandboxIframe._blobUrl);
+      }
       try {
-        if (plugin && typeof plugin.disconnect === 'function') {
-          plugin.disconnect();
-        }
-      } catch (_) {}
-    });
-    embeddedRuntime.scriptPlugins.clear();
+        embeddedRuntime.sandboxIframe.remove();
+      } catch (e) {
+        // Ignora errori di rimozione
+      }
+      embeddedRuntime.sandboxIframe = null;
+    }
     
-    // Ripristina funzioni globali originali
-    if (window._originalPrint) {
-      window.print = window._originalPrint;
-      delete window._originalPrint;
-    }
-    if (window._originalError) {
-      window.error = window._originalError;
-      delete window._originalError;
-    }
+    embeddedRuntime.isReady = false;
+    embeddedRuntime.pendingScripts = [];
     
     // Pulisci cache immagini
     embeddedRuntime.loadedImagesCache.clear();
-    
-    // Nascondi container runtime e mostra di nuovo il canvas editor
-    const container = document.getElementById('runtime-container');
-    if (container) {
-      container.style.display = 'none';
-    }
-    const editorCanvas = document.getElementById('editorCanvas');
-    if (editorCanvas) {
-      editorCanvas.style.display = 'block';
-    }
     
     // Reset stato
     embeddedRuntime.gameData = null;
@@ -5425,10 +5167,6 @@ const wrapped = `
     embeddedRuntime.gameState.currentRoomId = null;
     embeddedRuntime.gameState.variables.clear();
     embeddedRuntime.isInitialized = false;
-    
-    if (embeddedRuntime.ctx) {
-      embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
-    }
   }
 
   // Functions for Play Test tab
@@ -5460,45 +5198,17 @@ const wrapped = `
       saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
     }, 100);
 
-    // Inizializza il runtime incorporato invece di aprire una nuova tab
-    await initializeEmbeddedRuntime(jsonString);
+    // Inizializza solo l'iframe sandboxed (senza rendering canvas nell'editor)
+    initializeSandboxRuntime(jsonString);
 
     playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
-    addDebugMessage('Runtime initialized in editor', 'success');
+    addDebugMessage('Sandbox runtime initialized', 'success');
     
-    // Esegui script globali on_game_start se esistono
-    // Cerca script globali che hanno on_game_start
-    const globalScripts = Array.from(jsScripts.entries()).filter(([name, content]) => {
-      return name.startsWith('Global:') || name === 'startup' || name.includes('game_start');
-    });
-    
-    // Esegui tutti gli script globali che potrebbero avere on_game_start
-    if (globalScripts.length > 0) {
-      addScriptLogMessage(`Found ${globalScripts.length} global script(s) to execute`, 'info');
-    }
-    
-    globalScripts.forEach(([scriptName, content]) => {
-      if (content && content.trim()) {
-        addDebugMessage(`Executing global script: ${scriptName}`, 'info');
-        addScriptLogMessage(`Executing script: ${scriptName}`, 'info');
-        // Esegui con un piccolo delay per assicurarsi che la console sia pronta
-        setTimeout(() => {
-          executeScriptHandler(content, 'on_game_start', []);
-        }, 100);
-      }
-    });
-    
-    // Trigger global game start event
-    triggerGameStart();
-    
-    try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
-        activePlugin.remote.on_game_start();
-      }
-    } catch(_) {}
+    // NOTA: Gli script globali vengono già eseguiti da initializeEmbeddedRuntimeScripts()
+    // Non duplicare l'esecuzione qui
   };
 
   window.pausePlayTest = function() {
@@ -5562,15 +5272,7 @@ const wrapped = `
       }
     });
     
-    // Trigger anche gli handler registrati tramite activePlugin (se esiste)
-    try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
-        addScriptLogMessage('Eseguendo handler da activePlugin', 'info');
-        activePlugin.remote.on_game_start();
-      }
-    } catch(e) {
-      addScriptLogMessage(`Errore activePlugin: ${e && e.message ? e.message : e}`, 'error');
-    }
+    // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     
     // Trigger anche i global event handlers
     triggerGameStart();
@@ -5590,9 +5292,7 @@ const wrapped = `
     const nextId = ids.length > 0 ? ids[(idx + 1) % ids.length] : prevRoomId;
     addDebugMessage(`Simulating room change: ${prevRoomId} -> ${nextId}`, 'info');
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, nextId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(nextId);
     if (roomScript) {
@@ -5612,10 +5312,8 @@ const wrapped = `
     addDebugMessage('Testing object interaction...', 'info');
     // Esegue on_object_click('door') nel contesto dell'ultimo script se definito
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
-        activePlugin.remote.on_object_click('door');
-        addDebugMessage('Object interaction tested via JS sandbox', 'success');
-      } else {
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
+      {
         setTimeout(() => { addDebugMessage('Object interaction tested (no handler exposed)', 'success'); }, 300);
       }
     } catch (err) {
@@ -5638,10 +5336,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
     
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_character_click === 'function') {
-        activePlugin.remote.on_character_click(who);
-        addDebugMessage('Character click tested via JS sandbox', 'success');
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch (err) {
       addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
     }
@@ -5683,9 +5378,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
-        activePlugin.remote.on_hotspot_click(activeHotspotId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const scriptContent = jsScripts.get(scriptName);
     if (!scriptContent) {
