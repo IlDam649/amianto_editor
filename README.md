@@ -10,7 +10,6 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
-- 🔐 **[Auth Testing](README_AUTH_TESTING.md)** - Guida al testing dell'autenticazione
 
 ---
 
@@ -57,8 +56,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Play Test Panel
   - Start/Pause/Stop test session; debug console; quick test actions
 - Authentication & Projects
-  - Login/logout, registration modal, persistent sessions, demo account
-  - Per-user project storage, debug tools (Reset Demo, Debug Auth, Force Reset)
+  - Login/logout, registration modal, persistent sessions
+  - Per-user project storage
 - File Menu
   - New/Open/Save/Export, Project Settings, Delete Project
 - Standalone Runtime
@@ -179,7 +178,6 @@ All other APIs listed in the extension roadmap are planned for future implementa
 - `JS/main.js` — Editor engine: tabs, canvas, rooms/objects, characters, scripting, UI handlers
 - `runtime.html` — Standalone runtime player
 - `JS/runtime.js` — Runtime renderer (rooms/assets, start room, OPFS/localStorage)
-- `README_AUTH_TESTING.md` — Auth system testing guide
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Full list of APIs to implement
 - `img/cover.png` — Project cover (shown above)
 
@@ -262,7 +260,6 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
-- 🔐 **[Auth Testing](README_AUTH_TESTING.md)** - Guida al testing dell'autenticazione
 
 ---
 
@@ -310,8 +307,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Play Test
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
 - Autenticazione & Progetti
-  - Login/logout, registrazione, sessioni persistenti, utente demo
-  - Progetti per utente, strumenti di debug (Reset Demo, Debug Auth, Force Reset)
+  - Login/logout, registrazione, sessioni persistenti
+  - Progetti per utente
 - Menu File
   - Nuovo/Apri/Salva/Export, Impostazioni Progetto, Elimina Progetto
 - Runtime Standalone
@@ -432,7 +429,6 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 - `JS/main.js` — Motore editor: tabs, canvas, stanze/oggetti, personaggi, scripting, UI
 - `runtime.html` — Player runtime standalone
 - `JS/runtime.js` — Renderer runtime (stanze/assets, start room, OPFS/localStorage)
-- `README_AUTH_TESTING.md` — Guida al testing dell’autenticazione
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Lista completa API da implementare
 - `img/cover.png` — Cover (in alto)
 
