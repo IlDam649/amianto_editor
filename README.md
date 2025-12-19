@@ -1,6 +1,18 @@
-<p align="center">
-  <img src="img/Amnt.png" alt="Amianto Editor" width="180" />
-</p>
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="220">
+        <img src="img/cover.png" alt="Amianto Editor Cover" width="180" />
+      </td>
+      <td align="center" width="280" style="vertical-align: middle;">
+        <h2 style="font-size: 2.5em; margin: 0; font-weight: bold;">si evolve....</h2>
+      </td>
+      <td align="center" width="220">
+        <img src="img/Amnt.png" alt="Amianto Editor" width="180" />
+      </td>
+    </tr>
+  </table>
+</div>
 
 # Amianto Editor
 
@@ -47,10 +59,14 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Contextual Cursors
   - Define cursor per target type (hotspot/character/scene object)
   - Upload cursor image, optional action text; list active cursors
-- Scripting (JavaScript, Jailed sandbox)
+- Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
   - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
+  - **GameAPI**: Complete API exposed to user scripts (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
+  - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
   - Save/Load scripts, Run/Stop sandbox
 - Play Test Panel
@@ -60,10 +76,13 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Per-user project storage
 - File Menu
   - New/Open/Save/Export, Project Settings, Delete Project
-- Standalone Runtime
+- Standalone Runtime & Play Test
   - `runtime.html` loads and renders exported JSON via `JS/runtime.js`
   - Load JSON file, load last saved (OPFS/localStorage), download JSON
   - Auto-try `game.json` at startup; shows runtime logs
+  - **Sandboxed Runtime**: Script execution in isolated iframe during Play Test
+  - **GameAPI Integration**: Full API access in runtime with context management (roomId, objectId, variables)
+  - **Script Console**: Real-time logging from scripts with level filtering and timestamps
 - Theming
   - Acid dark + neon UI across forms, buttons, lists, dropdowns
 
@@ -72,7 +91,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 The JavaScript scripting system currently provides **24 working APIs** organized in 5 categories:
 
 ### Basic APIs
-- **`print(...)`** - Outputs messages to the debug console
+- **`print(...)`** / **`GameAPI.print(...)`** - Outputs messages to the script console (with serialization)
+- **`GameAPI.error(...)`** - Outputs error messages to the script console
 - **`show_message(text)`** - Shows notification messages to the user
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
@@ -104,10 +124,15 @@ The JavaScript scripting system currently provides **24 working APIs** organized
 - **`set_room_background(imageUrlOrDataUrl)`** - Sets the room background image
 
 ### Game Variables APIs
-- **`get_var(key)`** / **`Game.getVar(key)`** - Gets a game variable value
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Sets a game variable value
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Gets a game variable value
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Sets a game variable value
 - **`has_var(key)`** / **`Game.hasVar(key)`** - Checks if a variable exists
 - **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggles a boolean variable
+
+### Runtime Context APIs (GameAPI)
+- **`GameAPI.getCurrentRoom()`** - Returns the current room ID
+- **`GameAPI.getCurrentObject()`** - Returns the current object ID (if any)
+- **`GameAPI.changeRoom(roomId)`** - Requests a room change (sends ROOM_CHANGE_REQUEST message)
 
 ### Usage Examples
 ```javascript
@@ -298,10 +323,14 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Cursori Contestuali
   - Definisci cursori per tipo target (hotspot/personaggio/oggetto scena)
   - Upload immagine cursore, testo azione opzionale; lista cursori attivi
-- Scripting (JavaScript, sandbox Jailed)
+- Scripting (JavaScript, Runtime Sandboxed)
   - Editor JavaScript integrato (CodeMirror)
   - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Runtime Sandboxed**: Esecuzione script in iframe isolato con `sandbox="allow-scripts"` per sicurezza
+  - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **Messaggistica Robusta**: Sistema MessageQueue con buffer, retry (3 tentativi) e fallback a console
+  - **Script Logging**: ScriptLogService integrato con log timestamped e livelli (info, warning, error)
   - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
   - Salva/Carica script, Esegui/Stop sandbox
 - Play Test
@@ -311,10 +340,13 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Progetti per utente
 - Menu File
   - Nuovo/Apri/Salva/Export, Impostazioni Progetto, Elimina Progetto
-- Runtime Standalone
+- Runtime Standalone & Play Test
   - `runtime.html` + `JS/runtime.js` per caricare/eseguire JSON di progetto
   - Carica file JSON, Carica ultimo salvataggio (OPFS/localStorage), Download JSON
-  - Tentativo automatico di caricare `game.json` all’avvio; log runtime
+  - Tentativo automatico di caricare `game.json` all'avvio; log runtime
+  - **Runtime Sandboxed**: Esecuzione script in iframe isolato durante Play Test
+  - **Integrazione GameAPI**: Accesso completo alle API nel runtime con gestione contesto (roomId, objectId, variables)
+  - **Script Console**: Logging in tempo reale dagli script con filtri per livello e timestamp
 - Tema
   - Interfaccia acid dark + neon uniforme (form, pulsanti, liste, menu)
 
@@ -323,7 +355,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** organizzate in 5 categorie:
 
 ### API Base
-- **`print(...)`** - Invia messaggi alla console di debug
+- **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
+- **`GameAPI.error(...)`** - Invia messaggi di errore alla script console
 - **`show_message(text)`** - Mostra notifiche all'utente
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
@@ -355,10 +388,15 @@ Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** o
 - **`set_room_background(imageUrlOrDataUrl)`** - Imposta l'immagine di sfondo della stanza
 
 ### API Variabili di Gioco
-- **`get_var(key)`** / **`Game.getVar(key)`** - Ottiene il valore di una variabile di gioco
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Imposta il valore di una variabile di gioco
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Ottiene il valore di una variabile di gioco
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Imposta il valore di una variabile di gioco
 - **`has_var(key)`** / **`Game.hasVar(key)`** - Verifica se una variabile esiste
 - **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Inverte il valore di una variabile booleana
+
+### API Contesto Runtime (GameAPI)
+- **`GameAPI.getCurrentRoom()`** - Restituisce l'ID della stanza corrente
+- **`GameAPI.getCurrentObject()`** - Restituisce l'ID dell'oggetto corrente (se presente)
+- **`GameAPI.changeRoom(roomId)`** - Richiede un cambio stanza (invia messaggio ROOM_CHANGE_REQUEST)
 
 ### Esempi di Utilizzo
 ```javascript

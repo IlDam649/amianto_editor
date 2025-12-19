@@ -6102,18 +6102,44 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     // Observe Firebase auth state
-    fbObserveAuthState(function(user){
+    fbObserveAuthState(async function(user){
       // In demo mode, ignore Firebase auth state transitions
       if (isDemoMode) {
         return;
       }
       if (user) {
-        currentUser = {
+        const mappedUser = {
           username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
           email: user.email || '',
           uid: user.uid
         };
+        
+        // Se l'utente è già loggato e corrisponde, sincronizza solo i progetti
+        if (currentUser && currentUser.uid === mappedUser.uid) {
+          // Utente già loggato, sincronizza solo i progetti
+          if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+            try {
+              await syncProjectsFromFirestore(mappedUser.uid);
+            } catch (error) {
+              console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
+            }
+          }
+          return;
+        }
+        
+        // Nuovo login: imposta utente e sincronizza
+        currentUser = mappedUser;
+        localStorage.setItem('amiantoCurrentUser', mappedUser.username);
         showDashboard();
+        
+        // Sincronizza progetti da Firestore
+        if (mappedUser.uid && window.firebaseDB && window.firebaseAuth) {
+          try {
+            await syncProjectsFromFirestore(mappedUser.uid);
+          } catch (error) {
+            console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
+          }
+        }
       } else {
         currentUser = null;
         showLoginPage();
@@ -6204,7 +6230,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Login user
-  function loginUser(user, rememberMe = false) {
+  async function loginUser(user, rememberMe = false) {
     currentUser = user;
     localStorage.setItem('amiantoCurrentUser', user.username);
 
@@ -6216,6 +6242,30 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     showDashboard();
     showNotification(`Welcome back, ${user.username}!`, 'success');
+
+    // Sincronizza progetti da Firestore dopo il login
+    if (user.uid && window.firebaseDB && window.firebaseAuth) {
+      console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
+      showNotification('Sincronizzazione progetti in corso...', 'info');
+      
+      try {
+        const syncSuccess = await syncProjectsFromFirestore(user.uid);
+        if (syncSuccess) {
+          console.log('[Login] ✅ Sincronizzazione progetti completata');
+          // Ricarica la lista progetti se la dashboard è già aperta
+          if (typeof loadUserProjects === 'function') {
+            loadUserProjects();
+          }
+        } else {
+          console.warn('[Login] Sincronizzazione progetti non completata (fallback a cache locale)');
+        }
+      } catch (error) {
+        console.error('[Login] Errore durante sincronizzazione progetti:', error);
+        showNotification('Errore sincronizzazione progetti. Usando cache locale.', 'warning');
+      }
+    } else {
+      console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
+    }
   }
 
   // Show login error
@@ -7057,6 +7107,158 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
+   * Sincronizza i progetti da Firestore al login
+   * Carica tutti i progetti da Firestore e li sincronizza con localStorage
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<boolean>} - true se sincronizzazione completata, false altrimenti
+   * 
+   * AGGIUNTO: Questa funzione sincronizza i progetti da Firestore al login
+   */
+  async function syncProjectsFromFirestore(userId) {
+    try {
+      console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId });
+      
+      if (!window.firebaseDB || !userId) {
+        console.warn('[Sync] Firestore non disponibile o userId mancante');
+        return false;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Sync] Utente non autenticato - impossibile sincronizzare');
+        return false;
+      }
+
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid !== userId) {
+        console.error('[Sync] userId non corrisponde a utente autenticato', { userId, currentAuthUid });
+        return false;
+      }
+
+      // Carica lista progetti da Firestore
+      const firestoreProjects = await listProjectsFromFirestore(userId);
+      console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
+
+      if (firestoreProjects.length === 0) {
+        console.log('[Sync] Nessun progetto su Firestore, sincronizzazione completata');
+        return true;
+      }
+
+      // Carica progetti locali esistenti
+      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      console.log('[Sync] Progetti locali esistenti:', localProjects.length);
+
+      // Crea una mappa dei progetti locali per confronto rapido
+      const localProjectsMap = new Map();
+      localProjects.forEach(p => {
+        if (p && p.settings && p.settings.name) {
+          const projectId = p.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          localProjectsMap.set(projectId, p);
+        }
+      });
+
+      // Sincronizza ogni progetto da Firestore
+      const syncedProjects = [];
+      let syncedCount = 0;
+      let newCount = 0;
+      let updatedCount = 0;
+
+      for (const firestoreProject of firestoreProjects) {
+        try {
+          const projectId = firestoreProject.id;
+          const projectName = firestoreProject.name;
+
+          // Carica i dati completi del progetto da Firestore
+          const projectData = await loadProjectFromFirestore(userId, projectId);
+          
+          if (!projectData) {
+            console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
+            continue;
+          }
+
+          // Prepara entry per la lista progetti
+          const projectEntry = {
+            settings: projectData.settings || { name: projectName },
+            updatedAt: firestoreProject.updatedAt || new Date().toISOString(),
+            createdAt: firestoreProject.createdAt || new Date().toISOString(),
+            source: 'firestore'
+          };
+
+          // Controlla se il progetto esiste già localmente
+          const localProject = localProjectsMap.get(projectId);
+          
+          if (localProject) {
+            // Progetto esiste localmente: confronta timestamp e mantieni il più recente
+            const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
+            const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
+            
+            if (firestoreUpdated >= localUpdated) {
+              // Firestore è più recente o uguale: usa Firestore
+              syncedProjects.push(projectEntry);
+              updatedCount++;
+              
+              // Salva anche il JSON completo in cache locale
+              const jsonString = JSON.stringify(projectData);
+              const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+              localStorage.setItem(projectKey, jsonString);
+              
+              console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
+            } else {
+              // Locale è più recente: mantieni locale
+              syncedProjects.push(localProject);
+              console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
+            }
+          } else {
+            // Nuovo progetto da Firestore
+            syncedProjects.push(projectEntry);
+            newCount++;
+            
+            // Salva il JSON completo in cache locale
+            const jsonString = JSON.stringify(projectData);
+            const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+            localStorage.setItem(projectKey, jsonString);
+            
+            console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+          }
+
+          syncedCount++;
+        } catch (error) {
+          console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        }
+      }
+
+      // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
+      localProjects.forEach(localProject => {
+        if (localProject && localProject.settings && localProject.settings.name) {
+          const projectId = localProject.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          const existsInFirestore = firestoreProjects.some(fp => {
+            const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+            return fpId === projectId;
+          });
+          
+          if (!existsInFirestore) {
+            // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
+            syncedProjects.push(localProject);
+            console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${localProject.settings.name}`);
+          }
+        }
+      });
+
+      // Salva lista sincronizzata in localStorage
+      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(syncedProjects));
+
+      console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
+      addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
+      
+      return true;
+    } catch (error) {
+      console.error('[Sync] ❌ Errore durante la sincronizzazione:', error);
+      addDebugMessage(`Errore sincronizzazione: ${error.message || error}`, 'error');
+      return false;
+    }
+  }
+
+  /**
    * Autosave su cache locale (localStorage) come fallback temporaneo
    * @param {string} projectName - Nome del progetto
    * @param {string} jsonString - JSON serializzato del progetto
@@ -7814,11 +8016,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Show project list (modal)
-  window.showProjectList = function() {
+  window.showProjectList = async function() {
     if (!currentUser) {
       showNotification('Please login to view projects', 'warning');
       return;
     }
+    
+    // Ricarica progetti da Firestore per avere dati aggiornati
+    if (currentUser.uid && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      try {
+        console.log('[ProjectList] Ricarica progetti da Firestore...');
+        await syncProjectsFromFirestore(currentUser.uid);
+      } catch (error) {
+        console.error('[ProjectList] Errore ricarica progetti:', error);
+      }
+    }
+    
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     // Crea modale
     const modal = document.createElement('div');

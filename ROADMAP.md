@@ -4,9 +4,10 @@
 
 **Amianto Editor** è una webapp per creare giochi punta e clicca nel browser. L'architettura è divisa in:
 - **Editor** (`index.html` + `JS/main.js`): Interfaccia di editing con tabs
-- **Runtime** (`runtime.html` + `JS/runtime.js`): Player standalone per test/gioco
+- **Runtime Standalone** (`runtime.html` + `JS/runtime.js`): Player standalone per test/gioco
+- **Runtime Sandboxed** (iframe + `JS/runtime.js`): Esecuzione script isolata durante Play Test con sistema MessageQueue robusto
 - **Backend**: Firebase (autenticazione, storage progetti)
-- **Scripting**: JavaScript con sandbox Jailed per sicurezza
+- **Scripting**: JavaScript eseguito in iframe sandboxed (`sandbox="allow-scripts"`) per isolamento completo e sicurezza
 
 ---
 
@@ -143,9 +144,20 @@
 - Log runtime base
 - Auto-load da OPFS/localStorage/game.json
 
+#### ✅ **Completato**
+- **Sistema print/log**: ✅ Implementato sistema completo con MessageQueue (buffer, retry fino a 3 tentativi, fallback a console locale)
+  - Sistema di messaggistica robusto con coda messaggi (max 1000)
+  - Retry automatico con delay configurabile
+  - Fallback alla console locale se parent non disponibile
+  - Gestione priorità messaggi (errori hanno priorità alta)
+- **Runtime sandboxed**: ✅ Sistema completo di esecuzione script isolato
+  - Iframe con sandbox="allow-scripts" per isolamento completo
+  - GameAPI esposto agli script utente con API limitate e sicure
+  - Gestione contesto di esecuzione (roomId, objectId, variables)
+  - Sistema di inizializzazione con RUNTIME_READY
+  - Gestione script pending durante inizializzazione
+
 #### 🟡 **Parzialmente Implementato**
-- **Sistema print/log**: postMessage funziona ma può perdere messaggi
-  - **Prossimo passo**: Buffer messaggi, retry, fallback a console locale
 - **Cambio stanza**: `load_room()` esiste ma non implementato completamente
   - **Prossimo passo**: Implementare cambio stanza con transizione, cleanup, script execution
 - **Sistema inventario runtime**: API placeholder, nessun rendering
@@ -256,14 +268,30 @@
 - ✅ Sistema variabili (4 API): `Game.getVar()`, `Game.setVar()`, `Game.hasVar()`, `Game.toggleVar()`
 - ✅ API base (3 API): `print()`, `show_message()`, `move_object()`
 
-#### 1.1 Fix Sistema Print/Log Runtime
-- **Stato**: 🟡 Parzialmente implementato
-- **Problema**: postMessage può perdere messaggi, sincronizzazione instabile
-- **Soluzione**: 
-  - Buffer messaggi con retry mechanism
-  - Fallback a console locale se opener chiuso
-  - Queue system per messaggi in ordine
-- **Tempo stimato**: 2-3 giorni
+**✅ COMPLETATO - Sistema Runtime Sandboxed**:
+- ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
+- ✅ Sistema MessageQueue robusto (buffer, retry, fallback)
+- ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `changeRoom()`, `getCurrentRoom()`, `getCurrentObject()`)
+- ✅ ScriptLogService integrato con logging timestamped e livelli
+- ✅ Gestione contesto esecuzione (roomId, objectId, variables)
+- ✅ Sistema di inizializzazione con RUNTIME_READY e script pending
+
+#### 1.1 ✅ Fix Sistema Print/Log Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo MessageQueue implementato
+  - ✅ Buffer messaggi con coda (MAX_QUEUE_SIZE: 1000)
+  - ✅ Retry mechanism con MAX_RETRIES: 3 e RETRY_DELAY: 100ms
+  - ✅ Fallback a console locale se parent non disponibile
+  - ✅ Sistema di priorità messaggi (errori hanno priorità alta)
+  - ✅ Check disponibilità parent con intervallo configurabile
+  - ✅ Gestione timeout e cleanup coda
+- **GameAPI completo**: 
+  - ✅ `GameAPI.print()` - Logging con serializzazione valori
+  - ✅ `GameAPI.error()` - Error logging
+  - ✅ `GameAPI.getVariable()` / `GameAPI.setVariable()` - Gestione variabili
+  - ✅ `GameAPI.changeRoom()` - Richiesta cambio stanza
+  - ✅ `GameAPI.getCurrentRoom()` / `GameAPI.getCurrentObject()` - Info contesto
+- **ScriptLogService**: Sistema di logging integrato nell'editor con timestamp e livelli (info, warning, error)
 
 #### 1.2 Implementare Interazioni Click Runtime
 - **Stato**: ❌ Mancante
@@ -489,11 +517,15 @@
 
 ## ⚠️ PROBLEMI STRUTTURALI CRITICI
 
-### 1. **Comunicazione Editor↔Runtime Instabile**
-- **Problema**: postMessage può perdere messaggi, window.opener può essere null
-- **Impatto**: Print/log non affidabili, debugging difficile
-- **Soluzione immediata**: Buffer + retry + fallback console
-- **Soluzione a lungo termine**: WebSocket o SharedWorker per comunicazione stabile
+### 1. ✅ **Comunicazione Editor↔Runtime - RISOLTO**
+- **Problema originale**: postMessage può perdere messaggi, window.opener può essere null
+- **Soluzione implementata**: ✅ Sistema MessageQueue completo con:
+  - Buffer messaggi con coda (MAX_QUEUE_SIZE: 1000)
+  - Retry mechanism (MAX_RETRIES: 3, RETRY_DELAY: 100ms)
+  - Fallback a console locale se parent non disponibile
+  - Sistema di priorità messaggi
+  - Check disponibilità parent periodico
+- **Stato**: ✅ Completato e funzionante
 
 ### 2. **Mancanza Sistema di Eventi Runtime**
 - **Problema**: Runtime non ha sistema eventi centralizzato
@@ -514,13 +546,16 @@
 
 ## 📈 PRIORITÀ SVILUPPO RACCOMANDATE
 
-### ✅ **Completato (Fase 1 - Sistema Scripting)**
+### ✅ **Completato (Fase 1 - Sistema Scripting e Runtime)**
 - ✅ Sistema eventi completo (5 API)
 - ✅ Sistema inventario completo (5 API)
 - ✅ Sistema oggetti completo (5 API)
 - ✅ Sistema stanze completo (4 API)
 - ✅ Sistema variabili completo (4 API)
-- **Totale: 24 API implementate e funzionanti**
+- ✅ Sistema Runtime Sandboxed completo con MessageQueue robusto
+- ✅ GameAPI completo con tutte le funzioni di base
+- ✅ ScriptLogService integrato
+- **Totale: 24 API implementate e funzionanti + Runtime Sandboxed completo**
 
 ### **Immediato (Settimane 1-4)**
 1. Fix sistema print/log runtime (Fase 1.1)
@@ -559,6 +594,6 @@
 ---
 
 *Roadmap aggiornata il: Gennaio 2025*
-*Versione progetto analizzata: 0.2*
-*Ultimo aggiornamento: Sistema Scripting API completato (24 API implementate)*
+*Versione progetto analizzata: 0.3*
+*Ultimo aggiornamento: Sistema Runtime Sandboxed completato con MessageQueue robusto, GameAPI completo e ScriptLogService*
 
