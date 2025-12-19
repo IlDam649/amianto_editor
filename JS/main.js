@@ -6507,65 +6507,486 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  // ================================
+  // FIRESTORE PERSISTENCE SYSTEM
+  // ================================
+  // 
+  // AGGIUNTO: Sistema completo di salvataggio persistente su Firestore
+  // 
+  // COSA È GIÀ IMPLEMENTATO:
+  // - Firebase è già configurato in firebase-config.js (window.firebaseDB disponibile)
+  // - serializeProject() esiste e funziona
+  // - applyProjectObject() esiste per caricare progetti
+  // - localStorage/OPFS come cache locale
+  // 
+  // COSA È STATO AGGIUNTO:
+  // - saveProjectToFirestore(): Salva progetto su Firestore
+  // - loadProjectFromFirestore(): Carica progetto da Firestore
+  // - listProjectsFromFirestore(): Lista progetti da Firestore (TODO: integrare in UI)
+  // - autosaveToCache(): Autosave su cache locale come fallback
+  // - Modificato saveCurrentProject(): Ora salva anche su Firestore
+  // - Modificato openProjectByName(): Carica prima da Firestore, poi fallback cache
+  // 
+  // STRUTTURA FIRESTORE:
+  // users/{userId}/projects/{projectId}
+  // {
+  //   name: string,
+  //   projectData: string (JSON serializzato),
+  //   createdAt: timestamp,
+  //   updatedAt: timestamp
+  // }
+  // 
+  // TODO:
+  // - Implementare sistema di projectId univoci (attualmente usa nome normalizzato)
+  // - Integrare listProjectsFromFirestore() nella UI di selezione progetti
+  // - Aggiungere autosave periodico (ogni 30-60 secondi)
+  //
+
+  /**
+   * Salva un progetto su Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto (usa il nome del progetto come ID temporaneo)
+   * @param {Object} projectData - Oggetto progetto completo (già serializzato)
+   * @returns {Promise<boolean>} - true se salvato con successo, false altrimenti
+   * 
+   * GIÀ IMPLEMENTATO: Firebase è già configurato in firebase-config.js
+   * AGGIUNTO: Questa funzione per salvare su Firestore
+   */
+  async function saveProjectToFirestore(userId, projectId, projectData) {
+    try {
+      console.log('[Firestore] Tentativo salvataggio progetto...', { userId, projectId });
+      
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
+        addDebugMessage('[Firestore] Firestore non disponibile, uso fallback cache', 'warning');
+        return false;
+      }
+      console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
+
+      // Verifica che userId e projectId siano validi
+      if (!userId || !projectId) {
+        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
+        addDebugMessage('[Firestore] userId o projectId mancanti', 'error');
+        return false;
+      }
+
+      const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
+      const jsonString = JSON.stringify(projectData);
+      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length });
+
+      // Struttura dati Firestore: users/{userId}/projects/{projectId}
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      console.log('[Firestore] Reference creata:', projectRef.path);
+
+      // Verifica se il documento esiste già per preservare createdAt
+      const docSnapshot = await projectRef.get();
+      const documentExists = docSnapshot.exists;
+      
+      // Prepara i dati da salvare
+      const firestoreData = {
+        name: projectName,
+        projectData: jsonString, // Salva come stringa JSON per evitare limiti di profondità Firestore
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      
+      // Aggiungi createdAt solo se il documento non esiste
+      if (!documentExists) {
+        firestoreData.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+        console.log('[Firestore] Creazione nuovo documento');
+      } else {
+        console.log('[Firestore] Aggiornamento documento esistente');
+      }
+
+      console.log('[Firestore] Tentativo scrittura su Firestore...');
+      
+      // Usa set con merge per creare o aggiornare
+      await projectRef.set(firestoreData, { merge: true });
+
+      console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
+      addDebugMessage(`[Firestore] Progetto salvato: ${projectName}`, 'success');
+      return true;
+    } catch (error) {
+      console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
+      console.error('[Firestore] Dettagli errore:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      addDebugMessage(`[Firestore] Errore salvataggio: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * Carica un progetto da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto
+   * @returns {Promise<Object|null>} - Oggetto progetto o null se non trovato/errore
+   * 
+   * AGGIUNTO: Questa funzione per caricare da Firestore
+   */
+  async function loadProjectFromFirestore(userId, projectId) {
+    try {
+      console.log('[Firestore] Tentativo caricamento progetto...', { userId, projectId });
+      
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Firestore] Firestore non disponibile');
+        return null;
+      }
+
+      // Verifica che userId e projectId siano validi
+      if (!userId || !projectId) {
+        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
+        return null;
+      }
+
+      // Verifica che l'utente sia autenticato (per le regole di sicurezza)
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Firestore] Utente non autenticato - impossibile caricare da Firestore');
+        return null;
+      }
+
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid !== userId) {
+        console.error('[Firestore] userId non corrisponde a utente autenticato', {
+          userId,
+          currentAuthUid
+        });
+        return null;
+      }
+
+      console.log('[Firestore] Verifiche superate, accesso a Firestore...');
+
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      console.log('[Firestore] Reference creata:', projectRef.path);
+
+      const doc = await projectRef.get();
+
+      if (!doc.exists) {
+        console.log(`[Firestore] Progetto non trovato: ${projectId}`);
+        return null;
+      }
+
+      const data = doc.data();
+      if (!data || !data.projectData) {
+        console.error('[Firestore] Dati progetto non validi');
+        return null;
+      }
+
+      // Parse del JSON salvato
+      const projectObj = JSON.parse(data.projectData);
+      console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
+      addDebugMessage(`[Firestore] Progetto caricato: ${data.name || projectId}`, 'success');
+      return projectObj;
+    } catch (error) {
+      console.error('[Firestore] ❌ Errore durante il caricamento:', error);
+      console.error('[Firestore] Dettagli errore:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      addDebugMessage(`[Firestore] Errore caricamento: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      return null;
+    }
+  }
+
+  /**
+   * Test connessione Firestore - funzione di debug
+   * AGGIUNTO: Funzione per testare se Firestore funziona correttamente
+   */
+  window.testFirestoreConnection = async function() {
+    console.log('=== TEST CONNESSIONE FIRESTORE ===');
+    
+    // 1. Verifica Firestore disponibile
+    if (!window.firebaseDB) {
+      console.error('❌ window.firebaseDB non disponibile');
+      addDebugMessage('❌ Firestore non disponibile', 'error');
+      return false;
+    }
+    console.log('✅ window.firebaseDB disponibile');
+    
+    // 2. Verifica utente autenticato
+    if (!currentUser || !currentUser.uid) {
+      console.error('❌ Utente non autenticato o uid mancante');
+      addDebugMessage('❌ Utente non autenticato', 'error');
+      return false;
+    }
+    console.log('✅ Utente autenticato:', currentUser.uid);
+    
+    // 3. Test scrittura
+    try {
+      const testRef = window.firebaseDB
+        .collection('users')
+        .doc(currentUser.uid)
+        .collection('projects')
+        .doc('_test_connection');
+      
+      const testData = {
+        name: 'Test Connection',
+        projectData: '{"test": true}',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      
+      console.log('🔄 Tentativo scrittura test...');
+      await testRef.set(testData);
+      console.log('✅ Scrittura test riuscita!');
+      
+      // 4. Test lettura
+      console.log('🔄 Tentativo lettura test...');
+      const doc = await testRef.get();
+      if (doc.exists) {
+        console.log('✅ Lettura test riuscita!', doc.data());
+        addDebugMessage('✅ Test Firestore: connessione OK', 'success');
+        
+        // Pulisci documento di test
+        await testRef.delete();
+        console.log('🧹 Documento di test eliminato');
+        return true;
+      } else {
+        console.error('❌ Documento test non trovato dopo scrittura');
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Errore durante test:', error);
+      console.error('Dettagli:', {
+        code: error.code,
+        message: error.message
+      });
+      addDebugMessage(`❌ Test Firestore fallito: ${error.message} (${error.code})`, 'error');
+      return false;
+    }
+  };
+
+  /**
+   * Lista tutti i progetti di un utente da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti con metadata
+   * 
+   * AGGIUNTO: Questa funzione per listare progetti da Firestore
+   * TODO: Integrare questa funzione nella UI di selezione progetti
+   */
+  async function listProjectsFromFirestore(userId) {
+    try {
+      if (!window.firebaseDB || !userId) {
+        return [];
+      }
+
+      const projectsRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects');
+
+      const snapshot = await projectsRef.get();
+      const projects = [];
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        projects.push({
+          id: doc.id,
+          name: data.name || doc.id,
+          updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+        });
+      });
+
+      return projects;
+    } catch (error) {
+      console.error('[Firestore] Errore durante il listing:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Autosave su cache locale (localStorage) come fallback temporaneo
+   * @param {string} projectName - Nome del progetto
+   * @param {string} jsonString - JSON serializzato del progetto
+   * 
+   * GIÀ IMPLEMENTATO: localStorage è già usato per cache
+   * AGGIUNTO: Questa funzione centralizza l'autosave su cache
+   */
+  function autosaveToCache(projectName, jsonString) {
+    try {
+      if (!currentUser || !projectName) return;
+
+      // Salva in localStorage come backup temporaneo
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      localStorage.setItem(projectKey, jsonString);
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      
+      // Aggiorna timestamp cache
+      const cacheMeta = {
+        savedAt: new Date().toISOString(),
+        source: 'cache'
+      };
+      localStorage.setItem(`${projectKey}_meta`, JSON.stringify(cacheMeta));
+
+      console.log('[Cache] Autosave completato su cache locale');
+    } catch (error) {
+      console.error('[Cache] Errore autosave cache:', error);
+    }
+  }
+
   // Save current project for current user
-  function saveCurrentProject() {
+  // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  window.saveCurrentProject = async function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
       return;
     }
+
     const jsonString = window.serializeProjectToJsonString(true);
-    // Mirror in localStorage (used by runtime)
+    const projectObj = window.serializeProject();
+    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
+    
+    // TODO: Implementare sistema di projectId univoci
+    // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
+    // In futuro, generare ID univoci (UUID) e salvare mapping nome->ID in Firestore.
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    // Le regole di sicurezza controllano request.auth.uid == userId
+    const userId = currentUser.uid;
+    if (!userId) {
+      console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
+      addDebugMessage('[Firestore] Utente non autenticato correttamente', 'error');
+      // Continua con cache locale come fallback
+    }
+
+    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
+    let firestoreSuccess = false;
+    if (userId) {
+      console.log('[Save] Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
+      firestoreSuccess = await saveProjectToFirestore(userId, projectId, projectObj);
+      console.log('[Save] Risultato salvataggio Firestore:', firestoreSuccess);
+    } else {
+      console.warn('[Save] userId non disponibile, salto Firestore');
+    }
+
+    // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
+    autosaveToCache(projectName, jsonString);
+
+    // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
 
-    // Also keep a lightweight entry per-user for quick project listing
-    const projectObj = window.serializeProject();
+    // 4. LIGHTWEIGHT ENTRY PER LISTING - GIÀ IMPLEMENTATO
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectObj.settings.name);
-    const entry = { settings: projectObj.settings, updatedAt: new Date().toISOString() };
+    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
+    const entry = { 
+      settings: projectObj.settings, 
+      updatedAt: new Date().toISOString(),
+      source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
+    };
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
 
-    // Store full JSON per progetto come backup locale per apertura rapida
+    // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
     try {
-      const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
       const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
       localStorage.setItem(projectKey, jsonString);
       localStorage.setItem('amiantoActiveProjectName', projectName);
       localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
     } catch (_) {}
 
-    // Persist to OPFS (silent) and also offer a regular file save (may prompt the user)
-    saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name);
-    saveProjectJsonToFile(jsonString, projectObj.settings && projectObj.settings.name);
-    showNotification('Project saved successfully!', 'success');
+    // 6. PERSIST TO OPFS (silent) - GIÀ IMPLEMENTATO
+    saveProjectJsonToOPFS(jsonString, projectName);
+
+    // 7. OFFER FILE SAVE (may prompt user) - GIÀ IMPLEMENTATO
+    // Nota: saveProjectJsonToFile apre un dialog, quindi non lo chiamiamo automaticamente
+    // saveProjectJsonToFile(jsonString, projectName);
+
+    // Messaggio di successo con indicazione della fonte
+    if (firestoreSuccess) {
+      showNotification('Project saved successfully to Firestore!', 'success');
+    } else {
+      showNotification('Project saved to cache (Firestore unavailable)', 'warning');
+    }
   }
 
   // Create new project
-  window.createNewProject = function() {
+  // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
+  window.createNewProject = async function() {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
       return;
     }
 
     const projectName = prompt('Enter project name:');
-    if (!projectName) return;
+    if (!projectName || !projectName.trim()) return;
 
-    // Initialize new project
+    const trimmedName = projectName.trim();
+
+    // Crea progetto completo con struttura corretta
     const newProject = {
+      format: 'amianto-game',
+      version: 1,
+      meta: {
+        exportedAt: new Date().toISOString(),
+        editor: 'Amianto Editor',
+        editorVersion: '0.1'
+      },
       settings: {
-        name: projectName,
+        name: trimmedName,
         canvasWidth: 800,
         canvasHeight: 600
       },
       rooms: [],
-      createdAt: new Date().toISOString()
+      guis: [],
+      characters: [],
+      inventory: [],
+      scripts: {},
+      attachments: {},
+      cursors: [],
+      variables: {
+        definitions: [],
+        state: {}
+      },
+      eventConditions: {
+        objects: {},
+        hotspots: {},
+        characters: {},
+        guiButtons: {},
+        inventory: {}
+      }
     };
 
+    // Apri il progetto nell'editor
+    await applyProjectObject(newProject);
+
+    // Imposta come progetto attivo
+    localStorage.setItem('amiantoActiveProjectName', trimmedName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+    // Aggiungi alla lista progetti utente
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    userProjects.push(newProject);
+    const entry = {
+      settings: newProject.settings,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
 
-    showNotification(`Project "${projectName}" created!`, 'success');
+    // Salva su Firestore se l'utente è autenticato
+    const userId = currentUser.uid;
+    if (userId && window.firebaseDB) {
+      const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      await saveProjectToFirestore(userId, projectId, newProject);
+    }
+
+    showNotification(`Project "${trimmedName}" created and opened!`, 'success');
   };
 
   // Helpers per file name sicuro in OPFS
@@ -6964,19 +7385,78 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   };
 
+  // MODIFICATO: Ora carica prima da Firestore, poi fallback su cache locale
   async function openProjectByName(projectName) {
-    if (!currentUser) { showNotification('Please login to open projects', 'warning'); return; }
-    if (!projectName) return;
-    // prova OPFS
-    let json = await loadProjectJsonFromOPFS(projectName);
-    if (!json) {
-      // backup locale
-      const key = `amiantoProject_${currentUser.username}:${projectName}`;
-      json = localStorage.getItem(key);
+    if (!currentUser) { 
+      showNotification('Please login to open projects', 'warning'); 
+      return; 
     }
-    if (!json) {
-      // fallback: crea progetto vuoto con solo settings
-      const fresh = {
+    if (!projectName) return;
+
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    // Le regole di sicurezza controllano request.auth.uid == userId
+    const userId = currentUser.uid;
+
+    let projectObj = null;
+    let loadedFrom = null;
+
+    // 1. PROVA FIRESTORE PRIMA (fonte ufficiale) - AGGIUNTO
+    // Verifica che l'utente sia autenticato e che Firestore sia disponibile
+    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid === userId) {
+        console.log('[Load] Tentativo caricamento da Firestore...', { userId, projectId });
+        projectObj = await loadProjectFromFirestore(userId, projectId);
+        if (projectObj) {
+          loadedFrom = 'firestore';
+          console.log('[Load] ✅ Caricato da Firestore');
+          addDebugMessage('Loaded from Firestore', 'success');
+        } else {
+          console.log('[Load] Progetto non trovato su Firestore, uso fallback');
+        }
+      } else {
+        console.warn('[Load] UID non corrisponde, salto Firestore', { userId, currentAuthUid });
+      }
+    } else {
+      console.log('[Load] Firestore non disponibile o utente non autenticato, uso fallback');
+    }
+
+    // 2. FALLBACK: OPFS - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      const json = await loadProjectJsonFromOPFS(projectName);
+      if (json) {
+        try {
+          projectObj = JSON.parse(json);
+          loadedFrom = 'opfs';
+          console.log('[Load] Caricato da OPFS');
+          addDebugMessage('Loaded from OPFS (fallback)', 'info');
+        } catch (e) {
+          console.error('[Load] Errore parsing OPFS:', e);
+        }
+      }
+    }
+
+    // 3. FALLBACK: LOCALSTORAGE CACHE - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      const key = `amiantoProject_${currentUser.username}:${projectName}`;
+      const json = localStorage.getItem(key);
+      if (json) {
+        try {
+          projectObj = JSON.parse(json);
+          loadedFrom = 'cache';
+          console.log('[Load] Caricato da cache locale');
+          addDebugMessage('Loaded from cache (fallback)', 'warning');
+        } catch (e) {
+          console.error('[Load] Errore parsing cache:', e);
+        }
+      }
+    }
+
+    // 4. FALLBACK FINALE: Progetto vuoto - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      projectObj = {
         format: 'amianto-game',
         version: 1,
         settings: { name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
@@ -6989,20 +7469,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         cursors: [],
         variables: {}
       };
-      await applyProjectObject(fresh);
-    } else {
-      await importProjectFromJson(json);
+      loadedFrom = 'new';
+      console.log('[Load] Creato progetto vuoto');
+      addDebugMessage('Created new empty project', 'info');
     }
+
+    // Applica il progetto caricato
+    await applyProjectObject(projectObj);
+
+    // Aggiorna stato locale
     localStorage.setItem('amiantoActiveProjectName', projectName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+    // Mostra notifica con fonte di caricamento
+    if (loadedFrom === 'firestore') {
+      showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
+    } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
+      showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
+    }
   }
 
+  // MODIFICATO: Ora elimina anche da Firestore
   async function deleteProjectByName(projectName) {
     if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
     if (!projectName) return;
     if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
     
-    // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    const userId = currentUser.uid;
+
+    // 1. ELIMINA DA FIRESTORE (se disponibile) - AGGIUNTO
+    if (userId && window.firebaseDB) {
+      try {
+        const projectRef = window.firebaseDB
+          .collection('users')
+          .doc(userId)
+          .collection('projects')
+          .doc(projectId);
+        await projectRef.delete();
+        console.log(`[Firestore] Progetto eliminato: ${projectName}`);
+        addDebugMessage(`[Firestore] Progetto eliminato: ${projectName}`, 'success');
+      } catch (error) {
+        console.error('[Firestore] Errore eliminazione:', error);
+        addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+      }
+    }
+    
+    // 2. Carica il JSON del progetto per ottenere la lista degli script da rimuovere - GIÀ IMPLEMENTATO
     const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
     let scriptsToRemove = [];
     try {
@@ -7015,20 +7530,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     } catch(_) {}
     
-    // Rimuovi dalla lista progetti
+    // 3. Rimuovi dalla lista progetti - GIÀ IMPLEMENTATO
     const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
     
-    // rimuovi backup locale
+    // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
     try { localStorage.removeItem(projectKey); } catch(_) {}
+    try { localStorage.removeItem(`${projectKey}_meta`); } catch(_) {} // Rimuovi anche metadata cache
     
-    // Rimuovi tutti gli script associati al progetto da localStorage
+    // 5. Rimuovi tutti gli script associati al progetto da localStorage - GIÀ IMPLEMENTATO
     scriptsToRemove.forEach(scriptName => {
       try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
     });
     
-    // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
+    // 6. Se è il progetto corrente aperto, pulisci anche jsScripts in memoria - GIÀ IMPLEMENTATO
     const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
     if (currentProjectName === projectName) {
       jsScripts.clear();
@@ -7050,7 +7566,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       rebuildScriptsTree();
     }
     
-    // rimuovi file OPFS se possibile
+    // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
     try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
     showNotification('Progetto eliminato', 'success');
   }
@@ -7137,22 +7653,75 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     });
     // New / Import
-    modal.querySelector('#btn-new-project')?.addEventListener('click', () => {
+    modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
       const projectName = prompt('Enter project name:');
-      if (!projectName) return;
+      if (!projectName || !projectName.trim()) return;
+
+      const trimmedName = projectName.trim();
+
+      // Crea progetto completo con struttura corretta
       const newProject = {
-        settings: { name: projectName, canvasWidth: 800, canvasHeight: 600 },
+        format: 'amianto-game',
+        version: 1,
+        meta: {
+          exportedAt: new Date().toISOString(),
+          editor: 'Amianto Editor',
+          editorVersion: '0.1'
+        },
+        settings: {
+          name: trimmedName,
+          canvasWidth: 800,
+          canvasHeight: 600
+        },
         rooms: [],
-        createdAt: new Date().toISOString()
+        guis: [],
+        characters: [],
+        inventory: [],
+        scripts: {},
+        attachments: {},
+        cursors: [],
+        variables: {
+          definitions: [],
+          state: {}
+        },
+        eventConditions: {
+          objects: {},
+          hotspots: {},
+          characters: {},
+          guiButtons: {},
+          inventory: {}
+        }
       };
+
+      // Apri il progetto nell'editor
+      await applyProjectObject(newProject);
+
+      // Imposta come progetto attivo
+      localStorage.setItem('amiantoActiveProjectName', trimmedName);
+      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+      // Aggiungi alla lista progetti utente
       const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      arr.push(newProject);
+      const entry = {
+        settings: newProject.settings,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      arr.push(entry);
       localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
-      showNotification(`Project "${projectName}" created!`, 'success');
-      // refresh rapido: riapri il modale
+
+      // Salva su Firestore se l'utente è autenticato
+      const userId = currentUser.uid;
+      if (userId && window.firebaseDB) {
+        const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        await saveProjectToFirestore(userId, projectId, newProject);
+      }
+
+      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+      
+      // Chiudi il modale
       const inst = bootstrap.Modal.getInstance(modal);
       if (inst) inst.hide();
-      setTimeout(() => showProjectList(), 0);
     });
     modal.querySelector('#btn-import-json')?.addEventListener('click', async () => {
       try {
@@ -7195,7 +7764,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
-    const projectName = document.getElementById('projectName').value || 'Untitled Project';
+    // Ottieni il nome del progetto da localStorage o dal campo input (se esiste)
+    let projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName) {
+      const projectNameInput = document.getElementById('projectName');
+      projectName = projectNameInput ? projectNameInput.value : null;
+    }
+    if (!projectName) {
+      // Fallback: cerca nell'oggetto serializzato
+      try {
+        const projectObj = window.serializeProject();
+        projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : null;
+      } catch (_) {}
+    }
+    if (!projectName) {
+      projectName = 'Untitled Project';
+    }
     if (confirm(`Are you sure you want to delete project "${projectName}"?`)) {
       // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
       const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
