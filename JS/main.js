@@ -225,6 +225,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Multiple GUI management
   let guis = []; // Array of GUI objects: { id, name, background, buttons }
   let currentGuiId = null;
+
+  // Asset management: mappa per tracciare assetId associati alle immagini
+  // Struttura: Map<Image, {assetId, type, projectId}>
+  // Usata per serializzare assetId invece di dataURL
+  const imageAssetMap = new Map();
   
   // Contextual cursors management
   let contextualCursors = []; // Array of cursor objects: { id, targetType, targetId, cursorImage, actionText, scriptName }
@@ -1781,20 +1786,55 @@ window.selectRoom = function(roomId) {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/*";
-      input.onchange = (e) => {
+      input.onchange = async (e) => {
         const file = e.target.files ? e.target.files[0] : null;
         if (!file) return;
-        const img = new Image();
-        img.onload = () => {
+        
+        // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+        if (!currentUser || !currentUser.uid) {
+          showNotification('Please login to upload images', 'warning');
+          return;
+        }
+        
+        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
+        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        
+        try {
+          showNotification('Uploading background...', 'info');
+          
+          // Upload immagine su Firebase Storage
+          const { assetId, downloadURL } = await uploadImage(file, projectId, 'background');
+          
+          // Carica immagine dall'URL
+          const img = await loadImageFromUrl(downloadURL);
+          if (!img) {
+            throw new Error('Failed to load image from URL');
+          }
+          
+          // Registra nella mappa asset
+          imageAssetMap.set(img, { assetId, type: 'background', projectId });
+          
+          // Imposta come background corrente
           background = img;
-          const r = rooms.get(currentRoomId); if (r) r.background = img;
+          const r = rooms.get(currentRoomId);
+          if (r) r.background = img;
           
-          // Show notification about background size
-          showNotification(`Background loaded: ${img.width}×${img.height}`, 'success');
-          
+          showNotification(`Background uploaded: ${img.width}×${img.height}`, 'success');
           redraw();
-        };
-        img.src = URL.createObjectURL(file);
+        } catch (error) {
+          console.error('[Asset] Errore upload background:', error);
+          showNotification(`Failed to upload background: ${error.message}`, 'error');
+          
+          // Fallback: carica localmente senza upload
+          const img = new Image();
+          img.onload = () => {
+            background = img;
+            const r = rooms.get(currentRoomId); if (r) r.background = img;
+            showNotification(`Background loaded locally (not saved): ${img.width}×${img.height}`, 'warning');
+            redraw();
+          };
+          img.src = URL.createObjectURL(file);
+        }
       };
       input.click();
     });
@@ -1807,11 +1847,35 @@ window.selectRoom = function(roomId) {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/*";
-      input.onchange = (e) => {
+      input.onchange = async (e) => {
         const file = e.target.files ? e.target.files[0] : null;
         if (!file) return;
-        const img = new Image();
-        img.onload = () => {
+        
+        // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+        if (!currentUser || !currentUser.uid) {
+          showNotification('Please login to upload images', 'warning');
+          return;
+        }
+        
+        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
+        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        
+        try {
+          showNotification('Uploading foreground layer...', 'info');
+          
+          // Upload immagine su Firebase Storage
+          const { assetId, downloadURL } = await uploadImage(file, projectId, 'foreground');
+          
+          // Carica immagine dall'URL
+          const img = await loadImageFromUrl(downloadURL);
+          if (!img) {
+            throw new Error('Failed to load image from URL');
+          }
+          
+          // Registra nella mappa asset
+          imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
+          
+          // Crea layer foreground
           const layer = {
             id: uid("fg"),
             name: file.name || `Layer ${foregrounds.length + 1}`,
@@ -1820,11 +1884,34 @@ window.selectRoom = function(roomId) {
             offsetY: 0
           };
           foregrounds.push(layer);
-          const r = rooms.get(currentRoomId); if (r) r.foregrounds = foregrounds;
+          const r = rooms.get(currentRoomId);
+          if (r) r.foregrounds = foregrounds;
+          
           refreshForegroundListUI();
+          showNotification('Foreground layer uploaded', 'success');
           redraw();
-        };
-        img.src = URL.createObjectURL(file);
+        } catch (error) {
+          console.error('[Asset] Errore upload foreground:', error);
+          showNotification(`Failed to upload foreground: ${error.message}`, 'error');
+          
+          // Fallback: carica localmente senza upload
+          const img = new Image();
+          img.onload = () => {
+            const layer = {
+              id: uid("fg"),
+              name: file.name || `Layer ${foregrounds.length + 1}`,
+              img: img,
+              offsetX: 0,
+              offsetY: 0
+            };
+            foregrounds.push(layer);
+            const r = rooms.get(currentRoomId); if (r) r.foregrounds = foregrounds;
+            refreshForegroundListUI();
+            showNotification('Foreground loaded locally (not saved)', 'warning');
+            redraw();
+          };
+          img.src = URL.createObjectURL(file);
+        }
       };
       input.click();
     });
@@ -1857,11 +1944,14 @@ window.selectRoom = function(roomId) {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.onchange = (e) => {
+      input.onchange = async (e) => {
         const file = e.target.files ? e.target.files[0] : null;
         if (!file) return;
+        
+        // TODO: not yet implemented - Upload GUI background to Firebase Storage
+        // Per ora carica localmente come fallback
         const img = new Image();
-        img.onload = () => { guiBackground = img; saveCurrentGUI(); showNotification('GUI background loaded', 'success'); redraw(); };
+        img.onload = () => { guiBackground = img; saveCurrentGUI(); showNotification('GUI background loaded (not saved to Storage)', 'warning'); redraw(); };
         img.src = URL.createObjectURL(file);
       };
       input.click();
@@ -2317,13 +2407,34 @@ window.selectRoom = function(roomId) {
     document.getElementById('scene-object-upload').click();
   };
 
-  window.uploadSceneObject = function(input) {
+  window.uploadSceneObject = async function(input) {
     const file = input.files[0];
     if (!file) return;
     
-    // Create image object
-    const img = new Image();
-    img.onload = () => {
+    // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+    if (!currentUser || !currentUser.uid) {
+      showNotification('Please login to upload images', 'warning');
+      return;
+    }
+    
+    const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    try {
+      showNotification('Uploading scene object...', 'info');
+      
+      // Upload immagine su Firebase Storage
+      const { assetId, downloadURL } = await uploadImage(file, projectId, 'sprite');
+      
+      // Carica immagine dall'URL
+      const img = await loadImageFromUrl(downloadURL);
+      if (!img) {
+        throw new Error('Failed to load image from URL');
+      }
+      
+      // Registra nella mappa asset
+      imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
+      
       // Generate unique name even for same image
       const baseName = file.name.replace(/\.[^/.]+$/, "");
       const timestamp = Date.now();
@@ -2346,6 +2457,8 @@ window.selectRoom = function(roomId) {
       // Add to scene objects array (room-scoped)
       sceneObjects.push(sceneObject);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      
+      showNotification('Scene object uploaded', 'success');
       
       // Add to UI list
       const sceneObjectsList = document.getElementById('scene-objects-list');
@@ -2372,9 +2485,56 @@ window.selectRoom = function(roomId) {
       
       // Show notification
       showNotification(`Scene object "${objectName}" added to canvas!`, 'success');
-    };
-    
-    img.src = URL.createObjectURL(file);
+    } catch (error) {
+      console.error('[Asset] Errore upload scene object:', error);
+      showNotification(`Failed to upload scene object: ${error.message}`, 'error');
+      
+      // Fallback: carica localmente senza upload
+      const img = new Image();
+      img.onload = () => {
+        const baseName = file.name.replace(/\.[^/.]+$/, "");
+        const timestamp = Date.now();
+        const objectName = `${baseName}_${timestamp}`;
+        
+        const sceneObject = {
+          id: uid("scene"),
+          name: objectName,
+          img: img,
+          x: 100 + Math.random() * 200,
+          y: 100 + Math.random() * 200,
+          type: "Interactive",
+          rotationRad: 0,
+          scaleX: 1,
+          scaleY: 1,
+          visible: true
+        };
+        
+        sceneObjects.push(sceneObject);
+        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+        
+        const sceneObjectsList = document.getElementById('scene-objects-list');
+        const newObject = document.createElement('div');
+        newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+        newObject.dataset.objectId = sceneObject.id;
+        newObject.innerHTML = `
+          <div>
+            <strong>${objectName}</strong>
+            <br><small>Scene object</small>
+            <br><span class="badge bg-warning">Interactive</span>
+            <br><small style="color: #888;">Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}</small>
+          </div>
+          <div>
+            <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
+            <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
+          </div>
+        `;
+        sceneObjectsList.appendChild(newObject);
+        
+        showNotification(`Scene object "${objectName}" loaded locally (not saved)`, 'warning');
+        redraw();
+      };
+      img.src = URL.createObjectURL(file);
+    }
     
     // Reset input to allow same file selection again
     input.value = '';
@@ -2710,6 +2870,8 @@ window.selectRoom = function(roomId) {
   });
 
   window.uploadCharacterFrames = function(input) {
+    // TODO: not yet implemented - Upload character frames to Firebase Storage
+    // Per ora carica localmente come fallback
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); input.value = ''; return; }
@@ -2749,7 +2911,7 @@ window.selectRoom = function(roomId) {
         dirData.frames.push(frameData);
         remaining--;
         if (remaining === 0) {
-          showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction})`, 'success');
+          showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction}) - not saved to Storage`, 'warning');
           updateDirectionInfo(); // Update the direction info display
         }
       };
@@ -6082,6 +6244,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return mod.signOut(auth);
   }
 
+  // Rimuovi progetto attivo alla chiusura della pagina
+  // Questo garantisce che ad ogni apertura/login si visualizzi il modale di selezione
+  window.addEventListener('beforeunload', function() {
+    // Rimuovi progetto attivo quando l'utente chiude la pagina
+    localStorage.removeItem('amiantoActiveProjectName');
+    localStorage.removeItem('amiantoActiveProjectOwner');
+    console.log('[Cleanup] Progetto attivo rimosso alla chiusura della pagina');
+  });
+
   // Initialize authentication system
   function initAuthSystem() {
     // Default view
@@ -6114,15 +6285,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           uid: user.uid
         };
         
-        // Se l'utente è già loggato e corrisponde, sincronizza solo i progetti
+        // Se l'utente è già loggato e corrisponde, sincronizza progetti e mostra modale se necessario
         if (currentUser && currentUser.uid === mappedUser.uid) {
-          // Utente già loggato, sincronizza solo i progetti
+          // Utente già loggato, sincronizza progetti
           if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
             try {
               await syncProjectsFromFirestore(mappedUser.uid);
             } catch (error) {
               console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
             }
+          }
+          
+          // Mostra modale selezione progetto se non c'è un progetto attivo
+          // (anche se l'utente è già loggato, ad esempio al refresh della pagina)
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (!activeProject) {
+            await showProjectSelectionModal();
           }
           return;
         }
@@ -6140,6 +6318,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
           }
         }
+        
+        // Mostra modale selezione progetto (sempre, perché il progetto attivo viene rimosso alla chiusura)
+        await showProjectSelectionModal();
       } else {
         currentUser = null;
         showLoginPage();
@@ -6229,6 +6410,190 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /**
+   * Mostra modale di selezione/creazione progetto dopo il login
+   * Sincronizza sempre i progetti da Firestore prima di mostrarli
+   * @returns {Promise<void>}
+   */
+  async function showProjectSelectionModal() {
+    if (!currentUser || !currentUser.uid) {
+      console.warn('[ProjectModal] Utente non autenticato');
+      return;
+    }
+
+    // Se c'è già un progetto attivo, non mostrare il modale
+    const activeProject = localStorage.getItem('amiantoActiveProjectName');
+    if (activeProject) {
+      console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
+      return;
+    }
+
+    // Sincronizza progetti da Firestore prima di mostrarli
+    showNotification('Synchronizing projects...', 'info');
+    try {
+      await syncProjectsFromFirestore(currentUser.uid);
+    } catch (error) {
+      console.error('[ProjectModal] Errore sincronizzazione:', error);
+      showNotification('Error synchronizing projects', 'warning');
+    }
+
+    // Carica progetti sincronizzati (da localStorage dopo sync)
+    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    const hasProjects = userProjects.length > 0;
+
+    // Crea modale dinamicamente
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = 'projectSelectionModal';
+    modal.setAttribute('tabindex', '-1');
+    modal.setAttribute('aria-labelledby', 'projectSelectionModalLabel');
+    modal.setAttribute('aria-hidden', 'true');
+    modal.setAttribute('data-bs-backdrop', 'static');
+    modal.setAttribute('data-bs-keyboard', 'false');
+
+    // Costruisci HTML del modale
+    let projectsHtml = '';
+    if (hasProjects) {
+      projectsHtml = userProjects.map((p, i) => {
+        const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
+        const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        return `
+          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
+            <div class="flex-grow-1">
+              <strong>${name}</strong>
+              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+            </div>
+            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
+              <i class="fas fa-folder-open"></i> Open
+            </button>
+          </li>
+        `;
+      }).join('');
+    }
+
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title" id="projectSelectionModalLabel">
+              <i class="fas fa-folder"></i> Your Projects
+            </h5>
+            <!-- X button rimosso: l'utente deve selezionare o creare un progetto -->
+          </div>
+          <div class="modal-body">
+            ${hasProjects ? `
+              <div class="mb-3">
+                <p class="text-muted">Select an existing project or create a new one:</p>
+              </div>
+              <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
+                <ul class="list-group">
+                  ${projectsHtml}
+                </ul>
+              </div>
+            ` : `
+              <div class="text-center py-4">
+                <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+                <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+              </div>
+            `}
+            <div class="d-grid gap-2">
+              <button class="btn btn-primary btn-lg" id="btn-create-new-project">
+                <i class="fas fa-plus"></i> Create New Project
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Aggiungi modale al DOM
+    document.body.appendChild(modal);
+
+    // Inizializza Bootstrap Modal
+    const bsModal = new bootstrap.Modal(modal, {
+      backdrop: 'static',
+      keyboard: false
+    });
+    bsModal.show();
+
+    // Gestione click su progetti esistenti
+    modal.addEventListener('click', async (e) => {
+      // Gestisci click su pulsanti "Open"
+      const target = e.target.closest('[data-action="open"]');
+      if (target) {
+        const projectName = target.getAttribute('data-project-name');
+        if (projectName) {
+          bsModal.hide();
+          showNotification(`Loading project "${projectName}"...`, 'info');
+          await openProjectByName(projectName);
+        }
+        return;
+      }
+      
+      // Previeni chiusura tramite click sul backdrop (area esterna al modale)
+      if (e.target === modal) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          showNotification('You must select or create a project to continue', 'warning');
+        }
+        return false;
+      }
+    });
+
+    // Gestione creazione nuovo progetto
+    modal.querySelector('#btn-create-new-project')?.addEventListener('click', async () => {
+      const projectName = prompt('Enter the new project name:');
+      if (projectName && projectName.trim()) {
+        bsModal.hide();
+        showNotification(`Creating project "${projectName.trim()}"...`, 'info');
+        await window.createNewProject(projectName.trim());
+        // Il progetto è stato creato e aperto, il modale è già chiuso
+      } else if (projectName !== null) {
+        // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
+        showNotification('Project name cannot be empty', 'warning');
+      }
+      // Se projectName === null, l'utente ha annullato, non fare nulla
+    });
+
+    // Rimuovi modale dal DOM quando viene nascosto
+    modal.addEventListener('hidden.bs.modal', function () {
+      modal.remove();
+    });
+
+    // Previeni completamente la chiusura del modale tramite backdrop o ESC
+    // L'utente DEVE selezionare o creare un progetto
+    modal.addEventListener('hide.bs.modal', function (e) {
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProject) {
+        e.preventDefault();
+        e.stopPropagation();
+        showNotification('You must select or create a project to continue', 'warning');
+        return false;
+      }
+    });
+
+    // Previeni chiusura tramite click sul backdrop
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          showNotification('You must select or create a project to continue', 'warning');
+        }
+      }
+    });
+  }
+
   // Login user
   async function loginUser(user, rememberMe = false) {
     currentUser = user;
@@ -6246,16 +6611,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Sincronizza progetti da Firestore dopo il login
     if (user.uid && window.firebaseDB && window.firebaseAuth) {
       console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
-      showNotification('Sincronizzazione progetti in corso...', 'info');
       
       try {
         const syncSuccess = await syncProjectsFromFirestore(user.uid);
         if (syncSuccess) {
           console.log('[Login] ✅ Sincronizzazione progetti completata');
-          // Ricarica la lista progetti se la dashboard è già aperta
-          if (typeof loadUserProjects === 'function') {
-            loadUserProjects();
-          }
         } else {
           console.warn('[Login] Sincronizzazione progetti non completata (fallback a cache locale)');
         }
@@ -6266,6 +6626,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     } else {
       console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
     }
+
+    // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
+    // L'utente deve selezionare o creare un progetto per continuare
+    await showProjectSelectionModal();
   }
 
   // Show login error
@@ -6443,17 +6807,36 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /**
+   * Serializza un'immagine: restituisce assetId se disponibile, altrimenti dataURL come fallback
+   * @param {Image} img - Oggetto Image da serializzare
+   * @returns {string|null} - assetId o dataURL, o null se immagine non valida
+   */
+  function serializeImage(img) {
+    if (!img) return null;
+    
+    // Controlla se l'immagine ha un assetId associato
+    const assetInfo = imageAssetMap.get(img);
+    if (assetInfo && assetInfo.assetId) {
+      // Restituisce assetId (prefisso per distinguerlo da dataURL)
+      return `asset:${assetInfo.assetId}`;
+    }
+    
+    // Fallback: usa dataURL (per compatibilità con progetti esistenti)
+    return imageToDataURL(img);
+  }
+
   function serializeRooms() {
     const serialized = [];
     rooms.forEach((r) => {
       serialized.push({
         id: r.id,
         name: r.name || r.id,
-        background: r.background ? imageToDataURL(r.background) : null,
+        background: serializeImage(r.background),
         foregrounds: Array.isArray(r.foregrounds) ? r.foregrounds.map(f => ({
           id: f.id,
           name: f.name,
-          image: f.img ? imageToDataURL(f.img) : null,
+          image: serializeImage(f.img),
           offsetX: Number(f.offsetX) || 0,
           offsetY: Number(f.offsetY) || 0
         })) : [],
@@ -6463,7 +6846,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           type: o.type || 'Interactive',
           x: Number(o.x) || 0,
           y: Number(o.y) || 0,
-          image: o.img ? imageToDataURL(o.img) : null
+          image: serializeImage(o.img)
         })) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
         hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
@@ -6483,7 +6866,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       name: g.name,
       type: g.type || 'MainInterface',
       settings: serializeGuiSettings(g.settings, g.type),
-      background: g.background ? imageToDataURL(g.background) : null,
+      background: serializeImage(g.background),
       buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
         id: b.id,
         name: b.name,
@@ -6492,7 +6875,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         w: Number(b.w)||0,
         h: Number(b.h)||0,
         text: b.text || '',
-        backgroundImage: b.backgroundImage ? imageToDataURL(b.backgroundImage) : null
+        backgroundImage: serializeImage(b.backgroundImage)
       })) : []
     })) : [];
   }
@@ -6530,7 +6913,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (d) {
           out.directions[dir] = {
             fps: Number(d.fps) || 8,
-            frames: Array.isArray(d.frames) ? d.frames.map(fr => (fr && fr.img) ? imageToDataURL(fr.img) : null).filter(Boolean) : []
+            frames: Array.isArray(d.frames) ? d.frames.map(fr => (fr && fr.img) ? serializeImage(fr.img) : null).filter(Boolean) : []
           };
         }
       });
@@ -6591,7 +6974,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       targetId: c.targetId,
       actionText: c.actionText || '',
       scriptName: c.scriptName || '',
-      cursorImage: c.cursorImage ? imageToDataURL(c.cursorImage) : null
+      cursorImage: serializeImage(c.cursorImage)
     })) : [];
   }
 
@@ -7366,13 +7749,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Create new project
   // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
-  window.createNewProject = async function() {
+  window.createNewProject = async function(projectNameFromModal = null) {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
       return;
     }
 
-    const projectName = prompt('Enter project name:');
+    // Se il nome progetto viene passato come parametro (dal modale), usalo
+    // Altrimenti chiedi all'utente
+    let projectName = projectNameFromModal;
+    if (!projectName) {
+      projectName = prompt('Enter project name:');
+    }
     if (!projectName || !projectName.trim()) return;
 
     const trimmedName = projectName.trim();
@@ -7438,6 +7826,370 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`Project "${trimmedName}" created and opened!`, 'success');
   };
 
+  // ================================
+  // ASSET MANAGEMENT SYSTEM
+  // ================================
+  // 
+  // Sistema completo per gestione asset (immagini) usando Firebase Storage
+  // 
+  // STRUTTURA STORAGE:
+  // projects/{projectId}/images/filename.png
+  // projects/{projectId}/gui/filename.png
+  // projects/{projectId}/audio/filename.mp3
+  // 
+  // STRUTTURA FIRESTORE:
+  // users/{userId}/projects/{projectId}/assets/{assetId}
+  // {
+  //   assetId: string,
+  //   name: string,
+  //   type: 'background' | 'foreground' | 'sprite' | 'gui' | 'character' | 'cursor',
+  //   storagePath: string,
+  //   projectId: string,
+  //   createdAt: timestamp
+  // }
+  // 
+  // NOTA: Le immagini NON vengono più salvate come base64 nel JSON del progetto.
+  // Vengono salvati solo gli assetId che vengono poi risolti in URL da Firebase Storage.
+  // 
+  // STATO IMPLEMENTAZIONE:
+  // ✅ IMPLEMENTATO:
+  //   - Upload background images
+  //   - Upload foreground layers
+  //   - Upload scene objects (sprites)
+  //   - Serializzazione con assetId
+  //   - Caricamento e risoluzione assetId in URL
+  //   - Gestione errori con fallback locale
+  // 
+  // ⚠️ TODO: not yet implemented:
+  //   - Upload GUI background images
+  //   - Upload GUI button background images
+  //   - Upload character animation frames
+  //   - Upload cursor images
+  //   - Export progetti come ZIP con asset inclusi
+  //   - Re-link asset in runtime.html per esecuzione jailed/iframe
+
+  /**
+   * Genera un assetId univoco
+   * @returns {string} - ID univoco per l'asset
+   */
+  function generateAssetId() {
+    return 'asset_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+  }
+
+  /**
+   * Determina la cartella Storage in base al tipo di asset
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor)
+   * @returns {string} - Nome della cartella (images, gui, audio)
+   */
+  function getStorageFolderForType(assetType) {
+    switch (assetType) {
+      case 'background':
+      case 'foreground':
+      case 'sprite':
+      case 'character':
+      case 'cursor':
+        return 'images';
+      case 'gui':
+        return 'gui';
+      case 'audio':
+        return 'audio';
+      default:
+        return 'images';
+    }
+  }
+
+  /**
+   * Carica un'immagine su Firebase Storage
+   * @param {File} file - File immagine da caricare
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor)
+   * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
+   * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string}>} - Metadata dell'asset caricato
+   */
+  async function uploadImageToStorage(file, projectId, assetType, assetId = null) {
+    try {
+      // Verifica che Firebase Storage sia disponibile
+      if (!window.firebaseStorage) {
+        console.warn('[Asset] Firebase Storage non disponibile');
+        throw new Error('Firebase Storage non disponibile');
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato - impossibile caricare asset');
+        throw new Error('Utente non autenticato');
+      }
+
+      // Genera assetId se non fornito
+      if (!assetId) {
+        assetId = generateAssetId();
+      }
+
+      // Determina cartella Storage
+      const folder = getStorageFolderForType(assetType);
+      
+      // Estrai estensione file
+      const fileExt = file.name.split('.').pop() || 'png';
+      
+      // Crea percorso Storage: projects/{projectId}/{folder}/{assetId}.{ext}
+      const fileName = `${assetId}.${fileExt}`;
+      const storagePath = `projects/${projectId}/${folder}/${fileName}`;
+      
+      console.log('[Asset] Upload immagine...', { storagePath, assetType, assetId });
+
+      // Crea riferimento Storage
+      const storageRef = window.firebaseStorage.ref(storagePath);
+      
+      // Upload file
+      const uploadTask = storageRef.put(file);
+      
+      // Attendi completamento upload
+      await new Promise((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            // Progress tracking (opzionale)
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            console.log(`[Asset] Upload progress: ${progress.toFixed(1)}%`);
+          },
+          (error) => {
+            console.error('[Asset] Errore durante upload:', error);
+            reject(error);
+          },
+          () => {
+            resolve();
+          }
+        );
+      });
+
+      // Ottieni URL di download
+      const downloadURL = await storageRef.getDownloadURL();
+      
+      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL });
+      
+      return {
+        assetId,
+        storagePath,
+        downloadURL
+      };
+    } catch (error) {
+      console.error('[Asset] ❌ Errore upload immagine:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Salva metadata asset in Firestore
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetId - ID univoco dell'asset
+   * @param {string} name - Nome originale del file
+   * @param {string} assetType - Tipo di asset
+   * @param {string} storagePath - Percorso Storage
+   * @returns {Promise<boolean>} - true se salvato con successo
+   */
+  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath) {
+    try {
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile');
+        return false;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
+        return false;
+      }
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      // Coerente con la struttura esistente dei progetti
+      const assetRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId);
+
+      const metadata = {
+        assetId,
+        name,
+        type: assetType,
+        storagePath,
+        projectId,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      await assetRef.set(metadata);
+      
+      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId });
+      return true;
+    } catch (error) {
+      console.error('[Asset] ❌ Errore salvataggio metadata:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Carica metadata di tutti gli asset di un progetto
+   * @param {string} projectId - ID del progetto
+   * @returns {Promise<Array>} - Array di metadata asset
+   */
+  async function loadProjectAssets(projectId) {
+    try {
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile');
+        return [];
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
+        return [];
+      }
+
+      console.log('[Asset] Caricamento asset per progetto:', projectId);
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Carica tutti gli asset del progetto
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      const assetsRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets');
+
+      const snapshot = await assetsRef.get();
+      
+      const assets = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        assets.push({
+          assetId: data.assetId || doc.id,
+          name: data.name || '',
+          type: data.type || 'sprite',
+          storagePath: data.storagePath || '',
+          projectId: data.projectId || projectId,
+          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+        });
+      });
+
+      console.log(`[Asset] ✅ Caricati ${assets.length} asset per progetto ${projectId}`);
+      return assets;
+    } catch (error) {
+      console.error('[Asset] ❌ Errore caricamento asset:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Risolve un assetId in un URL di download da Firebase Storage
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetId - ID dell'asset
+   * @returns {Promise<string|null>} - URL di download o null se non trovato
+   */
+  async function resolveAssetUrl(projectId, assetId) {
+    try {
+      // Verifica che Firestore e Storage siano disponibili
+      if (!window.firebaseDB || !window.firebaseStorage) {
+        console.warn('[Asset] Firebase non disponibile per risolvere asset:', assetId);
+        return null;
+      }
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Carica metadata asset
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      const assetRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId);
+
+      const doc = await assetRef.get();
+      
+      if (!doc.exists) {
+        console.warn('[Asset] Asset non trovato in Firestore:', assetId);
+        return null;
+      }
+
+      const data = doc.data();
+      const storagePath = data.storagePath;
+
+      if (!storagePath) {
+        console.warn('[Asset] Storage path mancante per asset:', assetId);
+        return null;
+      }
+
+      // Ottieni URL di download da Storage
+      const storageRef = window.firebaseStorage.ref(storagePath);
+      const downloadURL = await storageRef.getDownloadURL();
+      
+      console.log('[Asset] ✅ Asset risolto:', { assetId, downloadURL });
+      return downloadURL;
+    } catch (error) {
+      console.warn('[Asset] ⚠️ Errore risoluzione asset:', assetId, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Carica un'immagine da un URL (helper per compatibilità)
+   * @param {string} url - URL dell'immagine (può essere dataURL o URL Storage)
+   * @returns {Promise<Image|null>} - Oggetto Image o null se errore
+   */
+  async function loadImageFromUrl(url) {
+    return new Promise((resolve) => {
+      if (!url) {
+        resolve(null);
+        return;
+      }
+      
+      const img = new Image();
+      img.crossOrigin = 'anonymous'; // Permette CORS per Firebase Storage
+      
+      img.onload = () => {
+        resolve(img);
+      };
+      
+      img.onerror = (error) => {
+        console.warn('[Asset] ⚠️ Errore caricamento immagine:', url, error);
+        resolve(null);
+      };
+      
+      img.src = url;
+    });
+  }
+
+  /**
+   * Upload immagine e salva metadata (funzione combinata)
+   * @param {File} file - File immagine
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetType - Tipo di asset
+   * @returns {Promise<{assetId: string, downloadURL: string}>} - Risultato upload
+   */
+  async function uploadImage(file, projectId, assetType) {
+    try {
+      // Upload su Storage
+      const { assetId, storagePath, downloadURL } = await uploadImageToStorage(file, projectId, assetType);
+      
+      // Salva metadata in Firestore
+      await saveAssetMetadata(projectId, assetId, file.name, assetType, storagePath);
+      
+      return { assetId, downloadURL };
+    } catch (error) {
+      console.error('[Asset] ❌ Errore upload immagine completo:', error);
+      throw error;
+    }
+  }
+
   // Helpers per file name sicuro in OPFS
   function sanitizeProjectFileName(name) {
     const safe = (name && String(name).trim() !== '' ? String(name).trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
@@ -7474,18 +8226,58 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  function createImageFromDataUrl(url) {
-    return new Promise((resolve) => {
-      if (!url) { resolve(null); return; }
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => resolve(null);
-      img.src = url;
-    });
+  /**
+   * Carica un'immagine da URL o assetId
+   * @param {string} urlOrAssetId - URL (dataURL o HTTP) oppure assetId con prefisso "asset:"
+   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId è un assetId)
+   * @returns {Promise<Image|null>} - Oggetto Image o null se errore
+   */
+  async function createImageFromDataUrl(urlOrAssetId, projectId = null) {
+    if (!urlOrAssetId) {
+      return null;
+    }
+
+    // Se è un assetId (prefisso "asset:"), risolvi da Firebase Storage
+    if (urlOrAssetId.startsWith('asset:')) {
+      const assetId = urlOrAssetId.replace('asset:', '');
+      
+      if (!projectId) {
+        // Prova a ottenere projectId dal progetto corrente
+        const projectName = localStorage.getItem('amiantoActiveProjectName');
+        if (projectName) {
+          projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        }
+      }
+
+      if (!projectId) {
+        console.warn('[Asset] projectId mancante per risolvere asset:', assetId);
+        return null;
+      }
+
+      // Risolvi assetId in URL
+      const downloadURL = await resolveAssetUrl(projectId, assetId);
+      if (!downloadURL) {
+        console.warn('[Asset] Impossibile risolvere asset:', assetId);
+        return null;
+      }
+
+      // Carica immagine dall'URL risolto
+      return await loadImageFromUrl(downloadURL);
+    }
+
+    // Fallback: tratta come URL normale (dataURL o HTTP)
+    return await loadImageFromUrl(urlOrAssetId);
   }
 
   async function applyProjectObject(projectObj) {
     try {
+      // Ottieni projectId dal progetto (necessario per risolvere assetId)
+      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
+      const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      
+      // Pulisci mappa asset prima di caricare nuovo progetto
+      imageAssetMap.clear();
+
       // Settings / viewport
       if (projectObj && projectObj.settings) {
         const s = projectObj.settings;
@@ -7534,19 +8326,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           // carica immagini async (background, foregrounds, scene objects)
           Promise.resolve().then(async () => {
             if (r.background) {
-              roomVal.background = await createImageFromDataUrl(r.background);
+              const img = await createImageFromDataUrl(r.background, projectId);
+              roomVal.background = img;
+              // Se è un assetId, registra nella mappa
+              if (r.background && r.background.startsWith('asset:')) {
+                const assetId = r.background.replace('asset:', '');
+                imageAssetMap.set(img, { assetId, type: 'background', projectId });
+              }
               redraw();
             }
             if (Array.isArray(r.foregrounds)) {
               const out = [];
               for (const f of r.foregrounds) {
+                const img = f.image ? await createImageFromDataUrl(f.image, projectId) : null;
                 out.push({
                   id: f.id || uid('fg'),
                   name: f.name || 'Layer',
-                  img: f.image ? await createImageFromDataUrl(f.image) : null,
+                  img: img,
                   offsetX: Number(f.offsetX)||0,
                   offsetY: Number(f.offsetY)||0
                 });
+                // Se è un assetId, registra nella mappa
+                if (img && f.image && f.image.startsWith('asset:')) {
+                  const assetId = f.image.replace('asset:', '');
+                  imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
+                }
               }
               roomVal.foregrounds = out;
               refreshForegroundListUI();
@@ -7557,7 +8361,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 const src = r.sceneObjects[i];
                 const dst = roomVal.sceneObjects[i];
                 if (src && src.image) {
-                  dst.img = await createImageFromDataUrl(src.image);
+                  const img = await createImageFromDataUrl(src.image, projectId);
+                  dst.img = img;
+                  // Se è un assetId, registra nella mappa
+                  if (img && src.image.startsWith('asset:')) {
+                    const assetId = src.image.replace('asset:', '');
+                    imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
+                  }
                 }
               }
               // ricrea lista oggetti
@@ -7602,20 +8412,43 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       redraw();
 
       // GUI
-      guis = Array.isArray(projectObj.guis) ? projectObj.guis.map(g => ({
-        id: g.id || uid('gui'),
-        name: g.name || 'GUI',
-        type: g.type || 'MainInterface',
-        settings: g.settings || {},
-        background: g.background ? null : null, // background immagine opzionale, non serializzato ora
-        buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
-          id: b.id || uid('btn'),
-          name: b.name || 'Button',
-          x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
-          text: b.text || '',
-          backgroundImage: null
-        })) : []
-      })) : [];
+      guis = [];
+      if (Array.isArray(projectObj.guis)) {
+        for (const g of projectObj.guis) {
+          const guiBg = g.background ? await createImageFromDataUrl(g.background, projectId) : null;
+          if (guiBg && g.background && g.background.startsWith('asset:')) {
+            const assetId = g.background.replace('asset:', '');
+            imageAssetMap.set(guiBg, { assetId, type: 'gui', projectId });
+          }
+          
+          const buttons = [];
+          if (Array.isArray(g.buttons)) {
+            for (const b of g.buttons) {
+              const btnBg = b.backgroundImage ? await createImageFromDataUrl(b.backgroundImage, projectId) : null;
+              if (btnBg && b.backgroundImage && b.backgroundImage.startsWith('asset:')) {
+                const assetId = b.backgroundImage.replace('asset:', '');
+                imageAssetMap.set(btnBg, { assetId, type: 'gui', projectId });
+              }
+              buttons.push({
+                id: b.id || uid('btn'),
+                name: b.name || 'Button',
+                x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
+                text: b.text || '',
+                backgroundImage: btnBg
+              });
+            }
+          }
+          
+          guis.push({
+            id: g.id || uid('gui'),
+            name: g.name || 'GUI',
+            type: g.type || 'MainInterface',
+            settings: g.settings || {},
+            background: guiBg,
+            buttons: buttons
+          });
+        }
+      }
       if (guis.length === 0) {
         const defaultGui = { id: uid('gui'), name: 'Main GUI', type: 'MainInterface', settings: {}, background: null, buttons: [] };
         guis.push(defaultGui);
@@ -7639,8 +8472,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             const directions = {};
             if (ch && ch.directions) {
               for (const [dir, data] of Object.entries(ch.directions)) {
-                const frames = Array.isArray(data.frames) ? await Promise.all(data.frames.map(f => createImageFromDataUrl(f))) : [];
-                directions[dir] = { fps: Number(data.fps) || 8, frames: frames.filter(Boolean) };
+                const frames = [];
+                if (Array.isArray(data.frames)) {
+                  for (const f of data.frames) {
+                    const img = await createImageFromDataUrl(f, projectId);
+                    if (img) {
+                      frames.push(img);
+                      // Se è un assetId, registra nella mappa
+                      if (f && f.startsWith('asset:')) {
+                        const assetId = f.replace('asset:', '');
+                        imageAssetMap.set(img, { assetId, type: 'character', projectId });
+                      }
+                    }
+                  }
+                }
+                directions[dir] = { fps: Number(data.fps) || 8, frames: frames };
               }
             }
             characterFrames.set(ch.name || uid('char'), { directions, currentFrame: 0 });
@@ -7806,14 +8652,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       // Cursors contestuali
       try {
-        contextualCursors = Array.isArray(projectObj.cursors) ? projectObj.cursors.map(c => ({
-          id: c.id || uid('cursor'),
-          targetType: c.targetType || 'hotspot',
-          targetId: c.targetId || '',
-          cursorImage: null, // immagine non serializzata
-          actionText: c.actionText || '',
-          scriptName: c.scriptName || ''
-        })) : [];
+        contextualCursors = [];
+        if (Array.isArray(projectObj.cursors)) {
+          for (const c of projectObj.cursors) {
+            const cursorImg = c.cursorImage ? await createImageFromDataUrl(c.cursorImage, projectId) : null;
+            if (cursorImg && c.cursorImage && c.cursorImage.startsWith('asset:')) {
+              const assetId = c.cursorImage.replace('asset:', '');
+              imageAssetMap.set(cursorImg, { assetId, type: 'cursor', projectId });
+            }
+            contextualCursors.push({
+              id: c.id || uid('cursor'),
+              targetType: c.targetType || 'hotspot',
+              targetId: c.targetId || '',
+              cursorImage: cursorImg,
+              actionText: c.actionText || '',
+              scriptName: c.scriptName || ''
+            });
+          }
+        }
         refreshCursorsList();
       } catch(_) {}
 
@@ -8540,6 +9396,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   window.uploadCursorImage = function(input) {
+    // TODO: not yet implemented - Upload cursor images to Firebase Storage
+    // Per ora carica localmente come fallback
     if (!selectedCursorId) {
       showNotification('Please select a cursor first', 'warning');
       return;
@@ -8554,7 +9412,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const img = new Image();
     img.onload = () => {
       cursor.cursorImage = img;
-      showNotification(`Cursor image uploaded for ${cursor.targetType}: ${cursor.targetId}`, 'success');
+      showNotification(`Cursor image loaded for ${cursor.targetType}: ${cursor.targetId} (not saved to Storage)`, 'warning');
       refreshCursorsList();
     };
     img.src = URL.createObjectURL(file);

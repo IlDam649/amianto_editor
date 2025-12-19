@@ -35,6 +35,7 @@ try {
 // Export Firebase services
 window.firebaseAuth = firebase.auth();
 window.firebaseDB = firebase.firestore();
+window.firebaseStorage = firebase.storage();
 
 // Configure Firebase settings for better performance
 window.firebaseDB.settings({
@@ -42,4 +43,4 @@ window.firebaseDB.settings({
   cacheSizeBytes: firebase.firestore.CACHE_SIZE_UNLIMITED
 });
 
-console.log('🔥 Firebase services ready');
+console.log('🔥 Firebase services ready (Auth, Firestore, Storage)');
