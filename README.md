@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="img/cover.png" alt="Amianto Editor" width="180" />
+  <img src="img/Amnt.png" alt="Amianto Editor" width="180" />
 </p>
 
 # Amianto Editor
@@ -179,7 +179,7 @@ All other APIs listed in the extension roadmap are planned for future implementa
 - `runtime.html` — Standalone runtime player
 - `JS/runtime.js` — Runtime renderer (rooms/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Full list of APIs to implement
-- `img/cover.png` — Project cover (shown above)
+- `img/Amnt.png` — Project cover (shown above)
 
 ## Extending
 
@@ -430,7 +430,7 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 - `runtime.html` — Player runtime standalone
 - `JS/runtime.js` — Renderer runtime (stanze/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Lista completa API da implementare
-- `img/cover.png` — Cover (in alto)
+- `img/Amnt.png` — Cover (in alto)
 
 ## Estensioni Possibili
 
