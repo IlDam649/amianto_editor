@@ -4935,13 +4935,22 @@ window.selectRoom = function(roomId) {
 
       switch (message.type) {
         case 'RUNTIME_READY':
-          embeddedRuntime.isReady = true;
-          sendRuntimeLogToEditor('Sandbox runtime ready', 'info');
-          // Esegui script in attesa
-          embeddedRuntime.pendingScripts.forEach(script => {
-            executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
-          });
-          embeddedRuntime.pendingScripts = [];
+          if (!embeddedRuntime.isReady) {
+            embeddedRuntime.isReady = true;
+            sendRuntimeLogToEditor('✓ Sandbox runtime ready and initialized', 'info');
+            sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
+            
+            // Aggiorna contesto prima di eseguire script
+            updateSandboxContext();
+            
+            // Esegui script in attesa
+            embeddedRuntime.pendingScripts.forEach(script => {
+              executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
+            });
+            embeddedRuntime.pendingScripts = [];
+          } else {
+            sendRuntimeLogToEditor('Warning: RUNTIME_READY received but runtime already marked as ready', 'warning');
+          }
           break;
 
         case 'SCRIPT_LOG':
@@ -4950,25 +4959,37 @@ window.selectRoom = function(roomId) {
             let mappedType = 'print';
             if (level === 'error') mappedType = 'error';
             else if (level === 'warning') mappedType = 'warning';
+            
+            // Usa timestamp dal messaggio o genera uno nuovo se mancante
+            const timestamp = message.timestamp || Date.now();
+            
             ScriptLogService.log({
               type: mappedType,
               message: message.message || '',
               source: 'runtime',
-              timestamp: message.timestamp
+              timestamp: timestamp
             });
+          } else {
+            // Fallback se ScriptLogService non è disponibile
+            console.log('[Runtime Log]', message.message || '');
           }
           break;
 
         case 'SCRIPT_ERROR':
           const errorMsg = message.error || 'Unknown error';
+          const errorTimestamp = message.timestamp || Date.now();
+          
           sendRuntimeLogToEditor(`Script error: ${errorMsg}`, 'error');
           if (window.ScriptLogService) {
             ScriptLogService.log({
               type: 'error',
               message: errorMsg,
               source: 'runtime',
-              timestamp: message.timestamp
+              timestamp: errorTimestamp
             });
+          } else {
+            // Fallback se ScriptLogService non è disponibile
+            console.error('[Runtime Error]', errorMsg);
           }
           break;
 
@@ -5030,14 +5051,41 @@ window.selectRoom = function(roomId) {
             if (originalError) originalError.apply(iframe.contentWindow.console, args);
           };
         }
+        
+        // Verifica se runtime.js è stato caricato
+        setTimeout(() => {
+          try {
+            if (iframe.contentWindow && iframe.contentWindow.GameAPI) {
+              sendRuntimeLogToEditor('Runtime.js loaded successfully - GameAPI available', 'info');
+            } else {
+              sendRuntimeLogToEditor('Warning: Runtime.js may not have loaded - GameAPI not found', 'warning');
+            }
+          } catch (e) {
+            // Non possiamo accedere (sandbox restriction)
+            sendRuntimeLogToEditor('Cannot verify runtime.js load status (sandbox restriction)', 'warning');
+          }
+        }, 500);
       } catch (e) {
         // Non possiamo accedere alla console dell'iframe (sandbox restriction)
+        sendRuntimeLogToEditor('Cannot access iframe console (sandbox restriction): ' + (e.message || e), 'warning');
       }
       
       // Se dopo 2 secondi non abbiamo ricevuto RUNTIME_READY, potrebbe esserci un problema
       setTimeout(() => {
         if (!embeddedRuntime.isReady) {
-          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received. Check if JS/runtime.js is loading correctly.', 'warning');
+          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received after 2s. Check if JS/runtime.js is loading correctly.', 'warning');
+          // Verifica se possiamo accedere all'iframe
+          try {
+            if (iframe.contentWindow) {
+              if (iframe.contentWindow.GameAPI) {
+                sendRuntimeLogToEditor('GameAPI exists but RUNTIME_READY not sent - runtime may not be initializing', 'error');
+              } else {
+                sendRuntimeLogToEditor('GameAPI not found - JS/runtime.js may not have loaded', 'error');
+              }
+            }
+          } catch (e) {
+            sendRuntimeLogToEditor('Cannot access iframe contentWindow to verify runtime status', 'warning');
+          }
         }
       }, 2000);
     };
@@ -5050,17 +5098,36 @@ window.selectRoom = function(roomId) {
     // Timeout per rilevare se l'iframe non si carica
     setTimeout(() => {
       if (!embeddedRuntime.isReady) {
-        sendRuntimeLogToEditor('Warning: Sandbox iframe initialization timeout. Check if runtime.html and JS/runtime.js are accessible.', 'warning');
+        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 5s. Runtime may not be working.', 'error');
+        sendRuntimeLogToEditor('Check: 1) runtime.html exists, 2) JS/runtime.js is accessible, 3) No CORS errors in console', 'error');
+        
         // Prova a verificare se l'iframe è caricato
         try {
           if (iframe.contentWindow) {
-            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'warning');
+            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'error');
+            // Verifica se runtime.js è caricato
+            try {
+              if (iframe.contentWindow.GameAPI) {
+                sendRuntimeLogToEditor('GameAPI exists - runtime.js loaded but RUNTIME_READY message not sent', 'error');
+              } else {
+                sendRuntimeLogToEditor('GameAPI NOT found - JS/runtime.js may not have loaded correctly', 'error');
+              }
+            } catch (e) {
+              sendRuntimeLogToEditor('Cannot check GameAPI (sandbox restriction): ' + (e.message || e), 'warning');
+            }
           } else {
             sendRuntimeLogToEditor('Iframe contentWindow not accessible (sandbox restriction)', 'warning');
           }
         } catch (e) {
           sendRuntimeLogToEditor('Cannot access iframe contentWindow: ' + (e.message || e), 'warning');
         }
+        
+        // Mostra informazioni di debug
+        sendRuntimeLogToEditor(`Iframe src: ${iframe.src}`, 'info');
+        sendRuntimeLogToEditor(`Iframe sandbox: ${iframe.sandbox}`, 'info');
+        sendRuntimeLogToEditor(`Current page location: ${window.location.href}`, 'info');
+      } else {
+        sendRuntimeLogToEditor('✓ Runtime initialization completed successfully', 'info');
       }
     }, 5000);
   }
@@ -5304,13 +5371,15 @@ window.selectRoom = function(roomId) {
     }
     
     // Crea e inizializza l'iframe sandboxed
+    sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
     createSandboxIframe();
     
     // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe è pronto)
+    // Gli script verranno messi in pendingScripts se l'iframe non è ancora pronto
     initializeEmbeddedRuntimeScripts();
     
     embeddedRuntime.isInitialized = true;
-    sendRuntimeLogToEditor('Sandbox runtime ready', 'info');
+    sendRuntimeLogToEditor('Embedded runtime initialization started (waiting for iframe ready...)', 'info');
   }
 
   // Ferma e pulisce il runtime incorporato
@@ -8525,6 +8594,59 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   initializeCursorSystem();
+
+  // ============================================
+  // Console Resize Handle - ridimensionamento verticale delle console
+  // ============================================
+  function initializeConsoleResize() {
+    const resizeHandle = document.getElementById('console-resize-handle');
+    const scriptConsole = document.getElementById('script-console');
+    const debugConsole = document.getElementById('debug-console');
+    
+    if (!resizeHandle || !scriptConsole || !debugConsole) {
+      return;
+    }
+
+    let isResizing = false;
+    let startY = 0;
+    let startHeight = 0;
+    const minHeight = 100;
+    const maxHeight = 800;
+
+    resizeHandle.addEventListener('mousedown', function(e) {
+      isResizing = true;
+      startY = e.clientY;
+      startHeight = parseInt(window.getComputedStyle(scriptConsole).height, 10);
+      document.body.style.cursor = 'ns-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!isResizing) return;
+      
+      const deltaY = startY - e.clientY; // Invertito per rendere il drag verso l'alto = aumento altezza
+      let newHeight = startHeight + deltaY;
+      
+      // Limita l'altezza tra minHeight e maxHeight
+      newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
+      
+      // Applica la nuova altezza a entrambe le console
+      scriptConsole.style.height = newHeight + 'px';
+      debugConsole.style.height = newHeight + 'px';
+    });
+
+    document.addEventListener('mouseup', function() {
+      if (isResizing) {
+        isResizing = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+  }
+
+  // Inizializza il resize handle quando il DOM è pronto
+  initializeConsoleResize();
 
   // Expose global functions
   window.showNotification = showNotification;

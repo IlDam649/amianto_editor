@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Sistema Print/Log Runtime</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #1a1a1a;
+      color: #eee;
+    }
+    h1 {
+      color: #4ade80;
+      border-bottom: 2px solid #4ade80;
+      padding-bottom: 10px;
+    }
+    .test-section {
+      background: #2a2a2a;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      border: 1px solid #444;
+    }
+    .test-section h2 {
+      color: #60a5fa;
+      margin-top: 0;
+    }
+    button {
+      background: #4ade80;
+      color: #1a1a1a;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+      margin: 5px;
+    }
+    button:hover {
+      background: #22c55e;
+    }
+    button.danger {
+      background: #f87171;
+    }
+    button.danger:hover {
+      background: #ef4444;
+    }
+    #log-output {
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 5px;
+      padding: 15px;
+      max-height: 400px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .log-entry {
+      margin: 5px 0;
+      padding: 5px;
+      border-left: 3px solid #444;
+      padding-left: 10px;
+    }
+    .log-entry.info {
+      border-left-color: #60a5fa;
+      color: #93c5fd;
+    }
+    .log-entry.error {
+      border-left-color: #f87171;
+      color: #fca5a5;
+    }
+    .log-entry.warning {
+      border-left-color: #fbbf24;
+      color: #fcd34d;
+    }
+    .log-entry.system {
+      border-left-color: #4ade80;
+      color: #86efac;
+    }
+    .status {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 3px;
+      font-weight: bold;
+      margin: 5px;
+    }
+    .status.ready {
+      background: #4ade80;
+      color: #1a1a1a;
+    }
+    .status.error {
+      background: #f87171;
+      color: #fff;
+    }
+    .status.waiting {
+      background: #fbbf24;
+      color: #1a1a1a;
+    }
+    #queue-status {
+      background: #2a2a2a;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 10px 0;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧪 Test Sistema Print/Log Runtime</h1>
+  
+  <div class="test-section">
+    <h2>Stato Connessione</h2>
+    <div>
+      <span id="connection-status" class="status waiting">In attesa...</span>
+      <span id="queue-info" class="status">Coda: 0 messaggi</span>
+    </div>
+    <div id="queue-status">Caricamento...</div>
+  </div>
+
+  <div class="test-section">
+    <h2>Test Base</h2>
+    <p>Testa le funzionalità base del sistema di logging</p>
+    <button onclick="testBasicPrint()">Test print() base</button>
+    <button onclick="testMultiplePrints()">Test multipli print()</button>
+    <button onclick="testError()">Test error()</button>
+    <button onclick="testMixedTypes()">Test tipi misti</button>
+  </div>
+
+  <div class="test-section">
+    <h2>Test Buffer e Retry</h2>
+    <p>Testa il sistema di buffer e retry mechanism</p>
+    <button onclick="testRapidMessages()">Test messaggi rapidi (100)</button>
+    <button onclick="testLargeQueue()">Test coda grande (500 messaggi)</button>
+    <button onclick="testRetry()">Test retry mechanism</button>
+  </div>
+
+  <div class="test-section">
+    <h2>Test Fallback</h2>
+    <p>Testa il fallback alla console locale</p>
+    <button onclick="testFallback()" class="danger">Simula parent non disponibile</button>
+    <button onclick="restoreConnection()">Ripristina connessione</button>
+  </div>
+
+  <div class="test-section">
+    <h2>Test Script Completi</h2>
+    <p>Testa esecuzione script con logging</p>
+    <button onclick="testScriptExecution()">Esegui script di test</button>
+    <button onclick="testScriptWithErrors()">Script con errori</button>
+  </div>
+
+  <div class="test-section">
+    <h2>Output Log</h2>
+    <button onclick="clearLogs()" class="danger">Pulisci Log</button>
+    <div id="log-output"></div>
+  </div>
+
+  <!-- Iframe sandboxed per il runtime -->
+  <iframe id="runtime-iframe" 
+          style="display: none; width: 0; height: 0; border: none;"
+          sandbox="allow-scripts"
+          src="runtime.html">
+  </iframe>
+
+  <script>
+    let logCount = 0;
+    let runtimeReady = false;
+    const runtimeIframe = document.getElementById('runtime-iframe');
+    const logOutput = document.getElementById('log-output');
+    const connectionStatus = document.getElementById('connection-status');
+    const queueInfo = document.getElementById('queue-info');
+    const queueStatus = document.getElementById('queue-status');
+
+    // Listener per messaggi dal runtime
+    window.addEventListener('message', function(event) {
+      const message = event.data;
+      if (!message || typeof message !== 'object') {
+        return;
+      }
+
+      switch (message.type) {
+        case 'RUNTIME_READY':
+          runtimeReady = true;
+          connectionStatus.textContent = 'Connesso';
+          connectionStatus.className = 'status ready';
+          addLog('Sistema Runtime pronto e connesso', 'system');
+          updateQueueStatus();
+          break;
+
+        case 'SCRIPT_LOG':
+          addLog(message.message || '', message.level || 'info');
+          updateQueueStatus();
+          break;
+
+        case 'SCRIPT_ERROR':
+          addLog(message.error || 'Unknown error', 'error');
+          updateQueueStatus();
+          break;
+
+        case 'SCRIPT_DONE':
+          addLog('Script completato', 'system');
+          break;
+      }
+    });
+
+    function addLog(message, type = 'info') {
+      logCount++;
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      const timestamp = new Date().toLocaleTimeString();
+      entry.textContent = `[${timestamp}] [${type.toUpperCase()}] ${message}`;
+      logOutput.appendChild(entry);
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    function clearLogs() {
+      logOutput.innerHTML = '';
+      logCount = 0;
+    }
+
+    function sendToRuntime(message) {
+      if (runtimeIframe && runtimeIframe.contentWindow) {
+        runtimeIframe.contentWindow.postMessage(message, '*');
+      } else {
+        addLog('Runtime iframe non disponibile', 'error');
+      }
+    }
+
+    function updateQueueStatus() {
+      // Prova ad accedere allo stato della coda se disponibile
+      try {
+        if (runtimeIframe && runtimeIframe.contentWindow && runtimeIframe.contentWindow.__RuntimeMessageQueue) {
+          const status = runtimeIframe.contentWindow.__RuntimeMessageQueue.getStatus();
+          queueInfo.textContent = `Coda: ${status.queueLength} messaggi`;
+          queueStatus.textContent = `Stato: ${status.isProcessing ? 'Elaborazione' : 'In attesa'} | Parent: ${status.parentAvailable ? 'Disponibile' : 'Non disponibile'}`;
+        }
+      } catch (e) {
+        // Ignora errori di accesso cross-origin
+      }
+    }
+
+    // Test functions
+    function testBasicPrint() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: 'print("Test print() base - funziona!");',
+        context: {}
+      });
+    }
+
+    function testMultiplePrints() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          for (let i = 1; i <= 10; i++) {
+            print("Messaggio " + i);
+          }
+        `,
+        context: {}
+      });
+    }
+
+    function testError() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: 'GameAPI.error("Questo è un messaggio di errore di test");',
+        context: {}
+      });
+    }
+
+    function testMixedTypes() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          print("Stringa");
+          print(123);
+          print(true);
+          print(null);
+          print({a: 1, b: "test"});
+          print([1, 2, 3]);
+        `,
+        context: {}
+      });
+    }
+
+    function testRapidMessages() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          for (let i = 1; i <= 100; i++) {
+            print("Messaggio rapido " + i);
+          }
+        `,
+        context: {}
+      });
+    }
+
+    function testLargeQueue() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          for (let i = 1; i <= 500; i++) {
+            print("Messaggio coda grande " + i);
+          }
+        `,
+        context: {}
+      });
+    }
+
+    function testRetry() {
+      addLog('Test retry: invio messaggi con simulazione problemi di connessione', 'warning');
+      // Questo test richiede di simulare problemi, che è difficile in un iframe sandboxed
+      // In un ambiente reale, il sistema gestirà automaticamente i retry
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          for (let i = 1; i <= 20; i++) {
+            print("Test retry " + i);
+          }
+        `,
+        context: {}
+      });
+    }
+
+    function testFallback() {
+      addLog('Simulazione parent non disponibile - i messaggi dovrebbero andare alla console locale', 'warning');
+      // Non possiamo realmente simulare questo in un iframe, ma possiamo testare
+      // che il sistema gestisca correttamente i messaggi
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          print("Questo messaggio dovrebbe essere gestito anche se il parent non è disponibile");
+        `,
+        context: {}
+      });
+    }
+
+    function restoreConnection() {
+      addLog('Connessione ripristinata', 'system');
+      connectionStatus.textContent = 'Connesso';
+      connectionStatus.className = 'status ready';
+    }
+
+    function testScriptExecution() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          print("=== Inizio script di test ===");
+          print("Variabile test: " + (GameAPI.getVariable("test") || "non definita"));
+          GameAPI.setVariable("test", "valore di test");
+          print("Variabile test dopo set: " + GameAPI.getVariable("test"));
+          print("=== Fine script di test ===");
+        `,
+        context: {}
+      });
+    }
+
+    function testScriptWithErrors() {
+      sendToRuntime({
+        type: 'RUN_SCRIPT',
+        code: `
+          print("Script con errori intenzionali");
+          GameAPI.error("Errore 1: Test errore");
+          print("Continuo dopo errore");
+          GameAPI.error("Errore 2: Altro test");
+          print("Fine script");
+        `,
+        context: {}
+      });
+    }
+
+    // Aggiorna lo stato della coda periodicamente
+    setInterval(updateQueueStatus, 1000);
+
+    // Inizializzazione
+    addLog('Sistema di test inizializzato. In attesa del runtime...', 'system');
+  </script>
+</body>
+</html>
+

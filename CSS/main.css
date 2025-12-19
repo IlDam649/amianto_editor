@@ -673,3 +673,40 @@ header {
 .script-log-console.script-log-error {
   box-shadow: 0 0 0 1px #dc3545;
 }
+
+/* Console Resize Handle */
+.console-resize-handle {
+  width: 100%;
+  height: 8px;
+  background-color: #333;
+  border-top: 1px solid #555;
+  border-bottom: 1px solid #555;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  transition: background-color 0.2s ease, color 0.2s ease;
+  user-select: none;
+  margin-top: 8px;
+  position: relative;
+}
+
+.console-resize-handle:hover {
+  background-color: #444;
+  color: #39ff14;
+}
+
+.console-resize-handle:active {
+  background-color: #555;
+  color: #39ff14;
+}
+
+.console-resize-handle i {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.console-resize-handle:hover i {
+  opacity: 1;
+}
