@@ -3252,6 +3252,7 @@ window.selectRoom = function(roomId) {
     const scopeSel = document.getElementById('script-scope');
     const targetSel = document.getElementById('script-target');
     const eventSel = document.getElementById('script-event');
+    const lock = document.getElementById('lock-script-scope');
     if (!scopeSel || !targetSel || !eventSel) return;
 
     // Initialize once per tab open
@@ -3261,7 +3262,31 @@ window.selectRoom = function(roomId) {
     scopeSel.addEventListener('change', () => {
       populateEventsForScope(scopeSel.value);
       populateTargetsForScope(scopeSel.value);
+      // Quando l'utente cambia lo scope, riabilita i dropdown per permettere la creazione di un nuovo script
+      if (!lock || !lock.checked) {
+        scopeSel.disabled = false;
+        if (scopeSel.value === 'Global') {
+          targetSel.disabled = true;
+        } else {
+          targetSel.disabled = false;
+        }
+      }
     });
+
+    // Listener sul checkbox per gestire lo stato dei dropdown
+    if (lock) {
+      lock.addEventListener('change', () => {
+        if (!lock.checked) {
+          // Quando il lock viene deselezionato, riabilita i dropdown
+          scopeSel.disabled = false;
+          if (scopeSel.value === 'Global') {
+            targetSel.disabled = true;
+          } else {
+            targetSel.disabled = false;
+          }
+        }
+      });
+    }
   }
 
   function extractHandlersFromScript(content) {
@@ -3497,7 +3522,18 @@ window.selectRoom = function(roomId) {
       largeCodeMirrorEditor.focus();
     }
 
+    refreshScriptSelector();
     rebuildScriptsTree();
+    
+    // Riabilita sempre i dropdown dopo la creazione per permettere la creazione di altri script
+    // Il lock viene applicato solo quando si apre uno script esistente dall'albero
+    scopeSel.disabled = false;
+    if (scope === 'Global') {
+      targetSel.disabled = true;
+    } else {
+      targetSel.disabled = false;
+    }
+    
     showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
   }
 
@@ -4158,6 +4194,7 @@ window.selectRoom = function(roomId) {
     showNotification(`Script "${key}" saved!`, 'success');
 
     // refresh attach targets
+    refreshScriptSelector();
     refreshSceneObjectScriptTargets();
     rebuildScriptsTree();
   };
@@ -4172,40 +4209,135 @@ window.selectRoom = function(roomId) {
       return;
     }
     
-    // Assicurati che l'iframe sandboxed sia inizializzato
-    if (!embeddedRuntime.sandboxIframe || !embeddedRuntime.isInitialized) {
-      // Inizializza l'iframe sandboxed se non è già inizializzato
-      // Usa dati minimi per il test
-      const minimalGameData = {
-        scripts: {},
-        variables: [],
-        rooms: [],
-        settings: {}
-      };
-      initializeSandboxRuntime(JSON.stringify(minimalGameData));
-      
-      // Aspetta che l'iframe sia pronto
-      const checkReady = setInterval(() => {
-        if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
-          clearInterval(checkReady);
-          // Esegui lo script
-          executeScriptInSandbox('test_script_' + Date.now(), content, null, [], {});
-          showNotification('Script eseguito in sandbox!', 'success');
-        }
-      }, 100);
-      
-      // Timeout dopo 5 secondi
-      setTimeout(() => {
+    // Serializza il progetto completo (come fa startPlayTest) per avere tutte le variabili e il contesto
+    const jsonString = window.serializeProjectToJsonString(true);
+    
+    // Inizializza sempre il sandbox con i dati aggiornati del progetto
+    // Questo garantisce che lo script abbia accesso a tutte le variabili e al contesto corretto
+    initializeSandboxRuntime(jsonString);
+    
+    // Aspetta che l'iframe sia pronto e poi esegui lo script
+    const checkReady = setInterval(() => {
+      if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
         clearInterval(checkReady);
-        if (!embeddedRuntime.isReady) {
-          showNotification('Errore: sandbox non inizializzato', 'danger');
-        }
-      }, 5000);
-    } else {
-      // Iframe già pronto, esegui direttamente
-      executeScriptInSandbox('test_script_' + Date.now(), content, null, [], {});
-      showNotification('Script eseguito in sandbox!', 'success');
+        // Esegui lo script selezionato nel sandbox
+        executeScriptInSandbox('run_script_' + Date.now(), content, null, [], {});
+        showNotification('Script eseguito in sandbox!', 'success');
+      }
+    }, 100);
+    
+    // Timeout dopo 5 secondi
+    setTimeout(() => {
+      clearInterval(checkReady);
+      if (!embeddedRuntime.isReady) {
+        showNotification('Errore: sandbox non inizializzato', 'danger');
+      }
+    }, 5000);
+  };
+
+  window.deleteScript = function() {
+    // Determina lo script corrente
+    let scriptName = currentScriptName && String(currentScriptName);
+    if (!scriptName) {
+      const selector = document.getElementById('script-selector');
+      scriptName = (selector && selector.value) || '';
     }
+    
+    if (!scriptName || !scriptName.trim()) {
+      showNotification('Seleziona uno script da eliminare', 'warning');
+      return;
+    }
+    
+    // Chiedi conferma
+    if (!confirm(`Vuoi eliminare lo script "${scriptName}"?\n\nQuesta azione non può essere annullata.`)) {
+      return;
+    }
+    
+    // Rimuovi lo script da jsScripts
+    jsScripts.delete(scriptName);
+    
+    // Rimuovi da localStorage
+    try {
+      localStorage.removeItem(`script-${scriptName}`);
+    } catch(_) {}
+    
+    // Rimuovi tutti gli attachment che puntano a questo script
+    // Object scripts
+    for (const [objId, attachedScript] of objectScripts.entries()) {
+      if (attachedScript === scriptName) {
+        objectScripts.delete(objId);
+      }
+    }
+    
+    // Room scripts
+    for (const [roomId, attachedScript] of roomScripts.entries()) {
+      if (attachedScript === scriptName) {
+        roomScripts.delete(roomId);
+      }
+    }
+    
+    // Character scripts
+    for (const [charName, attachedScript] of characterScripts.entries()) {
+      if (attachedScript === scriptName) {
+        characterScripts.delete(charName);
+      }
+    }
+    
+    // Inventory scripts
+    for (const [itemName, attachedScript] of inventoryScripts.entries()) {
+      if (attachedScript === scriptName) {
+        inventoryScripts.delete(itemName);
+      }
+    }
+    
+    // Hotspot scripts
+    for (const [hotspotId, attachedScript] of hotspotScripts.entries()) {
+      if (attachedScript === scriptName) {
+        hotspotScripts.delete(hotspotId);
+      }
+    }
+    
+    // GUI scripts
+    if (typeof guiScripts !== 'undefined' && guiScripts instanceof Map) {
+      for (const [btnId, attachedScript] of guiScripts.entries()) {
+        if (attachedScript === scriptName) {
+          guiScripts.delete(btnId);
+        }
+      }
+    }
+    
+    // Se lo script eliminato era quello aperto, pulisci l'editor
+    if (currentScriptName === scriptName) {
+      currentScriptName = null;
+      ensureLargeScriptEditor();
+      ensureScriptEditor();
+      const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
+      if (editors.length) {
+        editors.forEach(ed => ed.setValue(''));
+      } else {
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+      }
+    }
+    
+    // Aggiorna il selector
+    refreshScriptSelector();
+    
+    // Aggiorna l'albero degli script
+    rebuildScriptsTree();
+    
+    // Aggiorna tutti i target selector
+    refreshSceneObjectScriptTargets();
+    refreshRoomScriptTargets();
+    refreshCharacterScriptTargets();
+    refreshInventoryScriptTargets();
+    try { refreshGuiScriptTargets(); } catch(_) {}
+    try { refreshHotspotScriptTargets(); } catch(_) {}
+    try { refreshCursorScriptTargets(); } catch(_) {}
+    
+    showNotification(`Script "${scriptName}" eliminato`, 'success');
   };
 
   window.stopScript = function() {
@@ -4561,6 +4693,41 @@ window.selectRoom = function(roomId) {
     });
   }
 
+  function refreshScriptSelector() {
+    const selector = document.getElementById('script-selector');
+    if (!selector) return;
+    
+    // Salva il valore corrente per ripristinarlo dopo
+    const currentValue = selector.value;
+    
+    // Pulisci il selector mantenendo solo il placeholder
+    selector.innerHTML = '';
+    const opt0 = document.createElement('option');
+    opt0.value = ''; opt0.textContent = 'Select a script...';
+    selector.appendChild(opt0);
+    
+    // Raccogli tutti gli script da jsScripts
+    const scriptNames = Array.from(jsScripts.keys()).filter(name => name && name.trim());
+    
+    // Ordina gli script per nome
+    scriptNames.sort();
+    
+    // Aggiungi ogni script al selector
+    scriptNames.forEach(name => {
+      const o = document.createElement('option');
+      o.value = name;
+      // Formatta il nome per la visualizzazione (es: "Room:room1" -> "Room: room1")
+      const displayName = name.includes(':') ? name.replace(':', ': ') : name;
+      o.textContent = displayName;
+      selector.appendChild(o);
+    });
+    
+    // Ripristina il valore precedente se esiste ancora
+    if (currentValue && scriptNames.includes(currentValue)) {
+      selector.value = currentValue;
+    }
+  }
+
   window.attachScriptToGUI = function() {
     const selector = document.getElementById('script-selector');
     const scriptName = selector.value;
@@ -4597,11 +4764,14 @@ window.selectRoom = function(roomId) {
     if (e.detail.currentTab === 'scripts') {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
+      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'none';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'block';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'flex'; // Cambiato a flex per il layout
+      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
       ensureLargeScriptEditor();
       ensureScriptEditor();
       initScriptsUI();
+      refreshScriptSelector();
       rebuildScriptsTree();
       // sync values small->large if small has content and large is empty
       if (codeMirrorEditor && largeCodeMirrorEditor && !largeCodeMirrorEditor.getValue()) {
@@ -4611,11 +4781,19 @@ window.selectRoom = function(roomId) {
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
+      // Aggiorna le dimensioni di CodeMirror dopo che il container è visibile
+      setTimeout(() => {
+        if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+          largeCodeMirrorEditor.refresh();
+        }
+      }, 100);
     } else {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
+      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'block';
       if (codeEditorContainer) codeEditorContainer.style.display = 'none';
+      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
     }
   });
 
@@ -7261,6 +7439,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         });
+        refreshScriptSelector();
         refreshSceneObjectScriptTargets();
         refreshRoomScriptTargets();
         refreshCharacterScriptTargets();
@@ -7556,13 +7735,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       hotspotScripts.clear();
       if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
       // Ricostruisci la lista script nell'UI
-      const selector = document.getElementById('script-selector');
-      if (selector) {
-        selector.innerHTML = '';
-        const opt0 = document.createElement('option');
-        opt0.value = ''; opt0.textContent = 'Select a script...';
-        selector.appendChild(opt0);
-      }
+      refreshScriptSelector();
       rebuildScriptsTree();
     }
     
@@ -7819,13 +7992,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         hotspotScripts.clear();
         if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
         // Ricostruisci la lista script nell'UI
-        const selector = document.getElementById('script-selector');
-        if (selector) {
-          selector.innerHTML = '';
-          const opt0 = document.createElement('option');
-          opt0.value = ''; opt0.textContent = 'Select a script...';
-          selector.appendChild(opt0);
-        }
+        refreshScriptSelector();
         rebuildScriptsTree();
       }
       

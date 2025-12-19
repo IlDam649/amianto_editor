@@ -184,13 +184,22 @@ header {
   background-color: #1a1a1a;
   border: 1px solid #333;
   border-radius: 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 /* CodeMirror sizing inside the large editor area */
 #codeEditorContainer .CodeMirror {
-  height: 70vh;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
   border-radius: 6px;
   font-size: 13px;
+}
+
+/* Assicura che il textarea dell'editor si adatti al container */
+#script-editor-large {
+  height: 100% !important;
 }
 
 /* Canvas Info */
