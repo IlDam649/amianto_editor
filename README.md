@@ -6,6 +6,14 @@
 
 Modern web-based point'n'click game editor. Design rooms, place scene objects, draw walkable areas, manage characters and animations, and script behaviors with JavaScript — all in your browser.
 
+## 📚 Documentazione
+
+- 📄 **[README](README.md)** - Panoramica e guida rapida
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🔐 **[Auth Testing](README_AUTH_TESTING.md)** - Guida al testing dell'autenticazione
+
+---
+
 ## Features (already implemented)
 
 - Rooms Manager
@@ -62,19 +70,45 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 ## Current API Status
 
-The JavaScript scripting system currently provides **8 working APIs**:
+The JavaScript scripting system currently provides **24 working APIs** organized in 5 categories:
 
 ### Basic APIs
 - **`print(...)`** - Outputs messages to the debug console
 - **`show_message(text)`** - Shows notification messages to the user
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
-### Event System APIs (NEW!)
+### Event System APIs
 - **`on_game_start(handler)`** - Registers a function to call when the game starts
 - **`on_room_change(handler)`** - Registers a function to call when changing rooms (receives oldRoomId, newRoomId)
 - **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y)
 - **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId)
 - **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId)
+
+### Inventory System APIs
+- **`add_to_inventory(itemId, quantity)`** - Adds items to inventory
+- **`remove_from_inventory(itemId, quantity)`** - Removes items from inventory
+- **`has_item(itemId)`** - Checks if an item exists in inventory
+- **`get_item_count(itemId)`** - Gets the quantity of an item in inventory
+- **`clear_inventory()`** - Clears all items from inventory
+
+### Object System APIs
+- **`spawn_object(objectNameOrId, x, y, imageUrlOrDataUrl)`** - Creates a new scene object
+- **`despawn_object(objectId)`** - Removes a scene object
+- **`rotate_object(objectId, degrees)`** - Rotates an object by degrees
+- **`scale_object(objectId, scaleX, scaleY)`** - Scales an object
+- **`set_object_visible(objectId, visible)`** - Shows or hides an object
+
+### Room System APIs
+- **`load_room(roomIdOrName)`** - Loads a room by ID or name
+- **`get_current_room()`** - Returns the current room ID
+- **`get_room_objects()`** - Returns array of all objects in current room
+- **`set_room_background(imageUrlOrDataUrl)`** - Sets the room background image
+
+### Game Variables APIs
+- **`get_var(key)`** / **`Game.getVar(key)`** - Gets a game variable value
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Sets a game variable value
+- **`has_var(key)`** / **`Game.hasVar(key)`** - Checks if a variable exists
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggles a boolean variable
 
 ### Usage Examples
 ```javascript
@@ -82,21 +116,44 @@ The JavaScript scripting system currently provides **8 working APIs**:
 on_game_start(function() {
     print("Game started!");
     show_message("Welcome to my adventure game!");
+    add_to_inventory("key", 1);
 });
 
 // Room change event
 on_room_change(function(oldRoom, newRoom) {
     print("Changed from room " + oldRoom + " to " + newRoom);
+    Game.setVar("lastRoom", oldRoom);
 });
 
 // Object click event
 on_object_click(function(objectId, x, y) {
     print("Clicked object " + objectId + " at position " + x + "," + y);
-    show_message("You clicked on " + objectId);
+    if (has_item("key")) {
+        move_object(objectId, x + 50, y);
+        show_message("You moved the object!");
+    }
 });
+
+// Inventory management
+if (has_item("sword")) {
+    print("You have a sword!");
+    remove_from_inventory("sword", 1);
+}
+
+// Object manipulation
+spawn_object("treasure", 100, 200, "treasure.png");
+rotate_object("treasure", 45);
+scale_object("treasure", 1.5, 1.5);
+
+// Room management
+load_room("kitchen");
+const objects = get_room_objects();
+print("Room has " + objects.length + " objects");
 ```
 
 All other APIs listed in the extension roadmap are planned for future implementation.
+
+> 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
 ## Quick Start
 
@@ -127,6 +184,8 @@ All other APIs listed in the extension roadmap are planned for future implementa
 - `img/cover.png` — Project cover (shown above)
 
 ## Extending
+
+> 🗺️ **Consulta la [ROADMAP.md](ROADMAP.md) per il piano completo di sviluppo, lo stato dettagliato di tutte le implementazioni e le priorità future.**
 
 ### 🚀 JavaScript API Roadmap
 
@@ -199,6 +258,14 @@ See `# 🎮 Funzioni da Implementare - Amianto editor.md` for the complete list 
 
 Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona oggetti di scena, disegna le zone camminabili, gestisci personaggi e animazioni, e crea comportamenti con script JavaScript — tutto nel browser.
 
+## 📚 Documentazione
+
+- 📄 **[README](README.md)** - Panoramica e guida rapida
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🔐 **[Auth Testing](README_AUTH_TESTING.md)** - Guida al testing dell'autenticazione
+
+---
+
 ## Funzionalità (già presenti)
 
 - Gestione Stanze
@@ -256,19 +323,45 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 ## Stato Corrente delle API
 
-Il sistema di scripting JavaScript fornisce attualmente **8 API funzionanti**:
+Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** organizzate in 5 categorie:
 
 ### API Base
 - **`print(...)`** - Invia messaggi alla console di debug
 - **`show_message(text)`** - Mostra notifiche all'utente
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
-### API Sistema Eventi (NUOVE!)
+### API Sistema Eventi
 - **`on_game_start(handler)`** - Registra una funzione da chiamare all'avvio del gioco
 - **`on_room_change(handler)`** - Registra una funzione da chiamare al cambio stanza (riceve oldRoomId, newRoomId)
 - **`on_object_click(handler)`** - Registra una funzione da chiamare al click sugli oggetti (riceve objectId, x, y)
 - **`on_character_click(handler)`** - Registra una funzione da chiamare al click sui personaggi (riceve characterId)
 - **`on_hotspot_click(handler)`** - Registra una funzione da chiamare al click sugli hotspot (riceve hotspotId)
+
+### API Sistema Inventario
+- **`add_to_inventory(itemId, quantity)`** - Aggiunge oggetti all'inventario
+- **`remove_from_inventory(itemId, quantity)`** - Rimuove oggetti dall'inventario
+- **`has_item(itemId)`** - Verifica se un oggetto è presente nell'inventario
+- **`get_item_count(itemId)`** - Ottiene la quantità di un oggetto nell'inventario
+- **`clear_inventory()`** - Svuota completamente l'inventario
+
+### API Sistema Oggetti
+- **`spawn_object(objectNameOrId, x, y, imageUrlOrDataUrl)`** - Crea un nuovo oggetto di scena
+- **`despawn_object(objectId)`** - Rimuove un oggetto di scena
+- **`rotate_object(objectId, degrees)`** - Ruota un oggetto di gradi specificati
+- **`scale_object(objectId, scaleX, scaleY)`** - Scala un oggetto
+- **`set_object_visible(objectId, visible)`** - Mostra o nasconde un oggetto
+
+### API Sistema Stanze
+- **`load_room(roomIdOrName)`** - Carica una stanza per ID o nome
+- **`get_current_room()`** - Restituisce l'ID della stanza corrente
+- **`get_room_objects()`** - Restituisce array di tutti gli oggetti nella stanza corrente
+- **`set_room_background(imageUrlOrDataUrl)`** - Imposta l'immagine di sfondo della stanza
+
+### API Variabili di Gioco
+- **`get_var(key)`** / **`Game.getVar(key)`** - Ottiene il valore di una variabile di gioco
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Imposta il valore di una variabile di gioco
+- **`has_var(key)`** / **`Game.hasVar(key)`** - Verifica se una variabile esiste
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Inverte il valore di una variabile booleana
 
 ### Esempi di Utilizzo
 ```javascript
@@ -276,21 +369,44 @@ Il sistema di scripting JavaScript fornisce attualmente **8 API funzionanti**:
 on_game_start(function() {
     print("Gioco avviato!");
     show_message("Benvenuto nella mia avventura!");
+    add_to_inventory("chiave", 1);
 });
 
 // Evento di cambio stanza
 on_room_change(function(oldRoom, newRoom) {
     print("Cambiato dalla stanza " + oldRoom + " alla " + newRoom);
+    Game.setVar("ultimaStanza", oldRoom);
 });
 
 // Evento di click oggetto
 on_object_click(function(objectId, x, y) {
     print("Cliccato oggetto " + objectId + " alla posizione " + x + "," + y);
-    show_message("Hai cliccato su " + objectId);
+    if (has_item("chiave")) {
+        move_object(objectId, x + 50, y);
+        show_message("Hai spostato l'oggetto!");
+    }
 });
+
+// Gestione inventario
+if (has_item("spada")) {
+    print("Hai una spada!");
+    remove_from_inventory("spada", 1);
+}
+
+// Manipolazione oggetti
+spawn_object("tesoro", 100, 200, "tesoro.png");
+rotate_object("tesoro", 45);
+scale_object("tesoro", 1.5, 1.5);
+
+// Gestione stanze
+load_room("cucina");
+const oggetti = get_room_objects();
+print("La stanza ha " + oggetti.length + " oggetti");
 ```
 
 Tutte le altre API elencate nella roadmap sono pianificate per implementazioni future.
+
+> 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
 ## Avvio Rapido
 
@@ -321,6 +437,8 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 - `img/cover.png` — Cover (in alto)
 
 ## Estensioni Possibili
+
+> 🗺️ **Consulta la [ROADMAP.md](ROADMAP.md) per il piano completo di sviluppo, lo stato dettagliato di tutte le implementazioni e le priorità future.**
 
 ### 🚀 Roadmap JavaScript API
 
@@ -377,8 +495,9 @@ window.gameAPI = {
 
 ### 📋 Checklist Implementazione
 
-- [x] **Fase 1**: Sistema eventi base e inventario
-- [ ] **Fase 1**: Gestione oggetti e stanze avanzata  
+- [x] **Fase 1**: Sistema eventi base e inventario ✅
+- [x] **Fase 1**: Gestione oggetti e stanze avanzata ✅
+- [x] **Fase 1**: Sistema variabili di gioco ✅
 - [ ] **Fase 2**: Sistema dialoghi e audio
 - [ ] **Fase 2**: Gestione personaggi e effetti visivi
 - [ ] **Fase 3**: Sistema gioco completo e UI avanzata
