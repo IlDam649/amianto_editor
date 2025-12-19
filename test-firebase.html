@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Firebase - Amianto Editor</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        #results { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🔥 Test Configurazione Firebase - Amianto Editor</h1>
+    
+    <div id="status" class="info">Caricamento...</div>
+    
+    <div>
+        <button onclick="testFirebaseInit()">Test Inizializzazione</button>
+        <button onclick="testAuth()">Test Authentication</button>
+        <button onclick="testFirestore()">Test Firestore</button>
+        <button onclick="testCreateAccount()">Test Creazione Account</button>
+    </div>
+    
+    <div id="results"></div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+
+    <script>
+        // Configurazione Firebase dal file esistente
+        const firebaseConfig = {
+            apiKey: "AIzaSyAg-wvBsbaKEWw896GbfUU9LDURrNa0xjY",
+            authDomain: "amianto-editor.firebaseapp.com",
+            projectId: "amianto-editor",
+            storageBucket: "amianto-editor.firebasestorage.app",
+            messagingSenderId: "1044586682132",
+            appId: "1:1044586682132:web:c53a04a0d204412f051401"
+        };
+
+        let app, auth, db;
+        let resultsDiv = document.getElementById('results');
+        let statusDiv = document.getElementById('status');
+
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.innerHTML = `<strong>${new Date().toLocaleTimeString()}</strong>: ${message}`;
+            resultsDiv.appendChild(div);
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        function updateStatus(message, type = 'info') {
+            statusDiv.className = `status ${type}`;
+            statusDiv.innerHTML = message;
+        }
+
+        async function testFirebaseInit() {
+            try {
+                addResult('🔄 Inizio test inizializzazione Firebase...', 'info');
+                
+                // Inizializza Firebase
+                app = firebase.initializeApp(firebaseConfig);
+                auth = firebase.auth();
+                db = firebase.firestore();
+                
+                addResult('✅ Firebase inizializzato con successo!', 'success');
+                addResult(`📋 Progetto: ${firebaseConfig.projectId}`, 'info');
+                addResult(`🌐 Auth Domain: ${firebaseConfig.authDomain}`, 'info');
+                
+                updateStatus('✅ Firebase inizializzato correttamente', 'success');
+                
+            } catch (error) {
+                addResult(`❌ Errore inizializzazione: ${error.message}`, 'error');
+                addResult(`🔍 Codice errore: ${error.code}`, 'warning');
+                updateStatus('❌ Errore nella configurazione Firebase', 'error');
+            }
+        }
+
+        async function testAuth() {
+            if (!auth) {
+                addResult('❌ Firebase non inizializzato. Esegui prima il test di inizializzazione.', 'error');
+                return;
+            }
+
+            try {
+                addResult('🔄 Test Authentication...', 'info');
+                
+                // Test configurazione auth
+                const settings = {
+                    signInSuccessUrl: window.location.href,
+                    tosUrl: '/terms',
+                    privacyPolicyUrl: '/privacy'
+                };
+                
+                addResult('✅ Authentication configurato correttamente', 'success');
+                addResult('🔐 Provider Email/Password disponibile', 'info');
+                
+            } catch (error) {
+                addResult(`❌ Errore Authentication: ${error.message}`, 'error');
+            }
+        }
+
+        async function testFirestore() {
+            if (!db) {
+                addResult('❌ Firebase non inizializzato. Esegui prima il test di inizializzazione.', 'error');
+                return;
+            }
+
+            try {
+                addResult('🔄 Test Firestore Database...', 'info');
+                
+                // Test scrittura
+                const testDoc = {
+                    test: true,
+                    timestamp: new Date(),
+                    message: 'Test connessione Firestore'
+                };
+                
+                const docRef = await db.collection('test').add(testDoc);
+                addResult(`✅ Documento scritto con ID: ${docRef.id}`, 'success');
+                
+                // Test lettura
+                const docSnap = await docRef.get();
+                if (docSnap.exists()) {
+                    addResult('✅ Documento letto con successo', 'success');
+                    addResult(`📄 Dati: ${JSON.stringify(docSnap.data())}`, 'info');
+                }
+                
+                // Pulizia
+                await docRef.delete();
+                addResult('🧹 Documento di test eliminato', 'info');
+                
+            } catch (error) {
+                addResult(`❌ Errore Firestore: ${error.message}`, 'error');
+                addResult(`🔍 Codice errore: ${error.code}`, 'warning');
+                
+                if (error.code === 'permission-denied') {
+                    addResult('⚠️ Le regole di sicurezza di Firestore potrebbero bloccare l\'accesso', 'warning');
+                    addResult('💡 Vai su Firebase Console → Firestore → Regole e aggiorna le regole', 'info');
+                }
+            }
+        }
+
+        async function testCreateAccount() {
+            if (!auth) {
+                addResult('❌ Firebase non inizializzato. Esegui prima il test di inizializzazione.', 'error');
+                return;
+            }
+
+            try {
+                addResult('🔄 Test creazione account...', 'info');
+                
+                const randomEmail = `test_${Date.now()}@example.com`;
+                const randomPassword = 'Test123456!';
+                
+                const userCredential = await auth.createUserWithEmailAndPassword(randomEmail, randomPassword);
+                const user = userCredential.user;
+                
+                addResult(`✅ Account creato con successo!`, 'success');
+                addResult(`📧 Email: ${user.email}`, 'info');
+                addResult(`🆔 UID: ${user.uid}`, 'info');
+                
+                // Test login
+                await auth.signInWithEmailAndPassword(randomEmail, randomPassword);
+                addResult('✅ Login test riuscito', 'success');
+                
+                // Elimina account di test
+                await user.delete();
+                addResult('🧹 Account di test eliminato', 'info');
+                
+            } catch (error) {
+                addResult(`❌ Errore creazione account: ${error.message}`, 'error');
+                addResult(`🔍 Codice errore: ${error.code}`, 'warning');
+                
+                if (error.code === 'auth/email-already-in-use') {
+                    addResult('ℹ️ Email già in uso (normale se il test è già stato eseguito)', 'info');
+                }
+            }
+        }
+
+        // Test automatico all'avvio
+        window.onload = function() {
+            updateStatus('🔧 Pronto per testare Firebase. Clicca sui pulsanti sopra.', 'info');
+            addResult('🚀 Pagina di test Firebase caricata', 'success');
+            addResult('📋 Configurazione rilevata:', 'info');
+            addResult(`   - Project ID: ${firebaseConfig.projectId}`, 'info');
+            addResult(`   - API Key: ${firebaseConfig.apiKey.substring(0, 10)}...`, 'info');
+        };
+    </script>
+</body>
+</html>

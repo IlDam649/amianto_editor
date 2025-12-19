@@ -460,12 +460,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Draw scene objects at their positions
     for (let obj of sceneObjects) {
-      if (obj.img) {
+      if (obj && obj.img) {
+        if (obj.visible === false) continue;
         const objX = (obj.x || 0);
         const objY = (obj.y || 0);
-        
-        // Draw object
-        drawImageAtOriginalSize(obj.img, objX, objY);
+        const rot = Number(obj.rotationRad || 0);
+        const sx = (typeof obj.scaleX === 'number') ? obj.scaleX : 1;
+        const sy = (typeof obj.scaleY === 'number') ? obj.scaleY : 1;
+
+        if (rot !== 0 || sx !== 1 || sy !== 1) {
+          ctx.save();
+          ctx.translate(objX, objY);
+          if (rot !== 0) ctx.rotate(rot);
+          if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
+          // draw image at origin with its natural size
+          ctx.drawImage(obj.img, 0, 0, obj.img.width, obj.img.height);
+          ctx.restore();
+        } else {
+          // Draw object without transforms
+          drawImageAtOriginalSize(obj.img, objX, objY);
+        }
         
         // Draw selection outline if this is the dragged object
         if (isDraggingObject && draggedObject && draggedObject.id === obj.id) {
@@ -976,14 +990,15 @@ if (playTestState && playTestState.isRunning) {
         triggerObjectClick(obj.id, Math.round(x), Math.round(y));
         
         try {
-          if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
-            activePlugin.remote.on_object_click(obj.id, Math.round(x), Math.round(y));
-          }
+          // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
         } catch(_) {}
         const scriptName = objectScripts.get(obj.id);
         if (scriptName) {
           const content = jsScripts.get(scriptName);
-          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)]);
+          const eventConditions = objectEventConditions.get(obj.id);
+          const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+          addDebugMessage(`[Object:onClick] ${obj.id}`, 'info');
+          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)], conditions);
         }
         return;
       }
@@ -994,14 +1009,15 @@ for (const hs of hotspots) {
           triggerHotspotClick(hs.id);
           
           try {
-            if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
-              activePlugin.remote.on_hotspot_click(hs.id);
-            }
+            // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
           } catch(_) {}
           const hScript = hotspotScripts.get(hs.id);
           if (hScript) {
             const hContent = jsScripts.get(hScript);
-            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id]);
+            const eventConditions = hotspotEventConditions.get(hs.id);
+            const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+            addDebugMessage(`[Hotspot:onClick] ${hs.id}`, 'info');
+            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id], conditions);
           }
           break;
         }
@@ -1690,9 +1706,7 @@ for (const hs of hotspots) {
     refreshRoomsSelector();
     redraw();
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, rid);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(rid);
     if (roomScript) {
@@ -1721,9 +1735,7 @@ for (const hs of hotspots) {
     refreshRoomsSelector();
     redraw();
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, first);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(first);
     if (roomScript) {
@@ -1746,9 +1758,7 @@ window.selectRoom = function(roomId) {
     }
     
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, roomId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(roomId);
     if (roomScript) {
@@ -2326,7 +2336,11 @@ window.selectRoom = function(roomId) {
         img: img,
         x: 100 + Math.random() * 200, // Random position for demo
         y: 100 + Math.random() * 200,
-        type: "Interactive"
+        type: "Interactive",
+        rotationRad: 0,
+        scaleX: 1,
+        scaleY: 1,
+        visible: true
       };
       
       // Add to scene objects array (room-scoped)
@@ -2994,361 +3008,50 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  // JS sandbox runtime (Jailed) e editor
+  // JS sandbox runtime (iframe sandboxed) e editor
   let codeMirrorEditor = null;
   let largeCodeMirrorEditor = null;
-  let currentScriptName = 'startup';
-const jsScripts = new Map(); // name -> content
+  let currentScriptName = 'Global:main';
+  const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
   const roomScripts = new Map(); // roomId -> scriptName
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
-  let activePlugin = null; // istanza di jailed.DynamicPlugin
+  // Runtime game inventory store: itemId (string) -> count (integer >= 0)
+  const gameInventory = new Map();
+  
+  // Event conditions storage
+  const objectEventConditions = new Map(); // sceneObjectId -> { onClick: [conditions], onUse: [conditions], ... }
+  const hotspotEventConditions = new Map(); // hotspotId -> { onClick: [conditions], onUse: [conditions], ... }
+  const characterEventConditions = new Map(); // characterName -> { onClick: [conditions], onUse: [conditions], ... }
+  const guiButtonEventConditions = new Map(); // buttonId -> { onClick: [conditions], ... }
+  const inventoryEventConditions = new Map(); // itemName -> { onClick: [conditions], onUse: [conditions], ... }
 
-  // Inventory System: Game state for player inventory
-  // Structure: Map<itemId, {name: string, quantity: number, data: any}>
-  let gameInventory = new Map();
-
-  // Demo Project Protection
-  let isDemoMode = false;
-  let isDemoUser = false;
-
-  // Firebase Integration
-  window.FirebaseManager = {
-    isOnline: navigator.onLine,
-    syncInProgress: false,
-    
-    // Initialize Firebase connection
-    async init() {
-      if (!window.firebaseAuth || !window.firebaseDB) {
-        console.warn('Firebase not available, using localStorage only');
-        return false;
-      }
-      
-      // Listen for auth state changes
-      window.firebaseAuth.onAuthStateChanged((user) => {
-        if (user) {
-          console.log('Firebase user authenticated:', user.email);
-          this.handleFirebaseUser(user);
-        } else {
-          console.log('Firebase user signed out');
+  // Inventory persistence helpers
+  function persistInventory() {
+    try {
+      const obj = {};
+      for (const [k, v] of gameInventory.entries()) obj[String(k)] = Number(v) || 0;
+      localStorage.setItem('amiantoGameInventory', JSON.stringify(obj));
+    } catch (_) {}
+  }
+  function loadInventoryFromStorage() {
+    try {
+      const raw = localStorage.getItem('amiantoGameInventory');
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      gameInventory.clear();
+      if (obj && typeof obj === 'object') {
+        for (const key of Object.keys(obj)) {
+          const count = Math.max(0, Number(obj[key]) || 0);
+          if (count > 0) gameInventory.set(String(key), count);
         }
-      });
-      
-      // Listen for online/offline status
-      window.addEventListener('online', () => {
-        this.isOnline = true;
-        console.log('Connection restored - syncing with Firebase');
-        this.syncLocalToFirebase();
-      });
-      
-      window.addEventListener('offline', () => {
-        this.isOnline = false;
-        console.log('Connection lost - using offline mode');
-      });
-      
-      return true;
-    },
-    
-    // Handle Firebase authentication
-    async handleFirebaseUser(firebaseUser) {
-      // Check if we have local user with same email
-      const localUser = Array.from(users.values()).find(u => u.email === firebaseUser.email);
-      
-      if (localUser) {
-        // Link Firebase user to local user
-        localUser.firebaseUid = firebaseUser.uid;
-        localUser.emailVerified = firebaseUser.emailVerified;
-        users.set(localUser.username, localUser);
-        
-        // Sync projects from Firebase
-        await this.syncProjectsFromFirebase(localUser);
-        
-        // Login as local user
-        loginUser(localUser);
-        showNotification(`Welcome back, ${localUser.username}! Firebase sync active.`, 'success');
-      } else {
-        // Create new local user from Firebase
-        const username = firebaseUser.email.split('@')[0];
-        const newUser = {
-          username: username,
-          email: firebaseUser.email,
-          password: null, // No password needed for Firebase users
-          firebaseUid: firebaseUser.uid,
-          emailVerified: firebaseUser.emailVerified,
-          createdAt: new Date().toISOString(),
-          lastLogin: new Date().toISOString()
-        };
-        
-        users.set(username, newUser);
-        loginUser(newUser);
-        showNotification(`Welcome to Amianto Editor, ${username}!`, 'success');
       }
-    },
-    
-    // Register new user with Firebase
-    async registerUser(email, password, username) {
-      try {
-        const result = await window.firebaseAuth.createUserWithEmailAndPassword(email, password);
-        
-        // Update profile with username
-        await result.user.updateProfile({
-          displayName: username
-        });
-        
-        // Send email verification
-        await result.user.sendEmailVerification();
-        
-        showNotification('Registration successful! Please check your email for verification.', 'success');
-        return true;
-      } catch (error) {
-        console.error('Firebase registration error:', error);
-        showNotification(this.getFirebaseErrorMessage(error), 'error');
-        return false;
-      }
-    },
-    
-    // Login with Firebase
-    async loginUser(email, password) {
-      try {
-        const result = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
-        return true;
-      } catch (error) {
-        console.error('Firebase login error:', error);
-        showNotification(this.getFirebaseErrorMessage(error), 'error');
-        return false;
-      }
-    },
-    
-    // Sync projects from Firebase to local storage
-    async syncProjectsFromFirebase(user) {
-      if (!user.firebaseUid) return;
-      
-      try {
-        const snapshot = await window.firebaseDB
-          .collection('users')
-          .doc(user.firebaseUid)
-          .collection('projects')
-          .get();
-        
-        const projects = [];
-        snapshot.forEach(doc => {
-          projects.push({
-            id: doc.id,
-            ...doc.data()
-          });
-        });
-        
-        // Save to localStorage
-        localStorage.setItem(`amiantoProjects_${user.username}`, JSON.stringify(projects));
-        console.log(`Synced ${projects.length} projects from Firebase for ${user.username}`);
-        
-        return projects;
-      } catch (error) {
-        console.error('Error syncing projects from Firebase:', error);
-        return [];
-      }
-    },
-    
-    // Save project to Firebase
-    async saveProjectToFirebase(projectData, projectId = null) {
-      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) {
-        return false;
-      }
-      
-      try {
-        this.syncInProgress = true;
-        
-        const projectRef = window.firebaseDB
-          .collection('users')
-          .doc(currentUser.firebaseUid)
-          .collection('projects')
-          .doc(projectId || projectData.settings.name);
-        
-        await projectRef.set({
-          ...projectData,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-          syncVersion: Date.now()
-        });
-        
-        console.log('Project saved to Firebase:', projectData.settings.name);
-        return true;
-      } catch (error) {
-        console.error('Error saving project to Firebase:', error);
-        showNotification('Firebase sync failed - project saved locally only', 'warning');
-        return false;
-      } finally {
-        this.syncInProgress = false;
-      }
-    },
-    
-    // Sync local data to Firebase
-    async syncLocalToFirebase() {
-      if (!currentUser || !currentUser.firebaseUid || !this.isOnline) return;
-      
-      console.log('Starting sync to Firebase...');
-      
-      // Sync all local projects
-      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      
-      for (const project of localProjects) {
-        await this.saveProjectToFirebase(project, project.id);
-      }
-      
-      showNotification('Projects synced with Firebase!', 'success');
-    },
-    
-    // Get user-friendly error messages
-    getFirebaseErrorMessage(error) {
-      const errorMessages = {
-        'auth/email-already-in-use': 'Email already registered. Try logging in.',
-        'auth/user-not-found': 'No account found with this email.',
-        'auth/wrong-password': 'Incorrect password.',
-        'auth/weak-password': 'Password should be at least 6 characters.',
-        'auth/invalid-email': 'Please enter a valid email address.',
-        'auth/too-many-requests': 'Too many attempts. Please try again later.',
-        'auth/network-request-failed': 'Network error. Please check your connection.'
-      };
-      
-      return errorMessages[error.code] || error.message || 'An error occurred. Please try again.';
-    }
-  };
-
-  // Demo Mode Management
-  function enableDemoMode() {
-    isDemoMode = true;
-    updateSaveButtonStates();
-    addDemoIndicator();
+    } catch (_) {}
   }
-
-  function disableDemoMode() {
-    isDemoMode = false;
-    updateSaveButtonStates();
-    removeDemoIndicator();
-  }
-
-  function addDemoIndicator() {
-    // Add demo badge to header
-    const userDisplay = document.getElementById('userDisplayName');
-    if (userDisplay && !userDisplay.querySelector('.demo-badge')) {
-      const badge = document.createElement('span');
-      badge.className = 'demo-badge ms-2 badge bg-warning text-dark';
-      badge.textContent = 'DEMO';
-      badge.title = 'Demo Mode - Register to save projects';
-      userDisplay.appendChild(badge);
-    }
-
-    // Add demo warning to project settings
-    const settingsCard = document.querySelector('.card-header:has(h5:contains("Project Settings"))');
-    if (settingsCard && !settingsCard.querySelector('.demo-warning')) {
-      const warning = document.createElement('div');
-      warning.className = 'demo-warning alert alert-warning alert-sm mt-2 mb-0';
-      warning.innerHTML = '<small><strong>Demo Mode:</strong> Project modifications cannot be saved. <a href="#" onclick="showRegistration()" class="alert-link">Register for free</a> to enable saving.</small>';
-      settingsCard.appendChild(warning);
-    }
-  }
-
-  function removeDemoIndicator() {
-    // Remove demo badge
-    const badge = document.querySelector('.demo-badge');
-    if (badge) badge.remove();
-
-    // Remove demo warning
-    const warning = document.querySelector('.demo-warning');
-    if (warning) warning.remove();
-  }
-
-  function updateSaveButtonStates() {
-    const saveBtn = document.querySelector('a[onclick="saveCurrentProject()"]');
-    const saveSettingsBtn = document.querySelector('button[onclick="saveProjectSettings()"]');
-    
-    if (isDemoMode) {
-      // Disable save buttons
-      if (saveBtn) {
-        saveBtn.classList.add('disabled');
-        saveBtn.setAttribute('onclick', 'showDemoSaveWarning()');
-        saveBtn.setAttribute('title', 'Demo mode - Register to save projects');
-      }
-      
-      if (saveSettingsBtn) {
-        saveSettingsBtn.disabled = true;
-        saveSettingsBtn.setAttribute('onclick', 'showDemoSaveWarning()');
-        saveSettingsBtn.setAttribute('title', 'Demo mode - Register to save projects');
-      }
-    } else {
-      // Enable save buttons
-      if (saveBtn) {
-        saveBtn.classList.remove('disabled');
-        saveBtn.setAttribute('onclick', 'saveCurrentProject()');
-        saveBtn.removeAttribute('title');
-      }
-      
-      if (saveSettingsBtn) {
-        saveSettingsBtn.disabled = false;
-        saveSettingsBtn.setAttribute('onclick', 'saveProjectSettings()');
-        saveSettingsBtn.removeAttribute('title');
-      }
-    }
-  }
-
-  window.showDemoSaveWarning = function() {
-    const modal = document.createElement('div');
-    modal.className = 'modal fade';
-    modal.innerHTML = `
-      <div class="modal-dialog">
-        <div class="modal-content bg-dark text-light">
-          <div class="modal-header border-secondary">
-            <h5 class="modal-title">🔒 Demo Mode - Save Restricted</h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-          </div>
-          <div class="modal-body">
-            <p>You're using the <strong>Amianto Editor Demo</strong>. While you can explore all features and create amazing projects, saving is restricted to registered users.</p>
-            
-            <div class="alert alert-info">
-              <h6><i class="fas fa-lightbulb"></i> What you can do in Demo Mode:</h6>
-              <ul class="mb-0">
-                <li>✅ Create and edit rooms</li>
-                <li>✅ Add scene objects and characters</li>
-                <li>✅ Draw walkable areas and hotspots</li>
-                <li>✅ Write and test JavaScript scripts</li>
-                <li>✅ Test your game with integrated runtime</li>
-                <li>✅ Export your game to run locally</li>
-              </ul>
-            </div>
-            
-            <div class="alert alert-warning">
-              <h6><i class="fas fa-lock"></i> What requires registration:</h6>
-              <ul class="mb-0">
-                <li>🔒 Save projects to your account</li>
-                <li>🔒 Access projects from any device</li>
-                <li>🔒 Collaborate with other users</li>
-                <li>🔒 Future cloud features</li>
-              </ul>
-            </div>
-          </div>
-          <div class="modal-footer border-secondary">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Continue in Demo Mode</button>
-            <button type="button" class="btn btn-success" onclick="registerFromDemo(); bootstrap.Modal.getInstance(this.closest('.modal')).hide();">
-              <i class="fas fa-user-plus"></i> Register for Free
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-    
-    document.body.appendChild(modal);
-    const bsModal = new bootstrap.Modal(modal);
-    bsModal.show();
-    
-    modal.addEventListener('hidden.bs.modal', () => {
-      document.body.removeChild(modal);
-    });
-  };
-
-  window.registerFromDemo = function() {
-    showRegistration();
-  };
+  loadInventoryFromStorage();
+  // activePlugin rimosso - ora usiamo solo iframe sandboxed
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -3362,7 +3065,10 @@ const jsScripts = new Map(); // name -> content
       indentUnit: 2,
       tabSize: 2,
       lineWrapping: true,
+      extraKeys: { 'Ctrl-Space': 'autocomplete' },
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
     });
+    attachAutoHint(codeMirrorEditor, 'small');
   }
 
   // Editor grande nel pannello principale (area canvas)
@@ -3377,14 +3083,701 @@ const jsScripts = new Map(); // name -> content
       indentUnit: 2,
       tabSize: 2,
       lineWrapping: true,
+      extraKeys: { 'Ctrl-Space': 'autocomplete' },
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
+    });
+    attachAutoHint(largeCodeMirrorEditor, 'large');
+  }
+
+  // Game API completions for CodeMirror
+  const GAME_API_COMPLETIONS = [
+    'print', 'show_message', 'move_object',
+    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
+    'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
+    'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
+    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible'
+  ];
+
+  function cmGameApiHint(cm) {
+    const cursor = cm.getCursor();
+    const token = cm.getTokenAt(cursor);
+    const start = token.start;
+    const end = cursor.ch;
+    const currentWord = token.string || '';
+    const list = GAME_API_COMPLETIONS.filter(name => name.toLowerCase().startsWith(currentWord.toLowerCase()));
+    return {
+      list: list.length ? list : GAME_API_COMPLETIONS,
+      from: CodeMirror.Pos(cursor.line, start),
+      to: CodeMirror.Pos(cursor.line, end)
+    };
+  }
+
+  // Attach auto-hint on typing for CodeMirror editors
+  let autoHintAttachedToSmall = false;
+  let autoHintAttachedToLarge = false;
+  function attachAutoHint(cm, which = 'small') {
+    if (!cm || typeof cm.on !== 'function') return;
+    if (which === 'large') {
+      if (autoHintAttachedToLarge) return;
+      autoHintAttachedToLarge = true;
+    } else {
+      if (autoHintAttachedToSmall) return;
+      autoHintAttachedToSmall = true;
+    }
+    cm.on('inputRead', function(editor, change) {
+      if (!change) return;
+      // Ignore programmatic changes and bulk edits
+      if (change.origin === 'setValue' || change.origin === 'paste' || change.origin === 'undo' || change.origin === 'redo') return;
+      // If a completion is already active, don't re-trigger
+      if (editor.state && editor.state.completionActive) return;
+      const inserted = Array.isArray(change.text) ? change.text.join('\n') : String(change.text || '');
+      if (!inserted) return;
+      // Trigger only for word characters to avoid noise
+      if (!/^[A-Za-z0-9_]$/.test(inserted)) return;
+      if (typeof editor.showHint === 'function') {
+        editor.showHint({ hint: cmGameApiHint, completeSingle: false });
+      }
     });
   }
 
+  // Events per scope: id = handler name in runtime, label = human-readable
+  const SCRIPT_EVENTS = {
+    Global: [
+      { id: 'on_game_start', label: 'onGameStart' },
+      { id: 'on_room_change', label: 'onRoomChange' }
+    ],
+    Room: [
+      // Anche disponibile a livello globale; mantenuto qui per comodità UI
+      { id: 'on_room_change', label: 'onRoomChange' }
+    ],
+    Object: [{ id: 'on_object_click', label: 'onClick' }],
+    Character: [{ id: 'on_character_click', label: 'onClick' }],
+    Hotspot: [{ id: 'on_hotspot_click', label: 'onClick' }]
+    // Nessun evento GUI: runtime non ancora collegato
+  };
+
+  function populateEventsForScope(scope) {
+    const sel = document.getElementById('script-event');
+    if (!sel) return;
+    sel.innerHTML = '';
+    const defs = SCRIPT_EVENTS[scope] || [];
+    defs.forEach(ev => {
+      const opt = document.createElement('option');
+      opt.value = ev.id;
+      opt.textContent = ev.label;
+      sel.appendChild(opt);
+    });
+  }
+
+  function populateTargetsForScope(scope) {
+    const sel = document.getElementById('script-target');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    if (scope === 'Global') {
+      sel.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = 'main';
+      opt.textContent = 'Global (project-wide)';
+      sel.appendChild(opt);
+      return;
+    }
+
+    sel.disabled = false;
+    const addPlaceholder = (text) => {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = text;
+      sel.appendChild(opt);
+    };
+
+    if (scope === 'Room') {
+      addPlaceholder('Select room...');
+      rooms.forEach((room) => {
+        const opt = document.createElement('option');
+        opt.value = room.id;
+        opt.textContent = room.name || room.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Object') {
+      addPlaceholder('Select scene object...');
+      (sceneObjects || []).forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.id;
+        opt.textContent = o.name || o.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Character') {
+      addPlaceholder('Select character...');
+      document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
+        const name = s.textContent.trim();
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Hotspot') {
+      addPlaceholder('Select hotspot...');
+      (Array.isArray(hotspots) ? hotspots : []).forEach(hs => {
+        const opt = document.createElement('option');
+        opt.value = `hotspot:${hs.id}`;
+        opt.textContent = hs.name || hs.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'GUI') {
+      addPlaceholder('Select GUI button...');
+      (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.name || b.id;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+  }
+
+  function initScriptsUI() {
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
+    const lock = document.getElementById('lock-script-scope');
+    if (!scopeSel || !targetSel || !eventSel) return;
+
+    // Initialize once per tab open
+    populateEventsForScope(scopeSel.value || 'Global');
+    populateTargetsForScope(scopeSel.value || 'Global');
+
+    scopeSel.addEventListener('change', () => {
+      populateEventsForScope(scopeSel.value);
+      populateTargetsForScope(scopeSel.value);
+      // Quando l'utente cambia lo scope, riabilita i dropdown per permettere la creazione di un nuovo script
+      if (!lock || !lock.checked) {
+        scopeSel.disabled = false;
+        if (scopeSel.value === 'Global') {
+          targetSel.disabled = true;
+        } else {
+          targetSel.disabled = false;
+        }
+      }
+    });
+
+    // Listener sul checkbox per gestire lo stato dei dropdown
+    if (lock) {
+      lock.addEventListener('change', () => {
+        if (!lock.checked) {
+          // Quando il lock viene deselezionato, riabilita i dropdown
+          scopeSel.disabled = false;
+          if (scopeSel.value === 'Global') {
+            targetSel.disabled = true;
+          } else {
+            targetSel.disabled = false;
+          }
+        }
+      });
+    }
+  }
+
+  function extractHandlersFromScript(content) {
+    if (!content) return new Set();
+    const handlers = new Set();
+    [
+      'on_game_start',
+      'on_room_change',
+      'on_object_click',
+      'on_character_click',
+      'on_hotspot_click',
+      'on_gui_click'
+    ].forEach(h => {
+      const re = new RegExp(`function\\s+${h}\\s*\\(`);
+      if (re.test(content)) handlers.add(h);
+    });
+    return handlers;
+  }
+
+  function rebuildScriptsTree() {
+    const tree = document.getElementById('scripts-tree');
+    if (!tree) return;
+    tree.innerHTML = '';
+
+    const container = document.createElement('div');
+
+    // Helper to build a group
+    const buildGroup = (title, items) => {
+      const group = document.createElement('div');
+      group.className = 'mb-2';
+      const h = document.createElement('div');
+      h.textContent = title;
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      group.appendChild(h);
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+
+      items.forEach(it => {
+        const li = document.createElement('li');
+        li.style.margin = '4px 0';
+        const label = document.createElement('span');
+        label.textContent = it.label;
+        label.style.cursor = 'pointer';
+        label.onclick = () => openScriptFromTree(it.scope, it.target, null);
+        li.appendChild(label);
+
+        if (it.events && it.events.length) {
+          const sub = document.createElement('ul');
+          sub.style.paddingLeft = '16px';
+          it.events.forEach(ev => {
+            const evLi = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = '#';
+            a.textContent = ev.label;
+            a.onclick = (e) => { e.preventDefault(); openScriptFromTree(it.scope, it.target, ev.id); };
+            evLi.appendChild(a);
+            sub.appendChild(evLi);
+          });
+          li.appendChild(sub);
+        }
+        ul.appendChild(li);
+      });
+      group.appendChild(ul);
+      container.appendChild(group);
+    };
+
+    // Global (single)
+    const globalKey = 'Global:main';
+    let globalContent = jsScripts.get(globalKey) || localStorage.getItem(`script-${globalKey}`) || '';
+    const globalHandlers = extractHandlersFromScript(globalContent);
+    const globalEvents = [];
+    SCRIPT_EVENTS.Global.forEach(def => { if (globalHandlers.has(def.id)) globalEvents.push(def); });
+
+    if (globalContent && globalEvents.length) {
+      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: globalEvents }]);
+    } else if (globalContent) {
+      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: [] }]);
+    }
+
+    // Rooms attached
+    const roomItems = [];
+    rooms.forEach((r) => {
+      const key = roomScripts.get(r.id) || `Room:${r.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !roomScripts.get(r.id)) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.Room.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      roomItems.push({ scope: 'Room', target: r.id, label: `Room: ${r.name || r.id}`, events });
+    });
+    if (roomItems.length) buildGroup('Room', roomItems);
+
+    // Objects attached
+    const objectItems = [];
+    (sceneObjects || []).forEach(o => {
+      const key = objectScripts.get(o.id) || `Object:${o.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !objectScripts.get(o.id)) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.Object.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      objectItems.push({ scope: 'Object', target: o.id, label: `Object: ${o.name || o.id}`, events });
+    });
+    if (objectItems.length) buildGroup('Object', objectItems);
+
+    // GUI attached
+    const guiItems = [];
+    (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
+      const key = (typeof guiScripts !== 'undefined' && guiScripts.get) ? (guiScripts.get(b.id) || `GUI:${b.id}`) : `GUI:${b.id}`;
+      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+      if (!content && !(typeof guiScripts !== 'undefined' && guiScripts.get && guiScripts.get(b.id))) return;
+      const handlers = extractHandlersFromScript(content);
+      const events = [];
+      SCRIPT_EVENTS.GUI.forEach(def => { if (handlers.has(def.id)) events.push(def); });
+      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, events });
+    });
+    if (guiItems.length) buildGroup('GUI', guiItems);
+
+    tree.appendChild(container);
+  }
+
+  function openScriptFromTree(scope, target, handlerId) {
+    ensureLargeScriptEditor();
+    ensureScriptEditor();
+    const key = `${scope}:${target}`;
+    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+    if (!content) {
+      showNotification('Script not found', 'warning');
+      return;
+    }
+    currentScriptName = key;
+    if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
+    if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+
+    // Reflect dropdowns and optionally lock
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    if (scopeSel && targetSel) {
+      scopeSel.value = scope;
+      populateTargetsForScope(scope);
+      if (targetSel.querySelector(`option[value="${target}"]`)) targetSel.value = target;
+      const lock = document.getElementById('lock-script-scope');
+      if (lock && lock.checked) {
+        targetSel.disabled = (scope !== 'Global');
+        scopeSel.disabled = true;
+      }
+    }
+
+    // Scroll to handler if provided
+    if (handlerId && largeCodeMirrorEditor) {
+      const re = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+      for (let i = 0; i < largeCodeMirrorEditor.lineCount(); i++) {
+        if (re.test(largeCodeMirrorEditor.getLine(i))) {
+          largeCodeMirrorEditor.setCursor({ line: i, ch: 0 });
+          largeCodeMirrorEditor.focus();
+          break;
+        }
+      }
+    }
+  }
+
+  window.createScriptFromDropdown = function() {
+    ensureLargeScriptEditor();
+    const scopeSel = document.getElementById('script-scope');
+    const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
+    if (!scopeSel || !targetSel || !eventSel) return;
+
+    const scope = scopeSel.value || 'Global';
+    const target = (scope === 'Global') ? 'main' : (targetSel.value || '').trim();
+    if (!target) { showNotification('Select a valid target', 'warning'); return; }
+    const handlerId = eventSel.value || 'on_game_start';
+    const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
+
+    const key = `${scope}:${target}`;
+    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+
+    // Ensure header
+    if (!content) {
+      const header = [
+        `// Scope: ${scope}`,
+        `// Target: ${target}`,
+        ''
+      ].join('\n');
+      content = header;
+    }
+
+    // Insert handler skeleton if missing
+    const handlerRegex = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+    if (!handlerRegex.test(content)) {
+      let skeleton = '\n';
+      skeleton += `// Event: ${eventDef.label}\n`;
+      if (handlerId === 'on_game_start') {
+        skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
+      } else if (handlerId === 'on_room_change') {
+        skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_object_click') {
+        skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_character_click') {
+        skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_hotspot_click') {
+        skeleton += `function on_hotspot_click(hotspotId){\n  // your code here\n}\n`;
+      } else {
+        skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
+      }
+      content = content.replace(/\s*$/, '') + '\n' + skeleton;
+    }
+
+    // Save and attach
+    jsScripts.set(key, content);
+    try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
+    currentScriptName = key;
+
+    if (scope === 'Room') {
+      roomScripts.set(target, key);
+    } else if (scope === 'Object') {
+      objectScripts.set(target, key);
+    } else if (scope === 'GUI') {
+      if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+    }
+
+    if (largeCodeMirrorEditor) {
+      largeCodeMirrorEditor.setValue(content);
+      // Move cursor to handler
+      const re = new RegExp(`function\\s+${handlerId}\\s*\\(`);
+      for (let i = 0; i < largeCodeMirrorEditor.lineCount(); i++) {
+        if (re.test(largeCodeMirrorEditor.getLine(i))) {
+          largeCodeMirrorEditor.setCursor({ line: i, ch: 0 });
+          break;
+        }
+      }
+      largeCodeMirrorEditor.focus();
+    }
+
+    refreshScriptSelector();
+    rebuildScriptsTree();
+    
+    // Riabilita sempre i dropdown dopo la creazione per permettere la creazione di altri script
+    // Il lock viene applicato solo quando si apre uno script esistente dall'albero
+    scopeSel.disabled = false;
+    if (scope === 'Global') {
+      targetSel.disabled = true;
+    } else {
+      targetSel.disabled = false;
+    }
+    
+    showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
+  }
+
+  // ============================================
+  // GAME STATE SYSTEM - Variabili di gioco globali
+  // ============================================
+  window.Game = window.Game || {};
+  
+  // Stato interno (non accessibile direttamente)
+  const _gameState = {};
+  
+  // Definizioni delle variabili (per editor UI e validazione)
+  window.gameVariableDefinitions = window.gameVariableDefinitions || [];
+  
+  // API Game State
+  window.Game.setVar = function(key, value) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.setVar] Invalid key:', key);
+      return false;
+    }
+    // Validazione tipo se definito
+    const def = gameVariableDefinitions.find(v => v.name === key);
+    if (def) {
+      const expectedType = def.type;
+      if (expectedType === 'boolean' && typeof value !== 'boolean') {
+        console.warn(`[Game.setVar] Variable "${key}" should be boolean, got ${typeof value}`);
+        value = !!value; // Coerce to boolean
+      } else if (expectedType === 'number' && typeof value !== 'number') {
+        console.warn(`[Game.setVar] Variable "${key}" should be number, got ${typeof value}`);
+        value = Number(value) || 0;
+      } else if (expectedType === 'string' && typeof value !== 'string') {
+        console.warn(`[Game.setVar] Variable "${key}" should be string, got ${typeof value}`);
+        value = String(value);
+      }
+    }
+    _gameState[key] = value;
+    return true;
+  };
+  
+  window.Game.getVar = function(key) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.getVar] Invalid key:', key);
+      return undefined;
+    }
+    if (!(key in _gameState)) {
+      // Se la variabile è definita ma non ancora impostata, restituisci il valore iniziale
+      const def = gameVariableDefinitions.find(v => v.name === key);
+      if (def && 'initialValue' in def) {
+        return def.initialValue;
+      }
+      console.warn(`[Game.getVar] Variable "${key}" not found`);
+      return undefined;
+    }
+    return _gameState[key];
+  };
+  
+  window.Game.hasVar = function(key) {
+    if (!key || typeof key !== 'string') return false;
+    return key in _gameState;
+  };
+  
+  window.Game.toggleVar = function(key) {
+    if (!key || typeof key !== 'string') {
+      console.warn('[Game.toggleVar] Invalid key:', key);
+      return false;
+    }
+    const current = Game.getVar(key);
+    if (typeof current === 'boolean') {
+      Game.setVar(key, !current);
+      return true;
+    } else {
+      // Se non è boolean, inizializza a true
+      Game.setVar(key, true);
+      return true;
+    }
+  };
+  
+  // Funzione per ottenere tutto lo stato (per serializzazione)
+  window.Game.getState = function() {
+    return JSON.parse(JSON.stringify(_gameState));
+  };
+
+  // API opzionale per mostrare testo nel gioco (usata da print(..., { showInGame: true }))
+  // L'implementazione concreta nel runtime può sovrascrivere questo metodo.
+  window.Game.showText = window.Game.showText || function(text) {
+    // Di default, in editor mostriamo una notifica non invasiva
+    try {
+      showNotification(String(text), 'info');
+    } catch (_) {}
+  };
+  
+  // Funzione per impostare tutto lo stato (per deserializzazione)
+  window.Game.setState = function(state) {
+    if (!state || typeof state !== 'object') return false;
+    Object.keys(_gameState).forEach(key => delete _gameState[key]);
+    Object.keys(state).forEach(key => {
+      _gameState[key] = state[key];
+    });
+    return true;
+  };
+  
+  // ============================================
+  // CONDITION SYSTEM - Sistema di condizioni
+  // ============================================
+  window.Condition = window.Condition || {};
+  
+  window.Condition.evaluate = function(conditionObject) {
+    if (!conditionObject || typeof conditionObject !== 'object') {
+      console.warn('[Condition.evaluate] Invalid condition object');
+      return false;
+    }
+    
+    const { var: varName, operator, value: expectedValue } = conditionObject;
+    
+    if (!varName || typeof varName !== 'string') {
+      console.warn('[Condition.evaluate] Invalid variable name');
+      return false;
+    }
+    
+    if (!operator || typeof operator !== 'string') {
+      console.warn('[Condition.evaluate] Invalid operator');
+      return false;
+    }
+    
+    // Ottieni valore corrente della variabile
+    const currentValue = Game.getVar(varName);
+    const varExists = Game.hasVar(varName);
+    
+    // Operatore "exists" - verifica solo esistenza
+    if (operator === 'exists') {
+      return varExists;
+    }
+    
+    // Se la variabile non esiste e l'operatore non è "exists", fallisce
+    if (!varExists) {
+      console.warn(`[Condition.evaluate] Variable "${varName}" does not exist`);
+      return false;
+    }
+    
+    // Valutazione condizioni
+    switch (operator) {
+      case '==':
+        return currentValue == expectedValue; // Usa == per permettere type coercion
+      case '!=':
+        return currentValue != expectedValue;
+      case '>':
+        return Number(currentValue) > Number(expectedValue);
+      case '<':
+        return Number(currentValue) < Number(expectedValue);
+      case '>=':
+        return Number(currentValue) >= Number(expectedValue);
+      case '<=':
+        return Number(currentValue) <= Number(expectedValue);
+      default:
+        console.warn(`[Condition.evaluate] Unknown operator: ${operator}`);
+        return false;
+    }
+  };
+  
+  window.Condition.evaluateAll = function(conditions) {
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      return true; // Nessuna condizione = sempre vero
+    }
+    
+    // Tutte le condizioni devono essere vere (AND logic)
+    return conditions.every(cond => Condition.evaluate(cond));
+  };
+
 // API esposte al sandbox
+  // Funzione helper standalone per serializzare valori in modo leggibile
+  // Deve essere standalone perché viene usata in contesti diversi (sandbox)
+  function serializeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
+  }
+
   const sandboxApi = {
+    // Funzione print() globale per gli script utente
+    // Accetta qualsiasi numero di argomenti e li serializza correttamente
+    // Centralizza tutto l'output degli script nello Script LogService
     print: function() {
-      const msg = Array.from(arguments).map(v => String(v)).join(' ');
-      addDebugMessage(msg, 'info');
+      try {
+        const args = Array.from(arguments);
+        if (args.length === 0) {
+          ScriptLogService.print('', 'editor-sandbox');
+          return;
+        }
+        
+        // Opzione speciale: ultimo argomento come { showInGame: true }
+        let showInGame = false;
+        const last = args[args.length - 1];
+        if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
+          if (last.showInGame === true) {
+            showInGame = true;
+          }
+          args.pop();
+        }
+
+        // Serializza ogni argomento e uniscili con spazi
+        const messages = args.map(arg => serializeValue(arg));
+        const msg = messages.join(' ');
+        
+        // Log nello Script LogService (non usa console.log come output principale)
+        ScriptLogService.print(msg, 'editor-sandbox');
+
+        // Integrazione opzionale con il gameplay tramite Game.showText()
+        if (showInGame && window.Game && typeof window.Game.showText === 'function') {
+          try {
+            window.Game.showText(msg);
+          } catch (_) {}
+        }
+      } catch (e) {
+        // Fallback in caso di errore nella serializzazione
+        addScriptLogMessage(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
+      }
+    },
+    
+    // Funzione error() per log di errori nello Script Log
+    // Supporta livelli di log separati (error vs info)
+    error: function() {
+      try {
+        const args = Array.from(arguments);
+        if (args.length === 0) {
+          addScriptLogMessage('', 'error');
+          return;
+        }
+        
+        const messages = args.map(arg => serializeValue(arg));
+        const msg = messages.join(' ');
+        
+        addScriptLogMessage(msg, 'error');
+      } catch (e) {
+        addScriptLogMessage(`[Error Log Error] ${e && e.message ? e.message : String(e)}`, 'error');
+      }
     },
     show_message: function(text){
       showNotification(String(text), 'info');
@@ -3423,87 +3816,274 @@ const jsScripts = new Map(); // name -> content
         addDebugMessage('Character click handler registered', 'info');
       }
     },
-on_hotspot_click: function(handler) {
+    on_hotspot_click: function(handler) {
       if (typeof handler === 'function') {
         window.gameEventHandlers = window.gameEventHandlers || {};
         window.gameEventHandlers.hotspot_click = handler;
         addDebugMessage('Hotspot click handler registered', 'info');
       }
     },
-    // Inventory System APIs
+    // Inventory APIs
     add_to_inventory: function(itemId, quantity) {
-      quantity = Number(quantity) || 1;
-      if (quantity <= 0) {
-        addDebugMessage('Quantity must be positive', 'warning');
-        return false;
-      }
-      
-      const existing = gameInventory.get(String(itemId));
-      if (existing) {
-        existing.quantity += quantity;
-      } else {
-        gameInventory.set(String(itemId), {
-          name: String(itemId),
-          quantity: quantity,
-          data: null
-        });
-      }
-      
-      addDebugMessage(`Added ${quantity}x ${itemId} to inventory`, 'info');
-      updateInventoryDisplay();
-      return true;
+      const id = String(itemId || '').trim();
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!id) { addDebugMessage('add_to_inventory: invalid itemId', 'warning'); return 0; }
+      const current = Number(gameInventory.get(id) || 0);
+      const next = current + q;
+      gameInventory.set(id, next);
+      persistInventory();
+      showNotification(`Added ${q} × "${id}" to inventory (total: ${next})`, 'success');
+      return next;
     },
     remove_from_inventory: function(itemId, quantity) {
-      quantity = Number(quantity) || 1;
-      if (quantity <= 0) {
-        addDebugMessage('Quantity must be positive', 'warning');
-        return false;
-      }
-      
-      const item = gameInventory.get(String(itemId));
-      if (!item) {
-        addDebugMessage(`Item ${itemId} not found in inventory`, 'warning');
-        return false;
-      }
-      
-      if (item.quantity <= quantity) {
-        gameInventory.delete(String(itemId));
-        addDebugMessage(`Removed all ${itemId} from inventory`, 'info');
-      } else {
-        item.quantity -= quantity;
-        addDebugMessage(`Removed ${quantity}x ${itemId} from inventory`, 'info');
-      }
-      
-      updateInventoryDisplay();
-      return true;
+      const id = String(itemId || '').trim();
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!id) { addDebugMessage('remove_from_inventory: invalid itemId', 'warning'); return 0; }
+      const current = Number(gameInventory.get(id) || 0);
+      const next = Math.max(0, current - q);
+      if (next <= 0) gameInventory.delete(id); else gameInventory.set(id, next);
+      persistInventory();
+      showNotification(`Removed ${q} × "${id}" from inventory (total: ${next})`, 'info');
+      return next;
     },
     has_item: function(itemId) {
-      return gameInventory.has(String(itemId));
+      const id = String(itemId || '').trim();
+      if (!id) return false;
+      return (Number(gameInventory.get(id) || 0) > 0);
     },
     get_item_count: function(itemId) {
-      const item = gameInventory.get(String(itemId));
-      return item ? item.quantity : 0;
-    },
-    get_inventory_items: function() {
-      const items = [];
-      gameInventory.forEach((item, id) => {
-        items.push({
-          id: id,
-          name: item.name,
-          quantity: item.quantity,
-          data: item.data
-        });
-      });
-      return items;
+      const id = String(itemId || '').trim();
+      if (!id) return 0;
+      return Number(gameInventory.get(id) || 0);
     },
     clear_inventory: function() {
-      const count = gameInventory.size;
       gameInventory.clear();
-      addDebugMessage(`Cleared inventory (${count} items removed)`, 'info');
-      updateInventoryDisplay();
+      persistInventory();
+      showNotification('Inventory cleared', 'warning');
       return true;
+    },
+
+    // Room System APIs
+    load_room: function(roomIdOrName) {
+      const key = String(roomIdOrName || '').trim();
+      if (!key) { addDebugMessage('load_room: missing room id/name', 'warning'); return false; }
+      let targetId = null;
+      if (rooms.has(key)) {
+        targetId = key;
+      } else {
+        rooms.forEach((r) => { if (!targetId && (r.name === key)) targetId = r.id; });
+      }
+      if (!targetId) { addDebugMessage(`load_room: room "${key}" not found`, 'warning'); return false; }
+      try {
+        window.selectRoom(targetId);
+        return true;
+      } catch (e) {
+        addDebugMessage(`load_room error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+    get_current_room: function() {
+      return currentRoomId || null;
+    },
+    get_room_objects: function() {
+      const r = rooms.get(currentRoomId);
+      if (!r || !Array.isArray(r.sceneObjects)) return [];
+      return r.sceneObjects.map(o => ({
+        id: String(o.id || ''),
+        name: String(o.name || ''),
+        type: String(o.type || 'Interactive'),
+        x: Number(o.x) || 0,
+        y: Number(o.y) || 0,
+        rotation: Number(o.rotationRad ? (o.rotationRad * 180 / Math.PI) : 0),
+        scaleX: Number((typeof o.scaleX === 'number') ? o.scaleX : 1),
+        scaleY: Number((typeof o.scaleY === 'number') ? o.scaleY : 1),
+        visible: (o.visible !== false)
+      }));
+    },
+    set_room_background: function(imageUrlOrDataUrl) {
+      const r = rooms.get(currentRoomId);
+      if (!r) { addDebugMessage('set_room_background: no current room', 'warning'); return false; }
+      const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
+      if (!url) {
+        r.background = null;
+        background = null;
+        redraw();
+        showNotification('Room background cleared', 'info');
+        return true;
+      }
+      try {
+        const img = new Image();
+        img.onload = () => {
+          r.background = img;
+          background = img;
+          redraw();
+          showNotification(`Room background set (${img.width}×${img.height})`, 'success');
+        };
+        img.onerror = () => {
+          addDebugMessage('set_room_background: failed to load image', 'error');
+          showNotification('Failed to load background image', 'danger');
+        };
+        img.src = url;
+        return true;
+      } catch (e) {
+        addDebugMessage(`set_room_background error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+
+    // Object System APIs
+    spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
+      const name = String(objectNameOrId || '').trim() || 'Object';
+      const objX = Number(x) || 0;
+      const objY = Number(y) || 0;
+
+      function addObjectWithImage(img) {
+        const newObj = {
+          id: uid('scene'),
+          name,
+          img,
+          x: objX,
+          y: objY,
+          type: 'Interactive',
+          rotationRad: 0,
+          scaleX: 1,
+          scaleY: 1,
+          visible: true
+        };
+        sceneObjects.push(newObj);
+        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+
+        // Add to UI list
+        try {
+          const list = document.getElementById('scene-objects-list');
+          if (list) {
+            const item = document.createElement('div');
+            item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+            item.dataset.objectId = newObj.id;
+            item.innerHTML = `
+              <div>
+                <strong>${newObj.name}</strong>
+                <br><small>Scene object</small>
+                <br><span class="badge bg-warning">Interactive</span>
+                <br><small style="color: #888;">Position: ${Math.round(newObj.x)}, ${Math.round(newObj.y)}</small>
+              </div>
+              <div>
+                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
+                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
+              </div>
+            `;
+            list.appendChild(item);
+          }
+        } catch (_) {}
+
+        redraw();
+        showNotification(`Spawned object "${newObj.name}"`, 'success');
+        return newObj.id;
+      }
+
+      try {
+        const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
+        if (!url) {
+          // Create a simple placeholder image (32x32)
+          const c = document.createElement('canvas');
+          c.width = 32; c.height = 32;
+          const t = c.getContext('2d');
+          t.fillStyle = '#cc3333'; t.fillRect(0, 0, 32, 32);
+          t.fillStyle = '#ffffff'; t.fillRect(4, 4, 24, 24);
+          const img = new Image();
+          img.onload = () => { addObjectWithImage(img); };
+          img.src = c.toDataURL('image/png');
+          return true;
+        } else {
+          const img = new Image();
+          img.onload = () => { addObjectWithImage(img); };
+          img.onerror = () => {
+            addDebugMessage('spawn_object: failed to load image', 'error');
+            showNotification('Failed to load object image', 'danger');
+          };
+          img.src = url;
+          return true;
+        }
+      } catch (e) {
+        addDebugMessage(`spawn_object error: ${e && e.message ? e.message : e}`, 'error');
+        return false;
+      }
+    },
+    despawn_object: function(objectId) {
+      const id = String(objectId || '').trim();
+      if (!id) { addDebugMessage('despawn_object: invalid id', 'warning'); return false; }
+      const before = sceneObjects.length;
+      sceneObjects = sceneObjects.filter(o => String(o.id) !== id);
+      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      // Remove from UI
+      try {
+        const el = document.querySelector(`[data-object-id="${id}"]`);
+        if (el) el.remove();
+      } catch (_) {}
+      const removed = (before !== sceneObjects.length);
+      if (removed) {
+        redraw();
+        showNotification(`Despawned object "${id}"`, 'info');
+      } else {
+        addDebugMessage(`despawn_object: object "${id}" not found`, 'warning');
+      }
+      return removed;
+    },
+    rotate_object: function(objectId, degrees) {
+      const id = String(objectId || '').trim();
+      const deg = Number(degrees) || 0;
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`rotate_object: object "${id}" not found`, 'warning'); return false; }
+      const rad = deg * Math.PI / 180;
+      obj.rotationRad = rad;
+      redraw();
+      return true;
+    },
+    scale_object: function(objectId, sx, sy) {
+      const id = String(objectId || '').trim();
+      let scaleX = Number(sx);
+      let scaleY = (typeof sy === 'undefined' || sy === null) ? scaleX : Number(sy);
+      if (!isFinite(scaleX)) scaleX = 1;
+      if (!isFinite(scaleY)) scaleY = 1;
+      scaleX = Math.max(0.01, scaleX);
+      scaleY = Math.max(0.01, scaleY);
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`scale_object: object "${id}" not found`, 'warning'); return false; }
+      obj.scaleX = scaleX;
+      obj.scaleY = scaleY;
+      redraw();
+      return true;
+    },
+    set_object_visible: function(objectId, visible) {
+      const id = String(objectId || '').trim();
+      const v = !!visible;
+      const obj = sceneObjects.find(o => String(o.id) === id);
+      if (!obj) { addDebugMessage(`set_object_visible: object "${id}" not found`, 'warning'); return false; }
+      obj.visible = v;
+      redraw();
+      return true;
+    },
+    // Game State API
+    get_var: function(key) {
+      return window.Game.getVar(key);
+    },
+    set_var: function(key, value) {
+      return window.Game.setVar(key, value);
+    },
+    has_var: function(key) {
+      return window.Game.hasVar(key);
+    },
+    toggle_var: function(key) {
+      return window.Game.toggleVar(key);
+    },
+    // Condition API (per uso interno, non esposto direttamente agli script)
+    evaluate_condition: function(conditionObject) {
+      return window.Condition.evaluate(conditionObject);
+    },
+    evaluate_all_conditions: function(conditions) {
+      return window.Condition.evaluateAll(conditions);
     }
-  };
+};
 
   // Event System: Global trigger functions
   window.gameEventHandlers = window.gameEventHandlers || {};
@@ -3540,34 +4120,36 @@ on_hotspot_click: function(handler) {
     triggerGameEvent('hotspot_click', hotspotId);
   };
 
-  function executeScriptHandler(scriptContent, handlerName, argsArray){
+  function executeScriptHandler(scriptContent, handlerName, argsArray, conditions){
     if (!scriptContent || !handlerName) return;
-    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') return;
-    const callArgs = Array.isArray(argsArray) ? argsArray : [];
-const wrapped = `
-      var print = application.remote.print;
-      var show_message = application.remote.show_message;
-      var move_object = application.remote.move_object;
-      var on_game_start = application.remote.on_game_start;
-      var on_room_change = application.remote.on_room_change;
-      var on_object_click = application.remote.on_object_click;
-      var on_character_click = application.remote.on_character_click;
-      var on_hotspot_click = application.remote.on_hotspot_click;
-      var add_to_inventory = application.remote.add_to_inventory;
-      var remove_from_inventory = application.remote.remove_from_inventory;
-      var has_item = application.remote.has_item;
-      var get_item_count = application.remote.get_item_count;
-      var get_inventory_items = application.remote.get_inventory_items;
-      var clear_inventory = application.remote.clear_inventory;
-      try { ${scriptContent}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
-      application.setInterface({});
-      try { if (typeof ${handlerName} === 'function') { ${handlerName}.apply(null, ${JSON.stringify(callArgs)}); } }
-      catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-    `;
-    try {
-      const plugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-      plugin.whenConnected(function(){ plugin.disconnect(); });
-    } catch(_) {}
+    
+    // Valuta condizioni se presenti
+    if (conditions && Array.isArray(conditions) && conditions.length > 0) {
+      if (!Condition.evaluateAll(conditions)) {
+        addDebugMessage(`[Condition] Script handler "${handlerName}" skipped: conditions not met`, 'info');
+        return; // Condizioni non soddisfatte, non eseguire lo script
+      }
+    }
+    
+    // Se il runtime non è inizializzato, non eseguire lo script
+    if (!embeddedRuntime.isInitialized || !embeddedRuntime.sandboxIframe) {
+      addDebugMessage(`[Script] Runtime not initialized, skipping handler "${handlerName}"`, 'warning');
+      return;
+    }
+    
+    // Esegui lo script nell'iframe sandboxed
+    const context = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: null,
+      variables: {}
+    };
+    
+    // Copia variabili dal gameState
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      context.variables[key] = value;
+    });
+    
+    executeScriptInSandbox(`handler_${handlerName}_${Date.now()}`, scriptContent, handlerName, argsArray, context);
   }
 
   window.newScript = function() {
@@ -3600,93 +4182,167 @@ const wrapped = `
       const taSmall = document.getElementById('script-editor');
       content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
     }
-    const selector = document.getElementById('script-selector');
-    const selectedScript = selector.value || 'new-script';
-    
-    // Simulate save
-    localStorage.setItem(`script-${selectedScript}`, content);
-    jsScripts.set(selectedScript, content);
-    showNotification(`Script "${selectedScript}" saved!`, 'success');
+    // Determine current key (scope/target) or fallback to legacy selector
+    let key = currentScriptName && String(currentScriptName);
+    if (!key) {
+      const selector = document.getElementById('script-selector');
+      key = (selector && selector.value) || 'new-script';
+    }
+
+    try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
+    jsScripts.set(key, content);
+    showNotification(`Script "${key}" saved!`, 'success');
 
     // refresh attach targets
+    refreshScriptSelector();
     refreshSceneObjectScriptTargets();
+    rebuildScriptsTree();
   };
 
   window.runScript = function() {
     ensureLargeScriptEditor();
     ensureScriptEditor();
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
-    // Ferma eventuale plugin attivo prima di avviarne uno nuovo
-    if (activePlugin && typeof activePlugin.disconnect === 'function') {
-      try { activePlugin.disconnect(); } catch(_) {}
-      activePlugin = null;
-    }
-    if (typeof jailed === 'undefined' || typeof jailed.DynamicPlugin === 'undefined') {
-      showNotification('Jailed not loaded. Check the include.', 'danger');
+    
+    if (!content || !content.trim()) {
+      showNotification('Script vuoto!', 'warning');
       return;
     }
-    // Wrappa il codice utente per esporre funzioni previste
-const wrapped = `
-      var print = application.remote.print;
-      var show_message = application.remote.show_message;
-      var move_object = application.remote.move_object;
-      var on_game_start = application.remote.on_game_start;
-      var on_room_change = application.remote.on_room_change;
-      var on_object_click = application.remote.on_object_click;
-      var on_character_click = application.remote.on_character_click;
-      var on_hotspot_click = application.remote.on_hotspot_click;
-      var add_to_inventory = application.remote.add_to_inventory;
-      var remove_from_inventory = application.remote.remove_from_inventory;
-      var has_item = application.remote.has_item;
-      var get_item_count = application.remote.get_item_count;
-      var get_inventory_items = application.remote.get_inventory_items;
-      var clear_inventory = application.remote.clear_inventory;
-      try { ${content}\n; } catch(e){ application.remote.print('Script error: ' + (e && e.message ? e.message : e)); }
-      application.setInterface({
-        on_object_click: function(object_id, x, y){
-          try { if (typeof on_object_click === 'function') { return on_object_click(object_id, x, y); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_game_start: function(){
-          try { if (typeof on_game_start === 'function') { return on_game_start(); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_room_change: function(oldRoomId, newRoomId){
-          try { if (typeof on_room_change === 'function') { return on_room_change(oldRoomId, newRoomId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_character_click: function(characterId){
-          try { if (typeof on_character_click === 'function') { return on_character_click(characterId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-        },
-        on_hotspot_click: function(hotspotId){
-          try { if (typeof on_hotspot_click === 'function') { return on_hotspot_click(hotspotId); } }
-          catch(e){ application.remote.print('Handler error: ' + (e && e.message ? e.message : e)); }
-        }
-      });
-      if (typeof on_game_start === 'function') { on_game_start(); }
-    `;
-    try {
-      activePlugin = new jailed.DynamicPlugin(wrapped, sandboxApi);
-      activePlugin.whenConnected(function(){
-        showNotification('JS script eseguito in sandbox!', 'success');
-      });
-      activePlugin.onDisconnect(function(){
-        addDebugMessage('Sandbox disconnesso', 'info');
-      });
-    } catch (err) {
-      const msg = (err && err.message) ? err.message : String(err);
-      addDebugMessage(`JS sandbox error: ${msg}`, 'error');
-      showNotification(`JS sandbox error: ${msg}`, 'danger');
+    
+    // Serializza il progetto completo (come fa startPlayTest) per avere tutte le variabili e il contesto
+    const jsonString = window.serializeProjectToJsonString(true);
+    
+    // Inizializza sempre il sandbox con i dati aggiornati del progetto
+    // Questo garantisce che lo script abbia accesso a tutte le variabili e al contesto corretto
+    initializeSandboxRuntime(jsonString);
+    
+    // Aspetta che l'iframe sia pronto e poi esegui lo script
+    const checkReady = setInterval(() => {
+      if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
+        clearInterval(checkReady);
+        // Esegui lo script selezionato nel sandbox
+        executeScriptInSandbox('run_script_' + Date.now(), content, null, [], {});
+        showNotification('Script eseguito in sandbox!', 'success');
+      }
+    }, 100);
+    
+    // Timeout dopo 5 secondi
+    setTimeout(() => {
+      clearInterval(checkReady);
+      if (!embeddedRuntime.isReady) {
+        showNotification('Errore: sandbox non inizializzato', 'danger');
+      }
+    }, 5000);
+  };
+
+  window.deleteScript = function() {
+    // Determina lo script corrente
+    let scriptName = currentScriptName && String(currentScriptName);
+    if (!scriptName) {
+      const selector = document.getElementById('script-selector');
+      scriptName = (selector && selector.value) || '';
     }
+    
+    if (!scriptName || !scriptName.trim()) {
+      showNotification('Seleziona uno script da eliminare', 'warning');
+      return;
+    }
+    
+    // Chiedi conferma
+    if (!confirm(`Vuoi eliminare lo script "${scriptName}"?\n\nQuesta azione non può essere annullata.`)) {
+      return;
+    }
+    
+    // Rimuovi lo script da jsScripts
+    jsScripts.delete(scriptName);
+    
+    // Rimuovi da localStorage
+    try {
+      localStorage.removeItem(`script-${scriptName}`);
+    } catch(_) {}
+    
+    // Rimuovi tutti gli attachment che puntano a questo script
+    // Object scripts
+    for (const [objId, attachedScript] of objectScripts.entries()) {
+      if (attachedScript === scriptName) {
+        objectScripts.delete(objId);
+      }
+    }
+    
+    // Room scripts
+    for (const [roomId, attachedScript] of roomScripts.entries()) {
+      if (attachedScript === scriptName) {
+        roomScripts.delete(roomId);
+      }
+    }
+    
+    // Character scripts
+    for (const [charName, attachedScript] of characterScripts.entries()) {
+      if (attachedScript === scriptName) {
+        characterScripts.delete(charName);
+      }
+    }
+    
+    // Inventory scripts
+    for (const [itemName, attachedScript] of inventoryScripts.entries()) {
+      if (attachedScript === scriptName) {
+        inventoryScripts.delete(itemName);
+      }
+    }
+    
+    // Hotspot scripts
+    for (const [hotspotId, attachedScript] of hotspotScripts.entries()) {
+      if (attachedScript === scriptName) {
+        hotspotScripts.delete(hotspotId);
+      }
+    }
+    
+    // GUI scripts
+    if (typeof guiScripts !== 'undefined' && guiScripts instanceof Map) {
+      for (const [btnId, attachedScript] of guiScripts.entries()) {
+        if (attachedScript === scriptName) {
+          guiScripts.delete(btnId);
+        }
+      }
+    }
+    
+    // Se lo script eliminato era quello aperto, pulisci l'editor
+    if (currentScriptName === scriptName) {
+      currentScriptName = null;
+      ensureLargeScriptEditor();
+      ensureScriptEditor();
+      const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
+      if (editors.length) {
+        editors.forEach(ed => ed.setValue(''));
+      } else {
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+      }
+    }
+    
+    // Aggiorna il selector
+    refreshScriptSelector();
+    
+    // Aggiorna l'albero degli script
+    rebuildScriptsTree();
+    
+    // Aggiorna tutti i target selector
+    refreshSceneObjectScriptTargets();
+    refreshRoomScriptTargets();
+    refreshCharacterScriptTargets();
+    refreshInventoryScriptTargets();
+    try { refreshGuiScriptTargets(); } catch(_) {}
+    try { refreshHotspotScriptTargets(); } catch(_) {}
+    try { refreshCursorScriptTargets(); } catch(_) {}
+    
+    showNotification(`Script "${scriptName}" eliminato`, 'success');
   };
 
   window.stopScript = function() {
-    if (activePlugin && typeof activePlugin.disconnect === 'function') {
-      try { activePlugin.disconnect(); } catch(_) {}
-      activePlugin = null;
-      showNotification('Sandbox JS fermato', 'warning');
-    }
+    // Non serve più fermare script singoli, ma possiamo pulire lo stato se necessario
+    showNotification('Script execution stopped', 'info');
   };
 
   window.loadScript = function(scriptName) {
@@ -3710,6 +4366,143 @@ const wrapped = `
       showNotification(`Script "${scriptName}" not found!`, 'warning');
     }
   };
+
+  // ============================================
+  // GAME VARIABLES UI MANAGEMENT
+  // ============================================
+  
+  function refreshVariablesList() {
+    const list = document.getElementById('variables-list');
+    if (!list) return;
+    
+    list.innerHTML = '';
+    
+    if (gameVariableDefinitions.length === 0) {
+      list.innerHTML = '<div class="text-muted text-center py-3"><small>No variables defined. Click "+ Add Variable" to create one.</small></div>';
+      return;
+    }
+    
+    gameVariableDefinitions.forEach((varDef, index) => {
+      const item = document.createElement('div');
+      item.className = 'list-group-item bg-secondary text-light mb-2';
+      item.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <strong>${varDef.name}</strong>
+            <span class="badge bg-info ms-2">${varDef.type}</span>
+            <br><small class="text-muted">Initial: ${JSON.stringify(varDef.initialValue)}</small>
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">✏️</button>
+            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `;
+      list.appendChild(item);
+    });
+  }
+  
+  window.addGameVariable = function() {
+    const name = prompt('Variable name:');
+    if (!name || !name.trim()) return;
+    
+    const trimmedName = name.trim();
+    if (gameVariableDefinitions.find(v => v.name === trimmedName)) {
+      showNotification(`Variable "${trimmedName}" already exists`, 'warning');
+      return;
+    }
+    
+    const type = prompt('Variable type (boolean/number/string):', 'boolean');
+    if (!['boolean', 'number', 'string'].includes(type)) {
+      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
+      return;
+    }
+    
+    let initialValue;
+    if (type === 'boolean') {
+      initialValue = false;
+    } else if (type === 'number') {
+      const num = prompt('Initial value (number):', '0');
+      initialValue = Number(num) || 0;
+    } else {
+      initialValue = prompt('Initial value (string):', '');
+    }
+    
+    gameVariableDefinitions.push({
+      name: trimmedName,
+      type: type,
+      initialValue: initialValue
+    });
+    
+    // Inizializza la variabile nello stato se non esiste
+    if (!Game.hasVar(trimmedName)) {
+      Game.setVar(trimmedName, initialValue);
+    }
+    
+    refreshVariablesList();
+    showNotification(`Variable "${trimmedName}" added`, 'success');
+  };
+  
+  window.editGameVariable = function(index) {
+    if (index < 0 || index >= gameVariableDefinitions.length) return;
+    
+    const varDef = gameVariableDefinitions[index];
+    const newName = prompt('Variable name:', varDef.name);
+    if (!newName || !newName.trim()) return;
+    
+    const trimmedName = newName.trim();
+    if (trimmedName !== varDef.name && gameVariableDefinitions.find(v => v.name === trimmedName)) {
+      showNotification(`Variable "${trimmedName}" already exists`, 'warning');
+      return;
+    }
+    
+    const type = prompt('Variable type (boolean/number/string):', varDef.type);
+    if (!['boolean', 'number', 'string'].includes(type)) {
+      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
+      return;
+    }
+    
+    let initialValue = varDef.initialValue;
+    if (type === 'boolean') {
+      initialValue = confirm('Initial value (OK = true, Cancel = false):') ? true : false;
+    } else if (type === 'number') {
+      const num = prompt('Initial value (number):', String(initialValue));
+      initialValue = Number(num) || 0;
+    } else {
+      initialValue = prompt('Initial value (string):', String(initialValue));
+    }
+    
+    // Aggiorna definizione
+    varDef.name = trimmedName;
+    varDef.type = type;
+    varDef.initialValue = initialValue;
+    
+    // Aggiorna valore nello stato se esiste
+    if (Game.hasVar(varDef.name)) {
+      Game.setVar(trimmedName, initialValue);
+    }
+    
+    refreshVariablesList();
+    showNotification(`Variable "${trimmedName}" updated`, 'success');
+  };
+  
+  window.deleteGameVariable = function(index) {
+    if (index < 0 || index >= gameVariableDefinitions.length) return;
+    
+    const varDef = gameVariableDefinitions[index];
+    if (!confirm(`Delete variable "${varDef.name}"?`)) return;
+    
+    gameVariableDefinitions.splice(index, 1);
+    refreshVariablesList();
+    showNotification(`Variable "${varDef.name}" deleted`, 'info');
+  };
+  
+  // Refresh variables list quando si carica la sezione Scripts
+  document.addEventListener('tabChanged', function(e) {
+    if (e.detail.currentTab === 'scripts') {
+      refreshVariablesList();
+    }
+  });
 
   // Attach a script to a scene object
   function refreshSceneObjectScriptTargets() {
@@ -3856,6 +4649,10 @@ const wrapped = `
   function refreshHotspotScriptTargets() {
     const sel = document.getElementById('script-target');
     if (!sel) return;
+
+    // Update only when Hotspot scope is active
+    const scopeSel = document.getElementById('script-scope');
+    if (scopeSel && scopeSel.value !== 'Hotspot') return;
     
     // Add hotspot options if not already present
     const existingHotspotOptions = sel.querySelectorAll('option[value^="hotspot:"]');
@@ -3896,6 +4693,41 @@ const wrapped = `
     });
   }
 
+  function refreshScriptSelector() {
+    const selector = document.getElementById('script-selector');
+    if (!selector) return;
+    
+    // Salva il valore corrente per ripristinarlo dopo
+    const currentValue = selector.value;
+    
+    // Pulisci il selector mantenendo solo il placeholder
+    selector.innerHTML = '';
+    const opt0 = document.createElement('option');
+    opt0.value = ''; opt0.textContent = 'Select a script...';
+    selector.appendChild(opt0);
+    
+    // Raccogli tutti gli script da jsScripts
+    const scriptNames = Array.from(jsScripts.keys()).filter(name => name && name.trim());
+    
+    // Ordina gli script per nome
+    scriptNames.sort();
+    
+    // Aggiungi ogni script al selector
+    scriptNames.forEach(name => {
+      const o = document.createElement('option');
+      o.value = name;
+      // Formatta il nome per la visualizzazione (es: "Room:room1" -> "Room: room1")
+      const displayName = name.includes(':') ? name.replace(':', ': ') : name;
+      o.textContent = displayName;
+      selector.appendChild(o);
+    });
+    
+    // Ripristina il valore precedente se esiste ancora
+    if (currentValue && scriptNames.includes(currentValue)) {
+      selector.value = currentValue;
+    }
+  }
+
   window.attachScriptToGUI = function() {
     const selector = document.getElementById('script-selector');
     const scriptName = selector.value;
@@ -3932,10 +4764,15 @@ const wrapped = `
     if (e.detail.currentTab === 'scripts') {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
+      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'none';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'block';
+      if (codeEditorContainer) codeEditorContainer.style.display = 'flex'; // Cambiato a flex per il layout
+      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
       ensureLargeScriptEditor();
       ensureScriptEditor();
+      initScriptsUI();
+      refreshScriptSelector();
+      rebuildScriptsTree();
       // sync values small->large if small has content and large is empty
       if (codeMirrorEditor && largeCodeMirrorEditor && !largeCodeMirrorEditor.getValue()) {
         largeCodeMirrorEditor.setValue(codeMirrorEditor.getValue());
@@ -3944,11 +4781,19 @@ const wrapped = `
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
+      // Aggiorna le dimensioni di CodeMirror dopo che il container è visibile
+      setTimeout(() => {
+        if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+          largeCodeMirrorEditor.refresh();
+        }
+      }, 100);
     } else {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
+      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'block';
       if (codeEditorContainer) codeEditorContainer.style.display = 'none';
+      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
     }
   });
 
@@ -4013,6 +4858,564 @@ const wrapped = `
     requestAnimationFrame(() => redraw());
   });
 
+  // ============================================
+  // RUNTIME SANDBOXED CON IFRAME
+  // ============================================
+  let embeddedRuntime = {
+    canvas: null,
+    ctx: null,
+    gameData: null,
+    currentRoomIndex: 0,
+    loadedImagesCache: new Map(),
+    sandboxIframe: null,
+    isReady: false,
+    pendingScripts: [],
+    gameState: {
+      currentRoomId: null,
+      variables: new Map()
+    },
+    isInitialized: false
+  };
+
+  // Funzione helper per serializzare valori
+  function serializeRuntimeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
+  }
+
+  // Funzione per inviare log al ScriptLogService
+  function sendRuntimeLogToEditor(message, level = 'info') {
+    if (window.ScriptLogService) {
+      let mappedType = 'print';
+      if (level === 'error') mappedType = 'error';
+      else if (level === 'warning') mappedType = 'warning';
+      ScriptLogService.log({ type: mappedType, message, source: 'runtime' });
+    }
+    // Anche nel debug console
+    addDebugMessage(`[Runtime] ${message}`, level);
+  }
+
+  // ============================================
+  // GESTIONE IFRAME SANDBOXED
+  // ============================================
+  
+  // Crea l'iframe sandboxed per l'esecuzione degli script
+  function createSandboxIframe() {
+    // Rimuovi iframe esistente se presente
+    if (embeddedRuntime.sandboxIframe) {
+      try {
+        // Rimuovi listener precedente se presente
+        if (embeddedRuntime.sandboxIframe._messageHandler) {
+          window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
+        }
+        embeddedRuntime.sandboxIframe.remove();
+      } catch (e) {
+        // Ignora errori di rimozione
+      }
+      embeddedRuntime.sandboxIframe = null;
+    }
+
+    // Listener per messaggi dall'iframe (deve essere configurato PRIMA di aggiungere l'iframe)
+    const messageHandler = function(event) {
+      // NOTA: In produzione, verificare event.origin per sicurezza
+      const message = event.data;
+      if (!message || typeof message !== 'object') {
+        return;
+      }
+
+      switch (message.type) {
+        case 'RUNTIME_READY':
+          if (!embeddedRuntime.isReady) {
+            embeddedRuntime.isReady = true;
+            sendRuntimeLogToEditor('✓ Sandbox runtime ready and initialized', 'info');
+            sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
+            
+            // Aggiorna contesto prima di eseguire script
+            updateSandboxContext();
+            
+            // Esegui script in attesa
+            embeddedRuntime.pendingScripts.forEach(script => {
+              executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
+            });
+            embeddedRuntime.pendingScripts = [];
+          } else {
+            sendRuntimeLogToEditor('Warning: RUNTIME_READY received but runtime already marked as ready', 'warning');
+          }
+          break;
+
+        case 'SCRIPT_LOG':
+          if (window.ScriptLogService) {
+            const level = message.level || 'info';
+            let mappedType = 'print';
+            if (level === 'error') mappedType = 'error';
+            else if (level === 'warning') mappedType = 'warning';
+            
+            // Usa timestamp dal messaggio o genera uno nuovo se mancante
+            const timestamp = message.timestamp || Date.now();
+            
+            ScriptLogService.log({
+              type: mappedType,
+              message: message.message || '',
+              source: 'runtime',
+              timestamp: timestamp
+            });
+          } else {
+            // Fallback se ScriptLogService non è disponibile
+            console.log('[Runtime Log]', message.message || '');
+          }
+          break;
+
+        case 'SCRIPT_ERROR':
+          const errorMsg = message.error || 'Unknown error';
+          const errorTimestamp = message.timestamp || Date.now();
+          
+          sendRuntimeLogToEditor(`Script error: ${errorMsg}`, 'error');
+          if (window.ScriptLogService) {
+            ScriptLogService.log({
+              type: 'error',
+              message: errorMsg,
+              source: 'runtime',
+              timestamp: errorTimestamp
+            });
+          } else {
+            // Fallback se ScriptLogService non è disponibile
+            console.error('[Runtime Error]', errorMsg);
+          }
+          break;
+
+        case 'SCRIPT_DONE':
+          // Script completato (opzionale, per logging)
+          break;
+
+        case 'ROOM_CHANGE_REQUEST':
+          // Richiesta cambio stanza dallo script
+          sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
+          // TODO: Implementare cambio stanza se necessario
+          break;
+
+        default:
+          // Ignora messaggi sconosciuti
+          break;
+      }
+    };
+
+    // Aggiungi listener PRIMA di creare l'iframe
+    window.addEventListener('message', messageHandler);
+
+    // Crea nuovo iframe con sandbox="allow-scripts" (SENZA allow-same-origin)
+    const iframe = document.createElement('iframe');
+    iframe.id = 'sandbox-runtime-iframe';
+    iframe.style.display = 'none'; // Nascosto, serve solo per esecuzione script
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = 'none';
+    iframe.sandbox = 'allow-scripts'; // IMPORTANTE: solo allow-scripts, NO allow-same-origin
+    
+    // Usa direttamente runtime.html (più affidabile)
+    // Il percorso deve essere relativo alla root o assoluto
+    const runtimePath = window.location.pathname.endsWith('/') 
+      ? 'runtime.html' 
+      : './runtime.html';
+    iframe.src = runtimePath;
+    
+    // Salva riferimento al listener per rimozione futura
+    iframe._messageHandler = messageHandler;
+
+    // Listener per errori di caricamento
+    iframe.onerror = function(e) {
+      sendRuntimeLogToEditor('Error loading sandbox iframe', 'error');
+      console.error('[Sandbox] Iframe load error:', e);
+    };
+
+    // Listener per quando l'iframe è caricato (per debug)
+    iframe.onload = function() {
+      sendRuntimeLogToEditor('Sandbox iframe loaded, waiting for initialization...', 'info');
+      
+      // Prova a verificare se ci sono errori nell'iframe
+      try {
+        // Prova ad accedere alla console dell'iframe per vedere errori (se possibile)
+        if (iframe.contentWindow && iframe.contentWindow.console) {
+          const originalError = iframe.contentWindow.console.error;
+          iframe.contentWindow.console.error = function(...args) {
+            sendRuntimeLogToEditor('Iframe error: ' + args.join(' '), 'error');
+            if (originalError) originalError.apply(iframe.contentWindow.console, args);
+          };
+        }
+        
+        // Verifica se runtime.js è stato caricato
+        setTimeout(() => {
+          try {
+            if (iframe.contentWindow && iframe.contentWindow.GameAPI) {
+              sendRuntimeLogToEditor('Runtime.js loaded successfully - GameAPI available', 'info');
+            } else {
+              sendRuntimeLogToEditor('Warning: Runtime.js may not have loaded - GameAPI not found', 'warning');
+            }
+          } catch (e) {
+            // Non possiamo accedere (sandbox restriction)
+            sendRuntimeLogToEditor('Cannot verify runtime.js load status (sandbox restriction)', 'warning');
+          }
+        }, 500);
+      } catch (e) {
+        // Non possiamo accedere alla console dell'iframe (sandbox restriction)
+        sendRuntimeLogToEditor('Cannot access iframe console (sandbox restriction): ' + (e.message || e), 'warning');
+      }
+      
+      // Se dopo 2 secondi non abbiamo ricevuto RUNTIME_READY, potrebbe esserci un problema
+      setTimeout(() => {
+        if (!embeddedRuntime.isReady) {
+          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received after 2s. Check if JS/runtime.js is loading correctly.', 'warning');
+          // Verifica se possiamo accedere all'iframe
+          try {
+            if (iframe.contentWindow) {
+              if (iframe.contentWindow.GameAPI) {
+                sendRuntimeLogToEditor('GameAPI exists but RUNTIME_READY not sent - runtime may not be initializing', 'error');
+              } else {
+                sendRuntimeLogToEditor('GameAPI not found - JS/runtime.js may not have loaded', 'error');
+              }
+            }
+          } catch (e) {
+            sendRuntimeLogToEditor('Cannot access iframe contentWindow to verify runtime status', 'warning');
+          }
+        }
+      }, 2000);
+    };
+
+    // Aggiungi iframe al DOM
+    document.body.appendChild(iframe);
+    embeddedRuntime.sandboxIframe = iframe;
+    embeddedRuntime.isReady = false;
+
+    // Timeout per rilevare se l'iframe non si carica
+    setTimeout(() => {
+      if (!embeddedRuntime.isReady) {
+        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 5s. Runtime may not be working.', 'error');
+        sendRuntimeLogToEditor('Check: 1) runtime.html exists, 2) JS/runtime.js is accessible, 3) No CORS errors in console', 'error');
+        
+        // Prova a verificare se l'iframe è caricato
+        try {
+          if (iframe.contentWindow) {
+            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'error');
+            // Verifica se runtime.js è caricato
+            try {
+              if (iframe.contentWindow.GameAPI) {
+                sendRuntimeLogToEditor('GameAPI exists - runtime.js loaded but RUNTIME_READY message not sent', 'error');
+              } else {
+                sendRuntimeLogToEditor('GameAPI NOT found - JS/runtime.js may not have loaded correctly', 'error');
+              }
+            } catch (e) {
+              sendRuntimeLogToEditor('Cannot check GameAPI (sandbox restriction): ' + (e.message || e), 'warning');
+            }
+          } else {
+            sendRuntimeLogToEditor('Iframe contentWindow not accessible (sandbox restriction)', 'warning');
+          }
+        } catch (e) {
+          sendRuntimeLogToEditor('Cannot access iframe contentWindow: ' + (e.message || e), 'warning');
+        }
+        
+        // Mostra informazioni di debug
+        sendRuntimeLogToEditor(`Iframe src: ${iframe.src}`, 'info');
+        sendRuntimeLogToEditor(`Iframe sandbox: ${iframe.sandbox}`, 'info');
+        sendRuntimeLogToEditor(`Current page location: ${window.location.href}`, 'info');
+      } else {
+        sendRuntimeLogToEditor('✓ Runtime initialization completed successfully', 'info');
+      }
+    }, 5000);
+  }
+
+  // Esegue uno script nell'iframe sandboxed
+  function executeScriptInSandbox(scriptName, scriptContent, handlerName, argsArray, context) {
+    if (!scriptContent || typeof scriptContent !== 'string' || !scriptContent.trim()) {
+      return;
+    }
+
+    const callArgs = Array.isArray(argsArray) ? argsArray : [];
+    
+    // Prepara il contesto di esecuzione
+    const executionContext = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: context?.objectId || null,
+      variables: {}
+    };
+
+    // Copia variabili dal gameState
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      executionContext.variables[key] = value;
+    });
+
+    // Se l'iframe non è pronto, metti in coda
+    if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
+      embeddedRuntime.pendingScripts.push({
+        name: scriptName,
+        code: scriptContent,
+        handler: handlerName,
+        args: callArgs,
+        context: executionContext
+      });
+      return;
+    }
+
+    // Invia script all'iframe (l'handler verrà gestito dal runtime.js)
+    try {
+      embeddedRuntime.sandboxIframe.contentWindow.postMessage({
+        type: 'RUN_SCRIPT',
+        code: scriptContent,
+        context: executionContext,
+        handlerName: handlerName,
+        handlerArgs: callArgs
+      }, '*');
+      
+      sendRuntimeLogToEditor(`[Script] ${scriptName} sent to sandbox`, 'info');
+    } catch (e) {
+      const errorMsg = `Failed to execute script ${scriptName}: ${e && e.message ? e.message : e}`;
+      sendRuntimeLogToEditor(errorMsg, 'error');
+    }
+  }
+
+  // Aggiorna il contesto dell'iframe (variabili, room, etc.)
+  function updateSandboxContext() {
+    if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
+      return;
+    }
+
+    const context = {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: null,
+      variables: {}
+    };
+
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      context.variables[key] = value;
+    });
+
+    try {
+      embeddedRuntime.sandboxIframe.contentWindow.postMessage({
+        type: 'UPDATE_CONTEXT',
+        context: context
+      }, '*');
+    } catch (e) {
+      // Ignora errori di comunicazione
+    }
+  }
+
+  // Inizializza gli script del runtime usando l'iframe sandboxed
+  function initializeEmbeddedRuntimeScripts() {
+    if (!embeddedRuntime.gameData || !embeddedRuntime.gameData.scripts) {
+      sendRuntimeLogToEditor('[Script] No scripts found in gameData', 'info');
+      return;
+    }
+    
+    const scripts = embeddedRuntime.gameData.scripts;
+    sendRuntimeLogToEditor(`[Script] Loading ${Object.keys(scripts).length} script(s)`, 'info');
+    
+    // Reset e carica variabili iniziali
+    embeddedRuntime.gameState.variables.clear();
+    if (embeddedRuntime.gameData.variables && Array.isArray(embeddedRuntime.gameData.variables)) {
+      embeddedRuntime.gameData.variables.forEach(v => {
+        if (v && v.name) {
+          embeddedRuntime.gameState.variables.set(v.name, v.initialValue || null);
+        }
+      });
+      sendRuntimeLogToEditor(`[Script] Loaded ${embeddedRuntime.gameState.variables.size} variable(s)`, 'info');
+    }
+    
+    // Aggiorna contesto sandbox
+    updateSandboxContext();
+    
+    // Esegui script globali
+    Object.keys(scripts).forEach(scriptName => {
+      if (scriptName.startsWith('Global:') || scriptName === 'startup') {
+        const content = scripts[scriptName];
+        if (content && content.trim()) {
+          sendRuntimeLogToEditor(`[Script] Executing global script: ${scriptName}`, 'info');
+          executeScriptInSandbox(scriptName, content, 'on_game_start', [], {});
+        }
+      }
+    });
+    
+    // Esegui script di room
+    if (embeddedRuntime.gameState.currentRoomId) {
+      const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
+      if (scripts[roomScriptName]) {
+        sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
+        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_enter', [], {
+          roomId: embeddedRuntime.gameState.currentRoomId
+        });
+      }
+    }
+  }
+
+  // Carica un'immagine nel runtime
+  function loadRuntimeImage(src) {
+    return new Promise((resolve) => {
+      if (!src) return resolve(null);
+      if (embeddedRuntime.loadedImagesCache.has(src)) return resolve(embeddedRuntime.loadedImagesCache.get(src));
+      const img = new Image();
+      img.onload = () => { 
+        embeddedRuntime.loadedImagesCache.set(src, img); 
+        resolve(img); 
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  // Carica asset di una stanza
+  async function loadRuntimeRoomAssets(room) {
+    const out = { background: null, foregrounds: [], objects: [] };
+    out.background = await loadRuntimeImage(room.background);
+    if (Array.isArray(room.foregrounds)) {
+      for (const f of room.foregrounds) {
+        const img = await loadRuntimeImage(f.image);
+        out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
+      }
+    }
+    if (Array.isArray(room.sceneObjects)) {
+      for (const o of room.sceneObjects) {
+        const img = await loadRuntimeImage(o.image);
+        out.objects.push({ 
+          id: o.id, 
+          name: o.name, 
+          type: o.type||'Interactive', 
+          x: Number(o.x)||0, 
+          y: Number(o.y)||0, 
+          img 
+        });
+      }
+    }
+    return out;
+  }
+
+  // Renderizza una stanza nel canvas del runtime
+  async function renderRuntimeRoom(index) {
+    if (!embeddedRuntime.gameData || !Array.isArray(embeddedRuntime.gameData.rooms) || 
+        index < 0 || index >= embeddedRuntime.gameData.rooms.length) return;
+    
+    const room = embeddedRuntime.gameData.rooms[index];
+    const assets = await loadRuntimeRoomAssets(room);
+
+    if (!embeddedRuntime.ctx) return;
+    
+    embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+    if (assets.background) embeddedRuntime.ctx.drawImage(assets.background, 0, 0);
+    for (const o of assets.objects) {
+      if (o.img) embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+    }
+    for (const f of assets.foregrounds) {
+      if (f.img) embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+    }
+
+    // Disegna marker posizione iniziale se questa è la stanza di start
+    try {
+      const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
+      if (s && s.startRoomId) {
+        const targetRoomIndex = (embeddedRuntime.gameData.rooms || []).findIndex(r => 
+          r && (r.id === s.startRoomId || r.name === s.startRoomId));
+        if (targetRoomIndex === index) {
+          const px = Number(s.startX) || 0;
+          const py = Number(s.startY) || 0;
+          embeddedRuntime.ctx.save();
+          embeddedRuntime.ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
+          embeddedRuntime.ctx.beginPath();
+          embeddedRuntime.ctx.arc(px, py, 6, 0, Math.PI * 2);
+          embeddedRuntime.ctx.fill();
+          embeddedRuntime.ctx.strokeStyle = 'white';
+          embeddedRuntime.ctx.lineWidth = 2;
+          embeddedRuntime.ctx.stroke();
+          embeddedRuntime.ctx.restore();
+        }
+      }
+    } catch(_) {}
+  }
+
+  // Inizializza solo l'iframe sandboxed per l'esecuzione degli script (senza rendering canvas)
+  function initializeSandboxRuntime(jsonData) {
+    try {
+      embeddedRuntime.gameData = (typeof jsonData === 'string') ? JSON.parse(jsonData) : jsonData;
+    } catch (e) {
+      sendRuntimeLogToEditor('Invalid JSON: ' + e, 'error');
+      return;
+    }
+
+    sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
+
+    // Seleziona stanza iniziale
+    try {
+      const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
+      if (s && s.startRoomId && Array.isArray(embeddedRuntime.gameData.rooms)) {
+        const idx = embeddedRuntime.gameData.rooms.findIndex(r => 
+          r && (r.id === s.startRoomId || r.name === s.startRoomId));
+        if (idx >= 0) {
+          embeddedRuntime.currentRoomIndex = idx;
+          embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[idx].id;
+        } else {
+          embeddedRuntime.currentRoomIndex = 0;
+          embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+        }
+      } else {
+        embeddedRuntime.currentRoomIndex = 0;
+        embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+      }
+    } catch(_) {
+      embeddedRuntime.currentRoomIndex = 0;
+      embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
+    }
+    
+    // Crea e inizializza l'iframe sandboxed
+    sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
+    createSandboxIframe();
+    
+    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe è pronto)
+    // Gli script verranno messi in pendingScripts se l'iframe non è ancora pronto
+    initializeEmbeddedRuntimeScripts();
+    
+    embeddedRuntime.isInitialized = true;
+    sendRuntimeLogToEditor('Embedded runtime initialization started (waiting for iframe ready...)', 'info');
+  }
+
+  // Ferma e pulisce il runtime incorporato
+  function stopEmbeddedRuntime() {
+    // Rimuovi iframe sandboxed
+    if (embeddedRuntime.sandboxIframe) {
+      // Rimuovi listener messaggi se presente
+      if (embeddedRuntime.sandboxIframe._messageHandler) {
+        window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
+      }
+      // Revoca blob URL se presente
+      if (embeddedRuntime.sandboxIframe._blobUrl) {
+        URL.revokeObjectURL(embeddedRuntime.sandboxIframe._blobUrl);
+      }
+      try {
+        embeddedRuntime.sandboxIframe.remove();
+      } catch (e) {
+        // Ignora errori di rimozione
+      }
+      embeddedRuntime.sandboxIframe = null;
+    }
+    
+    embeddedRuntime.isReady = false;
+    embeddedRuntime.pendingScripts = [];
+    
+    // Pulisci cache immagini
+    embeddedRuntime.loadedImagesCache.clear();
+    
+    // Reset stato
+    embeddedRuntime.gameData = null;
+    embeddedRuntime.currentRoomIndex = 0;
+    embeddedRuntime.gameState.currentRoomId = null;
+    embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.isInitialized = false;
+  }
+
   // Functions for Play Test tab
   let playTestState = {
     isRunning: false,
@@ -4020,40 +5423,39 @@ const wrapped = `
     startTime: null
   };
 
-  window.startPlayTest = function() {
+  window.startPlayTest = async function() {
     if (playTestState.isRunning) return;
 
     // Ensure latest project is serialized and saved for runtime
     const jsonString = window.serializeProjectToJsonString(true);
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     const projectObj = window.serializeProject();
-    try { saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name); } catch(_) {}
-
+    
     // Save game.json depending on mode
     if (window.AMIANTO_PLAYTEST_MODE === 'server') {
       saveGameJsonServer(jsonString);
     } else {
+      // saveGameJsonLocal già chiama saveProjectJsonToOPFS, non duplicare
       saveGameJsonLocal(jsonString);
     }
+    
+    // Salva anche con nome progetto (non duplicare se già salvato sopra)
+    // Usa setTimeout per evitare chiamate simultanee
+    setTimeout(() => {
+      saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
+    }, 100);
 
-    // Open runtime in a new tab that will auto-load game.json
-    const runtimeUrl = 'runtime.html';
-    window.open(runtimeUrl, '_blank');
+    // Inizializza solo l'iframe sandboxed (senza rendering canvas nell'editor)
+    initializeSandboxRuntime(jsonString);
 
-playTestState.isRunning = true;
+    playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
     updateGameStatus('Test running...');
-    addDebugMessage('Runtime opened in new tab', 'success');
+    addDebugMessage('Sandbox runtime initialized', 'success');
     
-    // Trigger global game start event
-    triggerGameStart();
-    
-    try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_game_start === 'function') {
-        activePlugin.remote.on_game_start();
-      }
-    } catch(_) {}
+    // NOTA: Gli script globali vengono già eseguiti da initializeEmbeddedRuntimeScripts()
+    // Non duplicare l'esecuzione qui
   };
 
   window.pausePlayTest = function() {
@@ -4078,6 +5480,9 @@ playTestState.isRunning = true;
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
     const durationSeconds = Math.round(duration / 1000);
     
+    // Ferma il runtime incorporato
+    stopEmbeddedRuntime();
+    
     playTestState.isRunning = false;
     playTestState.isPaused = false;
     playTestState.startTime = null;
@@ -4085,6 +5490,42 @@ playTestState.isRunning = true;
     updateGameStatus('Test stopped');
     addDebugMessage(`Test stopped. Duration: ${durationSeconds}s`, 'info');
     showNotification(`Test stopped after ${durationSeconds} seconds`, 'info');
+  };
+
+  // Test Game Start - esegue gli script on_game_start senza aprire il runtime
+  window.testGameStart = function() {
+    addScriptLogMessage('=== Testing Game Start ===', 'info');
+    
+    // Cerca script globali che hanno on_game_start
+    const globalScripts = Array.from(jsScripts.entries()).filter(([name, content]) => {
+      return name.startsWith('Global:') || name === 'startup' || name.includes('game_start');
+    });
+    
+    if (globalScripts.length === 0) {
+      addScriptLogMessage('Nessuno script globale trovato. Crea uno script con Scope=Global, Target=main, Event=onGameStart', 'warning');
+      showNotification('Nessuno script globale trovato', 'warning');
+      return;
+    }
+    
+    addScriptLogMessage(`Trovati ${globalScripts.length} script globale/i`, 'info');
+    
+    // Esegui tutti gli script globali che potrebbero avere on_game_start
+    globalScripts.forEach(([scriptName, content]) => {
+      if (content && content.trim()) {
+        addScriptLogMessage(`Eseguendo script: ${scriptName}`, 'info');
+        executeScriptHandler(content, 'on_game_start', []);
+      } else {
+        addScriptLogMessage(`Script "${scriptName}" è vuoto`, 'warning');
+      }
+    });
+    
+    // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
+    
+    // Trigger anche i global event handlers
+    triggerGameStart();
+    
+    addScriptLogMessage('=== Test Game Start completato ===', 'info');
+    showNotification('Game Start testato! Controlla la Script Console', 'success');
   };
 
   window.testRoomChange = function() {
@@ -4098,13 +5539,12 @@ playTestState.isRunning = true;
     const nextId = ids.length > 0 ? ids[(idx + 1) % ids.length] : prevRoomId;
     addDebugMessage(`Simulating room change: ${prevRoomId} -> ${nextId}`, 'info');
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_room_change === 'function') {
-        activePlugin.remote.on_room_change(prevRoomId, nextId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const roomScript = roomScripts.get(nextId);
     if (roomScript) {
       const content = jsScripts.get(roomScript);
+      addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
       executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
     }
     setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
@@ -4119,10 +5559,8 @@ playTestState.isRunning = true;
     addDebugMessage('Testing object interaction...', 'info');
     // Esegue on_object_click('door') nel contesto dell'ultimo script se definito
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_object_click === 'function') {
-        activePlugin.remote.on_object_click('door');
-        addDebugMessage('Object interaction tested via JS sandbox', 'success');
-      } else {
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
+      {
         setTimeout(() => { addDebugMessage('Object interaction tested (no handler exposed)', 'success'); }, 300);
       }
     } catch (err) {
@@ -4145,10 +5583,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
     
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_character_click === 'function') {
-        activePlugin.remote.on_character_click(who);
-        addDebugMessage('Character click tested via JS sandbox', 'success');
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch (err) {
       addDebugMessage('JS interaction error: ' + (err && err.message ? err.message : err), 'error');
     }
@@ -4156,7 +5591,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const scriptName = characterScripts.get(who);
       if (scriptName) {
         const content = jsScripts.get(scriptName);
-        executeScriptHandler(content, 'on_character_click', [who]);
+        const eventConditions = characterEventConditions.get(who);
+        const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+        addDebugMessage(`[Character:onClick] ${who}`, 'info');
+        executeScriptHandler(content, 'on_character_click', [who], conditions);
       }
     }
   };
@@ -4187,16 +5625,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
     try {
-      if (activePlugin && activePlugin.remote && typeof activePlugin.remote.on_hotspot_click === 'function') {
-        activePlugin.remote.on_hotspot_click(activeHotspotId);
-      }
+      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
     const scriptContent = jsScripts.get(scriptName);
     if (!scriptContent) {
       addDebugMessage(`Script "${scriptName}" not found`, 'error');
       return;
     }
-    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId]);
+    const eventConditions = hotspotEventConditions.get(activeHotspotId);
+    const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId], conditions);
     addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
   };
 
@@ -4213,322 +5651,37 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   window.clearDebugConsole = function() {
-    const console = document.getElementById('debug-console');
-    if (console) {
-      console.innerHTML = '[INFO] Console cleared\n';
+    const engineConsole = document.getElementById('debug-console');
+    if (engineConsole) {
+      engineConsole.textContent = '[INFO] Engine console cleared\n';
     }
-    showNotification('Debug console cleared', 'info');
+    const scriptConsole = document.getElementById('script-console');
+    if (scriptConsole) {
+      scriptConsole.textContent = '[INFO] Script console cleared\n';
+    }
+    showNotification('Debug consoles cleared', 'info');
   };
 
-function updateGameStatus(status) {
+  // Funzione per pulire solo lo Script Log
+  window.clearScriptConsole = function() {
+    if (window.ScriptLogService && typeof window.ScriptLogService.clear === 'function') {
+      window.ScriptLogService.clear();
+    } else {
+      const scriptConsole = document.getElementById('script-console');
+      if (scriptConsole) {
+        scriptConsole.textContent = '[INFO] Script log cleared\n';
+        scriptConsole.scrollTop = 0;
+      }
+    }
+    showNotification('Script Log cleared', 'info');
+  };
+
+  function updateGameStatus(status) {
     const statusElement = document.getElementById('game-status');
     if (statusElement) {
       statusElement.textContent = status;
     }
   }
-
-  // Inventory display functions
-  function updateInventoryDisplay() {
-    const displayEl = document.getElementById('inventory-display');
-    if (!displayEl) return;
-    
-    if (gameInventory.size === 0) {
-      displayEl.innerHTML = '[INFO] Inventory empty';
-      return;
-    }
-    
-    let html = '';
-    gameInventory.forEach((item, id) => {
-      html += `[ITEM] ${item.name} x${item.quantity}\n`;
-    });
-    
-    displayEl.textContent = html.trim();
-  }
-
-  window.testClearInventory = function() {
-    clear_inventory();
-    updateInventoryDisplay();
-    showNotification('Inventory cleared!', 'info');
-  };
-
-  // Test functions for inventory
-  window.testAddItem = function(itemId, quantity) {
-    itemId = itemId || 'test_item';
-    quantity = quantity || 1;
-    add_to_inventory(itemId, quantity);
-    updateInventoryDisplay();
-  };
-
-  window.testRemoveItem = function(itemId, quantity) {
-    itemId = itemId || 'test_item';
-    quantity = quantity || 1;
-    remove_from_inventory(itemId, quantity);
-    updateInventoryDisplay();
-  };
-
-// Integrated Runtime Manager
-  window.RuntimeManager = {
-    isRunning: false,
-    isPaused: false,
-    gameData: null,
-    currentRoomIndex: 0,
-    loadedImagesCache: new Map(),
-    animationFrame: null,
-    
-    // Canvas elements
-    runtimeCanvas: null,
-    runtimeCtx: null,
-    editorCanvas: null,
-    editorCtx: null,
-    
-    init() {
-      this.runtimeCanvas = document.getElementById('runtime-canvas');
-      this.runtimeCtx = this.runtimeCanvas ? this.runtimeCanvas.getContext('2d') : null;
-      this.editorCanvas = document.getElementById('canvas');
-      this.editorCtx = this.editorCanvas ? this.editorCanvas.getContext('2d') : null;
-      
-      this.setupEventListeners();
-      this.runtimeLog('Runtime Manager initialized');
-    },
-    
-    setupEventListeners() {
-      document.getElementById('btn-runtime-play')?.addEventListener('click', () => this.start());
-      document.getElementById('btn-runtime-pause')?.addEventListener('click', () => this.pause());
-      document.getElementById('btn-runtime-stop')?.addEventListener('click', () => this.stop());
-      document.getElementById('btn-runtime-restart')?.addEventListener('click', () => this.restart());
-    },
-    
-    async start() {
-      if (this.isRunning && !this.isPaused) return;
-      
-      if (!this.isPaused) {
-        // Load fresh game data
-        const jsonString = window.serializeProjectToJsonString(true);
-        try {
-          this.gameData = JSON.parse(jsonString);
-        } catch (e) {
-          this.runtimeLog('Failed to load project data: ' + e, 'error');
-          return;
-        }
-      }
-      
-      this.isRunning = true;
-      this.isPaused = false;
-      
-      // Set canvas size from game settings
-      const w = (this.gameData && this.gameData.settings && this.gameData.settings.canvasWidth) || 800;
-      const h = (this.gameData && this.gameData.settings && this.gameData.settings.canvasHeight) || 600;
-      this.setCanvasSize(w, h);
-      
-      // Find start room
-      this.currentRoomIndex = 0;
-      if (this.gameData && this.gameData.settings && this.gameData.settings.startRoomId) {
-        const idx = (this.gameData.rooms || []).findIndex(r => r && (r.id === this.gameData.settings.startRoomId || r.name === this.gameData.settings.startRoomId));
-        if (idx >= 0) this.currentRoomIndex = idx;
-      }
-      
-      this.updateUI(true);
-      this.runtimeLog(`Runtime started - Room: ${this.currentRoomIndex + 1}/${(this.gameData.rooms || []).length}`);
-      
-      // Trigger game start event
-      triggerGameStart();
-      
-      // Start rendering
-      this.render();
-    },
-    
-    pause() {
-      if (!this.isRunning || this.isPaused) return;
-      this.isPaused = true;
-      this.updateUI(false);
-      this.runtimeLog('Runtime paused');
-    },
-    
-    stop() {
-      this.isRunning = false;
-      this.isPaused = false;
-      if (this.animationFrame) {
-        cancelAnimationFrame(this.animationFrame);
-        this.animationFrame = null;
-      }
-      this.updateUI(false);
-      this.clearRuntimeCanvas();
-      this.runtimeLog('Runtime stopped');
-    },
-    
-    restart() {
-      this.stop();
-      setTimeout(() => this.start(), 100);
-    },
-    
-    setCanvasSize(w, h) {
-      if (this.runtimeCanvas) {
-        this.runtimeCanvas.width = w;
-        this.runtimeCanvas.height = h;
-      }
-    },
-    
-    async loadImage(src) {
-      if (!src) return null;
-      if (this.loadedImagesCache.has(src)) return this.loadedImagesCache.get(src);
-      
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => { 
-          this.loadedImagesCache.set(src, img); 
-          resolve(img); 
-        };
-        img.onerror = () => resolve(null);
-        img.src = src;
-      });
-    },
-    
-    async loadRoomAssets(room) {
-      const out = { background: null, foregrounds: [], objects: [] };
-      out.background = await this.loadImage(room.background);
-      
-      if (Array.isArray(room.foregrounds)) {
-        for (const f of room.foregrounds) {
-          const img = await this.loadImage(f.image);
-          out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
-        }
-      }
-      
-      if (Array.isArray(room.sceneObjects)) {
-        for (const o of room.sceneObjects) {
-          const img = await this.loadImage(o.image);
-          out.objects.push({ 
-            id: o.id, 
-            name: o.name, 
-            type: o.type||'Interactive', 
-            x: Number(o.x)||0, 
-            y: Number(o.y)||0, 
-            img 
-          });
-        }
-      }
-      
-      return out;
-    },
-    
-    async render() {
-      if (!this.isRunning || this.isPaused) return;
-      
-      const room = (this.gameData && this.gameData.rooms && this.gameData.rooms[this.currentRoomIndex]);
-      if (!room) return;
-      
-      const assets = await this.loadRoomAssets(room);
-      const ctx = this.runtimeCtx;
-      const canvas = this.runtimeCanvas;
-      
-      // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Draw background
-      if (assets.background) {
-        ctx.drawImage(assets.background, 0, 0);
-      }
-      
-      // Draw scene objects
-      for (const o of assets.objects) {
-        if (o.img) {
-          ctx.drawImage(o.img, o.x, o.y);
-        }
-      }
-      
-      // Draw foregrounds
-      for (const f of assets.foregrounds) {
-        if (f.img) {
-          ctx.drawImage(f.img, f.offsetX || 0, f.offsetY || 0);
-        }
-      }
-      
-      // Draw starting position marker
-      if (this.gameData && this.gameData.settings) {
-        const s = this.gameData.settings;
-        if (s.startRoomId) {
-          const targetRoomIndex = (this.gameData.rooms || []).findIndex(r => r && (r.id === s.startRoomId || r.name === s.startRoomId));
-          if (targetRoomIndex === this.currentRoomIndex) {
-            const px = Number(s.startX) || 0;
-            const py = Number(s.startY) || 0;
-            ctx.save();
-            ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
-            ctx.beginPath();
-            ctx.arc(px, py, 6, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.restore();
-          }
-        }
-      }
-      
-      // Continue rendering
-      this.animationFrame = requestAnimationFrame(() => this.render());
-    },
-    
-    clearRuntimeCanvas() {
-      if (this.runtimeCtx && this.runtimeCanvas) {
-        this.runtimeCtx.clearRect(0, 0, this.runtimeCanvas.width, this.runtimeCanvas.height);
-      }
-    },
-    
-    updateUI(isRunning) {
-      const playBtn = document.getElementById('btn-runtime-play');
-      const pauseBtn = document.getElementById('btn-runtime-pause');
-      const stopBtn = document.getElementById('btn-runtime-stop');
-      const restartBtn = document.getElementById('btn-runtime-restart');
-      const status = document.getElementById('runtime-status');
-      const overlay = document.getElementById('runtime-overlay');
-      const projectName = document.getElementById('runtime-project-name');
-      
-      if (isRunning) {
-        playBtn.disabled = true;
-        pauseBtn.disabled = false;
-        stopBtn.disabled = false;
-        restartBtn.disabled = false;
-        if (status) status.style.display = 'inline-block';
-        if (overlay) overlay.style.display = 'block';
-        if (projectName && this.gameData && this.gameData.settings && this.gameData.settings.name) {
-          projectName.textContent = this.gameData.settings.name;
-        }
-      } else {
-        playBtn.disabled = false;
-        pauseBtn.disabled = true;
-        stopBtn.disabled = true;
-        restartBtn.disabled = true;
-        if (status) status.style.display = 'none';
-        if (overlay) overlay.style.display = 'none';
-        if (projectName) projectName.textContent = '';
-      }
-    },
-    
-    runtimeLog(message, type = 'info') {
-      const console = document.getElementById('runtime-console');
-      if (!console) return;
-      
-      const timestamp = new Date().toLocaleTimeString();
-      const typeIcon = {
-        'info': '[INFO]',
-        'success': '[OK]',
-        'warning': '[WARN]',
-        'error': '[ERR]'
-      }[type] || '[INFO]';
-      
-      const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
-      console.textContent += newMessage;
-      console.scrollTop = console.scrollHeight;
-    }
-  };
-
-  // Runtime console utilities
-  window.clearRuntimeConsole = function() {
-    const console = document.getElementById('runtime-console');
-    if (console) {
-      console.textContent = '[Runtime] Console cleared...\n';
-    }
-  };
 
   function addDebugMessage(message, type = 'info') {
     const console = document.getElementById('debug-console');
@@ -4545,6 +5698,173 @@ function updateGameStatus(status) {
     const newMessage = `${timestamp} ${typeIcon} ${message}\n`;
     console.textContent += newMessage;
     console.scrollTop = console.scrollHeight;
+  }
+
+  // ============================================
+  // ScriptLogService - servizio centrale di log script
+  // ============================================
+  const ScriptLogService = (function() {
+    const _logs = [];
+    const MAX_LOGS = 1000;
+    const PANEL_ID = 'script-console';
+
+    function mapType(rawType) {
+      if (!rawType) return 'print';
+      const t = String(rawType).toLowerCase();
+      if (t === 'error') return 'error';
+      if (t === 'warning' || t === 'warn') return 'warning';
+      if (t === 'print') return 'print';
+      // Mappa i vecchi livelli "info/success" su print
+      return 'print';
+    }
+
+    function normalizeEntry(entry) {
+      const now = Date.now();
+      const normalizedType = mapType(entry.type);
+      const msg = (typeof entry.message === 'string')
+        ? entry.message
+        : serializeValue(entry.message);
+
+      return {
+        type: normalizedType,                  // print | error | warning
+        message: msg || '',
+        timestamp: entry.timestamp || now,    // epoch ms
+        source: entry.source || 'editor'      // editor | runtime | altro
+      };
+    }
+
+    function getPanel() {
+      return document.getElementById(PANEL_ID);
+    }
+
+    function renderEntry(entry) {
+      const panel = getPanel();
+      if (!panel) return;
+
+      const ts = new Date(entry.timestamp).toLocaleTimeString();
+      const typeIcon = entry.type === 'error'
+        ? '[ERR]'
+        : (entry.type === 'warning' ? '[WARN]' : '[PRINT]');
+      const sourceTag = entry.source ? `[${entry.source}]` : '';
+      const line = `${ts} ${typeIcon} ${sourceTag} ${entry.message}\n`;
+
+      panel.textContent += line;
+      panel.scrollTop = panel.scrollHeight;
+
+      // Evidenziazione globale del pannello per errori/warning recenti
+      panel.classList.remove('script-log-error', 'script-log-warning');
+      if (entry.type === 'error') {
+        panel.classList.add('script-log-error');
+      } else if (entry.type === 'warning') {
+        panel.classList.add('script-log-warning');
+      }
+    }
+
+    return {
+      /**
+       * Registra un messaggio normalizzato.
+       * entry: { type, message, timestamp?, source? }
+       */
+      log(entry) {
+        const normalized = normalizeEntry(entry || {});
+        _logs.push(normalized);
+        if (_logs.length > MAX_LOGS) {
+          _logs.shift();
+        }
+        renderEntry(normalized);
+      },
+
+      /**
+       * API di comodo per print/error/warning da editor.
+       */
+      print(message, source = 'editor') {
+        this.log({ type: 'print', message, source });
+      },
+
+      error(message, source = 'editor') {
+        this.log({ type: 'error', message, source });
+      },
+
+      warning(message, source = 'editor') {
+        this.log({ type: 'warning', message, source });
+      },
+
+      /**
+       * Ingest da runtime tramite postMessage.
+       * payload: { type, message, timestamp?, source? }
+       */
+      ingestFromRuntime(payload) {
+        const src = payload && payload.source ? payload.source : 'runtime';
+        this.log({
+          type: payload && payload.type,
+          message: payload && payload.message,
+          timestamp: payload && payload.timestamp,
+          source: src
+        });
+      },
+
+      clear() {
+        _logs.length = 0;
+        const panel = getPanel();
+        if (panel) {
+          panel.textContent = '[INFO] Script log cleared\n';
+          panel.scrollTop = 0;
+          panel.classList.remove('script-log-error', 'script-log-warning');
+        }
+      },
+
+      getAll() {
+        return _logs.slice();
+      }
+    };
+  })();
+
+  // Esponi come singleton globale
+  window.ScriptLogService = ScriptLogService;
+  
+  // Espone print() globalmente per test/debug nell'editor
+  window.print = function() {
+    ScriptLogService.print(Array.from(arguments).join(' '), 'editor');
+  };
+
+  // ============================================
+  // SISTEMA DI COMUNICAZIONE EDITOR ↔ RUNTIME
+  // ============================================
+  // NOTA: Il runtime è ora incorporato nell'editor, quindi non serve più postMessage
+  // Mantenuto per compatibilità futura se necessario
+  /*
+  // Listener per messaggi dal runtime (postMessage) - DISABILITATO: runtime incorporato
+  // Gestisce solo messaggi con type === "SCRIPT_LOG"
+  window.addEventListener('message', function(event) {
+    // TODO: Per sicurezza, verificare event.origin === location.origin
+    // In produzione: if (event.origin !== location.origin) return;
+
+    if (!event.data || event.data.type !== 'SCRIPT_LOG') {
+      return; // Ignora messaggi non relativi allo Script Log
+    }
+
+    const payload = event.data.payload || {};
+
+    if (window.ScriptLogService && typeof window.ScriptLogService.ingestFromRuntime === 'function') {
+      window.ScriptLogService.ingestFromRuntime(payload);
+    }
+  });
+  */
+
+  // Funzione di compatibilità: aggiunge messaggi al pannello Script Log
+  // Supporta livelli: info, warning, error
+  // NON usa console.log come output principale
+  function appendToScriptLog(message, level = 'info') {
+    let mappedType = 'print';
+    if (level === 'error') mappedType = 'error';
+    else if (level === 'warning') mappedType = 'warning';
+    ScriptLogService.log({ type: mappedType, message, source: 'runtime' });
+  }
+
+  // Script console: mostra solo output degli script (print, errori handler, ecc.)
+  // Mantiene compatibilità con il resto del codice che chiama addScriptLogMessage
+  function addScriptLogMessage(message, type = 'print') {
+    ScriptLogService.log({ type, message, source: 'editor' });
   }
 
   // Simulate notifications for tabs (example) - DISABLED
@@ -4649,13 +5969,7 @@ function updateGameStatus(status) {
   };
 
   // Save project settings function
-window.saveProjectSettings = function() {
-    // Check if demo user
-    if (isDemoUser) {
-      showDemoSaveWarning();
-      return;
-    }
-    
+  window.saveProjectSettings = function() {
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
     
@@ -4731,103 +6045,109 @@ window.saveProjectSettings = function() {
 
   // User management variables
   let currentUser = null;
-  let users = new Map(); // In-memory user storage (normally would be server-side)
+  let isDemoMode = false;
+
+  // Firebase auth (v9) integration via CDN
+  let __fbApp = null;
+  let __fbAuthMod = null;
+  let __fbAuth = null;
+  async function ensureFirebaseAuth() {
+    if (__fbApp && __fbAuth && __fbAuthMod) return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
+    const appMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js');
+    __fbAuthMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js');
+    const firebaseConfig = {
+      apiKey: "AIzaSyAg-wvBsbaKEWw896GbfUU9LDURrNa0xjY",
+      authDomain: "amianto-editor.firebaseapp.com",
+      projectId: "amianto-editor",
+      appId: "1:1044586682132:web:c53a04a0d204412f051401"
+    };
+    __fbApp = appMod.initializeApp(firebaseConfig);
+    __fbAuth = __fbAuthMod.getAuth(__fbApp);
+    return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
+  }
+  async function fbObserveAuthState(callback) {
+    const { auth, mod } = await ensureFirebaseAuth();
+    return mod.onAuthStateChanged(auth, callback);
+  }
+  async function fbRegister(email, password) {
+    const { auth, mod } = await ensureFirebaseAuth();
+    return mod.createUserWithEmailAndPassword(auth, email, password);
+  }
+  async function fbLogin(email, password) {
+    const { auth, mod } = await ensureFirebaseAuth();
+    return mod.signInWithEmailAndPassword(auth, email, password);
+  }
+  async function fbSignOut() {
+    const { auth, mod } = await ensureFirebaseAuth();
+    return mod.signOut(auth);
+  }
 
   // Initialize authentication system
   function initAuthSystem() {
-    // Load users from localStorage
-    loadUsers();
+    // Default view
+    showLoginPage();
 
-    // Check if user is logged in
-    const sessionUser = localStorage.getItem('amiantoCurrentUser');
-    if (sessionUser) {
-      const user = users.get(sessionUser);
-      if (user) {
-        loginUser(user);
-      } else {
-        // Session invalid, clear it
-        localStorage.removeItem('amiantoCurrentUser');
-        showLoginPage();
-      }
-    } else {
-      // No session: stay on login page (no auto-login)
-      showLoginPage();
+    // Wire forms
+    setupLoginForm();
+    setupRegistrationModal();
+
+    // Restore demo mode if previously set for this session
+    if (sessionStorage.getItem('amiantoDemoMode') === '1') {
+      isDemoMode = true;
+      setTimeout(() => {
+        if (typeof window.enterDemoMode === 'function') {
+          window.enterDemoMode();
+        }
+      }, 0);
     }
 
-    // Setup login form
-    setupLoginForm();
-
-    // Setup registration modal
-    setupRegistrationModal();
-  }
-
-  // Load users from localStorage
-  function loadUsers() {
-    const usersData = localStorage.getItem('amiantoUsers');
-    console.log('Loading users from localStorage:', usersData);
-
-    if (usersData) {
-      try {
-        const usersArray = JSON.parse(usersData);
-
-        // Validate users array structure
-        if (!Array.isArray(usersArray)) {
-          console.error('Users data is not an array, resetting...');
-          createDemoUser();
+    // Observe Firebase auth state
+    fbObserveAuthState(async function(user){
+      // In demo mode, ignore Firebase auth state transitions
+      if (isDemoMode) {
+        return;
+      }
+      if (user) {
+        const mappedUser = {
+          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
+          email: user.email || '',
+          uid: user.uid
+        };
+        
+        // Se l'utente è già loggato e corrisponde, sincronizza solo i progetti
+        if (currentUser && currentUser.uid === mappedUser.uid) {
+          // Utente già loggato, sincronizza solo i progetti
+          if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+            try {
+              await syncProjectsFromFirestore(mappedUser.uid);
+            } catch (error) {
+              console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
+            }
+          }
           return;
         }
-
-        users.clear();
-        let validUsers = 0;
-
-        usersArray.forEach((user, index) => {
-          // Validate user object structure
-          if (user && typeof user === 'object' && user.username && user.password) {
-            users.set(user.username, user);
-            validUsers++;
-          } else {
-            console.warn(`Invalid user at index ${index}:`, user);
+        
+        // Nuovo login: imposta utente e sincronizza
+        currentUser = mappedUser;
+        localStorage.setItem('amiantoCurrentUser', mappedUser.username);
+        showDashboard();
+        
+        // Sincronizza progetti da Firestore
+        if (mappedUser.uid && window.firebaseDB && window.firebaseAuth) {
+          try {
+            await syncProjectsFromFirestore(mappedUser.uid);
+          } catch (error) {
+            console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
           }
-        });
-
-        console.log(`Loaded ${validUsers} valid users:`, Array.from(users.keys()));
-
-        // Ensure demo user exists
-        if (!users.has('demo')) {
-          console.log('Demo user not found, creating...');
-          createDemoUser();
         }
-      } catch (e) {
-        console.error('Error parsing users data:', e);
-        console.log('Resetting users due to parse error...');
-        createDemoUser();
+      } else {
+        currentUser = null;
+        showLoginPage();
       }
-    } else {
-      console.log('No users found, creating demo user...');
-      // Create demo user if no users exist
-      createDemoUser();
-    }
-
-    console.log('Final users map:', Array.from(users.entries()));
+    });
   }
 
-  // Create demo user for testing
-  function createDemoUser() {
-    console.log('Creating demo user...');
-    const demoUser = {
-      username: 'demo',
-      email: 'demo@amianto.com',
-      password: 'demo123',
-      createdAt: new Date().toISOString(),
-      projects: []
-    };
-
-    users.set('demo', demoUser);
-    saveUsers();
-    console.log('Demo user created:', demoUser);
-  }
-
-  // Force reset all auth data (emergency function)
+  // Force reset all auth data (emergency function) — demo user removed
   window.forceResetAuth = function() {
     console.log('FORCE RESETTING ALL AUTH DATA');
 
@@ -4844,22 +6164,12 @@ window.saveProjectSettings = function() {
       console.log('Removed:', key);
     });
 
-    // Clear current user and users map
+    // Clear current user
     currentUser = null;
-    users.clear();
-
-    // Recreate demo user
-    createDemoUser();
 
     // Reload page
     location.reload();
   };
-
-  // Save users to localStorage
-  function saveUsers() {
-    const usersArray = Array.from(users.values());
-    localStorage.setItem('amiantoUsers', JSON.stringify(usersArray));
-  }
 
   // Show login page
   function showLoginPage() {
@@ -4895,66 +6205,35 @@ window.saveProjectSettings = function() {
     if (loginForm) {
       loginForm.addEventListener('submit', function(e) {
         e.preventDefault();
-        handleLogin();
+        const email = document.getElementById('loginUsername').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        if (!email || !password) {
+          showLoginError('Please enter both email and password');
+          return;
+        }
+        fbLogin(email, password).then((cred) => {
+          const user = cred && cred.user;
+          if (user) {
+            const mapped = {
+              username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
+              email: user.email || '',
+              uid: user.uid
+            };
+            loginUser(mapped, document.getElementById('rememberMe').checked);
+          }
+        }).catch((err) => {
+          console.error('[Login] Firebase error:', err && err.code, err && err.message);
+          showLoginError('Invalid email or password');
+        });
       });
     }
   }
 
-// Handle login
-  function handleLogin() {
-    const username = document.getElementById('loginUsername').value.trim();
-    const password = document.getElementById('loginPassword').value;
-    const rememberMe = document.getElementById('rememberMe').checked;
-
-    console.log('Login attempt:', { username, password: '***', rememberMe });
-    console.log('Available users:', Array.from(users.keys()));
-
-    if (!username || !password) {
-      showLoginError('Please enter both username and password');
-      return;
-    }
-
-    // Check if it's an email (Firebase login)
-    if (username.includes('@')) {
-      // Try Firebase login first
-      if (window.FirebaseManager && window.FirebaseManager.isOnline) {
-        window.FirebaseManager.loginUser(username, password);
-        return;
-      } else {
-        showLoginError('Firebase not available. Please check your connection.');
-        return;
-      }
-    }
-
-    // Local user login (existing system)
-    const user = users.get(username);
-    console.log('User found:', user);
-
-    if (!user) {
-      showLoginError('Invalid username or password');
-      return;
-    }
-
-    // Simple password check (in production, use proper hashing)
-    console.log('Password check:', user.password, 'vs', password);
-    if (user.password !== password) {
-      showLoginError('Invalid username or password');
-      return;
-    }
-
-    // Login successful
-    console.log('Login successful for user:', username);
-    loginUser(user, rememberMe);
-  }
-
-// Login user
-  function loginUser(user, rememberMe = false) {
+  // Login user
+  async function loginUser(user, rememberMe = false) {
     currentUser = user;
     localStorage.setItem('amiantoCurrentUser', user.username);
 
-    // Check if this is demo user
-    isDemoUser = (user.username === 'demo');
-    
     if (rememberMe) {
       localStorage.setItem('amiantoRememberUser', user.username);
     } else {
@@ -4962,13 +6241,30 @@ window.saveProjectSettings = function() {
     }
 
     showDashboard();
-    
-    if (isDemoUser) {
-      showNotification('Welcome to Amianto Editor Demo! You can explore all features but need to register to save projects.', 'info');
-      enableDemoMode();
+    showNotification(`Welcome back, ${user.username}!`, 'success');
+
+    // Sincronizza progetti da Firestore dopo il login
+    if (user.uid && window.firebaseDB && window.firebaseAuth) {
+      console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
+      showNotification('Sincronizzazione progetti in corso...', 'info');
+      
+      try {
+        const syncSuccess = await syncProjectsFromFirestore(user.uid);
+        if (syncSuccess) {
+          console.log('[Login] ✅ Sincronizzazione progetti completata');
+          // Ricarica la lista progetti se la dashboard è già aperta
+          if (typeof loadUserProjects === 'function') {
+            loadUserProjects();
+          }
+        } else {
+          console.warn('[Login] Sincronizzazione progetti non completata (fallback a cache locale)');
+        }
+      } catch (error) {
+        console.error('[Login] Errore durante sincronizzazione progetti:', error);
+        showNotification('Errore sincronizzazione progetti. Usando cache locale.', 'warning');
+      }
     } else {
-      showNotification(`Welcome back, ${user.username}!`, 'success');
-      disableDemoMode();
+      console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
     }
   }
 
@@ -4985,7 +6281,6 @@ window.saveProjectSettings = function() {
     modal.show();
 
     // Clear form
-    document.getElementById('registerUsername').value = '';
     document.getElementById('registerEmail').value = '';
     document.getElementById('registerPassword').value = '';
     document.getElementById('registerConfirmPassword').value = '';
@@ -4998,20 +6293,19 @@ window.saveProjectSettings = function() {
     const registerModal = document.getElementById('registerModal');
     if (registerModal) {
       registerModal.addEventListener('shown.bs.modal', function() {
-        document.getElementById('registerUsername').focus();
+        document.getElementById('registerEmail').focus();
       });
     }
   }
 
-// Register new user
+  // Register new user
   window.registerUser = function() {
-    const username = document.getElementById('registerUsername').value.trim();
     const email = document.getElementById('registerEmail').value.trim();
     const password = document.getElementById('registerPassword').value;
     const confirmPassword = document.getElementById('registerConfirmPassword').value;
 
     // Validation
-    if (!username || !email || !password || !confirmPassword) {
+    if (!email || !password || !confirmPassword) {
       showRegisterError('Please fill in all fields');
       return;
     }
@@ -5026,26 +6320,24 @@ window.saveProjectSettings = function() {
       return;
     }
 
-    // Check if username already exists locally
-    if (users.has(username)) {
-      showRegisterError('Username already exists');
-      return;
-    }
-
-    // Try Firebase registration first
-    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
-      window.FirebaseManager.registerUser(email, password, username)
-        .then((success) => {
-          if (success) {
-            // Close modal
-            const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
-            modal.hide();
-          }
-        });
-    } else {
-      // Fallback to local registration
-      showRegisterError('Firebase not available. Please check your connection.');
-    }
+    // Firebase registration
+    fbRegister(email, password).then((cred) => {
+      const user = cred && cred.user;
+      if (user) {
+        const mapped = {
+          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
+          email: user.email || '',
+          uid: user.uid
+        };
+        loginUser(mapped);
+      }
+      const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
+      if (modal) modal.hide();
+      showNotification('Account created successfully!', 'success');
+    }).catch((err) => {
+      console.error('[Register] Firebase error:', err && err.code, err && err.message);
+      showRegisterError('Registration failed. Please check your email and try again.');
+    });
   };
 
   // Show registration error
@@ -5057,14 +6349,40 @@ window.saveProjectSettings = function() {
 
   // Logout user
   window.logout = function() {
-    if (confirm('Are you sure you want to logout?')) {
+    // If in demo mode, just exit demo without calling Firebase
+    if (isDemoMode) {
+      isDemoMode = false;
+      sessionStorage.removeItem('amiantoDemoMode');
       currentUser = null;
       localStorage.removeItem('amiantoCurrentUser');
       localStorage.removeItem('amiantoRememberUser');
-
       showLoginPage();
-      showNotification('Logged out successfully', 'info');
+      showNotification('Hai lasciato la Demo Mode', 'info');
+      return;
     }
+
+    if (confirm('Are you sure you want to logout?')) {
+      fbSignOut().catch(()=>{}).finally(() => {
+        currentUser = null;
+        localStorage.removeItem('amiantoCurrentUser');
+        localStorage.removeItem('amiantoRememberUser');
+        showLoginPage();
+        showNotification('Logged out successfully', 'info');
+      });
+    }
+  };
+
+  // Enter demo mode (no account required)
+  window.enterDemoMode = function() {
+    isDemoMode = true;
+    sessionStorage.setItem('amiantoDemoMode', '1');
+    currentUser = {
+      username: 'Demo',
+      email: '',
+      uid: 'demo'
+    };
+    showDashboard();
+    showNotification('Demo Mode attiva: stai usando l’editor senza account', 'info');
   };
 
   // Show user profile (placeholder)
@@ -5082,99 +6400,13 @@ window.saveProjectSettings = function() {
     showNotification('Password recovery feature coming soon!', 'info');
   };
 
-  // Reset demo user (for debugging)
-window.resetDemoUser = function() {
-    console.log('Resetting demo user...');
-    // Clear all localStorage
-    localStorage.clear();
-    // Clear all users map
-    users.clear();
-    // Recreate demo user
-    createDemoUser();
-    
-    // Logout current user
-    currentUser = null;
-    localStorage.removeItem('amiantoCurrentUser');
-    
-    // Reload the page to recreate demo user
-    window.location.reload();
-  };
-
-  // Debug Firebase connection
-  window.testFirebaseConnection = async function() {
-    if (!window.firebaseAuth || !window.firebaseDB) {
-      showNotification('Firebase not loaded!', 'error');
-      return;
-    }
-
-    try {
-      // Test auth state
-      const user = window.firebaseAuth.currentUser;
-      console.log('Current Firebase user:', user);
-      
-      // Test database connection
-      const testDoc = {
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-        test: true,
-        userAgent: navigator.userAgent
-      };
-      
-      await window.firebaseDB.collection('test').doc('connection-test').set(testDoc);
-      
-      // Try to read it back
-      const doc = await window.firebaseDB.collection('test').doc('connection-test').get();
-      
-      if (doc.exists) {
-        showNotification('✅ Firebase connection successful!', 'success');
-        console.log('Firebase test data:', doc.data());
-      } else {
-        showNotification('⚠️ Firebase write failed', 'warning');
-      }
-      
-    } catch (error) {
-      console.error('Firebase test error:', error);
-      showNotification(`❌ Firebase error: ${error.message}`, 'error');
-    }
-  };
-
-  // Test Firebase registration
-  window.testFirebaseRegistration = async function() {
-    if (!window.FirebaseManager || !window.FirebaseManager.isOnline) {
-      showNotification('Firebase not available offline', 'warning');
-      return;
-    }
-
-    const testEmail = `test-${Date.now()}@amianto.test`;
-    const testPassword = 'password123';
-    const testUsername = `testuser${Date.now()}`;
-
-    console.log('Testing Firebase registration with:', testEmail);
-    
-    const success = await window.FirebaseManager.registerUser(testEmail, testPassword, testUsername);
-    
-    if (success) {
-      showNotification(`✅ Test registration successful! Check email: ${testEmail}`, 'success');
-    }
-  };
-
-  // Debug authentication system
+  // Debug authentication system (simplified — demo user removed)
   window.debugAuth = function() {
     console.log('=== AUTH DEBUG INFO ===');
     console.log('Current user:', currentUser);
-    console.log('Users map:', Array.from(users.entries()));
     console.log('localStorage amiantoUsers:', localStorage.getItem('amiantoUsers'));
     console.log('localStorage amiantoCurrentUser:', localStorage.getItem('amiantoCurrentUser'));
     console.log('localStorage amiantoRememberUser:', localStorage.getItem('amiantoRememberUser'));
-
-    // Try to find demo user
-    const demoUser = users.get('demo');
-    if (demoUser) {
-      console.log('Demo user found:', demoUser);
-      console.log('Demo password:', demoUser.password);
-    } else {
-      console.log('Demo user NOT found!');
-    }
-
     showNotification('Check console for debug info', 'info');
   };
 
@@ -5385,6 +6617,42 @@ window.resetDemoUser = function() {
     return settings;
   }
 
+  function serializeVariables() {
+    return {
+      definitions: gameVariableDefinitions.map(v => ({
+        name: v.name,
+        type: v.type,
+        initialValue: v.initialValue
+      })),
+      state: Game.getState()
+    };
+  }
+  
+  function serializeEventConditions() {
+    function mapToObjectDeep(mapInstance) {
+      const obj = {};
+      try {
+        if (mapInstance && mapInstance.forEach) {
+          mapInstance.forEach((v, k) => {
+            if (v && typeof v === 'object') {
+              obj[String(k)] = JSON.parse(JSON.stringify(v));
+            } else {
+              obj[String(k)] = v;
+            }
+          });
+        }
+      } catch (_) {}
+      return obj;
+    }
+    return {
+      objects: mapToObjectDeep(objectEventConditions),
+      hotspots: mapToObjectDeep(hotspotEventConditions),
+      characters: mapToObjectDeep(characterEventConditions),
+      guiButtons: mapToObjectDeep(guiButtonEventConditions),
+      inventory: mapToObjectDeep(inventoryEventConditions)
+    };
+  }
+
   window.serializeProject = function() {
     return {
       format: 'amianto-game',
@@ -5402,7 +6670,8 @@ window.resetDemoUser = function() {
       scripts: serializeScripts(),
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
-      variables: {}
+      variables: serializeVariables(),
+      eventConditions: serializeEventConditions()
     };
   }
 
@@ -5425,24 +6694,61 @@ window.resetDemoUser = function() {
     }, 0);
   }
 
+  // Debounce per evitare chiamate multiple OPFS in rapida successione
+  let opfsSaveTimeout = null;
+  let lastOpfsSaveTime = 0;
+  const OPFS_SAVE_DEBOUNCE_MS = 500; // Minimo 500ms tra salvataggi OPFS
+
   async function saveProjectJsonToOPFS(jsonString, projectName) {
     try {
       if (!navigator.storage || !navigator.storage.getDirectory) return null;
-      const root = await navigator.storage.getDirectory();
-      const projectDir = await root.getDirectoryHandle('amianto-projects', { create: true });
-      const safeName = (projectName && projectName.trim() !== '' ? projectName.trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
-      const fileName = `${safeName}.amianto.json`;
-      const fileHandle = await projectDir.getFileHandle(fileName, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(jsonString);
-      await writable.close();
-      const opfsPath = `amianto-projects/${fileName}`;
-      localStorage.setItem('amiantoLastProjectOPFSPath', opfsPath);
-      return opfsPath;
+      
+      // Debounce: se è passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
+      const now = Date.now();
+      const timeSinceLastSave = now - lastOpfsSaveTime;
+      
+      if (timeSinceLastSave < OPFS_SAVE_DEBOUNCE_MS) {
+        // Cancella timeout precedente se esiste
+        if (opfsSaveTimeout) {
+          clearTimeout(opfsSaveTimeout);
+        }
+        
+        // Ritarda il salvataggio
+        return new Promise((resolve) => {
+          opfsSaveTimeout = setTimeout(async () => {
+            lastOpfsSaveTime = Date.now();
+            try {
+              const result = await saveProjectJsonToOPFSInternal(jsonString, projectName);
+              resolve(result);
+            } catch (err) {
+              resolve(null); // Silently fail, OPFS is optional
+            }
+          }, OPFS_SAVE_DEBOUNCE_MS - timeSinceLastSave);
+        });
+      }
+      
+      lastOpfsSaveTime = now;
+      return await saveProjectJsonToOPFSInternal(jsonString, projectName);
     } catch (err) {
-      addDebugMessage('OPFS save failed: ' + (err && err.message ? err.message : err), 'warning');
+      // Non loggare errori OPFS come warning - è solo un fallback opzionale
+      // OPFS può fallire per vari motivi (permessi, sicurezza browser, ecc.)
       return null;
     }
+  }
+  
+  async function saveProjectJsonToOPFSInternal(jsonString, projectName) {
+    if (!navigator.storage || !navigator.storage.getDirectory) return null;
+    const root = await navigator.storage.getDirectory();
+    const projectDir = await root.getDirectoryHandle('amianto-projects', { create: true });
+    const safeName = (projectName && projectName.trim() !== '' ? projectName.trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
+    const fileName = `${safeName}.amianto.json`;
+    const fileHandle = await projectDir.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(jsonString);
+    await writable.close();
+    const opfsPath = `amianto-projects/${fileName}`;
+    localStorage.setItem('amiantoLastProjectOPFSPath', opfsPath);
+    return opfsPath;
   }
 
   async function saveProjectJsonToFile(jsonString, suggestedName) {
@@ -5498,107 +6804,1412 @@ window.resetDemoUser = function() {
     }
   }
 
-// Save current project for current user
-  function saveCurrentProject() {
+  // ================================
+  // FIRESTORE PERSISTENCE SYSTEM
+  // ================================
+  // 
+  // AGGIUNTO: Sistema completo di salvataggio persistente su Firestore
+  // 
+  // COSA È GIÀ IMPLEMENTATO:
+  // - Firebase è già configurato in firebase-config.js (window.firebaseDB disponibile)
+  // - serializeProject() esiste e funziona
+  // - applyProjectObject() esiste per caricare progetti
+  // - localStorage/OPFS come cache locale
+  // 
+  // COSA È STATO AGGIUNTO:
+  // - saveProjectToFirestore(): Salva progetto su Firestore
+  // - loadProjectFromFirestore(): Carica progetto da Firestore
+  // - listProjectsFromFirestore(): Lista progetti da Firestore (TODO: integrare in UI)
+  // - autosaveToCache(): Autosave su cache locale come fallback
+  // - Modificato saveCurrentProject(): Ora salva anche su Firestore
+  // - Modificato openProjectByName(): Carica prima da Firestore, poi fallback cache
+  // 
+  // STRUTTURA FIRESTORE:
+  // users/{userId}/projects/{projectId}
+  // {
+  //   name: string,
+  //   projectData: string (JSON serializzato),
+  //   createdAt: timestamp,
+  //   updatedAt: timestamp
+  // }
+  // 
+  // TODO:
+  // - Implementare sistema di projectId univoci (attualmente usa nome normalizzato)
+  // - Integrare listProjectsFromFirestore() nella UI di selezione progetti
+  // - Aggiungere autosave periodico (ogni 30-60 secondi)
+  //
+
+  /**
+   * Salva un progetto su Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto (usa il nome del progetto come ID temporaneo)
+   * @param {Object} projectData - Oggetto progetto completo (già serializzato)
+   * @returns {Promise<boolean>} - true se salvato con successo, false altrimenti
+   * 
+   * GIÀ IMPLEMENTATO: Firebase è già configurato in firebase-config.js
+   * AGGIUNTO: Questa funzione per salvare su Firestore
+   */
+  async function saveProjectToFirestore(userId, projectId, projectData) {
+    try {
+      console.log('[Firestore] Tentativo salvataggio progetto...', { userId, projectId });
+      
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
+        addDebugMessage('[Firestore] Firestore non disponibile, uso fallback cache', 'warning');
+        return false;
+      }
+      console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
+
+      // Verifica che userId e projectId siano validi
+      if (!userId || !projectId) {
+        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
+        addDebugMessage('[Firestore] userId o projectId mancanti', 'error');
+        return false;
+      }
+
+      const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
+      const jsonString = JSON.stringify(projectData);
+      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length });
+
+      // Struttura dati Firestore: users/{userId}/projects/{projectId}
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      console.log('[Firestore] Reference creata:', projectRef.path);
+
+      // Verifica se il documento esiste già per preservare createdAt
+      const docSnapshot = await projectRef.get();
+      const documentExists = docSnapshot.exists;
+      
+      // Prepara i dati da salvare
+      const firestoreData = {
+        name: projectName,
+        projectData: jsonString, // Salva come stringa JSON per evitare limiti di profondità Firestore
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      
+      // Aggiungi createdAt solo se il documento non esiste
+      if (!documentExists) {
+        firestoreData.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+        console.log('[Firestore] Creazione nuovo documento');
+      } else {
+        console.log('[Firestore] Aggiornamento documento esistente');
+      }
+
+      console.log('[Firestore] Tentativo scrittura su Firestore...');
+      
+      // Usa set con merge per creare o aggiornare
+      await projectRef.set(firestoreData, { merge: true });
+
+      console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
+      addDebugMessage(`[Firestore] Progetto salvato: ${projectName}`, 'success');
+      return true;
+    } catch (error) {
+      console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
+      console.error('[Firestore] Dettagli errore:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      addDebugMessage(`[Firestore] Errore salvataggio: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * Carica un progetto da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto
+   * @returns {Promise<Object|null>} - Oggetto progetto o null se non trovato/errore
+   * 
+   * AGGIUNTO: Questa funzione per caricare da Firestore
+   */
+  async function loadProjectFromFirestore(userId, projectId) {
+    try {
+      console.log('[Firestore] Tentativo caricamento progetto...', { userId, projectId });
+      
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Firestore] Firestore non disponibile');
+        return null;
+      }
+
+      // Verifica che userId e projectId siano validi
+      if (!userId || !projectId) {
+        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
+        return null;
+      }
+
+      // Verifica che l'utente sia autenticato (per le regole di sicurezza)
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Firestore] Utente non autenticato - impossibile caricare da Firestore');
+        return null;
+      }
+
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid !== userId) {
+        console.error('[Firestore] userId non corrisponde a utente autenticato', {
+          userId,
+          currentAuthUid
+        });
+        return null;
+      }
+
+      console.log('[Firestore] Verifiche superate, accesso a Firestore...');
+
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      console.log('[Firestore] Reference creata:', projectRef.path);
+
+      const doc = await projectRef.get();
+
+      if (!doc.exists) {
+        console.log(`[Firestore] Progetto non trovato: ${projectId}`);
+        return null;
+      }
+
+      const data = doc.data();
+      if (!data || !data.projectData) {
+        console.error('[Firestore] Dati progetto non validi');
+        return null;
+      }
+
+      // Parse del JSON salvato
+      const projectObj = JSON.parse(data.projectData);
+      console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
+      addDebugMessage(`[Firestore] Progetto caricato: ${data.name || projectId}`, 'success');
+      return projectObj;
+    } catch (error) {
+      console.error('[Firestore] ❌ Errore durante il caricamento:', error);
+      console.error('[Firestore] Dettagli errore:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      addDebugMessage(`[Firestore] Errore caricamento: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      return null;
+    }
+  }
+
+  /**
+   * Test connessione Firestore - funzione di debug
+   * AGGIUNTO: Funzione per testare se Firestore funziona correttamente
+   */
+  window.testFirestoreConnection = async function() {
+    console.log('=== TEST CONNESSIONE FIRESTORE ===');
+    
+    // 1. Verifica Firestore disponibile
+    if (!window.firebaseDB) {
+      console.error('❌ window.firebaseDB non disponibile');
+      addDebugMessage('❌ Firestore non disponibile', 'error');
+      return false;
+    }
+    console.log('✅ window.firebaseDB disponibile');
+    
+    // 2. Verifica utente autenticato
+    if (!currentUser || !currentUser.uid) {
+      console.error('❌ Utente non autenticato o uid mancante');
+      addDebugMessage('❌ Utente non autenticato', 'error');
+      return false;
+    }
+    console.log('✅ Utente autenticato:', currentUser.uid);
+    
+    // 3. Test scrittura
+    try {
+      const testRef = window.firebaseDB
+        .collection('users')
+        .doc(currentUser.uid)
+        .collection('projects')
+        .doc('_test_connection');
+      
+      const testData = {
+        name: 'Test Connection',
+        projectData: '{"test": true}',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      
+      console.log('🔄 Tentativo scrittura test...');
+      await testRef.set(testData);
+      console.log('✅ Scrittura test riuscita!');
+      
+      // 4. Test lettura
+      console.log('🔄 Tentativo lettura test...');
+      const doc = await testRef.get();
+      if (doc.exists) {
+        console.log('✅ Lettura test riuscita!', doc.data());
+        addDebugMessage('✅ Test Firestore: connessione OK', 'success');
+        
+        // Pulisci documento di test
+        await testRef.delete();
+        console.log('🧹 Documento di test eliminato');
+        return true;
+      } else {
+        console.error('❌ Documento test non trovato dopo scrittura');
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Errore durante test:', error);
+      console.error('Dettagli:', {
+        code: error.code,
+        message: error.message
+      });
+      addDebugMessage(`❌ Test Firestore fallito: ${error.message} (${error.code})`, 'error');
+      return false;
+    }
+  };
+
+  /**
+   * Lista tutti i progetti di un utente da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti con metadata
+   * 
+   * AGGIUNTO: Questa funzione per listare progetti da Firestore
+   * TODO: Integrare questa funzione nella UI di selezione progetti
+   */
+  async function listProjectsFromFirestore(userId) {
+    try {
+      if (!window.firebaseDB || !userId) {
+        return [];
+      }
+
+      const projectsRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects');
+
+      const snapshot = await projectsRef.get();
+      const projects = [];
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        projects.push({
+          id: doc.id,
+          name: data.name || doc.id,
+          updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+        });
+      });
+
+      return projects;
+    } catch (error) {
+      console.error('[Firestore] Errore durante il listing:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Sincronizza i progetti da Firestore al login
+   * Carica tutti i progetti da Firestore e li sincronizza con localStorage
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<boolean>} - true se sincronizzazione completata, false altrimenti
+   * 
+   * AGGIUNTO: Questa funzione sincronizza i progetti da Firestore al login
+   */
+  async function syncProjectsFromFirestore(userId) {
+    try {
+      console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId });
+      
+      if (!window.firebaseDB || !userId) {
+        console.warn('[Sync] Firestore non disponibile o userId mancante');
+        return false;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Sync] Utente non autenticato - impossibile sincronizzare');
+        return false;
+      }
+
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid !== userId) {
+        console.error('[Sync] userId non corrisponde a utente autenticato', { userId, currentAuthUid });
+        return false;
+      }
+
+      // Carica lista progetti da Firestore
+      const firestoreProjects = await listProjectsFromFirestore(userId);
+      console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
+
+      if (firestoreProjects.length === 0) {
+        console.log('[Sync] Nessun progetto su Firestore, sincronizzazione completata');
+        return true;
+      }
+
+      // Carica progetti locali esistenti
+      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      console.log('[Sync] Progetti locali esistenti:', localProjects.length);
+
+      // Crea una mappa dei progetti locali per confronto rapido
+      const localProjectsMap = new Map();
+      localProjects.forEach(p => {
+        if (p && p.settings && p.settings.name) {
+          const projectId = p.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          localProjectsMap.set(projectId, p);
+        }
+      });
+
+      // Sincronizza ogni progetto da Firestore
+      const syncedProjects = [];
+      let syncedCount = 0;
+      let newCount = 0;
+      let updatedCount = 0;
+
+      for (const firestoreProject of firestoreProjects) {
+        try {
+          const projectId = firestoreProject.id;
+          const projectName = firestoreProject.name;
+
+          // Carica i dati completi del progetto da Firestore
+          const projectData = await loadProjectFromFirestore(userId, projectId);
+          
+          if (!projectData) {
+            console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
+            continue;
+          }
+
+          // Prepara entry per la lista progetti
+          const projectEntry = {
+            settings: projectData.settings || { name: projectName },
+            updatedAt: firestoreProject.updatedAt || new Date().toISOString(),
+            createdAt: firestoreProject.createdAt || new Date().toISOString(),
+            source: 'firestore'
+          };
+
+          // Controlla se il progetto esiste già localmente
+          const localProject = localProjectsMap.get(projectId);
+          
+          if (localProject) {
+            // Progetto esiste localmente: confronta timestamp e mantieni il più recente
+            const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
+            const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
+            
+            if (firestoreUpdated >= localUpdated) {
+              // Firestore è più recente o uguale: usa Firestore
+              syncedProjects.push(projectEntry);
+              updatedCount++;
+              
+              // Salva anche il JSON completo in cache locale
+              const jsonString = JSON.stringify(projectData);
+              const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+              localStorage.setItem(projectKey, jsonString);
+              
+              console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
+            } else {
+              // Locale è più recente: mantieni locale
+              syncedProjects.push(localProject);
+              console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
+            }
+          } else {
+            // Nuovo progetto da Firestore
+            syncedProjects.push(projectEntry);
+            newCount++;
+            
+            // Salva il JSON completo in cache locale
+            const jsonString = JSON.stringify(projectData);
+            const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+            localStorage.setItem(projectKey, jsonString);
+            
+            console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+          }
+
+          syncedCount++;
+        } catch (error) {
+          console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        }
+      }
+
+      // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
+      localProjects.forEach(localProject => {
+        if (localProject && localProject.settings && localProject.settings.name) {
+          const projectId = localProject.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          const existsInFirestore = firestoreProjects.some(fp => {
+            const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+            return fpId === projectId;
+          });
+          
+          if (!existsInFirestore) {
+            // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
+            syncedProjects.push(localProject);
+            console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${localProject.settings.name}`);
+          }
+        }
+      });
+
+      // Salva lista sincronizzata in localStorage
+      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(syncedProjects));
+
+      console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
+      addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
+      
+      return true;
+    } catch (error) {
+      console.error('[Sync] ❌ Errore durante la sincronizzazione:', error);
+      addDebugMessage(`Errore sincronizzazione: ${error.message || error}`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * Autosave su cache locale (localStorage) come fallback temporaneo
+   * @param {string} projectName - Nome del progetto
+   * @param {string} jsonString - JSON serializzato del progetto
+   * 
+   * GIÀ IMPLEMENTATO: localStorage è già usato per cache
+   * AGGIUNTO: Questa funzione centralizza l'autosave su cache
+   */
+  function autosaveToCache(projectName, jsonString) {
+    try {
+      if (!currentUser || !projectName) return;
+
+      // Salva in localStorage come backup temporaneo
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      localStorage.setItem(projectKey, jsonString);
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      
+      // Aggiorna timestamp cache
+      const cacheMeta = {
+        savedAt: new Date().toISOString(),
+        source: 'cache'
+      };
+      localStorage.setItem(`${projectKey}_meta`, JSON.stringify(cacheMeta));
+
+      console.log('[Cache] Autosave completato su cache locale');
+    } catch (error) {
+      console.error('[Cache] Errore autosave cache:', error);
+    }
+  }
+
+  // Save current project for current user
+  // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  window.saveCurrentProject = async function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
       return;
     }
-    
-    // Check if demo user
-    if (isDemoUser) {
-      showDemoSaveWarning();
-      return;
-    }
-    
+
     const jsonString = window.serializeProjectToJsonString(true);
-    // Mirror in localStorage (used by runtime)
+    const projectObj = window.serializeProject();
+    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
+    
+    // TODO: Implementare sistema di projectId univoci
+    // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
+    // In futuro, generare ID univoci (UUID) e salvare mapping nome->ID in Firestore.
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    // Le regole di sicurezza controllano request.auth.uid == userId
+    const userId = currentUser.uid;
+    if (!userId) {
+      console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
+      addDebugMessage('[Firestore] Utente non autenticato correttamente', 'error');
+      // Continua con cache locale come fallback
+    }
+
+    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
+    let firestoreSuccess = false;
+    if (userId) {
+      console.log('[Save] Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
+      firestoreSuccess = await saveProjectToFirestore(userId, projectId, projectObj);
+      console.log('[Save] Risultato salvataggio Firestore:', firestoreSuccess);
+    } else {
+      console.warn('[Save] userId non disponibile, salto Firestore');
+    }
+
+    // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
+    autosaveToCache(projectName, jsonString);
+
+    // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
 
-    // Also keep a lightweight entry per-user for quick project listing
-    const projectObj = window.serializeProject();
+    // 4. LIGHTWEIGHT ENTRY PER LISTING - GIÀ IMPLEMENTATO
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectObj.settings.name);
+    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
     const entry = { 
       settings: projectObj.settings, 
       updatedAt: new Date().toISOString(),
-      id: projectObj.settings.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+      source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
     };
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
 
-    // Try to sync with Firebase
-    let firebaseSaved = false;
-    if (window.FirebaseManager && window.FirebaseManager.isOnline) {
-      window.FirebaseManager.saveProjectToFirebase(projectObj)
-        .then((saved) => {
-          firebaseSaved = saved;
-        });
-    }
+    // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
+    try {
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      localStorage.setItem(projectKey, jsonString);
+      localStorage.setItem('amiantoActiveProjectName', projectName);
+      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    } catch (_) {}
 
-    // Persist to OPFS (silent) and also offer a regular file save (may prompt the user)
-    saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name);
-    saveProjectJsonToFile(jsonString, projectObj.settings && projectObj.settings.name);
-    
-    // Show appropriate message
-    if (firebaseSaved) {
-      showNotification('Project saved locally and synced to Firebase!', 'success');
-    } else if (window.FirebaseManager && !window.FirebaseManager.isOnline) {
-      showNotification('Project saved locally. Will sync when online.', 'warning');
+    // 6. PERSIST TO OPFS (silent) - GIÀ IMPLEMENTATO
+    saveProjectJsonToOPFS(jsonString, projectName);
+
+    // 7. OFFER FILE SAVE (may prompt user) - GIÀ IMPLEMENTATO
+    // Nota: saveProjectJsonToFile apre un dialog, quindi non lo chiamiamo automaticamente
+    // saveProjectJsonToFile(jsonString, projectName);
+
+    // Messaggio di successo con indicazione della fonte
+    if (firestoreSuccess) {
+      showNotification('Project saved successfully to Firestore!', 'success');
     } else {
-      showNotification('Project saved successfully!', 'success');
+      showNotification('Project saved to cache (Firestore unavailable)', 'warning');
     }
   }
 
-// Create new project
-  window.createNewProject = function() {
+  // Create new project
+  // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
+  window.createNewProject = async function() {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
       return;
     }
 
-    // Check if demo user
-    if (isDemoUser) {
-      showDemoSaveWarning();
-      return;
-    }
-
     const projectName = prompt('Enter project name:');
-    if (!projectName) return;
+    if (!projectName || !projectName.trim()) return;
 
-    // Initialize new project
+    const trimmedName = projectName.trim();
+
+    // Crea progetto completo con struttura corretta
     const newProject = {
+      format: 'amianto-game',
+      version: 1,
+      meta: {
+        exportedAt: new Date().toISOString(),
+        editor: 'Amianto Editor',
+        editorVersion: '0.1'
+      },
       settings: {
-        name: projectName,
+        name: trimmedName,
         canvasWidth: 800,
         canvasHeight: 600
       },
       rooms: [],
-      createdAt: new Date().toISOString()
+      guis: [],
+      characters: [],
+      inventory: [],
+      scripts: {},
+      attachments: {},
+      cursors: [],
+      variables: {
+        definitions: [],
+        state: {}
+      },
+      eventConditions: {
+        objects: {},
+        hotspots: {},
+        characters: {},
+        guiButtons: {},
+        inventory: {}
+      }
     };
 
+    // Apri il progetto nell'editor
+    await applyProjectObject(newProject);
+
+    // Imposta come progetto attivo
+    localStorage.setItem('amiantoActiveProjectName', trimmedName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+    // Aggiungi alla lista progetti utente
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    userProjects.push(newProject);
+    const entry = {
+      settings: newProject.settings,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    userProjects.push(entry);
     localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
 
-    showNotification(`Project "${projectName}" created!`, 'success');
+    // Salva su Firestore se l'utente è autenticato
+    const userId = currentUser.uid;
+    if (userId && window.firebaseDB) {
+      const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      await saveProjectToFirestore(userId, projectId, newProject);
+    }
+
+    showNotification(`Project "${trimmedName}" created and opened!`, 'success');
   };
 
-  // Show project list
-  window.showProjectList = function() {
+  // Helpers per file name sicuro in OPFS
+  function sanitizeProjectFileName(name) {
+    const safe = (name && String(name).trim() !== '' ? String(name).trim() : 'amianto-project').replace(/[^a-z0-9-_\s]/gi, '_');
+    return `${safe}.amianto.json`;
+  }
+
+  async function loadProjectJsonFromOPFS(projectName) {
+    try {
+      if (!navigator.storage || !navigator.storage.getDirectory) return null;
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
+      const fileHandle = await dir.getFileHandle(sanitizeProjectFileName(projectName), { create: false });
+      const file = await fileHandle.getFile();
+      return await file.text();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function deleteProjectFileFromOPFS(projectName) {
+    try {
+      if (!navigator.storage || !navigator.storage.getDirectory) return false;
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
+      // FileSystemDirectoryHandle.removeEntry è disponibile su alcuni browser
+      if (dir.removeEntry) {
+        await dir.removeEntry(sanitizeProjectFileName(projectName));
+        return true;
+      }
+      // Fallback: non disponibile
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function createImageFromDataUrl(url) {
+    return new Promise((resolve) => {
+      if (!url) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  async function applyProjectObject(projectObj) {
+    try {
+      // Settings / viewport
+      if (projectObj && projectObj.settings) {
+        const s = projectObj.settings;
+        // aggiorna viewport
+        if (s.canvasWidth && s.canvasHeight) {
+          gameViewport.width = Number(s.canvasWidth) || gameViewport.width;
+          gameViewport.height = Number(s.canvasHeight) || gameViewport.height;
+          canvas.width = gameViewport.width;
+          canvas.height = gameViewport.height;
+          updateEditorDisplay();
+        }
+        // persisti impostazioni progetto
+        localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+      }
+
+      // Rooms
+      rooms = new Map();
+      currentRoomId = null;
+      // converte stanze
+      if (Array.isArray(projectObj.rooms)) {
+        // Precarica immagini in parallelo
+        for (const r of projectObj.rooms) {
+          const roomId = r.id || uid('room');
+          const roomVal = {
+            id: roomId,
+            name: r.name || roomId,
+            background: null,
+            foregrounds: [],
+            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
+              id: o.id || uid('scene'),
+              name: o.name || 'Object',
+              type: o.type || 'Interactive',
+              x: Number(o.x) || 0,
+              y: Number(o.y) || 0,
+              img: null
+            })) : [],
+            walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
+              id: h.id || uid('hotspot'),
+              name: h.name || 'Hotspot',
+              points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+              visible: (typeof h.visible === 'boolean') ? h.visible : true
+            })) : []
+          };
+          rooms.set(roomId, roomVal);
+          // carica immagini async (background, foregrounds, scene objects)
+          Promise.resolve().then(async () => {
+            if (r.background) {
+              roomVal.background = await createImageFromDataUrl(r.background);
+              redraw();
+            }
+            if (Array.isArray(r.foregrounds)) {
+              const out = [];
+              for (const f of r.foregrounds) {
+                out.push({
+                  id: f.id || uid('fg'),
+                  name: f.name || 'Layer',
+                  img: f.image ? await createImageFromDataUrl(f.image) : null,
+                  offsetX: Number(f.offsetX)||0,
+                  offsetY: Number(f.offsetY)||0
+                });
+              }
+              roomVal.foregrounds = out;
+              refreshForegroundListUI();
+              redraw();
+            }
+            if (Array.isArray(r.sceneObjects)) {
+              for (let i = 0; i < r.sceneObjects.length; i++) {
+                const src = r.sceneObjects[i];
+                const dst = roomVal.sceneObjects[i];
+                if (src && src.image) {
+                  dst.img = await createImageFromDataUrl(src.image);
+                }
+              }
+              // ricrea lista oggetti
+              const list = document.getElementById('scene-objects-list');
+              if (list) {
+                list.innerHTML = '';
+                roomVal.sceneObjects.forEach(obj => {
+                  const item = document.createElement('div');
+                  item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+                  item.dataset.objectId = obj.id;
+                  item.innerHTML = `
+        <div>
+          <strong>${obj.name}</strong>
+          <br><small>Scene object</small>
+          <br><span class="badge bg-warning">Interactive</span>
+          <br><small style="color: #888;">Position: ${Math.round(obj.x)}, ${Math.round(obj.y)}</small>
+        </div>
+        <div>
+          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
+        </div>
+                  `;
+                  list.appendChild(item);
+                });
+              }
+              redraw();
+            }
+            refreshHotspotsListUI();
+          });
+        }
+      } else {
+        // assicura almeno una stanza
+        const rid = uid('room');
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [] });
+      }
+      // Seleziona prima stanza e sincronizza riferimenti
+      const firstRoom = rooms.keys().next().value;
+      currentRoomId = firstRoom;
+      bindRoomRefs();
+      refreshRoomsSelector();
+      try { refreshStartRoomSelector(); } catch(_) {}
+      redraw();
+
+      // GUI
+      guis = Array.isArray(projectObj.guis) ? projectObj.guis.map(g => ({
+        id: g.id || uid('gui'),
+        name: g.name || 'GUI',
+        type: g.type || 'MainInterface',
+        settings: g.settings || {},
+        background: g.background ? null : null, // background immagine opzionale, non serializzato ora
+        buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
+          id: b.id || uid('btn'),
+          name: b.name || 'Button',
+          x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
+          text: b.text || '',
+          backgroundImage: null
+        })) : []
+      })) : [];
+      if (guis.length === 0) {
+        const defaultGui = { id: uid('gui'), name: 'Main GUI', type: 'MainInterface', settings: {}, background: null, buttons: [] };
+        guis.push(defaultGui);
+      }
+      currentGuiId = guis[0].id;
+      refreshGUISelector();
+      try {
+        const typeSel = document.getElementById('gui-type-select');
+        if (typeSel) {
+          typeSel.value = guis[0].type || 'MainInterface';
+        }
+        renderGuiSettingsPanel(guis[0].type || 'MainInterface', guis[0].settings || {});
+        refreshGuiButtonsList();
+      } catch(_) {}
+
+      // Characters frames (Map)
+      try {
+        characterFrames.clear();
+        if (Array.isArray(projectObj.characters)) {
+          for (const ch of projectObj.characters) {
+            const directions = {};
+            if (ch && ch.directions) {
+              for (const [dir, data] of Object.entries(ch.directions)) {
+                const frames = Array.isArray(data.frames) ? await Promise.all(data.frames.map(f => createImageFromDataUrl(f))) : [];
+                directions[dir] = { fps: Number(data.fps) || 8, frames: frames.filter(Boolean) };
+              }
+            }
+            characterFrames.set(ch.name || uid('char'), { directions, currentFrame: 0 });
+          }
+        }
+        refreshCharacterSelector();
+        refreshStartingPlayerUI();
+      } catch(_) {}
+
+      // Inventory UI (lista DOM)
+      try {
+        const inv = Array.isArray(projectObj.inventory) ? projectObj.inventory : [];
+        const list = document.getElementById('inventory-list');
+        if (list) {
+          list.innerHTML = '';
+          inv.forEach(item => {
+            const el = document.createElement('div');
+            el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+            el.innerHTML = `
+              <div>
+                <strong>${item.name || 'Item'}</strong>
+                <br><small>Inventory item</small>
+              </div>
+              <div>
+                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
+                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
+              </div>
+            `;
+            list.appendChild(el);
+          });
+        }
+        refreshInventoryScriptTargets();
+      } catch(_) {}
+
+      // Scripts
+      try {
+        jsScripts.clear();
+        const selector = document.getElementById('script-selector');
+        if (selector) {
+          // reset, mantieni placeholder
+          selector.innerHTML = '';
+          const opt0 = document.createElement('option');
+          opt0.value = ''; opt0.textContent = 'Select a script...';
+          selector.appendChild(opt0);
+        }
+        if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+          Object.entries(projectObj.scripts).forEach(([name, content]) => {
+            if (!name) return;
+            jsScripts.set(String(name), String(content || ''));
+            localStorage.setItem(`script-${name}`, String(content || ''));
+            if (selector) {
+              const o = document.createElement('option');
+              o.value = name; o.textContent = name;
+              selector.appendChild(o);
+            }
+          });
+        }
+        // ri-aggiungi alcuni script di default se mancanti
+        const defaults = ['startup','room-change','object-interaction'];
+        defaults.forEach(d => {
+          if (!jsScripts.has(d)) {
+            jsScripts.set(d, '');
+            if (selector) {
+              const o = document.createElement('option');
+              o.value = d; o.textContent = d === 'startup' ? 'Startup Game' : (d.replace('-', ' '));
+              selector.appendChild(o);
+            }
+          }
+        });
+        refreshScriptSelector();
+        refreshSceneObjectScriptTargets();
+        refreshRoomScriptTargets();
+        refreshCharacterScriptTargets();
+        refreshInventoryScriptTargets();
+        try { refreshGuiScriptTargets(); } catch(_) {}
+        try { refreshHotspotScriptTargets(); } catch(_) {}
+        try { refreshCursorScriptTargets(); } catch(_) {}
+      } catch(_) {}
+
+      // Attachments (mappe)
+      try {
+        objectScripts.clear();
+        roomScripts.clear();
+        characterScripts.clear();
+        inventoryScripts.clear();
+        hotspotScripts.clear();
+        if (projectObj.attachments && typeof projectObj.attachments === 'object') {
+          const A = projectObj.attachments;
+          if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
+          if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
+          if (A.characterScripts && typeof A.characterScripts === 'object') Object.entries(A.characterScripts).forEach(([k,v]) => { if (k && v) characterScripts.set(String(k), String(v)); });
+          if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
+          if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
+          if (A.hotspotScripts && typeof A.hotspotScripts === 'object') Object.entries(A.hotspotScripts).forEach(([k,v]) => { if (k && v) hotspotScripts.set(String(k), String(v)); });
+        }
+      } catch(_) {}
+      
+      // Variables (Game State)
+      try {
+        if (projectObj.variables && typeof projectObj.variables === 'object') {
+          const vars = projectObj.variables;
+          // Carica definizioni variabili
+          if (Array.isArray(vars.definitions)) {
+            gameVariableDefinitions = vars.definitions.map(v => ({
+              name: String(v.name || ''),
+              type: String(v.type || 'string'),
+              initialValue: v.initialValue
+            }));
+          }
+          // Carica stato variabili
+          if (vars.state && typeof vars.state === 'object') {
+            Game.setState(vars.state);
+          }
+        }
+      } catch(_) {}
+      
+      // Event Conditions
+      try {
+        objectEventConditions.clear();
+        hotspotEventConditions.clear();
+        characterEventConditions.clear();
+        guiButtonEventConditions.clear();
+        inventoryEventConditions.clear();
+        if (projectObj.eventConditions && typeof projectObj.eventConditions === 'object') {
+          const ec = projectObj.eventConditions;
+          if (ec.objects && typeof ec.objects === 'object') {
+            Object.entries(ec.objects).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                objectEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.hotspots && typeof ec.hotspots === 'object') {
+            Object.entries(ec.hotspots).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                hotspotEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.characters && typeof ec.characters === 'object') {
+            Object.entries(ec.characters).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                characterEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.guiButtons && typeof ec.guiButtons === 'object') {
+            Object.entries(ec.guiButtons).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                guiButtonEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+          if (ec.inventory && typeof ec.inventory === 'object') {
+            Object.entries(ec.inventory).forEach(([k, v]) => {
+              if (k && v && typeof v === 'object') {
+                inventoryEventConditions.set(String(k), JSON.parse(JSON.stringify(v)));
+              }
+            });
+          }
+        }
+      } catch(_) {}
+
+      // Cursors contestuali
+      try {
+        contextualCursors = Array.isArray(projectObj.cursors) ? projectObj.cursors.map(c => ({
+          id: c.id || uid('cursor'),
+          targetType: c.targetType || 'hotspot',
+          targetId: c.targetId || '',
+          cursorImage: null, // immagine non serializzata
+          actionText: c.actionText || '',
+          scriptName: c.scriptName || ''
+        })) : [];
+        refreshCursorsList();
+      } catch(_) {}
+
+      redraw();
+      showNotification('Project loaded', 'success');
+    } catch (err) {
+      addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
+      showNotification('Errore nel caricamento del progetto', 'danger');
+    }
+  }
+
+  window.importProjectFromJson = async function(jsonString) {
+    try {
+      const obj = JSON.parse(jsonString);
+      await applyProjectObject(obj);
+    } catch (err) {
+      addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
+      showNotification('JSON progetto non valido', 'danger');
+    }
+  };
+
+  // MODIFICATO: Ora carica prima da Firestore, poi fallback su cache locale
+  async function openProjectByName(projectName) {
+    if (!currentUser) { 
+      showNotification('Please login to open projects', 'warning'); 
+      return; 
+    }
+    if (!projectName) return;
+
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    // Le regole di sicurezza controllano request.auth.uid == userId
+    const userId = currentUser.uid;
+
+    let projectObj = null;
+    let loadedFrom = null;
+
+    // 1. PROVA FIRESTORE PRIMA (fonte ufficiale) - AGGIUNTO
+    // Verifica che l'utente sia autenticato e che Firestore sia disponibile
+    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      const currentAuthUid = window.firebaseAuth.currentUser.uid;
+      if (currentAuthUid === userId) {
+        console.log('[Load] Tentativo caricamento da Firestore...', { userId, projectId });
+        projectObj = await loadProjectFromFirestore(userId, projectId);
+        if (projectObj) {
+          loadedFrom = 'firestore';
+          console.log('[Load] ✅ Caricato da Firestore');
+          addDebugMessage('Loaded from Firestore', 'success');
+        } else {
+          console.log('[Load] Progetto non trovato su Firestore, uso fallback');
+        }
+      } else {
+        console.warn('[Load] UID non corrisponde, salto Firestore', { userId, currentAuthUid });
+      }
+    } else {
+      console.log('[Load] Firestore non disponibile o utente non autenticato, uso fallback');
+    }
+
+    // 2. FALLBACK: OPFS - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      const json = await loadProjectJsonFromOPFS(projectName);
+      if (json) {
+        try {
+          projectObj = JSON.parse(json);
+          loadedFrom = 'opfs';
+          console.log('[Load] Caricato da OPFS');
+          addDebugMessage('Loaded from OPFS (fallback)', 'info');
+        } catch (e) {
+          console.error('[Load] Errore parsing OPFS:', e);
+        }
+      }
+    }
+
+    // 3. FALLBACK: LOCALSTORAGE CACHE - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      const key = `amiantoProject_${currentUser.username}:${projectName}`;
+      const json = localStorage.getItem(key);
+      if (json) {
+        try {
+          projectObj = JSON.parse(json);
+          loadedFrom = 'cache';
+          console.log('[Load] Caricato da cache locale');
+          addDebugMessage('Loaded from cache (fallback)', 'warning');
+        } catch (e) {
+          console.error('[Load] Errore parsing cache:', e);
+        }
+      }
+    }
+
+    // 4. FALLBACK FINALE: Progetto vuoto - GIÀ IMPLEMENTATO
+    if (!projectObj) {
+      projectObj = {
+        format: 'amianto-game',
+        version: 1,
+        settings: { name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
+        rooms: [],
+        guis: [],
+        characters: [],
+        inventory: [],
+        scripts: {},
+        attachments: {},
+        cursors: [],
+        variables: {}
+      };
+      loadedFrom = 'new';
+      console.log('[Load] Creato progetto vuoto');
+      addDebugMessage('Created new empty project', 'info');
+    }
+
+    // Applica il progetto caricato
+    await applyProjectObject(projectObj);
+
+    // Aggiorna stato locale
+    localStorage.setItem('amiantoActiveProjectName', projectName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+    // Mostra notifica con fonte di caricamento
+    if (loadedFrom === 'firestore') {
+      showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
+    } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
+      showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
+    }
+  }
+
+  // MODIFICATO: Ora elimina anche da Firestore
+  async function deleteProjectByName(projectName) {
+    if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
+    if (!projectName) return;
+    if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
+    
+    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    
+    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
+    const userId = currentUser.uid;
+
+    // 1. ELIMINA DA FIRESTORE (se disponibile) - AGGIUNTO
+    if (userId && window.firebaseDB) {
+      try {
+        const projectRef = window.firebaseDB
+          .collection('users')
+          .doc(userId)
+          .collection('projects')
+          .doc(projectId);
+        await projectRef.delete();
+        console.log(`[Firestore] Progetto eliminato: ${projectName}`);
+        addDebugMessage(`[Firestore] Progetto eliminato: ${projectName}`, 'success');
+      } catch (error) {
+        console.error('[Firestore] Errore eliminazione:', error);
+        addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+      }
+    }
+    
+    // 2. Carica il JSON del progetto per ottenere la lista degli script da rimuovere - GIÀ IMPLEMENTATO
+    const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+    let scriptsToRemove = [];
+    try {
+      const projectJson = localStorage.getItem(projectKey);
+      if (projectJson) {
+        const projectObj = JSON.parse(projectJson);
+        if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+          scriptsToRemove = Object.keys(projectObj.scripts);
+        }
+      }
+    } catch(_) {}
+    
+    // 3. Rimuovi dalla lista progetti - GIÀ IMPLEMENTATO
+    const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
+    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
+    
+    // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
+    try { localStorage.removeItem(projectKey); } catch(_) {}
+    try { localStorage.removeItem(`${projectKey}_meta`); } catch(_) {} // Rimuovi anche metadata cache
+    
+    // 5. Rimuovi tutti gli script associati al progetto da localStorage - GIÀ IMPLEMENTATO
+    scriptsToRemove.forEach(scriptName => {
+      try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+    });
+    
+    // 6. Se è il progetto corrente aperto, pulisci anche jsScripts in memoria - GIÀ IMPLEMENTATO
+    const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (currentProjectName === projectName) {
+      jsScripts.clear();
+      // Pulisci anche le mappe di attachment
+      objectScripts.clear();
+      roomScripts.clear();
+      characterScripts.clear();
+      inventoryScripts.clear();
+      hotspotScripts.clear();
+      if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+      // Ricostruisci la lista script nell'UI
+      refreshScriptSelector();
+      rebuildScriptsTree();
+    }
+    
+    // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
+    try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
+    showNotification('Progetto eliminato', 'success');
+  }
+
+  // Show project list (modal)
+  window.showProjectList = async function() {
     if (!currentUser) {
       showNotification('Please login to view projects', 'warning');
       return;
     }
-
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    if (userProjects.length === 0) {
-      showNotification('No projects found. Create a new project first!', 'info');
-      return;
+    
+    // Ricarica progetti da Firestore per avere dati aggiornati
+    if (currentUser.uid && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      try {
+        console.log('[ProjectList] Ricarica progetti da Firestore...');
+        await syncProjectsFromFirestore(currentUser.uid);
+      } catch (error) {
+        console.error('[ProjectList] Errore ricarica progetti:', error);
+      }
     }
+    
+    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    // Crea modale
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = 'projectListModal';
+    modal.setAttribute('tabindex', '-1');
+    modal.setAttribute('aria-labelledby', 'projectListModalLabel');
+    modal.setAttribute('aria-hidden', 'true');
+    const count = userProjects.length;
+    const itemsHtml = count === 0 ? `
+      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu File.</div>
+    ` : userProjects.map((p, i) => {
+      const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
+      const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
+      const updatedShort = updated ? new Date(updated).toLocaleString() : '';
+      return `
+        <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center">
+          <div>
+            <strong>${name}</strong>
+            ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button class="btn btn-success" data-name="${name}" data-action="open">Open</button>
+            <button class="btn btn-outline-danger" data-name="${name}" data-action="delete">Delete</button>
+          </div>
+        </li>
+      `;
+    }).join('');
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title" id="projectListModalLabel">My Projects</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <div><span class="badge bg-info">${count}</span> projects</div>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-light" id="btn-new-project">New Project</button>
+                <button class="btn btn-outline-light" id="btn-import-json">Import JSON</button>
+              </div>
+            </div>
+            <ul class="list-group">
+              ${itemsHtml}
+            </ul>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    modal.addEventListener('hidden.bs.modal', function () { modal.remove(); });
+    // Bind azioni
+    modal.addEventListener('click', async (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      const action = t.getAttribute('data-action');
+      const name = t.getAttribute('data-name');
+      if (action === 'open' && name) {
+        await openProjectByName(name);
+        const inst = bootstrap.Modal.getInstance(modal);
+        if (inst) inst.hide();
+      }
+      if (action === 'delete' && name) {
+        await deleteProjectByName(name);
+        // aggiorna lista nel modale senza ricrearlo
+        const li = t.closest('li');
+        if (li) li.remove();
+      }
+    });
+    // New / Import
+    modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
+      const projectName = prompt('Enter project name:');
+      if (!projectName || !projectName.trim()) return;
 
-    // Show project selection modal (placeholder)
-    showNotification(`${userProjects.length} projects available`, 'info');
+      const trimmedName = projectName.trim();
+
+      // Crea progetto completo con struttura corretta
+      const newProject = {
+        format: 'amianto-game',
+        version: 1,
+        meta: {
+          exportedAt: new Date().toISOString(),
+          editor: 'Amianto Editor',
+          editorVersion: '0.1'
+        },
+        settings: {
+          name: trimmedName,
+          canvasWidth: 800,
+          canvasHeight: 600
+        },
+        rooms: [],
+        guis: [],
+        characters: [],
+        inventory: [],
+        scripts: {},
+        attachments: {},
+        cursors: [],
+        variables: {
+          definitions: [],
+          state: {}
+        },
+        eventConditions: {
+          objects: {},
+          hotspots: {},
+          characters: {},
+          guiButtons: {},
+          inventory: {}
+        }
+      };
+
+      // Apri il progetto nell'editor
+      await applyProjectObject(newProject);
+
+      // Imposta come progetto attivo
+      localStorage.setItem('amiantoActiveProjectName', trimmedName);
+      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+
+      // Aggiungi alla lista progetti utente
+      const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      const entry = {
+        settings: newProject.settings,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      arr.push(entry);
+      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
+
+      // Salva su Firestore se l'utente è autenticato
+      const userId = currentUser.uid;
+      if (userId && window.firebaseDB) {
+        const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        await saveProjectToFirestore(userId, projectId, newProject);
+      }
+
+      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+      
+      // Chiudi il modale
+      const inst = bootstrap.Modal.getInstance(modal);
+      if (inst) inst.hide();
+    });
+    modal.querySelector('#btn-import-json')?.addEventListener('click', async () => {
+      try {
+        if (!window.showOpenFilePicker) { showNotification('Import non supportato su questo browser', 'warning'); return; }
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'Amianto Project JSON', accept: { 'application/json': ['.json'] } }],
+          multiple: false
+        });
+        const file = await handle.getFile();
+        const text = await file.text();
+        await importProjectFromJson(text);
+        const nameGuess = (() => {
+          try { const o = JSON.parse(text); return (o && o.settings && o.settings.name) ? o.settings.name : null; } catch (_) { return null; }
+        })();
+        if (nameGuess) {
+          // aggiungi alla lista utente se manca
+          const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+          if (!arr.find(p => p && p.settings && p.settings.name === nameGuess)) {
+            arr.push({ settings: { name: nameGuess, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height }, createdAt: new Date().toISOString() });
+            localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
+          }
+          localStorage.setItem(`amiantoProject_${currentUser.username}:${nameGuess}`, text);
+          localStorage.setItem('amiantoActiveProjectName', nameGuess);
+          localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        }
+        const inst = bootstrap.Modal.getInstance(modal);
+        if (inst) inst.hide();
+        showNotification('Progetto importato', 'success');
+      } catch (err) {
+        addDebugMessage('Import failed: ' + (err && err.message ? err.message : err), 'error');
+        showNotification('Import fallito', 'danger');
+      }
+    });
   };
 
   // Delete current project
@@ -5608,11 +8219,65 @@ window.resetDemoUser = function() {
       return;
     }
 
-    const projectName = document.getElementById('projectName').value || 'Untitled Project';
+    // Ottieni il nome del progetto da localStorage o dal campo input (se esiste)
+    let projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName) {
+      const projectNameInput = document.getElementById('projectName');
+      projectName = projectNameInput ? projectNameInput.value : null;
+    }
+    if (!projectName) {
+      // Fallback: cerca nell'oggetto serializzato
+      try {
+        const projectObj = window.serializeProject();
+        projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : null;
+      } catch (_) {}
+    }
+    if (!projectName) {
+      projectName = 'Untitled Project';
+    }
     if (confirm(`Are you sure you want to delete project "${projectName}"?`)) {
+      // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
+      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+      let scriptsToRemove = [];
+      try {
+        const projectJson = localStorage.getItem(projectKey);
+        if (projectJson) {
+          const projectObj = JSON.parse(projectJson);
+          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+            scriptsToRemove = Object.keys(projectObj.scripts);
+          }
+        }
+      } catch(_) {}
+      
+      // Rimuovi dalla lista progetti
       const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
       const filteredProjects = userProjects.filter(p => p.settings.name !== projectName);
       localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filteredProjects));
+      
+      // Rimuovi il backup locale del progetto
+      try { localStorage.removeItem(projectKey); } catch(_) {}
+      
+      // Rimuovi tutti gli script associati al progetto da localStorage
+      scriptsToRemove.forEach(scriptName => {
+        try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+      });
+      
+      // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
+      const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (currentProjectName === projectName) {
+        jsScripts.clear();
+        // Pulisci anche le mappe di attachment
+        objectScripts.clear();
+        roomScripts.clear();
+        characterScripts.clear();
+        inventoryScripts.clear();
+        hotspotScripts.clear();
+        if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+        // Ricostruisci la lista script nell'UI
+        refreshScriptSelector();
+        rebuildScriptsTree();
+      }
+      
       showNotification('Project deleted successfully!', 'success');
     }
   };
@@ -6141,22 +8806,60 @@ window.resetDemoUser = function() {
     updateCursorTargets();
   }
 
-initializeCursorSystem();
+  initializeCursorSystem();
 
-  // Initialize Device Detector (must be first)
-  if (window.DeviceDetector) {
-    window.DeviceDetector.init();
+  // ============================================
+  // Console Resize Handle - ridimensionamento verticale delle console
+  // ============================================
+  function initializeConsoleResize() {
+    const resizeHandle = document.getElementById('console-resize-handle');
+    const scriptConsole = document.getElementById('script-console');
+    const debugConsole = document.getElementById('debug-console');
+    
+    if (!resizeHandle || !scriptConsole || !debugConsole) {
+      return;
+    }
+
+    let isResizing = false;
+    let startY = 0;
+    let startHeight = 0;
+    const minHeight = 100;
+    const maxHeight = 800;
+
+    resizeHandle.addEventListener('mousedown', function(e) {
+      isResizing = true;
+      startY = e.clientY;
+      startHeight = parseInt(window.getComputedStyle(scriptConsole).height, 10);
+      document.body.style.cursor = 'ns-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!isResizing) return;
+      
+      const deltaY = startY - e.clientY; // Invertito per rendere il drag verso l'alto = aumento altezza
+      let newHeight = startHeight + deltaY;
+      
+      // Limita l'altezza tra minHeight e maxHeight
+      newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
+      
+      // Applica la nuova altezza a entrambe le console
+      scriptConsole.style.height = newHeight + 'px';
+      debugConsole.style.height = newHeight + 'px';
+    });
+
+    document.addEventListener('mouseup', function() {
+      if (isResizing) {
+        isResizing = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
   }
 
-  // Initialize Integrated Runtime Manager
-  if (window.RuntimeManager) {
-    window.RuntimeManager.init();
-  }
-
-  // Initialize Firebase Manager
-  if (window.FirebaseManager) {
-    window.FirebaseManager.init();
-  }
+  // Inizializza il resize handle quando il DOM è pronto
+  initializeConsoleResize();
 
   // Expose global functions
   window.showNotification = showNotification;

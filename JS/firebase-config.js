@@ -1,13 +1,13 @@
 // Firebase Configuration for Amianto Editor
-// Production configuration
+// Configurazione con valori reali
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDTnS93zr7Qq7vL6kQH7mK1rZ1XkV9W2uY",
+  apiKey: "AIzaSyAg-wvBsbaKEWw896GbfUU9LDURrNa0xjY",
   authDomain: "amianto-editor.firebaseapp.com",
   projectId: "amianto-editor",
   storageBucket: "amianto-editor.appspot.com",
-  messagingSenderId: "123456789012",
-  appId: "1:123456789012:web:abcdef123456789012345"
+  messagingSenderId: "1044586682132",
+  appId: "1:1044586682132:web:c53a04a0d204412f051401"
 };
 
 // Debug logging
@@ -19,10 +19,17 @@ console.log('Firebase Config:', {
 
 // Initialize Firebase
 try {
-  firebase.initializeApp(firebaseConfig);
-  console.log('Firebase initialized successfully');
+  // Verifica se Firebase è già inizializzato
+  if (!window.firebase || !window.firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+    console.log('✅ Firebase initialized successfully');
+  } else {
+    console.log('✅ Firebase already initialized');
+  }
 } catch (error) {
-  console.error('Firebase initialization error:', error);
+  console.error('❌ Firebase initialization error:', error);
+  console.error('Error code:', error.code);
+  console.error('Error message:', error.message);
 }
 
 // Export Firebase services
@@ -35,4 +42,4 @@ window.firebaseDB.settings({
   cacheSizeBytes: firebase.firestore.CACHE_SIZE_UNLIMITED
 });
 
-console.log('Firebase services ready');
+console.log('🔥 Firebase services ready');

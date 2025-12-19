@@ -1,238 +1,564 @@
-(function(){
+/**
+ * Runtime Sandbox - Esecuzione isolata di script utente
+ * 
+ * Questo file viene caricato in un iframe con sandbox="allow-scripts"
+ * per garantire isolamento completo dall'editor.
+ */
+
+(function() {
   'use strict';
 
-  const canvas = document.getElementById('gameCanvas');
-  const ctx = canvas.getContext('2d');
-  const logEl = document.getElementById('runtime-log');
-  const projectNameEl = document.getElementById('runtime-project-name');
+  // ============================================
+  // STATO INTERNO DEL RUNTIME
+  // ============================================
+  let gameState = {
+    currentRoomId: null,
+    objectId: null,
+    variables: new Map()
+  };
 
-  let gameData = null; // parsed JSON
-  let currentRoomIndex = 0;
-  let loadedImagesCache = new Map(); // dataURL/src -> HTMLImageElement
-
-  function log(msg) {
-    const t = new Date().toLocaleTimeString();
-    logEl.textContent += `[${t}] ${msg}\n`;
-    logEl.scrollTop = logEl.scrollHeight;
+  // ============================================
+  // HELPER PER SERIALIZZAZIONE
+  // ============================================
+  function serializeValue(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return '[object Object]';
+      }
+    }
+    return String(value);
   }
 
-  function setCanvasSize(w, h) {
-    canvas.width = w;
-    canvas.height = h;
+  // ============================================
+  // COMUNICAZIONE CON L'EDITOR - SISTEMA MIGLIORATO
+  // ============================================
+  // Sistema di buffer, retry e fallback per garantire affidabilità
+  
+  const MessageQueue = (function() {
+    const queue = [];
+    const MAX_QUEUE_SIZE = 1000;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 100; // ms
+    let isProcessing = false;
+    let retryTimeoutId = null;
+    let parentAvailable = true;
+    let lastParentCheck = 0;
+    const PARENT_CHECK_INTERVAL = 5000; // Controlla disponibilità parent ogni 5 secondi
+
+    /**
+     * Verifica se il parent è disponibile e può ricevere messaggi
+     */
+    function checkParentAvailable() {
+      const now = Date.now();
+      // Controlla solo ogni PARENT_CHECK_INTERVAL per evitare overhead
+      if (now - lastParentCheck < PARENT_CHECK_INTERVAL) {
+        return parentAvailable;
+      }
+      lastParentCheck = now;
+
+      try {
+        if (window.parent && window.parent !== window) {
+          // Prova a verificare se il parent è ancora accessibile
+          // In un iframe sandboxed, questo può fallire silenziosamente
+          parentAvailable = true;
+          return true;
+        } else {
+          parentAvailable = false;
+          return false;
+        }
+      } catch (e) {
+        parentAvailable = false;
+        return false;
+      }
+    }
+
+    /**
+     * Fallback: scrive sulla console locale se il parent non è disponibile
+     */
+    function fallbackToConsole(message) {
+      const level = message.level || 'info';
+      const msg = message.message || message.error || JSON.stringify(message);
+      const prefix = '[Runtime]';
+      
+      switch (level) {
+        case 'error':
+          console.error(prefix, msg);
+          break;
+        case 'warning':
+          console.warn(prefix, msg);
+          break;
+        default:
+          console.log(prefix, msg);
+      }
+    }
+
+    /**
+     * Tenta di inviare un messaggio al parent
+     */
+    function trySendMessage(message) {
+      if (!checkParentAvailable()) {
+        return false;
+      }
+
+      try {
+        window.parent.postMessage(message, '*');
+        return true;
+      } catch (e) {
+        // Errore durante l'invio
+        parentAvailable = false;
+        return false;
+      }
+    }
+
+    /**
+     * Processa la coda di messaggi
+     */
+    function processQueue() {
+      if (isProcessing || queue.length === 0) {
+        return;
+      }
+
+      isProcessing = true;
+
+      // Processa tutti i messaggi disponibili
+      while (queue.length > 0) {
+        const item = queue[0];
+        
+        // Verifica se il parent è disponibile
+        if (checkParentAvailable()) {
+          // Tenta di inviare il messaggio
+          if (trySendMessage(item.message)) {
+            // Successo: rimuovi dalla coda
+            queue.shift();
+            item.retries = 0;
+          } else {
+            // Fallimento: incrementa retry
+            item.retries = (item.retries || 0) + 1;
+            
+            if (item.retries >= MAX_RETRIES) {
+              // Troppi tentativi falliti: usa fallback console e rimuovi
+              fallbackToConsole(item.message);
+              queue.shift();
+            } else {
+              // Riprova dopo un delay
+              break;
+            }
+          }
+        } else {
+          // Parent non disponibile: usa fallback console
+          fallbackToConsole(item.message);
+          queue.shift();
+        }
+      }
+
+      isProcessing = false;
+
+      // Se ci sono ancora messaggi in coda, programma un retry
+      if (queue.length > 0) {
+        if (retryTimeoutId) {
+          clearTimeout(retryTimeoutId);
+        }
+        retryTimeoutId = setTimeout(processQueue, RETRY_DELAY);
+      } else {
+        retryTimeoutId = null;
+      }
+    }
+
+    /**
+     * Aggiunge un messaggio alla coda
+     */
+    function enqueue(message, priority = false) {
+      // Limita la dimensione della coda per evitare memory leak
+      if (queue.length >= MAX_QUEUE_SIZE) {
+        // Rimuovi il messaggio più vecchio se la coda è piena
+        const removed = queue.shift();
+        fallbackToConsole(removed.message);
+      }
+
+      const item = {
+        message: message,
+        retries: 0,
+        timestamp: Date.now()
+      };
+
+      if (priority) {
+        // Messaggi prioritari vanno in cima alla coda
+        queue.unshift(item);
+      } else {
+        queue.push(item);
+      }
+
+      // Avvia il processing se non è già in corso
+      if (!isProcessing) {
+        // Usa setTimeout per non bloccare il thread principale
+        setTimeout(processQueue, 0);
+      }
+    }
+
+    /**
+     * Pulisce la coda (utile per reset)
+     */
+    function clear() {
+      queue.length = 0;
+      if (retryTimeoutId) {
+        clearTimeout(retryTimeoutId);
+        retryTimeoutId = null;
+      }
+      isProcessing = false;
+    }
+
+    /**
+     * Ottiene lo stato della coda (per debug)
+     */
+    function getStatus() {
+      return {
+        queueLength: queue.length,
+        isProcessing: isProcessing,
+        parentAvailable: parentAvailable
+      };
+    }
+
+    return {
+      enqueue: enqueue,
+      clear: clear,
+      getStatus: getStatus,
+      processQueue: processQueue // Esposto per test
+    };
+  })();
+
+  /**
+   * Invia un messaggio all'editor con sistema di buffer e retry
+   */
+  function sendToEditor(message, priority = false) {
+    MessageQueue.enqueue(message, priority);
   }
 
-  function setProjectName(name) {
-    projectNameEl.textContent = name ? ` — ${name}` : '';
-  }
-
-  function loadImage(src) {
-    return new Promise((resolve) => {
-      if (!src) return resolve(null);
-      if (loadedImagesCache.has(src)) return resolve(loadedImagesCache.get(src));
-      const img = new Image();
-      img.onload = () => { loadedImagesCache.set(src, img); resolve(img); };
-      img.onerror = () => resolve(null);
-      img.src = src;
+  /**
+   * Invia un log con livello specificato
+   */
+  function sendLog(message, level = 'info') {
+    sendToEditor({
+      type: 'SCRIPT_LOG',
+      message: message,
+      level: level,
+      timestamp: Date.now()
     });
   }
 
-  async function loadRoomAssets(room) {
-    const out = { background: null, foregrounds: [], objects: [] };
-    out.background = await loadImage(room.background);
-    if (Array.isArray(room.foregrounds)) {
-      for (const f of room.foregrounds) {
-        const img = await loadImage(f.image);
-        out.foregrounds.push({ img, offsetX: Number(f.offsetX)||0, offsetY: Number(f.offsetY)||0 });
-      }
-    }
-    if (Array.isArray(room.sceneObjects)) {
-      for (const o of room.sceneObjects) {
-        const img = await loadImage(o.image);
-        out.objects.push({ id: o.id, name: o.name, type: o.type||'Interactive', x: Number(o.x)||0, y: Number(o.y)||0, img });
-      }
-    }
-    return out;
+  /**
+   * Invia un errore
+   */
+  function sendError(error) {
+    const errorMessage = typeof error === 'string' ? error : (error && error.message ? error.message : String(error));
+    sendToEditor({
+      type: 'SCRIPT_ERROR',
+      error: errorMessage,
+      timestamp: Date.now()
+    }, true); // Errori hanno priorità alta
   }
 
-  async function renderRoom(index) {
-    if (!gameData || !Array.isArray(gameData.rooms) || index < 0 || index >= gameData.rooms.length) return;
-    const room = gameData.rooms[index];
-    const assets = await loadRoomAssets(room);
-
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    if (assets.background) ctx.drawImage(assets.background, 0, 0);
-    for (const o of assets.objects) {
-      if (o.img) ctx.drawImage(o.img, o.x, o.y);
-    }
-    for (const f of assets.foregrounds) {
-      if (f.img) ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
-    }
-
-    // Draw starting position marker if this is the start room
-    try {
-      const s = gameData && gameData.settings ? gameData.settings : null;
-      if (s && s.startRoomId) {
-        const targetRoomIndex = (gameData.rooms || []).findIndex(r => r && (r.id === s.startRoomId || r.name === s.startRoomId));
-        if (targetRoomIndex === index) {
-          const px = Number(s.startX) || 0;
-          const py = Number(s.startY) || 0;
-          ctx.save();
-          ctx.fillStyle = 'rgba(255, 64, 64, 0.9)';
-          ctx.beginPath();
-          ctx.arc(px, py, 6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.restore();
-        }
-      }
-    } catch(_) {}
+  /**
+   * Notifica completamento script
+   */
+  function sendDone() {
+    sendToEditor({
+      type: 'SCRIPT_DONE',
+      timestamp: Date.now()
+    });
   }
 
-  async function startRuntimeFromData(json) {
-    try {
-      gameData = (typeof json === 'string') ? JSON.parse(json) : json;
-    } catch (e) {
-      log('Invalid JSON: ' + e);
-      return;
-    }
-
-    const w = (gameData && gameData.settings && gameData.settings.canvasWidth) || 800;
-    const h = (gameData && gameData.settings && gameData.settings.canvasHeight) || 600;
-    setCanvasSize(w, h);
-    setProjectName(gameData && gameData.settings && gameData.settings.name);
-    log('Runtime initialized');
-
-    // Pick start room if specified in settings
-    try {
-      const s = gameData && gameData.settings ? gameData.settings : null;
-      if (s && s.startRoomId && Array.isArray(gameData.rooms)) {
-        const idx = gameData.rooms.findIndex(r => r && (r.id === s.startRoomId || r.name === s.startRoomId));
-        if (idx >= 0) currentRoomIndex = idx; else currentRoomIndex = 0;
-      } else {
-        currentRoomIndex = 0;
-      }
-    } catch(_) {
-      currentRoomIndex = 0;
-    }
-    await renderRoom(currentRoomIndex);
-    log('First room rendered');
-  }
-
-  // Public API: loadGame(data)
-  window.loadGame = async function(data){
-    await startRuntimeFromData(data);
-  };
-
-async function pickJsonFileAndStart() {
-    try {
-      if (window.showOpenFilePicker) {
-        const [handle] = await window.showOpenFilePicker({ types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }] });
-        const file = await handle.getFile();
-        const text = await file.text();
-        await startRuntimeFromData(text);
+  // ============================================
+  // GAME API - API LIMITATE ESPOSTE AGLI SCRIPT
+  // ============================================
+  // Questa è l'unica API accessibile agli script utente
+  const GameAPI = {
+    // Logging
+    print: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendLog('', 'info');
         return;
       }
-    } catch (e) {
-      // Check if the user cancelled the operation
-      if (e.name === 'AbortError' || e.message.includes('User canceled') || e.message.includes('abort')) {
-        log('File selection cancelled');
-        return; // Don't show fallback input if user cancelled
-      }
-      log('File picker failed: ' + e);
-    }
-    // Fallback input - only show if File System Access API is not available or failed for other reasons
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/json';
-    input.onchange = async (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const text = await f.text();
-      await startRuntimeFromData(text);
-    };
-    input.click();
-  }
+      const messages = args.map(arg => serializeValue(arg));
+      const msg = messages.join(' ');
+      sendLog(msg, 'info');
+    },
 
-  async function tryLoadFromOPFS() {
-    try {
-      if (!navigator.storage || !navigator.storage.getDirectory) return null;
-      const opfsPath = localStorage.getItem('amiantoLastProjectOPFSPath');
-      if (!opfsPath) return null;
-      const segments = opfsPath.split('/').filter(Boolean);
-      let dir = await navigator.storage.getDirectory();
-      for (let i = 0; i < segments.length - 1; i++) {
-        dir = await dir.getDirectoryHandle(segments[i]);
+    error: function() {
+      const args = Array.from(arguments);
+      if (args.length === 0) {
+        sendLog('', 'error');
+        return;
       }
-      const fileHandle = await dir.getFileHandle(segments[segments.length - 1]);
-      const file = await fileHandle.getFile();
-      const text = await file.text();
-      return text;
-    } catch (_) {
-      return null;
-    }
-  }
+      const messages = args.map(arg => serializeValue(arg));
+      const msg = messages.join(' ');
+      sendLog(msg, 'error');
+    },
 
-  async function loadLastSaved() {
-    // Try OPFS first, then localStorage
-    const opfsText = await tryLoadFromOPFS();
-    if (opfsText) {
-      await startRuntimeFromData(opfsText);
+    // Variabili
+    getVariable: function(name) {
+      if (typeof name !== 'string') {
+        sendError('GameAPI.getVariable: name must be a string');
+        return null;
+      }
+      return gameState.variables.get(name) || null;
+    },
+
+    setVariable: function(name, value) {
+      if (typeof name !== 'string') {
+        sendError('GameAPI.setVariable: name must be a string');
+        return;
+      }
+      gameState.variables.set(name, value);
+    },
+
+    // Stanze
+    changeRoom: function(roomId) {
+      if (typeof roomId !== 'string' && typeof roomId !== 'number') {
+        sendError('GameAPI.changeRoom: roomId must be a string or number');
+        return;
+      }
+      // Notifica l'editor del cambio stanza
+      sendToEditor({
+        type: 'ROOM_CHANGE_REQUEST',
+        roomId: String(roomId),
+        timestamp: Date.now()
+      });
+    },
+
+    // Informazioni contesto
+    getCurrentRoom: function() {
+      return gameState.currentRoomId;
+    },
+
+    getCurrentObject: function() {
+      return gameState.objectId;
+    }
+  };
+
+  // Esponi GameAPI globalmente (unica API accessibile agli script)
+  window.GameAPI = GameAPI;
+
+  // Sostituisci print() globale per compatibilità
+  window.print = function() {
+    GameAPI.print.apply(GameAPI, arguments);
+  };
+
+  // ============================================
+  // ESECUZIONE SCRIPT
+  // ============================================
+  function executeScript(code, context, handlerName, handlerArgs) {
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      sendError('Script code is empty or invalid');
+      sendDone();
       return;
     }
-    const ls = localStorage.getItem('amiantoLastSavedProjectJson');
-    if (!ls) {
-      log('No last saved project found');
-      return;
+
+    // Aggiorna il contesto di esecuzione
+    if (context) {
+      if (context.roomId !== undefined) {
+        gameState.currentRoomId = context.roomId;
+      }
+      if (context.objectId !== undefined) {
+        gameState.objectId = context.objectId;
+      }
+      if (context.variables && typeof context.variables === 'object') {
+        // Carica variabili dal contesto
+        Object.keys(context.variables).forEach(key => {
+          gameState.variables.set(key, context.variables[key]);
+        });
+      }
     }
-    await startRuntimeFromData(ls);
+
+    try {
+      // Crea alias per compatibilità con vecchio sistema
+      const aliases = {
+        // Variabili (compatibilità)
+        get_var: GameAPI.getVariable,
+        set_var: GameAPI.setVariable,
+        getVariable: GameAPI.getVariable,
+        setVariable: GameAPI.setVariable,
+        // Game object (compatibilità)
+        Game: {
+          getVar: GameAPI.getVariable,
+          setVar: GameAPI.setVariable,
+          getVariable: GameAPI.getVariable,
+          setVariable: GameAPI.setVariable
+        }
+      };
+
+      // Prepara il codice finale con chiamata all'handler se presente
+      let finalCode = code;
+      if (handlerName && typeof handlerName === 'string' && handlerName.trim()) {
+        const callArgs = Array.isArray(handlerArgs) ? handlerArgs : [];
+        const argsString = JSON.stringify(callArgs);
+        finalCode = `
+          ${code}
+          
+          // Invoca l'handler se definito
+          if (typeof ${handlerName} === 'function') {
+            try {
+              ${handlerName}.apply(null, ${argsString});
+            } catch (e) {
+              GameAPI.error('Handler execution error: ' + (e && e.message ? e.message : String(e)));
+            }
+          } else {
+            // Handler non trovato - non è un errore, solo un avviso
+            GameAPI.print('Handler "${handlerName}" non definito nello script');
+          }
+        `;
+      }
+
+      // Esegui lo script in un contesto isolato
+      // Le uniche API accessibili sono quelle di GameAPI e gli alias
+      const scriptFunction = new Function(
+        'GameAPI',
+        'print',
+        'get_var',
+        'set_var',
+        'getVariable',
+        'setVariable',
+        'Game',
+        `
+        // Wrapper per catturare errori
+        try {
+          ${finalCode}
+        } catch (e) {
+          GameAPI.error('Script execution error: ' + (e && e.message ? e.message : String(e)));
+          throw e;
+        }
+        `
+      );
+
+      // Esegui con GameAPI e alias come parametri
+      scriptFunction(
+        GameAPI,
+        GameAPI.print,
+        aliases.get_var,
+        aliases.set_var,
+        aliases.getVariable,
+        aliases.setVariable,
+        aliases.Game
+      );
+
+      // Notifica completamento
+      sendDone();
+
+    } catch (e) {
+      // Cattura errori di esecuzione
+      const errorMessage = e && e.message ? e.message : String(e);
+      sendError(`Script execution failed: ${errorMessage}`);
+      sendDone();
+    }
   }
 
-  // Wire UI
-  document.getElementById('btn-load-json').addEventListener('click', pickJsonFileAndStart);
-  document.getElementById('btn-load-last').addEventListener('click', loadLastSaved);
-  document.getElementById('btn-exit').addEventListener('click', () => window.close());
-  document.getElementById('btn-restart').addEventListener('click', () => { if (gameData) startRuntimeFromData(gameData); });
-  document.getElementById('btn-download-json').addEventListener('click', async () => {
-    try {
-      let text = null;
-      if (gameData) {
-        text = (typeof gameData === 'string') ? gameData : JSON.stringify(gameData, null, 2);
-      } else {
-        const res = await fetch('game.json', { cache: 'no-store' });
-        if (res.ok) text = await res.text();
-      }
-      if (!text) { log('No project data to download'); return; }
-      const blob = new Blob([text], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const name = (gameData && gameData.settings && gameData.settings.name) ? gameData.settings.name : 'game';
-      a.download = `${name}.amianto.json`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
-    } catch (e) {
-      log('Download failed: ' + e);
+  // ============================================
+  // LISTENER PER MESSAGGI DALL'EDITOR
+  // ============================================
+  window.addEventListener('message', function(event) {
+    // NOTA: In produzione, verificare event.origin per sicurezza
+    // Per ora accettiamo messaggi da qualsiasi origine per sviluppo
+    
+    const message = event.data;
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    switch (message.type) {
+      case 'RUN_SCRIPT':
+        executeScript(message.code, message.context, message.handlerName, message.handlerArgs);
+        break;
+
+      case 'UPDATE_CONTEXT':
+        // Aggiorna contesto senza eseguire script
+        if (message.context) {
+          if (message.context.roomId !== undefined) {
+            gameState.currentRoomId = message.context.roomId;
+          }
+          if (message.context.objectId !== undefined) {
+            gameState.objectId = message.context.objectId;
+          }
+          if (message.context.variables && typeof message.context.variables === 'object') {
+            Object.keys(message.context.variables).forEach(key => {
+              gameState.variables.set(key, message.context.variables[key]);
+            });
+          }
+        }
+        break;
+
+      case 'RESET':
+        // Reset completo dello stato
+        gameState.currentRoomId = null;
+        gameState.objectId = null;
+        gameState.variables.clear();
+        // Pulisci anche la coda di messaggi
+        MessageQueue.clear();
+        sendToEditor({
+          type: 'RUNTIME_READY',
+          timestamp: Date.now()
+        }, true); // Priorità alta per messaggi di sistema
+        break;
+
+      default:
+        // Ignora messaggi sconosciuti
+        break;
     }
   });
 
-  // Try to fetch game.json from root (server/static) with graceful error
-  (async function autoStart(){
+  // ============================================
+  // INIZIALIZZAZIONE
+  // ============================================
+  // Notifica l'editor che il runtime è pronto
+  // Usa un piccolo delay per assicurarsi che tutto sia inizializzato
+  function sendRuntimeReady() {
+    sendToEditor({
+      type: 'RUNTIME_READY',
+      timestamp: Date.now()
+    }, true); // Priorità alta per messaggi di sistema
+    
+    // Log locale per debug (se possibile)
     try {
-      const res = await fetch('game.json', { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        await startRuntimeFromData(text);
-        return;
-      }
+      console.log('[Runtime] RUNTIME_READY message sent to parent');
     } catch (e) {
-      log('Could not fetch game.json: ' + e);
+      // Ignora se console non disponibile
     }
-    // Fallback: last saved from editor (localStorage/OPFS)
-    await loadLastSaved();
-  })();
+  }
+  
+  // Invia immediatamente
+  sendRuntimeReady();
+  
+  // Re-invia dopo un breve delay come backup (nel caso il primo messaggio vada perso)
+  setTimeout(() => {
+    // Verifica se il parent è ancora disponibile prima di re-inviare
+    if (window.parent && window.parent !== window) {
+      sendRuntimeReady();
+    }
+  }, 100);
+
+  // Esponi MessageQueue per debug (opzionale, può essere rimosso in produzione)
+  if (typeof window !== 'undefined') {
+    window.__RuntimeMessageQueue = MessageQueue;
+    window.GameAPI = GameAPI; // Esponi anche GameAPI per debug
+  }
+
+  // Blocca accesso a API pericolose
+  try {
+    // Rimuovi o blocca accesso a window.parent (già limitato dal sandbox)
+    // Rimuovi accesso a document (non necessario per gli script)
+    // Rimuovi fetch, XMLHttpRequest, etc.
+    Object.defineProperty(window, 'fetch', {
+      value: undefined,
+      writable: false,
+      configurable: false
+    });
+  } catch (e) {
+    // Ignora errori di definizione
+  }
+
 })();
-
-

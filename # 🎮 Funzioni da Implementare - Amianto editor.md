@@ -308,6 +308,71 @@ get_performance_stats()              // Ottieni statistiche performance
 clear_console()                      // Pulisci console
 ```
 
+### 📜 **Sistema Scripting e Condizionali**
+
+#### Condizionali IF
+```javascript
+// Condizionali base
+if_condition(condition, trueAction, falseAction) // Esegue azione basata su condizione
+if_variable_equals(varName, value, action)      // Se variabile = valore
+if_variable_greater(varName, value, action)      // Se variabile > valore
+if_variable_less(varName, value, action)         // Se variabile < valore
+if_variable_not_empty(varName, action)           // Se variabile non è vuota
+
+// Condizionali inventario
+if_has_item(itemId, action)                      // Se ha oggetto nell'inventario
+if_has_items(itemList, action)                   // Se ha tutti gli oggetti nella lista
+if_inventory_empty(action)                        // Se inventario è vuoto
+if_inventory_full(action)                        // Se inventario è pieno
+
+// Condizionali personaggi
+if_character_exists(characterId, action)         // Se personaggio esiste
+if_character_in_room(characterId, roomId, action) // Se personaggio è in stanza
+if_character_health_above(characterId, health, action) // Se salute personaggio > valore
+if_character_mood_is(characterId, mood, action)  // Se umore personaggio è specifico
+
+// Condizionali stanza
+if_in_room(roomId, action)                       // Se si è nella stanza specifica
+if_room_accessible(roomId, action)               // Se stanza è accessibile
+if_room_contains_object(roomId, objectId, action) // Se stanza contiene oggetto
+
+// Condizionali gioco
+if_game_variable_exists(varName, action)         // Se variabile di gioco esiste
+if_score_above(score, action)                     // Se punteggio > valore
+if_first_time_playthrough(action)                 // Se è il primo gioco
+if_save_exists(slot, action)                      // Se salvataggio esiste
+
+// Condizionali temporali
+if_time_elapsed(seconds, action)                  // Se è trascorso tempo specifico
+if_game_time_between(start, end, action)         // Se tempo di gioco è tra valori
+if_day_time_is(timeOfDay, action)                 // Se è un certo momento del giorno
+
+// Condizionali multiple
+if_and(conditions, action)                       // Se tutte le condizioni sono vere
+if_or(conditions, action)                        // Se almeno una condizione è vera
+if_not(condition, action)                         // Se condizione è falsa
+
+// Condizionali complesse
+if_random_chance(chance, action)                  // Esegue azione basata su probabilità
+if_distance_less_than(object1, object2, distance, action) // Se distanza < valore
+if_angle_between(object1, object2, minAngle, maxAngle, action) // Se angolo è nel range
+
+// Condizionali UI
+if_gui_element_visible(elementId, action)         // Se elemento UI è visibile
+if_menu_is_open(menuId, action)                   // Se menu è aperto
+if_dialogue_active(action)                        // Se dialogo è attivo
+
+// Condizionali audio
+if_music_playing(trackId, action)                  // Se musica specifica sta suonando
+if_sound_playing(soundId, action)                 // Se suono specifico sta suonando
+if_audio_muted(action)                            // Se audio è mutato
+
+// Condizionali stato
+if_game_paused(action)                            // Se gioco è in pausa
+if_cutscene_playing(action)                       // Se cutscene è in riproduzione
+if_loading_complete(action)                       // Se caricamento è completato
+```
+
 ---
 
 ## 📝 Note per l'Implementazione

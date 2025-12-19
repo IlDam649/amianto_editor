@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Jailed Test</title>
+</head>
+<body>
+    <div id="output"></div>
+    
+    <script src="JS/jailed.min.js"></script>
+    <script src="JS/_JailedSite.js"></script>
+    
+    <script>
+        const output = document.getElementById('output');
+        
+        function log(msg) {
+            output.innerHTML += msg + '<br>';
+        }
+        
+        // Test basic jailed functionality
+        log('Testing jailed implementation...');
+        
+        if (typeof jailed !== 'undefined') {
+            log('✓ jailed object loaded');
+            log('✓ DynamicPlugin: ' + (typeof jailed.DynamicPlugin));
+            
+            // Test DynamicPlugin creation
+            try {
+                const testApi = {
+                    test: function(callback) {
+                        callback('Test successful');
+                    }
+                };
+                
+                const pluginCode = `
+                    application.api.test(function(result) {
+                        console.log('Plugin received:', result);
+                    });
+                `;
+                
+                const plugin = new jailed.DynamicPlugin(pluginCode, testApi);
+                plugin.whenReady(function(remote) {
+                    log('✓ Plugin initialized successfully');
+                });
+                
+                setTimeout(() => {
+                    plugin.disconnect();
+                    log('✓ Plugin disconnected');
+                }, 1000);
+                
+            } catch (e) {
+                log('✗ Error creating plugin: ' + e.message);
+            }
+        } else {
+            log('✗ jailed object not found');
+        }
+    </script>
+</body>
+</html>
