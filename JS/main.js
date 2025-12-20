@@ -1,4 +1,182 @@
 // main.js
+
+/* ============================
+   APP STATE - UNICA FONTE DI VERITÀ
+   ============================ */
+
+/**
+ * Stato globale dell'applicazione
+ * Questa è l'UNICA fonte di verità per:
+ * - utente loggato
+ * - lista progetti
+ * - stato di caricamento
+ * - errori
+ */
+const AppState = {
+  initialized: false,
+  loading: false,
+  user: null,
+  projects: [],
+  error: null
+};
+
+/**
+ * Aggiorna lo stato dell'app e notifica eventuali listener
+ * @param {Object} updates - Oggetto con le proprietà da aggiornare
+ */
+function updateAppState(updates) {
+  Object.assign(AppState, updates);
+  
+  // Log per debug
+  if (updates.loading !== undefined) {
+    console.log(`[AppState] Loading: ${updates.loading}`);
+  }
+  if (updates.user !== undefined) {
+    console.log(`[AppState] User: ${updates.user ? updates.user.username : 'null'}`);
+  }
+  if (updates.projects !== undefined) {
+    console.log(`[AppState] Projects: ${updates.projects.length}`);
+  }
+  if (updates.initialized !== undefined) {
+    console.log(`[AppState] Initialized: ${updates.initialized}`);
+  }
+  if (updates.error !== undefined && updates.error !== null) {
+    console.error(`[AppState] Error:`, updates.error);
+  }
+}
+
+/**
+ * Bootstrap globale dell'applicazione
+ * 
+ * Responsabilità:
+ * - attendere autenticazione Firebase
+ * - caricare SEMPRE i progetti da Firestore (non dalla cache)
+ * - popolare AppState.projects
+ * - aggiornare localStorage solo come cache secondaria
+ * - impostare AppState.initialized = true
+ * 
+ * La UI NON deve essere utilizzabile prima che bootstrapApp sia completata.
+ * 
+ * @returns {Promise<void>}
+ */
+async function bootstrapApp() {
+  console.log('========================================');
+  console.log('🚀 BOOTSTRAP START');
+  console.log('========================================');
+  
+  updateAppState({ loading: true, error: null });
+  
+  // Mostra loading overlay visivamente
+  showLoadingOverlay('Caricamento applicazione...');
+  
+  try {
+    // STEP 1: Attendi che Firebase sia disponibile
+    console.log('[BOOTSTRAP] Attesa Firebase...');
+    
+    let firebaseReady = false;
+    let attempts = 0;
+    const maxAttempts = 50; // 5 secondi max
+    
+    while (!firebaseReady && attempts < maxAttempts) {
+      if (window.firebaseAuth && window.firebaseDB) {
+        firebaseReady = true;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
+    
+    if (!firebaseReady) {
+      throw new Error('Firebase non disponibile dopo 5 secondi');
+    }
+    
+    console.log('[BOOTSTRAP] ✅ Firebase disponibile');
+    
+    // STEP 2: Attendi autenticazione utente
+    console.log('[BOOTSTRAP] Attesa autenticazione...');
+    
+    const currentUser = window.firebaseAuth.currentUser;
+    
+    if (!currentUser) {
+      console.log('[BOOTSTRAP] ⚠️ Nessun utente autenticato - app in modalità login');
+      updateAppState({ 
+        loading: false, 
+        initialized: true,
+        user: null,
+        projects: []
+      });
+      console.log('========================================');
+      console.log('✅ BOOTSTRAP COMPLETE (no user)');
+      console.log('========================================');
+      return;
+    }
+    
+    // STEP 3: Mappa utente
+    const mappedUser = {
+      username: (currentUser.email || '').split('@')[0] || (currentUser.uid ? `user_${currentUser.uid.substring(0, 6)}` : 'User'),
+      email: currentUser.email || '',
+      uid: currentUser.uid
+    };
+    
+    updateAppState({ user: mappedUser });
+    console.log('[BOOTSTRAP] ✅ USER AUTHENTICATED:', mappedUser.username);
+    
+    // STEP 4: Carica progetti SEMPRE da Firestore (non dalla cache)
+    console.log('[BOOTSTRAP] Caricamento progetti da Firestore...');
+    
+    let projects = [];
+    
+    try {
+      // Usa loadProjectsDirectlyFromFirestore per ottenere dati sempre aggiornati
+      projects = await loadProjectsDirectlyFromFirestore(currentUser.uid);
+      console.log(`[BOOTSTRAP] ✅ PROJECTS LOADED: ${projects.length}`);
+      
+      // Aggiorna localStorage solo come cache secondaria
+      if (mappedUser.username) {
+        saveProjectsToCache(mappedUser.username, projects);
+        console.log('[BOOTSTRAP] Cache localStorage aggiornata');
+      }
+    } catch (error) {
+      console.error('[BOOTSTRAP] ❌ Errore caricamento progetti:', error);
+      
+      // In caso di errore, prova a caricare dalla cache come fallback
+      if (mappedUser.username) {
+        console.log('[BOOTSTRAP] Fallback a cache localStorage...');
+        projects = loadProjectsFromCache(mappedUser.username);
+        console.log(`[BOOTSTRAP] Progetti da cache: ${projects.length}`);
+      }
+      
+      // Se anche la cache è vuota, continua comunque (utente nuovo)
+      updateAppState({ error: error.message || 'Errore caricamento progetti' });
+    }
+    
+    // STEP 5: Popola AppState
+    updateAppState({ 
+      projects: projects,
+      loading: false,
+      initialized: true
+    });
+    
+    console.log('========================================');
+    console.log('✅ BOOTSTRAP COMPLETE');
+    console.log(`   User: ${mappedUser.username}`);
+    console.log(`   Projects: ${projects.length}`);
+    console.log('========================================');
+    
+  } catch (error) {
+    console.error('[BOOTSTRAP] ❌ Errore critico:', error);
+    updateAppState({ 
+      loading: false,
+      initialized: true, // Inizializzato anche in caso di errore per permettere login
+      error: error.message || 'Errore durante il bootstrap'
+    });
+    
+    console.log('========================================');
+    console.log('⚠️ BOOTSTRAP COMPLETE (con errori)');
+    console.log('========================================');
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
 
   /* ============================
@@ -18,11 +196,30 @@ document.addEventListener("DOMContentLoaded", () => {
   function showSectionById(id, addToHistory = true) {
     if (!id || tabState.currentTab === id) return;
     
+    // Blocca cambio tab se non c'è progetto aperto (tranne Projects)
+    if (id !== 'projects') {
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        showNotification('Please select or create a project first', 'warning');
+        // Torna alla tab Projects
+        const projectsButton = document.querySelector(`[data-section="projects"]`);
+        if (projectsButton && !projectsButton.disabled) {
+          projectsButton.click();
+        }
+        return;
+      }
+    }
+    
     const targetSection = document.getElementById(id);
     const targetButton = document.querySelector(`[data-section="${id}"]`);
     
     if (!targetSection || !targetButton) {
       console.warn(`Section "${id}" not found`);
+      return;
+    }
+    
+    // Blocca cambio se il bottone è disabilitato
+    if (targetButton.disabled) {
       return;
     }
 
@@ -135,6 +332,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Improved initialization
   function initializeTabs() {
+    // Controlla se c'è un progetto aperto e abilita/disabilita tab di conseguenza
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    enableOtherTabs(!!activeProjectName);
+    
     // Find initial active tab
     const initiallyActiveBtn = document.querySelector(".section-btn.active-btn") || sectionButtons[0];
     if (initiallyActiveBtn) {
@@ -179,6 +380,57 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize tab system
   initializeTabs();
+
+  // Listener per tabChanged - carica progetti quando si entra nella tab Projects
+  document.addEventListener('tabChanged', async (e) => {
+    const currentTab = e.detail?.currentTab;
+    if (currentTab === 'projects') {
+      await loadAndRenderProjectsTab();
+    }
+  });
+
+  // Event listeners per pulsanti nella tab Projects
+  // Usa un listener che si attiva dopo che il DOM è caricato e le funzioni sono disponibili
+  setTimeout(() => {
+    // Pulsante Create Project
+    const btnCreateProject = document.getElementById('btn-create-project-in-tab');
+    if (btnCreateProject && !btnCreateProject.hasAttribute('data-listener-attached')) {
+      btnCreateProject.setAttribute('data-listener-attached', 'true');
+      btnCreateProject.addEventListener('click', async () => {
+        const projectName = prompt('Enter project name:');
+        if (!projectName || !projectName.trim()) return;
+        
+        try {
+          await window.createNewProject(projectName.trim(), true);
+          // Ricarica la lista progetti
+          await loadAndRenderProjectsTab();
+        } catch (error) {
+          console.error('[ProjectsTab] Errore creazione progetto:', error);
+          showNotification('Error creating project', 'error');
+        }
+      });
+    }
+    
+    // Pulsante Refresh
+    const btnRefreshProjects = document.getElementById('btn-refresh-projects');
+    if (btnRefreshProjects && !btnRefreshProjects.hasAttribute('data-listener-attached')) {
+      btnRefreshProjects.setAttribute('data-listener-attached', 'true');
+      btnRefreshProjects.addEventListener('click', async () => {
+        btnRefreshProjects.disabled = true;
+        btnRefreshProjects.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+        try {
+          await loadAndRenderProjectsTab();
+          showNotification('Projects list refreshed', 'success');
+        } catch (error) {
+          console.error('[ProjectsTab] Errore refresh progetti:', error);
+          showNotification('Error refreshing projects', 'error');
+        } finally {
+          btnRefreshProjects.disabled = false;
+          btnRefreshProjects.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh List';
+        }
+      });
+    }
+  }, 1000);
 
   // Expose global functions for external use
   window.__amiantoTabs = {
@@ -5113,7 +5365,14 @@ window.selectRoom = function(roomId) {
   let isSyncingProjects = false;
 
   // Function to show loading overlay with amnt.png
-  function showLoadingOverlay(message = 'Synchronizing projects...') {
+  /**
+   * Mostra loader globale
+   * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
+   */
+  function showLoadingOverlay(message = 'Loading...') {
+    // Aggiorna AppState
+    updateAppState({ loading: true });
+    
     // Rimuovi eventuali overlay esistenti
     const existingOverlay = document.getElementById('syncLoadingOverlay');
     if (existingOverlay) {
@@ -5157,7 +5416,13 @@ window.selectRoom = function(roomId) {
   }
 
   // Function to hide loading overlay
+  /**
+   * Nascondi loader globale
+   * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
+   */
   function hideLoadingOverlay() {
+    // Aggiorna AppState
+    updateAppState({ loading: false });
     const overlay = document.getElementById('syncLoadingOverlay');
     if (overlay) {
       overlay.remove();
@@ -6491,7 +6756,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   });
 
   // Initialize authentication system
-  function initAuthSystem() {
+  async function initAuthSystem() {
     // Default view
     showLoginPage();
 
@@ -6509,12 +6774,38 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }, 0);
     }
 
-    // Observe Firebase auth state
+    // Esegui bootstrap iniziale
+    await bootstrapApp();
+    
+    // Nascondi loading dopo bootstrap
+    hideLoadingOverlay();
+    
+    // Se l'app è inizializzata con un utente, mostra dashboard
+    if (AppState.initialized && AppState.user) {
+      currentUser = AppState.user;
+      localStorage.setItem('amiantoCurrentUser', AppState.user.username);
+      showDashboard();
+      
+      // Controlla se c'è un progetto attivo e abilita/disabilita tab
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      enableOtherTabs(!!activeProject);
+      
+      // Carica progetti nella tab Projects se siamo nella tab Projects
+      setTimeout(async () => {
+        const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
+        if (currentTab === 'projects') {
+          await loadAndRenderProjectsTab();
+        }
+      }, 500);
+    }
+
+    // Observe Firebase auth state per cambiamenti successivi
     fbObserveAuthState(async function(user){
       // In demo mode, ignore Firebase auth state transitions
       if (isDemoMode) {
         return;
       }
+      
       if (user) {
         const mappedUser = {
           username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
@@ -6522,44 +6813,53 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           uid: user.uid
         };
         
-        // Se l'utente è già loggato e corrisponde, sincronizza progetti e mostra modale se necessario
-        if (currentUser && currentUser.uid === mappedUser.uid) {
-          // Utente già loggato, sincronizza progetti
-          if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-            try {
-              await syncProjectsFromFirestore(mappedUser.uid);
-            } catch (error) {
-              console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
-            }
-          }
+        // Se l'utente è già loggato e corrisponde, aggiorna AppState e sincronizza in background
+        if (AppState.user && AppState.user.uid === mappedUser.uid) {
+          console.log('[AuthObserver] Utente già loggato, aggiornamento progetti in background...');
           
-          // Mostra modale selezione progetto se non c'è un progetto attivo
-          // (anche se l'utente è già loggato, ad esempio al refresh della pagina)
+          // Sincronizza in background (non blocca UI)
+          syncProjectsFromFirestore(mappedUser.uid)
+            .then(() => {
+              // Ricarica progetti da Firestore e aggiorna AppState
+              return loadProjectsDirectlyFromFirestore(mappedUser.uid);
+            })
+            .then(projects => {
+              updateAppState({ projects: projects });
+              if (mappedUser.username) {
+                saveProjectsToCache(mappedUser.username, projects);
+              }
+              console.log('[AuthObserver] ✅ Progetti aggiornati in background');
+            })
+            .catch(error => {
+              console.error('[AuthObserver] Errore aggiornamento background:', error);
+            });
+          
+          // Mostra modale se necessario
           const activeProject = localStorage.getItem('amiantoActiveProjectName');
           if (!activeProject) {
-            await showProjectSelectionModal();
+            showProjectSelectionModal(false);
           }
           return;
         }
         
-        // Nuovo login: imposta utente e sincronizza
-        currentUser = mappedUser;
-        localStorage.setItem('amiantoCurrentUser', mappedUser.username);
-        showDashboard();
+        // Nuovo login: esegui bootstrap completo
+        updateAppState({ loading: true, user: null, projects: [] });
+        showLoadingOverlay('Caricamento progetti...');
+        await bootstrapApp();
+        hideLoadingOverlay();
         
-        // Sincronizza progetti da Firestore
-        if (mappedUser.uid && window.firebaseDB && window.firebaseAuth) {
-          try {
-            await syncProjectsFromFirestore(mappedUser.uid);
-          } catch (error) {
-            console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
-          }
+        if (AppState.user) {
+          currentUser = AppState.user;
+          localStorage.setItem('amiantoCurrentUser', AppState.user.username);
+          showDashboard();
+          
+          // Mostra modale selezione progetto
+          showProjectSelectionModal(false);
         }
-        
-        // Mostra modale selezione progetto (sempre, perché il progetto attivo viene rimosso alla chiusura)
-        await showProjectSelectionModal();
       } else {
+        // Logout
         currentUser = null;
+        updateAppState({ user: null, projects: [] });
         showLoginPage();
       }
     });
@@ -6623,14 +6923,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Sincronizza e verifica progetti
       if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
         try {
-          await syncProjectsFromFirestore(currentUser.uid);
-          const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+          const userProjects = await syncProjectsFromFirestore(currentUser.uid);
           if (userProjects.length === 0) {
             // Nessun progetto: mostra il modale
             await showProjectSelectionModal(true);
           }
         } catch (error) {
           console.error('[Dashboard] Errore verifica progetti:', error);
+          // In caso di errore, prova comunque a mostrare il modale usando getProjectsForUI
+          try {
+            const localProjects = await getProjectsForUI(currentUser.uid);
+            if (localProjects.length === 0) {
+              await showProjectSelectionModal(true, true); // skipSync = true
+            }
+          } catch (fallbackError) {
+            console.error('[Dashboard] Errore anche nel fallback:', fallbackError);
+            // Se anche il fallback fallisce, mostra comunque il modale (sarà vuoto)
+            await showProjectSelectionModal(true, true);
+          }
         }
       }
     }
@@ -6672,129 +6982,108 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {bootstrap.Modal} bsModal - Istanza Bootstrap Modal
    * @returns {Promise<void>}
    */
-  async function updateProjectModalContent(modal, bsModal) {
-    if (!currentUser || !currentUser.uid) return;
-    
-    console.log('[ProjectModal] Aggiornamento contenuto modale...');
-    
-    // Sincronizza con Firestore per ottenere la lista più aggiornata
-    isSyncingProjects = true;
-    showLoadingOverlay('Updating project list...');
-    try {
-      await syncProjectsFromFirestore(currentUser.uid);
-      console.log('[ProjectModal] Sincronizzazione completata');
-    } catch (error) {
-      console.error('[ProjectModal] Errore sincronizzazione per aggiornamento:', error);
-    } finally {
-      isSyncingProjects = false;
-      hideLoadingOverlay();
+  /**
+   * Aggiorna il contenuto del modale progetti
+   * RIFATTORIZZATA: Usa getProjectsForUI e renderProjectsList
+   * 
+   * @param {HTMLElement} modal - Elemento modale
+   * @param {Object} bsModal - Istanza Bootstrap Modal
+   */
+  /**
+   * Aggiorna il contenuto del modale progetti
+   * RIFATTORIZZATA: Legge SOLO da AppState.projects
+   * 
+   * @param {HTMLElement} modal - Elemento modale
+   * @param {Object} bsModal - Istanza Bootstrap Modal
+   */
+  function updateProjectModalContent(modal, bsModal) {
+    if (!AppState.user || !AppState.user.uid) {
+      console.warn('[ProjectModal] updateProjectModalContent: utente non disponibile in AppState');
+      return;
     }
     
-    // Carica progetti aggiornati da localStorage (dopo la sincronizzazione)
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    console.log('[ProjectModal] Progetti trovati dopo sincronizzazione:', userProjects.length, userProjects.map(p => p?.settings?.name));
-    const hasProjects = userProjects.length > 0;
+    console.log('[ProjectModal] Aggiornamento contenuto modale da AppState...');
     
-    // Costruisci HTML progetti
-    let projectsHtml = '';
-    if (hasProjects) {
-      projectsHtml = userProjects.map((p, i) => {
-        const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
-        const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        return `
-          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
-            <div class="flex-grow-1">
-              <strong>${name}</strong>
-              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
-            </div>
-            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
-              <i class="fas fa-folder-open"></i> Open
-            </button>
-          </li>
-        `;
-      }).join('');
+    // Verifica che il modale esista ancora
+    if (!modal || !document.body.contains(modal)) {
+      console.warn('[ProjectModal] Modale non trovato nel DOM, impossibile aggiornare');
+      return;
     }
     
-    // Aggiorna il contenuto del modale
-    const modalBody = modal.querySelector('.modal-body');
-    if (modalBody) {
-      modalBody.innerHTML = `
-        ${hasProjects ? `
-          <div class="mb-3">
-            <p class="text-muted">Select an existing project or create a new one:</p>
-          </div>
-          <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
-            <ul class="list-group">
-              ${projectsHtml}
-            </ul>
-          </div>
-        ` : `
-          <div class="text-center py-4">
-            <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-            <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
-          </div>
-        `}
-        <div class="d-grid gap-2">
-          <button class="btn btn-primary btn-lg" id="btn-create-new-project">
-            <i class="fas fa-plus"></i> Create New Project
-          </button>
-        </div>
-      `;
-      
-      // Non serve aggiungere listener: l'event delegation sul modale
-      // gestisce già correttamente i click sui pulsanti "Open" e "Create New Project"
+    // Trova container modale
+    const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+    if (!modalBody) {
+      console.error('[ProjectModal] ❌ modal-body non trovato, impossibile aggiornare');
+      return;
     }
+    
+    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÀ)
+    renderProjectsList(AppState.projects, modalBody);
+    
+    console.log('[ProjectModal] ✅ Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
   }
 
   /**
-   * Mostra modale di selezione/creazione progetto dopo il login
-   * Sincronizza sempre i progetti da Firestore prima di mostrarli
-   * @returns {Promise<void>}
+   * Mostra modale di selezione/creazione progetto
+   * 
+   * RIFATTORIZZATA: Legge SOLO da AppState.projects
+   * Non avvia caricamenti, non fa fallback, non gestisce async
+   * 
+   * Flusso corretto:
+   * click →
+   *   se AppState.loading === true → mostra loader
+   *   se AppState.projects.length === 0 → mostra empty state
+   *   altrimenti → render lista e apri modale
+   * 
+   * @param {boolean} forceShow - Forza apertura anche se c'è progetto attivo
    */
-  async function showProjectSelectionModal(forceShow = false) {
-    if (!currentUser || !currentUser.uid) {
+  function showProjectSelectionModal(forceShow = false) {
+    // Verifica che l'app sia inizializzata
+    if (!AppState.initialized) {
+      console.warn('[ProjectModal] App non ancora inizializzata, attesa...');
+      // Attendi che l'app sia inizializzata
+      const checkInitialized = setInterval(() => {
+        if (AppState.initialized) {
+          clearInterval(checkInitialized);
+          showProjectSelectionModal(forceShow);
+        }
+      }, 100);
+      return;
+    }
+
+    // Verifica che ci sia un utente
+    if (!AppState.user || !AppState.user.uid) {
       console.warn('[ProjectModal] Utente non autenticato');
       return;
     }
 
-    // VERIFICA E CHIUDI EVENTUALI MODALI ESISTENTI
-    // Assicurati che ci sia sempre un solo modale aperto
-    const existingModal = document.getElementById('projectSelectionModal');
-    if (existingModal) {
-      console.log('[ProjectModal] Trovato modale esistente, chiudo e rimuovo...');
-      try {
-        const existingBsModal = bootstrap.Modal.getInstance(existingModal);
-        if (existingBsModal) {
-          existingBsModal.hide();
-          // Attendi che il modale venga nascosto prima di rimuoverlo
-          existingModal.addEventListener('hidden.bs.modal', function handler() {
-            existingModal.remove();
-            existingModal.removeEventListener('hidden.bs.modal', handler);
-          }, { once: true });
-        } else {
-          // Se non c'è istanza Bootstrap, rimuovi direttamente
-          existingModal.remove();
-        }
-      } catch (error) {
-        console.warn('[ProjectModal] Errore chiusura modale esistente:', error);
-        // In caso di errore, rimuovi comunque il modale
-        existingModal.remove();
-      }
+    // Usa il modale statico dall'HTML invece di crearlo dinamicamente
+    let modal = document.getElementById('projectSelectionModal');
+    
+    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilità)
+    if (!modal) {
+      console.warn('[ProjectModal] Modale statico non trovato, creazione dinamica...');
+      modal = document.createElement('div');
+      modal.className = 'modal fade';
+      modal.id = 'projectSelectionModal';
+      modal.setAttribute('tabindex', '-1');
+      modal.setAttribute('aria-labelledby', 'projectSelectionModalLabel');
+      modal.setAttribute('aria-hidden', 'true');
+      modal.setAttribute('data-bs-backdrop', 'static');
+      modal.setAttribute('data-bs-keyboard', 'false');
+      document.body.appendChild(modal);
     }
     
-    // Verifica anche eventuali modali Bootstrap aperti nel DOM
-    // Chiudi tutti i modali Bootstrap aperti prima di crearne uno nuovo
+    // Chiudi eventuali istanze Bootstrap esistenti
+    const existingBsModal = bootstrap.Modal.getInstance(modal);
+    if (existingBsModal) {
+      existingBsModal.hide();
+    }
+    
+    // Chiudi altri modali aperti
     const allModals = document.querySelectorAll('.modal.show');
     allModals.forEach(m => {
       if (m.id === 'projectSelectionModal') {
-        // Già gestito sopra
         return;
       }
       try {
@@ -6808,7 +7097,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
 
     // Se c'è già un progetto attivo e non è forzato, non mostrare il modale
-    // forceShow = true quando viene chiamato dopo la cancellazione dell'ultimo progetto
     if (!forceShow) {
       const activeProject = localStorage.getItem('amiantoActiveProjectName');
       if (activeProject) {
@@ -6817,112 +7105,69 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    // SEMPRE sincronizza progetti da Firestore prima di mostrarli
-    isSyncingProjects = true;
-    showLoadingOverlay('Synchronizing projects with Firestore...');
+    // FLUSSO CORRETTO: Leggi SOLO da AppState
     try {
-      await syncProjectsFromFirestore(currentUser.uid);
-    } catch (error) {
-      console.error('[ProjectModal] Errore sincronizzazione:', error);
-      showNotification('Error synchronizing projects', 'warning');
-    } finally {
-      isSyncingProjects = false;
-      hideLoadingOverlay();
-    }
+      // STEP 1: Verifica stato di caricamento
+      if (AppState.loading) {
+        console.log('[ProjectModal] App in caricamento, mostra loader...');
+        showLoadingOverlay('Caricamento progetti...');
+      }
 
-    // Carica progetti sincronizzati (da localStorage dopo sync)
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    const hasProjects = userProjects.length > 0;
+      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÀ)
+      const userProjects = AppState.projects || [];
+      console.log('[ProjectModal] Progetti da AppState:', userProjects.length);
 
-    // Crea modale dinamicamente
-    const modal = document.createElement('div');
-    modal.className = 'modal fade';
-    modal.id = 'projectSelectionModal';
-    modal.setAttribute('tabindex', '-1');
-    modal.setAttribute('aria-labelledby', 'projectSelectionModalLabel');
-    modal.setAttribute('aria-hidden', 'true');
-    modal.setAttribute('data-bs-backdrop', 'static');
-    modal.setAttribute('data-bs-keyboard', 'false');
+      // STEP 3: Trova container modale
+      const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+      if (!modalBody) {
+        const error = new Error('Modal body not found');
+        console.error('[ProjectModal] DOM error:', error);
+        throw error;
+      }
 
-    // Costruisci HTML del modale
-    let projectsHtml = '';
-    if (hasProjects) {
-      projectsHtml = userProjects.map((p, i) => {
-        const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
-        const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        return `
-          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
-            <div class="flex-grow-1">
-              <strong>${name}</strong>
-              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
-            </div>
-            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
-              <i class="fas fa-folder-open"></i> Open
-            </button>
-          </li>
-        `;
-      }).join('');
-    }
+      // STEP 4: Renderizza lista usando funzione centralizzata
+      renderProjectsList(userProjects, modalBody);
 
-    modal.innerHTML = `
-      <div class="modal-dialog modal-lg modal-dialog-centered">
-        <div class="modal-content bg-dark text-light">
-          <div class="modal-header border-secondary">
-            <h5 class="modal-title" id="projectSelectionModalLabel">
-              <i class="fas fa-folder"></i> Your Projects
-            </h5>
-            <!-- X button rimosso: l'utente deve selezionare o creare un progetto -->
-          </div>
-          <div class="modal-body">
-            ${hasProjects ? `
-              <div class="mb-3">
-                <p class="text-muted">Select an existing project or create a new one:</p>
-              </div>
-              <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
-                <ul class="list-group">
-                  ${projectsHtml}
-                </ul>
-              </div>
-            ` : `
-              <div class="text-center py-4">
-                <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-                <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
-              </div>
-            `}
-            <div class="d-grid gap-2">
-              <button class="btn btn-primary btn-lg" id="btn-create-new-project">
-                <i class="fas fa-plus"></i> Create New Project
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
+      // STEP 5: Inizializza Bootstrap Modal
+      if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        const error = new Error('Bootstrap Modal is not available');
+        console.error('[ProjectModal] Bootstrap error:', error);
+        throw error;
+      }
 
-    // Aggiungi modale al DOM
-    document.body.appendChild(modal);
+      const bsModal = new bootstrap.Modal(modal, {
+        backdrop: 'static',
+        keyboard: false
+      });
 
-    // Inizializza Bootstrap Modal
-    const bsModal = new bootstrap.Modal(modal, {
-      backdrop: 'static',
-      keyboard: false
-    });
-    bsModal.show();
+      if (!bsModal) {
+        const error = new Error('Failed to create Bootstrap Modal instance');
+        console.error('[ProjectModal] Bootstrap error:', error);
+        throw error;
+      }
+
+      // STEP 6: Mostra modale
+      bsModal.show();
+      console.log('[ProjectModal] Modale mostrato con', userProjects.length, 'progetti da AppState');
+
+      // STEP 7: Nascondi loader se era visibile
+      if (AppState.loading) {
+        // Il loader verrà nascosto quando AppState.loading diventa false
+        // Ma nascondiamo anche qui per sicurezza
+        hideLoadingOverlay();
+      }
 
     // Gestione click su pulsanti Open con event delegation (funziona anche dopo aggiornamenti contenuto)
-    modal.addEventListener('click', async (e) => {
-      // Blocca azioni durante la sincronizzazione
-      if (isSyncingProjects) {
+    // Aggiungi listener solo se non è già stato aggiunto
+    if (!modal.dataset.clickListenersAttached) {
+      modal.dataset.clickListenersAttached = 'true';
+      
+      modal.addEventListener('click', async (e) => {
+      // Blocca azioni durante il caricamento
+      if (AppState.loading) {
         e.preventDefault();
         e.stopPropagation();
-        showNotification('Please wait for synchronization to complete', 'warning');
+        showNotification('Please wait for loading to complete', 'warning');
         return false;
       }
 
@@ -6956,20 +7201,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         target = target.parentElement;
       }
       
-      // Previeni chiusura tramite click sul backdrop (area esterna al modale)
-      if (e.target === modal) {
-        e.preventDefault();
-        e.stopPropagation();
-        const activeProject = localStorage.getItem('amiantoActiveProjectName');
-        if (!activeProject) {
-          showNotification('You must select or create a project to continue', 'warning');
-        }
-        return false;
-      }
-    }, { capture: true });
-
-    // Gestione creazione nuovo progetto con event delegation
-    modal.addEventListener('click', async (e) => {
+      // Gestione click su pulsante "Create New Project"
       if (e.target && (e.target.id === 'btn-create-new-project' || e.target.closest('#btn-create-new-project'))) {
         e.preventDefault();
         e.stopPropagation();
@@ -6989,19 +7221,27 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           // Passa false per showSuccessNotification per evitare notifica duplicata
           await window.createNewProject(projectName.trim(), false);
           
-          // Attendi un momento per assicurarsi che Firestore abbia completato il salvataggio
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Attendi che Firestore abbia completato il salvataggio e propagato i cambiamenti
+          // Firestore può richiedere tempo per propagare i cambiamenti, specialmente su dispositivi lenti
+          console.log('[ProjectModal] Attesa completamento salvataggio Firestore...');
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Aumentato a 2 secondi per dare tempo a Firestore
           
           // Mostra notifica di successo dopo la creazione
           showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
           
           // Dopo la creazione, sincronizza e aggiorna il modale con la nuova lista progetti
-          await updateProjectModalContent(modal, bsModal);
+          // Questo mostrerà il loading durante la sincronizzazione
+          console.log('[ProjectModal] Avvio sincronizzazione per aggiornare lista progetti...');
+          const currentBsModal = bootstrap.Modal.getInstance(modal);
+          if (currentBsModal) {
+            await updateProjectModalContent(modal, currentBsModal);
+            console.log('[ProjectModal] Sincronizzazione completata, modale aggiornato');
+          }
           
           // Chiudi il modale solo se il progetto è stato aperto con successo
           const activeProject = localStorage.getItem('amiantoActiveProjectName');
-          if (activeProject === projectName.trim()) {
-            bsModal.hide();
+          if (activeProject === projectName.trim() && currentBsModal) {
+            currentBsModal.hide();
           }
         } else if (projectName !== null) {
           // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
@@ -7010,29 +7250,118 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Se projectName === null, l'utente ha annullato, non fare nulla
         return false;
       }
-    }, { capture: true });
+      
+      // Previeni chiusura tramite click sul backdrop (area esterna al modale)
+      if (e.target === modal) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          showNotification('You must select or create a project to continue', 'warning');
+        }
+        return false;
+      }
+      }, { capture: true });
+    }
 
-    // Rimuovi modale dal DOM quando viene nascosto
-    modal.addEventListener('hidden.bs.modal', function () {
-      modal.remove();
-    });
+      // Il modale è statico nell'HTML, non rimuoverlo quando viene nascosto
+      // Aggiungi listener per sincronizzare sempre all'apertura (solo una volta)
+      if (!modal.dataset.listenersAttached) {
+        modal.dataset.listenersAttached = 'true';
+        
+        modal.addEventListener('show.bs.modal', function() {
+          // Aggiorna il contenuto del modale con i progetti da AppState
+          if (AppState.user && AppState.user.uid) {
+            console.log('[ProjectModal] Modale aperto, aggiornamento da AppState...');
+            
+            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+            if (modalBody) {
+              renderProjectsList(AppState.projects, modalBody);
+              console.log('[ProjectModal] Modale aggiornato con', AppState.projects.length, 'progetti da AppState');
+            }
+            
+            // Se AppState.loading è true, mostra loader
+            if (AppState.loading) {
+              showLoadingOverlay('Caricamento progetti...');
+            } else {
+              hideLoadingOverlay();
+            }
+          }
+        }, { once: false });
+      }
 
     // Previeni completamente la chiusura del modale tramite backdrop o ESC
     // L'utente DEVE selezionare o creare un progetto
-    modal.addEventListener('hide.bs.modal', function (e) {
-      const activeProject = localStorage.getItem('amiantoActiveProjectName');
-      if (!activeProject) {
-        e.preventDefault();
-        e.stopPropagation();
-        showNotification('You must select or create a project to continue', 'warning');
-        return false;
-      }
-      // Se c'è un progetto attivo, permettere la chiusura
-      console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
-    });
+    if (!modal.dataset.hideListenerAttached) {
+      modal.dataset.hideListenerAttached = 'true';
+      modal.addEventListener('hide.bs.modal', function (e) {
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          e.preventDefault();
+          e.stopPropagation();
+          showNotification('You must select or create a project to continue', 'warning');
+          return false;
+        }
+        // Se c'è un progetto attivo, permettere la chiusura
+        console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
+      });
+    }
 
     // Il listener per il backdrop è già gestito dentro handleProjectClick
     // Non aggiungere listener duplicati
+
+    } catch (error) {
+      // Gestione errori
+      console.error('[ProjectModal] Errore durante il rendering:', error);
+
+      // Distingui tra diversi tipi di errori
+      if (error.code === 'permission-denied') {
+        console.error('[ProjectModal] Firestore permission denied error:', error);
+        console.error('[ProjectModal] Check Firestore security rules for user:', AppState.user?.uid);
+      } else if (error.code === 'network-error' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[ProjectModal] Network error:', error);
+      } else if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
+        console.error('[ProjectModal] DOM/Bootstrap error:', error);
+        showNotification('Errore durante la creazione del modale. Ricarica la pagina.', 'danger');
+        return;
+      } else {
+        console.error('[ProjectModal] Unexpected error:', error);
+      }
+
+      // In caso di errore, mostra modale con lista vuota da AppState
+      const errorModal = document.getElementById('projectSelectionModal');
+      if (!errorModal) {
+        console.error('[ProjectModal] Modale statico non trovato in error handler');
+        return;
+      }
+
+      const modalBody = errorModal.querySelector('#projectSelectionModalBody') || errorModal.querySelector('.modal-body');
+      if (!modalBody) {
+        console.error('[ProjectModal] Modal body not found in error handler');
+        return;
+      }
+
+      // Renderizza lista vuota o da AppState
+      renderProjectsList(AppState.projects || [], modalBody);
+
+      if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        console.error('[ProjectModal] Bootstrap Modal not available in error handler');
+        return;
+      }
+
+      const bsModal = new bootstrap.Modal(errorModal, {
+        backdrop: 'static',
+        keyboard: false
+      });
+
+      bsModal.show();
+      console.log('[ProjectModal] Modale mostrato con', AppState.projects?.length || 0, 'progetti (gestione errore)');
+      
+      // Nascondi loader se era visibile
+      if (AppState.loading) {
+        hideLoadingOverlay();
+      }
+    }
   }
 
   // Login user
@@ -7046,31 +7375,48 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       localStorage.removeItem('amiantoRememberUser');
     }
 
-    showDashboard();
-    showNotification(`Welcome back, ${user.username}!`, 'success');
+    // Mostra loading overlay durante la sincronizzazione progetti
+    // IMPORTANTE: Durante il caricamento si vede SOLO il loading, NON il modale
+    showLoadingOverlay('Caricamento progetti...');
 
-    // Sincronizza progetti da Firestore dopo il login
+    // Sincronizza progetti da Firestore PRIMA di mostrare la dashboard
     if (user.uid && window.firebaseDB && window.firebaseAuth) {
       console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
       
       try {
-        const syncSuccess = await syncProjectsFromFirestore(user.uid);
-        if (syncSuccess) {
-          console.log('[Login] ✅ Sincronizzazione progetti completata');
-        } else {
-          console.warn('[Login] Sincronizzazione progetti non completata (fallback a cache locale)');
-        }
+        const projects = await syncProjectsFromFirestore(user.uid);
+        console.log('[Login] ✅ Sincronizzazione progetti completata:', projects.length, 'progetti');
       } catch (error) {
         console.error('[Login] Errore durante sincronizzazione progetti:', error);
-        showNotification('Errore sincronizzazione progetti. Usando cache locale.', 'warning');
+        // Per dispositivi senza cache (primo accesso), questo è normale se non ci sono progetti
+        // Mostra un messaggio informativo ma non bloccante
+        if (error.code === 'permission-denied') {
+          console.error('[Login] Firestore permission denied error');
+          console.warn('[Login] Questo può essere normale per nuovi utenti. L\'utente può comunque creare progetti.');
+          // Non mostrare notifica per permission-denied, il modale gestirà l'errore
+        } else if (error.code === 'network-error') {
+          console.error('[Login] Network error');
+          showNotification('Errore di connessione. Puoi comunque creare un nuovo progetto.', 'warning');
+        } else {
+          // Per altri errori, mostra un messaggio informativo
+          console.warn('[Login] Errore sincronizzazione. L\'utente può comunque creare progetti.');
+          // Non mostrare notifica per errori generici, il modale gestirà l'errore
+        }
       }
     } else {
       console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
     }
 
+    // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
+    hideLoadingOverlay();
+    showDashboard();
+    showNotification(`Welcome back, ${user.username}!`, 'success');
+
     // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
     // L'utente deve selezionare o creare un progetto per continuare
-    await showProjectSelectionModal();
+    // skipSync = true perché abbiamo già sincronizzato i progetti sopra
+    // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
+    await showProjectSelectionModal(false, true);
   }
 
   // Show login error
@@ -7216,15 +7562,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Load user's projects
-  function loadUserProjects() {
-    if (!currentUser) return;
+  /**
+   * Carica progetti utente per la UI
+   * RIFATTORIZZATA: Usa getProjectsForUI invece di accedere direttamente a localStorage
+   */
+  async function loadUserProjects() {
+    if (!currentUser || !currentUser.uid) return;
 
-    // Load user's projects from localStorage
-    const userProjects = localStorage.getItem(`amiantoProjects_${currentUser.username}`);
-    if (userProjects) {
-      const projects = JSON.parse(userProjects);
-      // Update UI to show user's projects
-      console.log('Loaded projects for user:', currentUser.username, projects);
+    try {
+      // Usa getProjectsForUI per ottenere progetti (gestisce cache e fallback)
+      const projects = await getProjectsForUI(currentUser.uid);
+      console.log('Loaded projects for user:', currentUser.username, projects.length, 'progetti');
+      return projects;
+    } catch (error) {
+      console.error('[loadUserProjects] Errore caricamento progetti:', error);
+      return [];
     }
   }
 
@@ -7899,12 +8251,40 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * AGGIUNTO: Questa funzione per listare progetti da Firestore
    * TODO: Integrare questa funzione nella UI di selezione progetti
    */
+  /**
+   * Lista progetti da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti caricati da Firestore
+   * @throws {Error} - Lancia errori invece di ritornare array vuoto
+   */
   async function listProjectsFromFirestore(userId) {
-    try {
-      if (!window.firebaseDB || !userId) {
-        return [];
-      }
+    if (!window.firebaseDB) {
+      const error = new Error('Firestore database not available');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
 
+    if (!userId) {
+      const error = new Error('User ID is required');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    // Verifica che l'utente sia autenticato
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      const error = new Error('User not authenticated');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    const currentAuthUid = window.firebaseAuth.currentUser.uid;
+    if (currentAuthUid !== userId) {
+      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    try {
       const projectsRef = window.firebaseDB
         .collection('users')
         .doc(userId)
@@ -7925,161 +8305,720 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       return projects;
     } catch (error) {
-      console.error('[Firestore] Errore durante il listing:', error);
+      // Distingui tra errori di permesso e altri errori
+      if (error.code === 'permission-denied') {
+        console.error('[Firestore] Permission denied error:', error);
+        console.error('[Firestore] Check Firestore security rules for user:', userId);
+        const permissionError = new Error(`Permission denied: ${error.message}`);
+        permissionError.code = 'permission-denied';
+        throw permissionError;
+      }
+      
+      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[Firestore] Network error:', error);
+        const networkError = new Error(`Network error: ${error.message}`);
+        networkError.code = 'network-error';
+        throw networkError;
+      }
+
+      console.error('[Firestore] Unexpected error during listing:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Normalizza un progetto per garantire struttura coerente
+   * @param {Object} project - Progetto da normalizzare
+   * @param {number} index - Indice opzionale per progetti senza nome
+   * @returns {Object} - Progetto normalizzato
+   */
+  function normalizeProject(project, index = null) {
+    if (!project || typeof project !== 'object') {
+      return {
+        settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
+        updatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        source: 'unknown'
+      };
+    }
+
+    return {
+      settings: project.settings || { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` },
+      updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
+      createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+      source: project.source || 'unknown',
+      id: project.id || null
+    };
+  }
+
+  /**
+   * Carica progetti dalla cache localStorage
+   * @param {string} username - Username dell'utente
+   * @returns {Array} - Array di progetti normalizzati o array vuoto
+   */
+  function loadProjectsFromCache(username) {
+    if (!username) {
+      console.warn('[Cache] Username non disponibile per caricamento cache');
+      return [];
+    }
+
+    try {
+      const cacheKey = `amiantoProjects_${username}`;
+      const cachedData = localStorage.getItem(cacheKey);
+      
+      if (!cachedData) {
+        console.log('[Cache] Nessun dato in cache');
+        return [];
+      }
+
+      const projects = JSON.parse(cachedData);
+      
+      if (!Array.isArray(projects)) {
+        console.error('[Cache] Dati cache non sono un array:', typeof projects);
+        return [];
+      }
+
+      // Normalizza tutti i progetti
+      const normalizedProjects = projects.map((p, i) => normalizeProject(p, i));
+      console.log('[Cache] ✅ Caricati', normalizedProjects.length, 'progetti dalla cache');
+      return normalizedProjects;
+    } catch (error) {
+      console.error('[Cache] ❌ Errore parsing cache:', error);
       return [];
     }
   }
 
   /**
-   * Sincronizza i progetti da Firestore al login
-   * Carica tutti i progetti da Firestore e li sincronizza con localStorage
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<boolean>} - true se sincronizzazione completata, false altrimenti
+   * Salva progetti in cache localStorage
+   * @param {string} username - Username dell'utente
+   * @param {Array} projects - Array di progetti da salvare
+   */
+  function saveProjectsToCache(username, projects) {
+    if (!username) {
+      console.warn('[Cache] Username non disponibile per salvataggio cache');
+      return;
+    }
+
+    if (!Array.isArray(projects)) {
+      console.error('[Cache] Tentativo di salvare dati non-array in cache');
+      return;
+    }
+
+    try {
+      const cacheKey = `amiantoProjects_${username}`;
+      localStorage.setItem(cacheKey, JSON.stringify(projects));
+      console.log('[Cache] ✅ Salvati', projects.length, 'progetti in cache');
+    } catch (error) {
+      console.error('[Cache] ❌ Errore salvataggio cache:', error);
+    }
+  }
+
+  /**
+   * FUNZIONE PRINCIPALE: Ottiene progetti per la UI
+   * Questa è l'UNICA funzione che la UI deve usare per ottenere progetti
+   * Gestisce internamente cache e fallback
    * 
-   * AGGIUNTO: Questa funzione sincronizza i progetti da Firestore al login
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti normalizzati (sempre un array, anche vuoto)
+   */
+  async function getProjectsForUI(userId) {
+    if (!userId) {
+      console.error('[getProjectsForUI] userId mancante');
+      return [];
+    }
+
+    if (!currentUser || !currentUser.username) {
+      console.error('[getProjectsForUI] currentUser non disponibile');
+      return [];
+    }
+
+    const username = currentUser.username;
+
+    // STEP 1: Verifica se la cache esiste ed è valida
+    const cachedProjects = loadProjectsFromCache(username);
+    
+    // Se la cache esiste e ha progetti, usala immediatamente
+    // (ma aggiorna in background se possibile)
+    if (cachedProjects.length > 0) {
+      console.log('[getProjectsForUI] Cache trovata con', cachedProjects.length, 'progetti');
+      
+      // Prova ad aggiornare in background (non blocca il ritorno)
+      loadProjectsDirectlyFromFirestore(userId)
+        .then(firestoreProjects => {
+          if (Array.isArray(firestoreProjects) && firestoreProjects.length > 0) {
+            const normalized = firestoreProjects.map((p, i) => normalizeProject(p, i));
+            saveProjectsToCache(username, normalized);
+            console.log('[getProjectsForUI] Cache aggiornata in background');
+          }
+        })
+        .catch(error => {
+          console.warn('[getProjectsForUI] Errore aggiornamento background (non critico):', error);
+        });
+      
+      return cachedProjects;
+    }
+
+    // STEP 2: Cache vuota o non valida, carica da Firestore
+    console.log('[getProjectsForUI] Cache vuota o non valida, caricamento da Firestore...');
+    
+    try {
+      const firestoreProjects = await loadProjectsDirectlyFromFirestore(userId);
+      
+      if (!Array.isArray(firestoreProjects)) {
+        console.error('[getProjectsForUI] Firestore ha restituito dati non-array');
+        return [];
+      }
+
+      // Normalizza progetti
+      const normalizedProjects = firestoreProjects.map((p, i) => normalizeProject(p, i));
+      
+      // Salva in cache
+      saveProjectsToCache(username, normalizedProjects);
+      
+      console.log('[getProjectsForUI] ✅ Caricati', normalizedProjects.length, 'progetti da Firestore');
+      return normalizedProjects;
+    } catch (error) {
+      console.error('[getProjectsForUI] ❌ Errore caricamento da Firestore:', error);
+      
+      // Distingui errori critici
+      if (error.code === 'permission-denied') {
+        console.error('[getProjectsForUI] Permission denied - verifica regole Firestore per utente:', userId);
+      } else if (error.code === 'network-error') {
+        console.error('[getProjectsForUI] Network error - verifica connessione');
+      }
+      
+      // Ritorna array vuoto invece di lanciare errore
+      // La UI può gestire lista vuota mostrando messaggio appropriato
+      return [];
+    }
+  }
+
+  /**
+   * Carica e renderizza progetti sempre da Firestore (NO cache) nella tab Projects
+   * Questa funzione viene chiamata quando si entra nella tab Projects
+   */
+  async function loadAndRenderProjectsTab() {
+    const container = document.getElementById('projects-list-container');
+    const currentProjectInfo = document.getElementById('current-project-info');
+    const currentProjectName = document.getElementById('current-project-name');
+    const currentProjectUpdated = document.getElementById('current-project-updated');
+    
+    if (!container) {
+      console.error('[ProjectsTab] Container not found');
+      return;
+    }
+    
+    // Mostra loading
+    container.innerHTML = `
+      <div class="text-center py-4">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="text-muted mt-3">Loading projects from Firestore...</p>
+      </div>
+    `;
+    
+    try {
+      // Usa AppState.user come fonte primaria, fallback a currentUser, poi a firebaseAuth
+      let userId = null;
+      let username = null;
+      
+      console.log('[ProjectsTab] Verifica utente:', {
+        appStateUser: AppState.user,
+        currentUser: currentUser,
+        firebaseAuth: !!window.firebaseAuth,
+        firebaseAuthCurrentUser: window.firebaseAuth?.currentUser
+      });
+      
+      if (AppState.user && AppState.user.uid) {
+        userId = AppState.user.uid;
+        username = AppState.user.username;
+        console.log('[ProjectsTab] Usando AppState.user:', userId);
+      } else if (currentUser && currentUser.uid) {
+        userId = currentUser.uid;
+        username = currentUser.username;
+        console.log('[ProjectsTab] Usando currentUser:', userId);
+      } else if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+        const fbUser = window.firebaseAuth.currentUser;
+        userId = fbUser.uid;
+        username = (fbUser.email || '').split('@')[0] || `user_${fbUser.uid.substring(0, 6)}`;
+        console.log('[ProjectsTab] Usando firebaseAuth.currentUser:', userId);
+      }
+      
+      if (!userId) {
+        console.warn('[ProjectsTab] Nessun utente trovato');
+        container.innerHTML = `
+          <div class="alert alert-warning" role="alert">
+            <strong>Please login to view projects</strong><br>
+            <small>No authenticated user found. Please refresh the page or login again.</small>
+          </div>
+        `;
+        return;
+      }
+      
+      console.log('[ProjectsTab] Caricamento progetti per userId:', userId);
+      
+      // Carica SEMPRE direttamente da Firestore (no cache)
+      const projects = await loadProjectsDirectlyFromFirestore(userId);
+      
+      // Renderizza lista progetti
+      renderProjectsListInTab(projects, container);
+      
+      // Aggiorna info progetto corrente
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (activeProjectName && currentProjectInfo && currentProjectName && currentProjectUpdated) {
+        const project = projects.find(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
+          return name === activeProjectName;
+        });
+        
+        if (project) {
+          currentProjectName.textContent = activeProjectName;
+          const updated = project.updatedAt || project.createdAt || '';
+          if (updated) {
+            const updatedDate = new Date(updated);
+            currentProjectUpdated.textContent = `Last updated: ${updatedDate.toLocaleString()}`;
+          } else {
+            currentProjectUpdated.textContent = '';
+          }
+          currentProjectInfo.style.display = 'block';
+          
+          // Abilita altre tab
+          enableOtherTabs(true);
+        } else {
+          currentProjectInfo.style.display = 'none';
+          enableOtherTabs(false);
+        }
+      } else {
+        if (currentProjectInfo) currentProjectInfo.style.display = 'none';
+        enableOtherTabs(false);
+      }
+      
+    } catch (error) {
+      console.error('[ProjectsTab] Errore caricamento progetti:', error);
+      container.innerHTML = `
+        <div class="alert alert-danger" role="alert">
+          <strong>Error loading projects:</strong><br>
+          ${error.message || error}
+          ${error.code ? ` (${error.code})` : ''}
+        </div>
+      `;
+      enableOtherTabs(false);
+    }
+  }
+  
+  // WeakMap per memorizzare gli event handler dei container (evita memory leak)
+  const containerHandlers = new WeakMap();
+  
+  /**
+   * Renderizza lista progetti nella tab Projects
+   */
+  function renderProjectsListInTab(projects, container) {
+    if (!container) return;
+    
+    const hasProjects = Array.isArray(projects) && projects.length > 0;
+    
+    if (hasProjects) {
+      const projectsHtml = projects.map((p) => {
+        const normalized = normalizeProject(p);
+        const name = normalized.settings.name;
+        const updated = normalized.updatedAt || normalized.createdAt || '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('it-IT', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        
+        const isActive = name === localStorage.getItem('amiantoActiveProjectName');
+        
+        return `
+          <div class="list-group-item bg-secondary text-light mb-2 ${isActive ? 'border border-success' : ''}" data-project-name="${name}">
+            <div class="d-flex justify-content-between align-items-start">
+              <div class="flex-grow-1">
+                <strong>${name}</strong>
+                ${isActive ? ' <span class="badge bg-success">Active</span>' : ''}
+                ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+              </div>
+              <div class="btn-group btn-group-sm ms-2">
+                <button class="btn btn-success" data-action="open" data-project-name="${name}" ${isActive ? 'disabled' : ''}>
+                  <i class="fas fa-folder-open"></i> ${isActive ? 'Active' : 'Open'}
+                </button>
+                <button class="btn btn-outline-danger" data-action="delete" data-project-name="${name}">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      
+      container.innerHTML = `
+        <div class="list-group">
+          ${projectsHtml}
+        </div>
+      `;
+    } else {
+      container.innerHTML = `
+        <div class="text-center py-4">
+          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+        </div>
+      `;
+    }
+    
+    // Aggiungi event listeners ai pulsanti usando delegazione eventi (più efficiente e evita duplicati)
+    // Rimuovi listener precedenti se esistono
+    const existingHandler = containerHandlers.get(container);
+    if (existingHandler) {
+      container.removeEventListener('click', existingHandler);
+    }
+    
+    const clickHandler = async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      
+      e.preventDefault();
+      e.stopPropagation();
+      const action = btn.getAttribute('data-action');
+      const projectName = btn.getAttribute('data-project-name');
+        
+      if (action === 'open' && projectName) {
+        try {
+          showNotification(`Loading project "${projectName}"...`, 'info');
+          await openProjectByName(projectName);
+          // Ricarica la lista dopo apertura
+          await loadAndRenderProjectsTab();
+          showNotification(`Project "${projectName}" opened successfully!`, 'success');
+        } catch (error) {
+          console.error('[ProjectsTab] Errore apertura progetto:', error);
+          showNotification('Error opening project', 'error');
+        }
+      } else if (action === 'delete' && projectName) {
+        if (confirm(`Delete project "${projectName}"? This action cannot be undone.`)) {
+          try {
+            await deleteProjectByName(projectName);
+            // Ricarica la lista dopo eliminazione
+            await loadAndRenderProjectsTab();
+            showNotification(`Project "${projectName}" deleted`, 'info');
+          } catch (error) {
+            console.error('[ProjectsTab] Errore eliminazione progetto:', error);
+            showNotification('Error deleting project', 'error');
+          }
+        }
+      }
+    };
+    
+    container.addEventListener('click', clickHandler);
+    containerHandlers.set(container, clickHandler);
+  }
+  
+  /**
+   * Abilita/disabilita altre tab (tutte tranne Projects)
+   */
+  function enableOtherTabs(enabled) {
+    const tabsToDisable = ['rooms', 'objects', 'characters', 'gui', 'scripts', 'play'];
+    tabsToDisable.forEach(tabId => {
+      const button = document.querySelector(`[data-section="${tabId}"]`);
+      if (button) {
+        button.disabled = !enabled;
+        if (!enabled) {
+          button.classList.add('disabled');
+        } else {
+          button.classList.remove('disabled');
+        }
+      }
+    });
+  }
+
+  /**
+   * Renderizza la lista progetti nel container specificato
+   * @param {Array} projects - Array di progetti normalizzati
+   * @param {HTMLElement} container - Container dove renderizzare (es. modal-body)
+   */
+  function renderProjectsList(projects, container) {
+    if (!container) {
+      console.error('[renderProjectsList] Container non fornito');
+      return;
+    }
+
+    if (!Array.isArray(projects)) {
+      console.error('[renderProjectsList] projects non è un array');
+      projects = [];
+    }
+
+    const hasProjects = projects.length > 0;
+    
+    // Costruisci HTML progetti
+    let projectsHtml = '';
+    if (hasProjects) {
+      projectsHtml = projects.map((p, i) => {
+        const normalized = normalizeProject(p, i);
+        const name = normalized.settings.name;
+        const updated = normalized.updatedAt || normalized.createdAt || '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        
+        return `
+          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
+            <div class="flex-grow-1">
+              <strong>${name}</strong>
+              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+            </div>
+            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
+              <i class="fas fa-folder-open"></i> Open
+            </button>
+          </li>
+        `;
+      }).join('');
+    }
+
+    // Aggiorna contenuto container
+    container.innerHTML = `
+      ${hasProjects ? `
+        <div class="mb-3">
+          <p class="text-muted">Select an existing project or create a new one:</p>
+        </div>
+        <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
+          <ul class="list-group">
+            ${projectsHtml}
+          </ul>
+        </div>
+      ` : `
+        <div class="text-center py-4">
+          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+        </div>
+      `}
+      <div class="d-grid gap-2">
+        <button class="btn btn-primary btn-lg" id="btn-create-new-project">
+          <i class="fas fa-plus"></i> Create New Project
+        </button>
+      </div>
+    `;
+
+    console.log('[renderProjectsList] ✅ Lista renderizzata con', projects.length, 'progetti');
+  }
+
+  /**
+   * Carica direttamente i progetti da Firestore (solo metadata, senza dipendere da localStorage)
+   * Questa funzione è ottimale per PC nuovi senza cache, garantisce sempre dati aggiornati
+   * 
+   * RIFATTORIZZATA: Ora è una funzione pura che SOLO legge da Firestore
+   * Nessun accesso a DOM o localStorage
+   * 
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti con metadata normalizzati
+   * @throws {Error} - Lancia errori invece di ritornare array vuoto
+   */
+  async function loadProjectsDirectlyFromFirestore(userId) {
+    if (!window.firebaseDB) {
+      const error = new Error('Firestore database not available');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    if (!userId) {
+      const error = new Error('User ID is required');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    // Verifica che l'utente sia autenticato
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      const error = new Error('User not authenticated');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    const currentAuthUid = window.firebaseAuth.currentUser.uid;
+    if (currentAuthUid !== userId) {
+      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    try {
+      console.log('[FirestoreDirect] Caricamento diretto progetti da Firestore...');
+      
+      // Lista progetti da Firestore (solo metadata, veloce)
+      const firestoreProjects = await listProjectsFromFirestore(userId);
+      console.log('[FirestoreDirect] Trovati', firestoreProjects.length, 'progetti su Firestore');
+      
+      // Normalizza progetti usando funzione centralizzata
+      const projectsList = firestoreProjects.map((fp, i) => normalizeProject({
+        settings: { name: fp.name },
+        updatedAt: fp.updatedAt || null,
+        createdAt: fp.createdAt || null,
+        source: 'firestore',
+        id: fp.id
+      }, i));
+      
+      console.log('[FirestoreDirect] ✅ Lista progetti caricata direttamente da Firestore:', projectsList.length);
+      return projectsList;
+    } catch (error) {
+      // Distingui tra errori di permesso e altri errori
+      if (error.code === 'permission-denied') {
+        console.error('[FirestoreDirect] Permission denied error:', error);
+        const permissionError = new Error(`Permission denied: ${error.message}`);
+        permissionError.code = 'permission-denied';
+        throw permissionError;
+      }
+      
+      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[FirestoreDirect] Network error:', error);
+        const networkError = new Error(`Network error: ${error.message}`);
+        networkError.code = 'network-error';
+        throw networkError;
+      }
+
+      console.error('[FirestoreDirect] Unexpected error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sincronizza progetti da Firestore a localStorage (solo background)
+   * 
+   * RIFATTORIZZATA: Questa funzione serve SOLO per aggiornare la cache in background
+   * NON deve essere usata per il rendering UI - usa getProjectsForUI() invece
+   * 
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<void>} - Non restituisce dati per la UI
+   * @throws {Error} - Lancia errori in caso di fallimento critico
    */
   async function syncProjectsFromFirestore(userId) {
-    try {
-      console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId });
-      
-      if (!window.firebaseDB || !userId) {
-        console.warn('[Sync] Firestore non disponibile o userId mancante');
-        return false;
+    if (!currentUser || !currentUser.username) {
+      const error = new Error('Current user not available');
+      console.error('[Sync] syncProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    const username = currentUser.username;
+    console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId, username });
+
+    // Carica lista progetti da Firestore
+    const firestoreProjects = await listProjectsFromFirestore(userId);
+    console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
+
+    // Carica progetti locali esistenti usando funzione centralizzata
+    const localProjects = loadProjectsFromCache(username);
+    console.log('[Sync] Progetti locali esistenti:', localProjects.length);
+
+    // Crea una mappa dei progetti locali per confronto rapido
+    const localProjectsMap = new Map();
+    localProjects.forEach((p, i) => {
+      const normalized = normalizeProject(p, i);
+      if (normalized.settings && normalized.settings.name) {
+        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        localProjectsMap.set(projectId, normalized);
       }
+    });
 
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Sync] Utente non autenticato - impossibile sincronizzare');
-        return false;
-      }
+    // Sincronizza ogni progetto da Firestore
+    const syncedProjects = [];
+    let syncedCount = 0;
+    let newCount = 0;
+    let updatedCount = 0;
 
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid !== userId) {
-        console.error('[Sync] userId non corrisponde a utente autenticato', { userId, currentAuthUid });
-        return false;
-      }
+    for (const firestoreProject of firestoreProjects) {
+      try {
+        const projectId = firestoreProject.id;
+        const projectName = firestoreProject.name;
 
-      // Carica lista progetti da Firestore
-      const firestoreProjects = await listProjectsFromFirestore(userId);
-      console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
-
-      if (firestoreProjects.length === 0) {
-        console.log('[Sync] Nessun progetto su Firestore, sincronizzazione completata');
-        return true;
-      }
-
-      // Carica progetti locali esistenti
-      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      console.log('[Sync] Progetti locali esistenti:', localProjects.length);
-
-      // Crea una mappa dei progetti locali per confronto rapido
-      const localProjectsMap = new Map();
-      localProjects.forEach(p => {
-        if (p && p.settings && p.settings.name) {
-          const projectId = p.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          localProjectsMap.set(projectId, p);
+        // Carica i dati completi del progetto da Firestore
+        const projectData = await loadProjectFromFirestore(userId, projectId);
+        
+        if (!projectData) {
+          console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
+          continue;
         }
-      });
 
-      // Sincronizza ogni progetto da Firestore
-      const syncedProjects = [];
-      let syncedCount = 0;
-      let newCount = 0;
-      let updatedCount = 0;
+        // Normalizza progetto usando funzione centralizzata
+        const projectEntry = normalizeProject({
+          settings: projectData.settings || { name: projectName },
+          updatedAt: firestoreProject.updatedAt || null,
+          createdAt: firestoreProject.createdAt || null,
+          source: 'firestore',
+          id: projectId
+        });
 
-      for (const firestoreProject of firestoreProjects) {
-        try {
-          const projectId = firestoreProject.id;
-          const projectName = firestoreProject.name;
-
-          // Carica i dati completi del progetto da Firestore
-          const projectData = await loadProjectFromFirestore(userId, projectId);
+        // Controlla se il progetto esiste già localmente
+        const localProject = localProjectsMap.get(projectId);
+        
+        if (localProject) {
+          // Progetto esiste localmente: confronta timestamp e mantieni il più recente
+          const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
+          const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
           
-          if (!projectData) {
-            console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
-            continue;
-          }
-
-          // Prepara entry per la lista progetti
-          const projectEntry = {
-            settings: projectData.settings || { name: projectName },
-            updatedAt: firestoreProject.updatedAt || new Date().toISOString(),
-            createdAt: firestoreProject.createdAt || new Date().toISOString(),
-            source: 'firestore'
-          };
-
-          // Controlla se il progetto esiste già localmente
-          const localProject = localProjectsMap.get(projectId);
-          
-          if (localProject) {
-            // Progetto esiste localmente: confronta timestamp e mantieni il più recente
-            const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
-            const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
-            
-            if (firestoreUpdated >= localUpdated) {
-              // Firestore è più recente o uguale: usa Firestore
-              syncedProjects.push(projectEntry);
-              updatedCount++;
-              
-              // Salva anche il JSON completo in cache locale
-              const jsonString = JSON.stringify(projectData);
-              const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-              localStorage.setItem(projectKey, jsonString);
-              
-              console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
-            } else {
-              // Locale è più recente: mantieni locale
-              syncedProjects.push(localProject);
-              console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
-            }
-          } else {
-            // Nuovo progetto da Firestore
+          if (firestoreUpdated >= localUpdated) {
+            // Firestore è più recente o uguale: usa Firestore
             syncedProjects.push(projectEntry);
-            newCount++;
+            updatedCount++;
             
-            // Salva il JSON completo in cache locale
+            // Salva anche il JSON completo in cache locale
             const jsonString = JSON.stringify(projectData);
-            const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+            const projectKey = `amiantoProject_${username}:${projectName}`;
             localStorage.setItem(projectKey, jsonString);
             
-            console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+            console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
+          } else {
+            // Locale è più recente: mantieni locale
+            syncedProjects.push(localProject);
+            console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
           }
+        } else {
+          // Nuovo progetto da Firestore
+          syncedProjects.push(projectEntry);
+          newCount++;
+          
+          // Salva il JSON completo in cache locale
+          const jsonString = JSON.stringify(projectData);
+          const projectKey = `amiantoProject_${username}:${projectName}`;
+          localStorage.setItem(projectKey, jsonString);
+          
+          console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+        }
 
-          syncedCount++;
-        } catch (error) {
-          console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        syncedCount++;
+      } catch (error) {
+        console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        // Continua con gli altri progetti anche se uno fallisce
+      }
+    }
+
+    // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
+    localProjects.forEach((localProject, i) => {
+      const normalized = normalizeProject(localProject, i);
+      if (normalized.settings && normalized.settings.name) {
+        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        const existsInFirestore = firestoreProjects.some(fp => {
+          const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          return fpId === projectId;
+        });
+        
+        if (!existsInFirestore) {
+          // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
+          syncedProjects.push(normalized);
+          console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${normalized.settings.name}`);
         }
       }
+    });
 
-      // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
-      localProjects.forEach(localProject => {
-        if (localProject && localProject.settings && localProject.settings.name) {
-          const projectId = localProject.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          const existsInFirestore = firestoreProjects.some(fp => {
-            const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-            return fpId === projectId;
-          });
-          
-          if (!existsInFirestore) {
-            // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
-            syncedProjects.push(localProject);
-            console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${localProject.settings.name}`);
-          }
-        }
-      });
+    // Salva lista sincronizzata usando funzione centralizzata
+    saveProjectsToCache(username, syncedProjects);
 
-      // Salva lista sincronizzata in localStorage
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(syncedProjects));
-
-      console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
-      addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
-      
-      return true;
-    } catch (error) {
-      console.error('[Sync] ❌ Errore durante la sincronizzazione:', error);
-      addDebugMessage(`Errore sincronizzazione: ${error.message || error}`, 'error');
-      return false;
-    }
+    console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
+    addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
+    
+    // IMPORTANTE: Questa funzione NON restituisce dati per la UI
+    // Usa getProjectsForUI() per ottenere progetti per il rendering
   }
 
   /**
@@ -8167,16 +9106,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
 
-    // 4. LIGHTWEIGHT ENTRY PER LISTING - GIÀ IMPLEMENTATO
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    // 4. LIGHTWEIGHT ENTRY PER LISTING - Aggiorna cache usando funzione centralizzata
+    const userProjects = loadProjectsFromCache(currentUser.username);
     const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
-    const entry = { 
+    const entry = normalizeProject({ 
       settings: projectObj.settings, 
       updatedAt: new Date().toISOString(),
+      createdAt: projectObj.createdAt || new Date().toISOString(),
       source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
-    };
+    });
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+    saveProjectsToCache(currentUser.username, userProjects);
 
     // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
     try {
@@ -8266,15 +9206,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
 
-    // Aggiungi alla lista progetti utente
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    const entry = {
+    // Aggiungi alla lista progetti utente usando funzione centralizzata
+    const userProjects = loadProjectsFromCache(currentUser.username);
+    const entry = normalizeProject({
       settings: newProject.settings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    });
     userProjects.push(entry);
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+    saveProjectsToCache(currentUser.username, userProjects);
 
     // Salva su Firestore se l'utente è autenticato
     const userId = currentUser.uid;
@@ -8283,6 +9223,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       await saveProjectToFirestore(userId, projectId, newProject);
     }
 
+    // Abilita altre tab ora che c'è un progetto aperto
+    enableOtherTabs(true);
+    
     // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
     if (showSuccessNotification) {
       showNotification(`Project "${trimmedName}" created and opened!`, 'success');
@@ -9367,6 +10310,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localStorage.setItem('amiantoActiveProjectName', projectName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
 
+    // Abilita altre tab ora che c'è un progetto aperto
+    enableOtherTabs(true);
+    
     // Mostra notifica con fonte di caricamento
     if (loadedFrom === 'firestore') {
       showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
@@ -9418,10 +10364,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     } catch(_) {}
     
-    // 3. Rimuovi dalla lista progetti - GIÀ IMPLEMENTATO
-    const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    // 3. Rimuovi dalla lista progetti usando funzione centralizzata
+    const list = loadProjectsFromCache(currentUser.username);
     const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
+    saveProjectsToCache(currentUser.username, filtered);
     
     // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
     try { localStorage.removeItem(projectKey); } catch(_) {}
@@ -9619,6 +10565,27 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // aggiorna lista nel modale senza ricrearlo
         const li = t.closest('li');
         if (li) li.remove();
+        
+        // Verifica se ci sono ancora progetti dopo l'eliminazione
+        const remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+        if (remainingProjects.length === 0) {
+          // Se non ci sono più progetti, chiudi il modale "My Projects"
+          // Il modale di selezione verrà mostrato automaticamente da deleteProjectByName
+          const projectListModal = document.getElementById('projectListModal');
+          if (projectListModal) {
+            const bsModal = bootstrap.Modal.getInstance(projectListModal);
+            if (bsModal) {
+              bsModal.hide();
+            }
+          }
+        } else {
+          // Aggiorna il contatore dei progetti nel modale
+          const badge = modal.querySelector('.badge');
+          if (badge) {
+            badge.textContent = `${remainingProjects.length} projects`;
+          }
+        }
+        
         return false;
       }
     }, { capture: true });
@@ -9728,7 +10695,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Delete current project
-  window.deleteCurrentProject = function() {
+  window.deleteCurrentProject = async function() {
     if (!currentUser) {
       showNotification('Please login to delete projects', 'warning');
       return;
@@ -9791,9 +10758,50 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Ricostruisci la lista script nell'UI
         refreshScriptSelector();
         rebuildScriptsTree();
+        
+        // Rimuovi progetto attivo
+        localStorage.removeItem('amiantoActiveProjectName');
+        localStorage.removeItem('amiantoActiveProjectOwner');
+      }
+      
+      // Verifica se ci sono ancora progetti dopo la cancellazione
+      // Sincronizza con Firestore per avere la lista aggiornata
+      const userId = currentUser.uid;
+      let remainingProjects = [];
+      if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          await syncProjectsFromFirestore(userId);
+          remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+        } catch (error) {
+          console.error('[DeleteCurrent] Errore sincronizzazione dopo cancellazione:', error);
+          // Fallback: usa la lista locale già filtrata
+          remainingProjects = filteredProjects;
+        }
+      } else {
+        // Fallback: usa la lista locale già filtrata
+        remainingProjects = filteredProjects;
       }
       
       showNotification('Project deleted successfully!', 'success');
+      
+      // Se non ci sono più progetti, mostra il modale di selezione
+      if (remainingProjects.length === 0) {
+        console.log('[DeleteCurrent] Nessun progetto rimasto, mostro modale selezione');
+        // Rimuovi progetto attivo se ancora presente
+        localStorage.removeItem('amiantoActiveProjectName');
+        localStorage.removeItem('amiantoActiveProjectOwner');
+        // Pulisci l'editor
+        rooms = new Map();
+        currentRoomId = null;
+        background = null;
+        foregrounds = [];
+        sceneObjects = [];
+        guis = [];
+        characters = [];
+        contextualCursors = [];
+        // Mostra il modale (forzato, anche se c'era un progetto attivo)
+        await showProjectSelectionModal(true);
+      }
     }
   };
 

@@ -188,13 +188,36 @@
     </div>
   </div>
 
+  <!-- Project Selection Modal -->
+  <div class="modal fade" id="projectSelectionModal" tabindex="-1" aria-labelledby="projectSelectionModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content bg-dark text-light">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="projectSelectionModalLabel">
+            <i class="fas fa-folder"></i> Your Projects
+          </h5>
+        </div>
+        <div class="modal-body" id="projectSelectionModalBody">
+          <!-- Content will be dynamically updated -->
+          <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="text-muted mt-3">Caricamento progetti...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Main Dashboard (hidden by default) -->
   <div id="mainDashboard" style="display: none;">
     <!-- Menu inline -->
     <nav class="navbar navbar-expand-lg navbar-custom">
       <div class="container-fluid d-flex justify-content-center">
 
-        <button class="section-btn active-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)">Rooms</button>
+        <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
+        <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)" disabled>Rooms</button>
         <button class="section-btn" data-section="objects" aria-label="Manage game objects" title="Manage game objects (Ctrl+2)">Objects</button>
         <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+3)">Characters</button>
         <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+4)">GUI</button>
@@ -287,7 +310,47 @@
       </div>
       <!-- Sidebar -->
       <div class="col-md-3 sidebar p-3">
-        <div id="rooms" class="section active">
+        <div id="projects" class="section active">
+          <h3>Project Manager</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <div class="alert alert-warning" role="alert">
+                <small>
+                  <strong>⚠️ Select or create a project to continue.</strong> You cannot access other tabs until a project is open.
+                </small>
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <button class="btn btn-success btn-sm w-100 mb-2" id="btn-create-project-in-tab">
+                <i class="fas fa-plus"></i> Create New Project
+              </button>
+              <button class="btn btn-info btn-sm w-100 mb-2" id="btn-refresh-projects">
+                <i class="fas fa-sync-alt"></i> Refresh List
+              </button>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Projects List:</label>
+              <div id="projects-list-container" style="max-height: 500px; overflow-y: auto;">
+                <div class="text-center py-4">
+                  <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                  </div>
+                  <p class="text-muted mt-3">Loading projects...</p>
+                </div>
+              </div>
+            </div>
+            
+            <div id="current-project-info" class="mt-3 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px; display: none;">
+              <h6 class="m-0 mb-2" style="color:#eee">Current Project:</h6>
+              <div id="current-project-name" style="color:#39ff14; font-weight: bold;"></div>
+              <small class="text-muted" id="current-project-updated"></small>
+            </div>
+          </div>
+        </div>
+
+        <div id="rooms" class="section">
       <h3>Rooms</h3>
 
       <!-- Rooms Manager -->
