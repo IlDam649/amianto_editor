@@ -4959,11 +4959,98 @@ window.selectRoom = function(roomId) {
     }
   });
 
+  // Variabile globale per tracciare lo stato di sincronizzazione
+  let isSyncingProjects = false;
+
+  // Function to show loading overlay with amnt.png
+  function showLoadingOverlay(message = 'Synchronizing projects...') {
+    // Rimuovi eventuali overlay esistenti
+    const existingOverlay = document.getElementById('syncLoadingOverlay');
+    if (existingOverlay) {
+      existingOverlay.remove();
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'syncLoadingOverlay';
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.85);
+      z-index: 10060;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      backdrop-filter: blur(5px);
+    `;
+
+    overlay.innerHTML = `
+      <div style="text-align: center; color: #fff;">
+        <img src="img/Amnt.png" alt="Loading" style="width: 120px; height: 120px; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
+        <div style="font-size: 18px; margin-bottom: 20px; color: #39ff14;">${message}</div>
+        <div class="spinner-border text-success" role="status" style="width: 3rem; height: 3rem;">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+      </div>
+      <style>
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.7; transform: scale(1.05); }
+        }
+      </style>
+    `;
+
+    document.body.appendChild(overlay);
+  }
+
+  // Function to hide loading overlay
+  function hideLoadingOverlay() {
+    const overlay = document.getElementById('syncLoadingOverlay');
+    if (overlay) {
+      overlay.remove();
+    }
+  }
+
+  // Function to close project selection modal deterministically
+  function closeProjectModal() {
+    const modal = document.getElementById('projectSelectionModal');
+    if (!modal) return;
+    
+    // Rimuovi classe show
+    modal.classList.remove('show');
+    
+    // Imposta display none
+    modal.style.display = 'none';
+    
+    // Rimuovi modal-open dal body
+    document.body.classList.remove('modal-open');
+    
+    // Rimuovi backdrop se presente
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) {
+      backdrop.remove();
+    }
+    
+    // Rimuovi padding-right dal body se presente
+    document.body.style.paddingRight = '';
+    
+    // Rimuovi overflow hidden dal body se presente
+    document.body.style.overflow = '';
+    
+    // Rimuovi il modale dal DOM
+    modal.remove();
+    
+    console.log('[ProjectModal] Modale chiuso deterministicamente');
+  }
+
   // Function to show notifications
   function showNotification(message, type = 'info') {
     const notification = document.createElement('div');
     notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
-    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    notification.style.cssText = 'top: 20px; right: 20px; z-index: 10050; min-width: 300px;';
     notification.innerHTML = `
       ${message}
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
@@ -6366,7 +6453,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Show dashboard
-  function showDashboard() {
+  async function showDashboard() {
     document.getElementById('loginPage').style.display = 'none';
     document.getElementById('mainDashboard').style.display = 'block';
     document.getElementById('loginHeader').style.display = 'none';
@@ -6378,6 +6465,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Load user's projects
     loadUserProjects();
+    
+    // Verifica se ci sono progetti: se non ce ne sono, mostra il modale
+    // (solo se non c'è un progetto attivo già aperto)
+    const activeProject = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProject && currentUser && currentUser.uid) {
+      // Sincronizza e verifica progetti
+      if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          await syncProjectsFromFirestore(currentUser.uid);
+          const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+          if (userProjects.length === 0) {
+            // Nessun progetto: mostra il modale
+            await showProjectSelectionModal(true);
+          }
+        } catch (error) {
+          console.error('[Dashboard] Errore verifica progetti:', error);
+        }
+      }
+    }
   }
 
   // Setup login form
@@ -6411,30 +6517,167 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
+   * Aggiorna il contenuto del modale con la lista progetti aggiornata
+   * @param {HTMLElement} modal - Elemento modale da aggiornare
+   * @param {bootstrap.Modal} bsModal - Istanza Bootstrap Modal
+   * @returns {Promise<void>}
+   */
+  async function updateProjectModalContent(modal, bsModal) {
+    if (!currentUser || !currentUser.uid) return;
+    
+    console.log('[ProjectModal] Aggiornamento contenuto modale...');
+    
+    // Sincronizza con Firestore per ottenere la lista più aggiornata
+    isSyncingProjects = true;
+    showLoadingOverlay('Updating project list...');
+    try {
+      await syncProjectsFromFirestore(currentUser.uid);
+      console.log('[ProjectModal] Sincronizzazione completata');
+    } catch (error) {
+      console.error('[ProjectModal] Errore sincronizzazione per aggiornamento:', error);
+    } finally {
+      isSyncingProjects = false;
+      hideLoadingOverlay();
+    }
+    
+    // Carica progetti aggiornati da localStorage (dopo la sincronizzazione)
+    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    console.log('[ProjectModal] Progetti trovati dopo sincronizzazione:', userProjects.length, userProjects.map(p => p?.settings?.name));
+    const hasProjects = userProjects.length > 0;
+    
+    // Costruisci HTML progetti
+    let projectsHtml = '';
+    if (hasProjects) {
+      projectsHtml = userProjects.map((p, i) => {
+        const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
+        const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        return `
+          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
+            <div class="flex-grow-1">
+              <strong>${name}</strong>
+              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+            </div>
+            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
+              <i class="fas fa-folder-open"></i> Open
+            </button>
+          </li>
+        `;
+      }).join('');
+    }
+    
+    // Aggiorna il contenuto del modale
+    const modalBody = modal.querySelector('.modal-body');
+    if (modalBody) {
+      modalBody.innerHTML = `
+        ${hasProjects ? `
+          <div class="mb-3">
+            <p class="text-muted">Select an existing project or create a new one:</p>
+          </div>
+          <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
+            <ul class="list-group">
+              ${projectsHtml}
+            </ul>
+          </div>
+        ` : `
+          <div class="text-center py-4">
+            <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+            <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+          </div>
+        `}
+        <div class="d-grid gap-2">
+          <button class="btn btn-primary btn-lg" id="btn-create-new-project">
+            <i class="fas fa-plus"></i> Create New Project
+          </button>
+        </div>
+      `;
+      
+      // Non serve aggiungere listener: l'event delegation sul modale
+      // gestisce già correttamente i click sui pulsanti "Open" e "Create New Project"
+    }
+  }
+
+  /**
    * Mostra modale di selezione/creazione progetto dopo il login
    * Sincronizza sempre i progetti da Firestore prima di mostrarli
    * @returns {Promise<void>}
    */
-  async function showProjectSelectionModal() {
+  async function showProjectSelectionModal(forceShow = false) {
     if (!currentUser || !currentUser.uid) {
       console.warn('[ProjectModal] Utente non autenticato');
       return;
     }
 
-    // Se c'è già un progetto attivo, non mostrare il modale
-    const activeProject = localStorage.getItem('amiantoActiveProjectName');
-    if (activeProject) {
-      console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
-      return;
+    // VERIFICA E CHIUDI EVENTUALI MODALI ESISTENTI
+    // Assicurati che ci sia sempre un solo modale aperto
+    const existingModal = document.getElementById('projectSelectionModal');
+    if (existingModal) {
+      console.log('[ProjectModal] Trovato modale esistente, chiudo e rimuovo...');
+      try {
+        const existingBsModal = bootstrap.Modal.getInstance(existingModal);
+        if (existingBsModal) {
+          existingBsModal.hide();
+          // Attendi che il modale venga nascosto prima di rimuoverlo
+          existingModal.addEventListener('hidden.bs.modal', function handler() {
+            existingModal.remove();
+            existingModal.removeEventListener('hidden.bs.modal', handler);
+          }, { once: true });
+        } else {
+          // Se non c'è istanza Bootstrap, rimuovi direttamente
+          existingModal.remove();
+        }
+      } catch (error) {
+        console.warn('[ProjectModal] Errore chiusura modale esistente:', error);
+        // In caso di errore, rimuovi comunque il modale
+        existingModal.remove();
+      }
+    }
+    
+    // Verifica anche eventuali modali Bootstrap aperti nel DOM
+    // Chiudi tutti i modali Bootstrap aperti prima di crearne uno nuovo
+    const allModals = document.querySelectorAll('.modal.show');
+    allModals.forEach(m => {
+      if (m.id === 'projectSelectionModal') {
+        // Già gestito sopra
+        return;
+      }
+      try {
+        const bsModalInstance = bootstrap.Modal.getInstance(m);
+        if (bsModalInstance) {
+          bsModalInstance.hide();
+        }
+      } catch (error) {
+        console.warn('[ProjectModal] Errore chiusura modale:', error);
+      }
+    });
+
+    // Se c'è già un progetto attivo e non è forzato, non mostrare il modale
+    // forceShow = true quando viene chiamato dopo la cancellazione dell'ultimo progetto
+    if (!forceShow) {
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      if (activeProject) {
+        console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
+        return;
+      }
     }
 
-    // Sincronizza progetti da Firestore prima di mostrarli
-    showNotification('Synchronizing projects...', 'info');
+    // SEMPRE sincronizza progetti da Firestore prima di mostrarli
+    isSyncingProjects = true;
+    showLoadingOverlay('Synchronizing projects with Firestore...');
     try {
       await syncProjectsFromFirestore(currentUser.uid);
     } catch (error) {
       console.error('[ProjectModal] Errore sincronizzazione:', error);
       showNotification('Error synchronizing projects', 'warning');
+    } finally {
+      isSyncingProjects = false;
+      hideLoadingOverlay();
     }
 
     // Carica progetti sincronizzati (da localStorage dopo sync)
@@ -6523,18 +6766,44 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
     bsModal.show();
 
-    // Gestione click su progetti esistenti
+    // Gestione click su pulsanti Open con event delegation (funziona anche dopo aggiornamenti contenuto)
     modal.addEventListener('click', async (e) => {
+      // Blocca azioni durante la sincronizzazione
+      if (isSyncingProjects) {
+        e.preventDefault();
+        e.stopPropagation();
+        showNotification('Please wait for synchronization to complete', 'warning');
+        return false;
+      }
+
       // Gestisci click su pulsanti "Open"
-      const target = e.target.closest('[data-action="open"]');
-      if (target) {
-        const projectName = target.getAttribute('data-project-name');
-        if (projectName) {
-          bsModal.hide();
-          showNotification(`Loading project "${projectName}"...`, 'info');
-          await openProjectByName(projectName);
+      let target = e.target;
+      while (target && target !== modal) {
+        if (target.hasAttribute && target.hasAttribute('data-action') && 
+            target.getAttribute('data-action') === 'open') {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          
+          const projectName = target.getAttribute('data-project-name');
+          if (projectName) {
+            // NON chiudere qui - aspetta che il progetto sia caricato
+            showNotification(`Loading project "${projectName}"...`, 'info');
+            
+            try {
+              await openProjectByName(projectName);
+              
+              // Chiudi il modale DOPO che il progetto è stato caricato con successo
+              closeProjectModal();
+            } catch (error) {
+              console.error('[ProjectModal] Errore apertura progetto:', error);
+              showNotification('Error opening project', 'danger');
+              // Non chiudere il modale in caso di errore
+            }
+          }
+          return false;
         }
-        return;
+        target = target.parentElement;
       }
       
       // Previeni chiusura tramite click sul backdrop (area esterna al modale)
@@ -6547,22 +6816,51 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         return false;
       }
-    });
+    }, { capture: true });
 
-    // Gestione creazione nuovo progetto
-    modal.querySelector('#btn-create-new-project')?.addEventListener('click', async () => {
-      const projectName = prompt('Enter the new project name:');
-      if (projectName && projectName.trim()) {
-        bsModal.hide();
-        showNotification(`Creating project "${projectName.trim()}"...`, 'info');
-        await window.createNewProject(projectName.trim());
-        // Il progetto è stato creato e aperto, il modale è già chiuso
-      } else if (projectName !== null) {
-        // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
-        showNotification('Project name cannot be empty', 'warning');
+    // Gestione creazione nuovo progetto con event delegation
+    modal.addEventListener('click', async (e) => {
+      if (e.target && (e.target.id === 'btn-create-new-project' || e.target.closest('#btn-create-new-project'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        
+        // Blocca durante la sincronizzazione
+        if (isSyncingProjects) {
+          showNotification('Please wait for synchronization to complete', 'warning');
+          return false;
+        }
+        
+        const projectName = prompt('Enter the new project name:');
+        if (projectName && projectName.trim()) {
+          showNotification(`Creating project "${projectName.trim()}"...`, 'info');
+          
+          // Crea il progetto (questo salva anche su Firestore)
+          // Passa false per showSuccessNotification per evitare notifica duplicata
+          await window.createNewProject(projectName.trim(), false);
+          
+          // Attendi un momento per assicurarsi che Firestore abbia completato il salvataggio
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Mostra notifica di successo dopo la creazione
+          showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
+          
+          // Dopo la creazione, sincronizza e aggiorna il modale con la nuova lista progetti
+          await updateProjectModalContent(modal, bsModal);
+          
+          // Chiudi il modale solo se il progetto è stato aperto con successo
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (activeProject === projectName.trim()) {
+            bsModal.hide();
+          }
+        } else if (projectName !== null) {
+          // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
+          showNotification('Project name cannot be empty', 'warning');
+        }
+        // Se projectName === null, l'utente ha annullato, non fare nulla
+        return false;
       }
-      // Se projectName === null, l'utente ha annullato, non fare nulla
-    });
+    }, { capture: true });
 
     // Rimuovi modale dal DOM quando viene nascosto
     modal.addEventListener('hidden.bs.modal', function () {
@@ -6579,19 +6877,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         showNotification('You must select or create a project to continue', 'warning');
         return false;
       }
+      // Se c'è un progetto attivo, permettere la chiusura
+      console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
     });
 
-    // Previeni chiusura tramite click sul backdrop
-    modal.addEventListener('click', function (e) {
-      if (e.target === modal) {
-        e.preventDefault();
-        e.stopPropagation();
-        const activeProject = localStorage.getItem('amiantoActiveProjectName');
-        if (!activeProject) {
-          showNotification('You must select or create a project to continue', 'warning');
-        }
-      }
-    });
+    // Il listener per il backdrop è già gestito dentro handleProjectClick
+    // Non aggiungere listener duplicati
   }
 
   // Login user
@@ -7749,9 +8040,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Create new project
   // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
-  window.createNewProject = async function(projectNameFromModal = null) {
+  window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
+      return;
+    }
+
+    // Blocca durante la sincronizzazione
+    if (isSyncingProjects) {
+      showNotification('Please wait for synchronization to complete before creating a project', 'warning');
       return;
     }
 
@@ -7823,7 +8120,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       await saveProjectToFirestore(userId, projectId, newProject);
     }
 
-    showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+    // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
+    if (showSuccessNotification) {
+      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+    }
   };
 
   // ================================
@@ -8699,6 +8999,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
     if (!projectName) return;
 
+    // Blocca durante la sincronizzazione
+    if (isSyncingProjects) {
+      showNotification('Please wait for synchronization to complete before opening a project', 'warning');
+      return;
+    }
+
     const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
     
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
@@ -8783,7 +9089,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Applica il progetto caricato
     await applyProjectObject(projectObj);
 
-    // Aggiorna stato locale
+    // IMPORTANTE: Salva il progetto attivo PRIMA di qualsiasi altra operazione
+    // Questo assicura che il listener hide.bs.modal possa rilevarlo
     localStorage.setItem('amiantoActiveProjectName', projectName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
 
@@ -8793,13 +9100,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
       showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
     }
+    
+    // Il modale verrà chiuso dal chiamante dopo questa funzione completa
   }
 
   // MODIFICATO: Ora elimina anche da Firestore
   async function deleteProjectByName(projectName) {
     if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
     if (!projectName) return;
-    if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
+    if (!confirm(`Delete project "${projectName}"? This action cannot be undone.`)) return;
     
     const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
     
@@ -8868,7 +9177,51 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
     try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
-    showNotification('Progetto eliminato', 'success');
+    
+    // 8. Se è il progetto corrente aperto, rimuovi anche il progetto attivo
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (activeProjectName === projectName) {
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+    }
+    
+    // 9. Verifica se ci sono ancora progetti dopo la cancellazione
+    // Sincronizza con Firestore per avere la lista aggiornata
+    let remainingProjects = [];
+    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      try {
+        await syncProjectsFromFirestore(userId);
+        remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      } catch (error) {
+        console.error('[Delete] Errore sincronizzazione dopo cancellazione:', error);
+        // Fallback: usa la lista locale già filtrata
+        remainingProjects = filtered;
+      }
+    } else {
+      // Fallback: usa la lista locale già filtrata
+      remainingProjects = filtered;
+    }
+    
+    showNotification('Project deleted', 'success');
+    
+    // 10. Se non ci sono più progetti, mostra il modale di selezione
+    if (remainingProjects.length === 0) {
+      console.log('[Delete] Nessun progetto rimasto, mostro modale selezione');
+      // Rimuovi progetto attivo se ancora presente
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+      // Pulisci l'editor
+      rooms = new Map();
+      currentRoomId = null;
+      background = null;
+      foregrounds = [];
+      sceneObjects = [];
+      guis = [];
+      characters = [];
+      contextualCursors = [];
+      // Mostra il modale (forzato, anche se c'era un progetto attivo)
+      await showProjectSelectionModal(true);
+    }
   }
 
   // Show project list (modal)
@@ -8945,24 +9298,57 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const bsModal = new bootstrap.Modal(modal);
     bsModal.show();
     modal.addEventListener('hidden.bs.modal', function () { modal.remove(); });
-    // Bind azioni
+    // Bind azioni - usa capture: true per intercettare prima di altri listener
     modal.addEventListener('click', async (e) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
       const action = t.getAttribute('data-action');
       const name = t.getAttribute('data-name');
+      
       if (action === 'open' && name) {
-        await openProjectByName(name);
-        const inst = bootstrap.Modal.getInstance(modal);
-        if (inst) inst.hide();
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        
+        // NON chiudere qui - aspetta che il progetto sia caricato
+        showNotification(`Loading project "${name}"...`, 'info');
+        
+        try {
+          await openProjectByName(name);
+          
+          // Chiudi il modale DOPO che il progetto è stato caricato con successo
+          const inst = bootstrap.Modal.getInstance(modal);
+          if (inst) {
+            inst.hide();
+            // Il listener hidden.bs.modal già presente rimuoverà il modale dal DOM
+          } else {
+            // Fallback: chiudi manualmente se Bootstrap non è disponibile
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+            document.body.classList.remove('modal-open');
+            const backdrop = document.querySelector('.modal-backdrop');
+            if (backdrop) backdrop.remove();
+            modal.remove();
+          }
+        } catch (error) {
+          console.error('[ProjectListModal] Errore apertura progetto:', error);
+          showNotification('Error opening project', 'danger');
+          // Non chiudere il modale in caso di errore
+        }
+        return false;
       }
+      
       if (action === 'delete' && name) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         await deleteProjectByName(name);
         // aggiorna lista nel modale senza ricrearlo
         const li = t.closest('li');
         if (li) li.remove();
+        return false;
       }
-    });
+    }, { capture: true });
     // New / Import
     modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
       const projectName = prompt('Enter project name:');
