@@ -404,6 +404,31 @@ header {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 18px rgba(57, 255, 20, 0.15);
 }
 
+/* Dropdown Submenu Styles */
+.dropdown-submenu {
+  position: relative;
+}
+
+.dropdown-submenu > .dropdown-menu {
+  top: 0;
+  right: 100%;
+  margin-top: -1px;
+  margin-right: 0.125rem;
+  display: none;
+}
+
+.dropdown-submenu:hover > .dropdown-menu {
+  display: block;
+}
+
+.dropdown-submenu > .dropdown-item::after {
+  content: "◀";
+  float: left;
+  margin-right: 0.5rem;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
 /* Responsive design per le tabs */
 @media (max-width: 768px) {
   .section-btn {

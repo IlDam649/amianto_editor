@@ -324,10 +324,52 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Draw image at original size with offset
   function drawImageAtOriginalSize(img, offsetX = 0, offsetY = 0) {
-    if (!img || !img.width || !img.height) return;
+    if (!img) {
+      console.warn('[drawImageAtOriginalSize] img is null or undefined');
+      return;
+    }
+    
+    // Controlla se l'immagine è completamente caricata
+    // Usa naturalWidth/naturalHeight per maggiore affidabilità
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    
+    if (!width || !height) {
+      // Se l'immagine non è ancora caricata, aspetta e ridisegna
+      if (!img.complete) {
+        console.warn('[drawImageAtOriginalSize] Image not fully loaded yet, waiting...', {
+          complete: img.complete,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          width: img.width,
+          height: img.height
+        });
+        
+        // Se non c'è già un handler onload, aggiungilo per ridisegnare quando l'immagine è pronta
+        if (!img._onloadHandlerAdded) {
+          img._onloadHandlerAdded = true;
+          const originalOnload = img.onload;
+          img.onload = () => {
+            if (originalOnload) originalOnload.call(img);
+            // Ridisegna quando l'immagine è caricata
+            setTimeout(() => redraw(), 10);
+          };
+        }
+        return;
+      } else {
+        console.warn('[drawImageAtOriginalSize] Image has no dimensions:', {
+          complete: img.complete,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          width: img.width,
+          height: img.height
+        });
+        return;
+      }
+    }
     
     // Draw image at its original size with offset
-    ctx.drawImage(img, offsetX, offsetY, img.width, img.height);
+    ctx.drawImage(img, offsetX, offsetY, width, height);
   }
 
   // Convert screen coordinates to world coordinates
@@ -344,9 +386,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const internalX = canvasX * scaleX;
     const internalY = canvasY * scaleY;
     
-    // Apply inverse transformations
-    const worldX = (internalX - editorState.panX) / editorState.zoom;
-    const worldY = (internalY - editorState.panY) / editorState.zoom;
+    // Calcola l'offset di centratura (stesso calcolo usato in redraw)
+    let centerOffsetX = 0;
+    let centerOffsetY = 0;
+    if (rect.width > 0 && rect.height > 0) {
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
+      centerOffsetX = cssOffsetX * scaleX;
+      centerOffsetY = cssOffsetY * scaleY;
+    }
+    
+    // Apply inverse transformations (considerando anche l'offset di centratura)
+    const worldX = (internalX - centerOffsetX - editorState.panX) / editorState.zoom;
+    const worldY = (internalY - centerOffsetY - editorState.panY) / editorState.zoom;
     
     // Debug logging (can be removed in production)
     if (window.debugCoordinates) {
@@ -356,6 +410,7 @@ document.addEventListener("DOMContentLoaded", () => {
         canvas: { width: canvas.width, height: canvas.height },
         scale: { x: scaleX, y: scaleY },
         internal: { x: internalX, y: internalY },
+        centerOffset: { x: centerOffsetX, y: centerOffsetY },
         world: { x: worldX, y: worldY }
       });
     }
@@ -448,19 +503,48 @@ document.addEventListener("DOMContentLoaded", () => {
       return; // skip rooms rendering
     }
 
-    // Apply transformations for zoom and pan
+    // Calcola l'offset per centrare il contenuto nel canvas visualizzato
+    // Il contenuto ha dimensioni gameViewport.width x gameViewport.height
+    // Il canvas viene ridimensionato via CSS, quindi dobbiamo calcolare l'offset
+    // considerando le dimensioni CSS del canvas
+    const canvasRect = canvas.getBoundingClientRect();
+    let centerOffsetX = 0;
+    let centerOffsetY = 0;
+    
+    if (canvasRect.width > 0 && canvasRect.height > 0) {
+      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
+      const scaleX = canvas.width / canvasRect.width;
+      const scaleY = canvas.height / canvasRect.height;
+      
+      // Calcola l'offset necessario per centrare il contenuto nel canvas CSS
+      // Il contenuto ha dimensioni gameViewport.width x gameViewport.height
+      // Dopo lo zoom, le dimensioni diventano gameViewport.width * zoom x gameViewport.height * zoom
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      
+      // Calcola l'offset per centrare il contenuto nel canvas CSS (in coordinate CSS)
+      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+      
+      // Converti l'offset da coordinate CSS a coordinate canvas interne
+      centerOffsetX = cssOffsetX * scaleX;
+      centerOffsetY = cssOffsetY * scaleY;
+    }
+
+    // Apply transformations: prima centra, poi pan, poi zoom
     ctx.save();
-    ctx.translate(editorState.panX, editorState.panY);
+    ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
     ctx.scale(editorState.zoom, editorState.zoom);
 
     // Default (Rooms tab): draw scene
     // Draw background at original size
+    // L'origine (0,0) è ora nell'angolo in alto a sinistra del contenuto centrato
     if (background) {
       drawImageAtOriginalSize(background, 0, 0);
     } else {
       // Placeholder background
       ctx.fillStyle = "#111";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
     }
 
     // Draw scene objects at their positions
@@ -1539,10 +1623,10 @@ for (const hs of hotspots) {
     const zoomY = containerHeight / gameViewport.height;
     const zoom = Math.min(zoomX, zoomY, 1.0); // Don't zoom in beyond 100%
     
-    // Center the view
+    // Imposta lo zoom e resetta il pan (il centraggio è automatico in redraw)
     editorState.zoom = zoom;
-    editorState.panX = (containerWidth - gameViewport.width * zoom) / 2;
-    editorState.panY = (containerHeight - gameViewport.height * zoom) / 2;
+    editorState.panX = 0;
+    editorState.panY = 0;
     
     updateEditorDisplay();
     redraw();
@@ -1584,14 +1668,13 @@ for (const hs of hotspots) {
 
   // Center view function
   window.centerView = function() {
-    const container = document.getElementById('canvasContainer');
-    const containerWidth = container.clientWidth - 20;
-    const containerHeight = container.clientHeight - 20;
+    // Resetta il pan (il centraggio è automatico in redraw)
+    editorState.panX = 0;
+    editorState.panY = 0;
     
-    editorState.panX = (containerWidth - gameViewport.width * editorState.zoom) / 2;
-    editorState.panY = (containerHeight - gameViewport.height * editorState.zoom) / 2;
-    
+    updateEditorDisplay();
     redraw();
+    
     showNotification('View centered', 'info');
   };
 
@@ -1811,6 +1894,55 @@ window.selectRoom = function(roomId) {
             throw new Error('Failed to load image from URL');
           }
           
+          // Verifica che l'immagine sia completamente caricata
+          if (!img.complete || (img.naturalWidth === 0 && img.width === 0) || (img.naturalHeight === 0 && img.height === 0)) {
+            console.warn('[Background] Immagine non completamente caricata, aspetto...', {
+              complete: img.complete,
+              naturalWidth: img.naturalWidth,
+              naturalHeight: img.naturalHeight,
+              width: img.width,
+              height: img.height
+            });
+            
+            // Aspetta che l'immagine sia caricata
+            await new Promise((resolve, reject) => {
+              if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+                resolve();
+              } else {
+                const timeout = setTimeout(() => {
+                  reject(new Error('Timeout waiting for image to load'));
+                }, 10000);
+                
+                img.onload = () => {
+                  clearTimeout(timeout);
+                  resolve();
+                };
+                img.onerror = (error) => {
+                  clearTimeout(timeout);
+                  reject(new Error('Failed to load image'));
+                };
+              }
+            });
+          }
+          
+          // Verifica le dimensioni finali
+          const finalWidth = img.naturalWidth || img.width;
+          const finalHeight = img.naturalHeight || img.height;
+          
+          if (!finalWidth || !finalHeight) {
+            throw new Error(`Immagine caricata ma senza dimensioni valide: ${finalWidth}×${finalHeight}`);
+          }
+          
+          console.log('[Background] Immagine caricata con successo:', {
+            complete: img.complete,
+            naturalWidth: img.naturalWidth,
+            naturalHeight: img.naturalHeight,
+            width: img.width,
+            height: img.height,
+            finalWidth,
+            finalHeight
+          });
+          
           // Registra nella mappa asset
           imageAssetMap.set(img, { assetId, type: 'background', projectId });
           
@@ -1819,7 +1951,7 @@ window.selectRoom = function(roomId) {
           const r = rooms.get(currentRoomId);
           if (r) r.background = img;
           
-          showNotification(`Background uploaded: ${img.width}×${img.height}`, 'success');
+          showNotification(`Background uploaded: ${finalWidth}×${finalHeight}`, 'success');
           redraw();
         } catch (error) {
           console.error('[Asset] Errore upload background:', error);
@@ -4075,13 +4207,31 @@ window.selectRoom = function(roomId) {
       }
       try {
         const img = new Image();
+        img.crossOrigin = 'anonymous'; // Permette CORS per Firebase Storage
         img.onload = () => {
+          // Verifica che l'immagine sia completamente caricata
+          const width = img.naturalWidth || img.width;
+          const height = img.naturalHeight || img.height;
+          
+          if (!width || !height) {
+            console.warn('[set_room_background] Immagine caricata ma senza dimensioni valide:', {
+              complete: img.complete,
+              naturalWidth: img.naturalWidth,
+              naturalHeight: img.naturalHeight,
+              width: img.width,
+              height: img.height
+            });
+            addDebugMessage('set_room_background: image loaded but has no dimensions', 'warning');
+            return;
+          }
+          
           r.background = img;
           background = img;
           redraw();
-          showNotification(`Room background set (${img.width}×${img.height})`, 'success');
+          showNotification(`Room background set (${width}×${height})`, 'success');
         };
-        img.onerror = () => {
+        img.onerror = (error) => {
+          console.error('[set_room_background] Errore caricamento immagine:', url, error);
           addDebugMessage('set_room_background: failed to load image', 'error');
           showNotification('Failed to load background image', 'danger');
         };
@@ -7970,9 +8120,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
+    // Verifica che ci sia un progetto aperto
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open. Please open or create a project first.', 'warning');
+      return;
+    }
+
     const jsonString = window.serializeProjectToJsonString(true);
     const projectObj = window.serializeProject();
-    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
+    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : activeProjectName;
+    
+    // Verifica che il progetto serializzato corrisponda al progetto attivo
+    if (projectName !== activeProjectName && projectName !== 'amianto-project') {
+      showNotification('Project name mismatch. Please open the project you want to save.', 'warning');
+      return;
+    }
     
     // TODO: Implementare sistema di projectId univoci
     // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
@@ -8178,46 +8341,58 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   /**
    * Determina la cartella Storage in base al tipo di asset
-   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor)
-   * @returns {string} - Nome della cartella (images, gui, audio)
+   * Mappatura per Supabase Storage: backgrounds, foregrounds, sprites, audio
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
+   * @returns {string} - Nome della cartella (backgrounds, foregrounds, sprites, audio)
    */
   function getStorageFolderForType(assetType) {
     switch (assetType) {
       case 'background':
+        return 'backgrounds';
       case 'foreground':
+        return 'foregrounds';
       case 'sprite':
+        return 'sprites';
+      case 'gui':
       case 'character':
       case 'cursor':
-        return 'images';
-      case 'gui':
-        return 'gui';
+        // Questi tipi vanno in sprites per compatibilità
+        return 'sprites';
       case 'audio':
         return 'audio';
       default:
-        return 'images';
+        return 'sprites';
     }
   }
 
   /**
-   * Carica un'immagine su Firebase Storage
+   * Carica un'immagine su Supabase Storage
+   * 
+   * FALLBACK: Se Supabase non è disponibile:
+   * - Mostra errore chiaro all'utente
+   * - Blocca l'upload del nuovo asset
+   * - Non blocca il caricamento di asset esistenti (che hanno URL validi)
+   * - Non blocca il salvataggio del progetto (gli asset già caricati hanno URL persistenti)
+   * 
    * @param {File} file - File immagine da caricare
    * @param {string} projectId - ID del progetto
-   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor)
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
    * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
-   * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string}>} - Metadata dell'asset caricato
+   * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string, fileName: string}>} - Metadata dell'asset caricato
    */
   async function uploadImageToStorage(file, projectId, assetType, assetId = null) {
     try {
-      // Verifica che Firebase Storage sia disponibile
-      if (!window.firebaseStorage) {
-        console.warn('[Asset] Firebase Storage non disponibile');
-        throw new Error('Firebase Storage non disponibile');
-      }
-
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato - impossibile caricare asset');
-        throw new Error('Utente non autenticato');
+      // Verifica che Supabase Storage sia disponibile
+      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
+        const errorMsg = 'Supabase Storage non disponibile. Impossibile caricare asset. Verifica la configurazione SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js';
+        console.error('[Asset] ❌', errorMsg);
+        
+        // Mostra notifica all'utente
+        if (typeof showNotification === 'function') {
+          showNotification(errorMsg, 'error');
+        }
+        
+        throw new Error(errorMsg);
       }
 
       // Genera assetId se non fornito
@@ -8225,52 +8400,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         assetId = generateAssetId();
       }
 
-      // Determina cartella Storage
-      const folder = getStorageFolderForType(assetType);
+      // Determina categoria (backgrounds, foregrounds, sprites, audio)
+      const category = getStorageFolderForType(assetType);
       
-      // Estrai estensione file
-      const fileExt = file.name.split('.').pop() || 'png';
-      
-      // Crea percorso Storage: projects/{projectId}/{folder}/{assetId}.{ext}
-      const fileName = `${assetId}.${fileExt}`;
-      const storagePath = `projects/${projectId}/${folder}/${fileName}`;
-      
-      console.log('[Asset] Upload immagine...', { storagePath, assetType, assetId });
+      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId });
 
-      // Crea riferimento Storage
-      const storageRef = window.firebaseStorage.ref(storagePath);
+      // Usa la funzione uploadAsset da supabase.js
+      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId);
       
-      // Upload file
-      const uploadTask = storageRef.put(file);
+      // Costruisci storagePath per compatibilità con il resto del codice
+      // Usa il fileName generato da Supabase (include assetId)
+      const generatedFileName = result.fileName || result.url.split('/').pop().split('?')[0];
+      const storagePath = `${projectId}/${category}/${generatedFileName}`;
       
-      // Attendi completamento upload
-      await new Promise((resolve, reject) => {
-        uploadTask.on(
-          'state_changed',
-          (snapshot) => {
-            // Progress tracking (opzionale)
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            console.log(`[Asset] Upload progress: ${progress.toFixed(1)}%`);
-          },
-          (error) => {
-            console.error('[Asset] Errore durante upload:', error);
-            reject(error);
-          },
-          () => {
-            resolve();
-          }
-        );
-      });
-
-      // Ottieni URL di download
-      const downloadURL = await storageRef.getDownloadURL();
-      
-      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL });
+      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName });
       
       return {
         assetId,
         storagePath,
-        downloadURL
+        downloadURL: result.url,
+        fileName: generatedFileName // Nome file generato (con assetId) per risoluzione futura
       };
     } catch (error) {
       console.error('[Asset] ❌ Errore upload immagine:', error);
@@ -8285,9 +8434,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} name - Nome originale del file
    * @param {string} assetType - Tipo di asset
    * @param {string} storagePath - Percorso Storage
+   * @param {string} fileName - Nome file generato (opzionale, per Supabase)
+   * @param {string} publicUrl - URL pubblico dell'asset (opzionale, per Supabase)
    * @returns {Promise<boolean>} - true se salvato con successo
    */
-  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath) {
+  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null) {
     try {
       // Verifica che Firestore sia disponibile
       if (!window.firebaseDB) {
@@ -8319,15 +8470,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         type: assetType,
         storagePath,
         projectId,
+        // Aggiungi campi per Supabase Storage
+        fileName: fileName || null,
+        publicUrl: publicUrl || null,
+        storageProvider: 'supabase', // Indica che usa Supabase Storage
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       };
 
       await assetRef.set(metadata);
       
-      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId });
+      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId, fileName, publicUrl });
       return true;
     } catch (error) {
       console.error('[Asset] ❌ Errore salvataggio metadata:', error);
+      
+      // Se è un errore di permessi, fornisci informazioni utili
+      if (error.code === 'permission-denied') {
+        console.error('[Asset] ⚠️ Errore permessi Firestore. Verifica che le regole Firestore includano:');
+        console.error('[Asset]   match /users/{userId}/projects/{projectId}/assets/{assetId}');
+        console.error('[Asset]   allow write: if request.auth != null && request.auth.uid == userId;');
+        console.error('[Asset] Vedi FIRESTORE_SETUP.md per istruzioni su come deployare le regole.');
+      }
+      
       return false;
     }
   }
@@ -8388,22 +8552,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Risolve un assetId in un URL di download da Firebase Storage
+   * Risolve un assetId in un URL di download da Supabase Storage
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID dell'asset
    * @returns {Promise<string|null>} - URL di download o null se non trovato
    */
   async function resolveAssetUrl(projectId, assetId) {
     try {
-      // Verifica che Firestore e Storage siano disponibili
-      if (!window.firebaseDB || !window.firebaseStorage) {
-        console.warn('[Asset] Firebase non disponibile per risolvere asset:', assetId);
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile per risolvere asset:', assetId);
+        return null;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
         return null;
       }
 
       const userId = window.firebaseAuth.currentUser.uid;
 
-      // Carica metadata asset
+      // Carica metadata asset da Firestore
       // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
       const assetRef = window.firebaseDB
         .collection('users')
@@ -8421,19 +8591,36 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
 
       const data = doc.data();
-      const storagePath = data.storagePath;
-
-      if (!storagePath) {
-        console.warn('[Asset] Storage path mancante per asset:', assetId);
-        return null;
+      
+      // Se abbiamo già l'URL pubblico salvato (per Supabase), usalo direttamente
+      if (data.publicUrl) {
+        console.log('[Asset] ✅ Asset risolto da metadata (Supabase):', { assetId, publicUrl: data.publicUrl });
+        return data.publicUrl;
       }
 
-      // Ottieni URL di download da Storage
-      const storageRef = window.firebaseStorage.ref(storagePath);
-      const downloadURL = await storageRef.getDownloadURL();
-      
-      console.log('[Asset] ✅ Asset risolto:', { assetId, downloadURL });
-      return downloadURL;
+      // Fallback: prova a ricostruire l'URL da Supabase Storage
+      if (data.fileName && data.type && window.supabaseStorage && window.supabaseStorage.isAvailable()) {
+        const category = getStorageFolderForType(data.type);
+        // Passa userId per asset nuovi (con userId nel path), null per asset legacy
+        const publicUrl = window.supabaseStorage.getAssetPublicUrl(userId, projectId, category, data.fileName);
+        if (publicUrl) {
+          console.log('[Asset] ✅ Asset risolto da Supabase Storage:', { assetId, publicUrl });
+          return publicUrl;
+        }
+      }
+
+      // Se non è un asset Supabase, potrebbe essere un asset Firebase legacy
+      // In questo caso, prova a usare Firebase Storage come fallback
+      if (data.storagePath && window.firebaseStorage) {
+        console.warn('[Asset] ⚠️ Asset legacy Firebase rilevato, uso Firebase Storage come fallback:', assetId);
+        const storageRef = window.firebaseStorage.ref(data.storagePath);
+        const downloadURL = await storageRef.getDownloadURL();
+        console.log('[Asset] ✅ Asset risolto da Firebase Storage (legacy):', { assetId, downloadURL });
+        return downloadURL;
+      }
+
+      console.warn('[Asset] Impossibile risolvere asset:', assetId);
+      return null;
     } catch (error) {
       console.warn('[Asset] ⚠️ Errore risoluzione asset:', assetId, error.message);
       return null;
@@ -8452,16 +8639,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return;
       }
       
+      // Controlla se l'URL è un URL Firebase Storage diretto senza token
+      // Se è così, potrebbe causare problemi CORS
+      if (url.includes('firebasestorage.googleapis.com') && !url.includes('token=')) {
+        console.warn('[Asset] ⚠️ URL Firebase Storage senza token rilevato. Questo potrebbe causare errori CORS:', url);
+        console.warn('[Asset] Suggerimento: usa assetId invece di URL diretto per evitare problemi CORS');
+      }
+      
       const img = new Image();
-      img.crossOrigin = 'anonymous'; // Permette CORS per Firebase Storage
+      
+      // Prova prima con crossOrigin per supportare CORS
+      img.crossOrigin = 'anonymous';
+      
+      let resolved = false;
       
       img.onload = () => {
-        resolve(img);
+        if (!resolved) {
+          resolved = true;
+          resolve(img);
+        }
       };
       
-      img.onerror = (error) => {
-        console.warn('[Asset] ⚠️ Errore caricamento immagine:', url, error);
-        resolve(null);
+      img.onerror = async (error) => {
+        if (resolved) return;
+        
+        // Se fallisce con crossOrigin, prova senza (per dataURL o URL locali)
+        if (img.crossOrigin === 'anonymous' && !url.startsWith('data:')) {
+          console.warn('[Asset] ⚠️ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
+          
+          // Crea una nuova immagine senza crossOrigin
+          const imgNoCors = new Image();
+          imgNoCors.onload = () => {
+            if (!resolved) {
+              resolved = true;
+              resolve(imgNoCors);
+            }
+          };
+          imgNoCors.onerror = (error2) => {
+            if (!resolved) {
+              resolved = true;
+              console.error('[Asset] ❌ Errore definitivo caricamento immagine:', url, error2);
+              resolve(null);
+            }
+          };
+          imgNoCors.src = url;
+        } else {
+          resolved = true;
+          console.error('[Asset] ❌ Errore caricamento immagine:', url, error);
+          resolve(null);
+        }
       };
       
       img.src = url;
@@ -8477,11 +8703,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function uploadImage(file, projectId, assetType) {
     try {
-      // Upload su Storage
-      const { assetId, storagePath, downloadURL } = await uploadImageToStorage(file, projectId, assetType);
+      // Upload su Supabase Storage
+      const { assetId, storagePath, downloadURL, fileName } = await uploadImageToStorage(file, projectId, assetType);
       
-      // Salva metadata in Firestore
-      await saveAssetMetadata(projectId, assetId, file.name, assetType, storagePath);
+      // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
+      // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
+      // perché l'asset è già caricato su Supabase Storage
+      const metadataSaved = await saveAssetMetadata(projectId, assetId, file.name, assetType, storagePath, fileName, downloadURL);
+      
+      if (!metadataSaved) {
+        console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
+      }
       
       return { assetId, downloadURL };
     } catch (error) {
@@ -8537,7 +8769,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return null;
     }
 
-    // Se è un assetId (prefisso "asset:"), risolvi da Firebase Storage
+    // Se è un assetId (prefisso "asset:"), risolvi da Supabase Storage (o Firebase Storage legacy)
     if (urlOrAssetId.startsWith('asset:')) {
       const assetId = urlOrAssetId.replace('asset:', '');
       
@@ -8554,7 +8786,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return null;
       }
 
-      // Risolvi assetId in URL
+      // Risolvi assetId in URL (funziona sia per Supabase che Firebase legacy)
       const downloadURL = await resolveAssetUrl(projectId, assetId);
       if (!downloadURL) {
         console.warn('[Asset] Impossibile risolvere asset:', assetId);
@@ -8563,6 +8795,27 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       // Carica immagine dall'URL risolto
       return await loadImageFromUrl(downloadURL);
+    }
+
+    // Se è un URL Supabase Storage, caricalo direttamente
+    if (urlOrAssetId.includes('supabase.co/storage/v1/object/public/')) {
+      console.log('[Asset] URL Supabase Storage rilevato:', urlOrAssetId);
+      return await loadImageFromUrl(urlOrAssetId);
+    }
+
+    // Se è un URL Firebase Storage diretto senza token, avvisa l'utente
+    if (urlOrAssetId.includes('firebasestorage.googleapis.com') && !urlOrAssetId.includes('token=')) {
+      console.error('[Asset] ❌ URL Firebase Storage diretto rilevato (senza token). Questo causerà errori CORS.');
+      console.error('[Asset] URL problematico:', urlOrAssetId);
+      console.error('[Asset] Suggerimento: il progetto potrebbe essere stato salvato con URL diretti invece di assetId.');
+      console.error('[Asset] Prova a ricaricare l\'immagine dal progetto per generare un nuovo assetId.');
+      
+      // Prova comunque a caricarlo (potrebbe funzionare se le regole CORS sono configurate)
+      const img = await loadImageFromUrl(urlOrAssetId);
+      if (!img) {
+        showNotification('Errore CORS: immagine non caricabile. Ricarica l\'immagine dal progetto.', 'error');
+      }
+      return img;
     }
 
     // Fallback: tratta come URL normale (dataURL o HTTP)
@@ -8627,13 +8880,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           Promise.resolve().then(async () => {
             if (r.background) {
               const img = await createImageFromDataUrl(r.background, projectId);
-              roomVal.background = img;
-              // Se è un assetId, registra nella mappa
-              if (r.background && r.background.startsWith('asset:')) {
-                const assetId = r.background.replace('asset:', '');
-                imageAssetMap.set(img, { assetId, type: 'background', projectId });
+              if (img) {
+                // Verifica che l'immagine sia completamente caricata
+                const width = img.naturalWidth || img.width;
+                const height = img.naturalHeight || img.height;
+                
+                if (width && height) {
+                  roomVal.background = img;
+                  // Se è la stanza corrente, aggiorna anche il background globale
+                  if (roomId === currentRoomId) {
+                    background = img;
+                  }
+                  // Se è un assetId, registra nella mappa
+                  if (r.background && r.background.startsWith('asset:')) {
+                    const assetId = r.background.replace('asset:', '');
+                    imageAssetMap.set(img, { assetId, type: 'background', projectId });
+                  }
+                  redraw();
+                } else {
+                  console.warn('[Load Project] Background image loaded but has no dimensions:', {
+                    complete: img.complete,
+                    naturalWidth: img.naturalWidth,
+                    naturalHeight: img.naturalHeight,
+                    width: img.width,
+                    height: img.height
+                  });
+                }
               }
-              redraw();
             }
             if (Array.isArray(r.foregrounds)) {
               const out = [];
@@ -9251,7 +9524,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     modal.setAttribute('aria-hidden', 'true');
     const count = userProjects.length;
     const itemsHtml = count === 0 ? `
-      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu File.</div>
+      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu Profilo > File.</div>
     ` : userProjects.map((p, i) => {
       const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
       const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
@@ -10104,6 +10377,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Inizializza il resize handle quando il DOM è pronto
   initializeConsoleResize();
+
+  // Gestione sottomenu File nel dropdown del profilo
+  const submenuItems = document.querySelectorAll('.dropdown-submenu > .dropdown-item');
+  submenuItems.forEach(item => {
+    item.addEventListener('click', function(e) {
+      if (window.innerWidth <= 768) {
+        // Su dispositivi mobili, toggle del sottomenu
+        e.preventDefault();
+        e.stopPropagation();
+        const submenu = this.nextElementSibling;
+        if (submenu && submenu.classList.contains('dropdown-menu')) {
+          submenu.style.display = submenu.style.display === 'block' ? 'none' : 'block';
+        }
+      }
+    });
+  });
 
   // Expose global functions
   window.showNotification = showNotification;

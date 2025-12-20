@@ -29,6 +29,14 @@ service cloud.firestore {
       
       // Permetti eliminazione solo se l'utente è autenticato e il userId corrisponde
       allow delete: if request.auth != null && request.auth.uid == userId;
+      
+      // Regole per la subcollection assets
+      // Permette agli utenti autenticati di leggere/scrivere solo gli asset dei propri progetti
+      match /assets/{assetId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null && request.auth.uid == userId;
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
     }
     
     // Blocca tutto il resto per sicurezza
@@ -73,13 +81,15 @@ Le regole permettono accesso solo a questa struttura:
 
 ```
 users/{userId}/projects/{projectId}
+users/{userId}/projects/{projectId}/assets/{assetId}
 ```
 
 Dove:
 - `userId` = `request.auth.uid` (ID utente autenticato)
 - `projectId` = ID del progetto (attualmente nome normalizzato)
+- `assetId` = ID univoco dell'asset
 
-Ogni utente può leggere/scrivere/eliminare **solo i propri progetti**.
+Ogni utente può leggere/scrivere/eliminare **solo i propri progetti e i propri asset**.
 
 ## Troubleshooting
 

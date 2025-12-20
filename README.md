@@ -22,6 +22,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
+- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
 ---
 
@@ -285,6 +287,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
+- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
 ---
 
