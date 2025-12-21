@@ -735,3 +735,36 @@ header {
 .console-resize-handle:hover i {
   opacity: 1;
 }
+
+/* Console Log Toggle Button */
+.console-logs-wrapper {
+  position: relative;
+}
+
+.console-log-toggle-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  background-color: #333;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.console-log-toggle-btn:hover {
+  background-color: #444;
+  color: #39ff14;
+  border-color: #39ff14;
+}
+
+.console-log-toggle-btn:active {
+  background-color: #555;
+}
+
+.console-log-toggle-btn i {
+  font-size: 12px;
+}

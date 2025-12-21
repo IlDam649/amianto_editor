@@ -5328,10 +5328,12 @@ window.selectRoom = function(roomId) {
     if (e.detail.currentTab === 'scripts') {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
-      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'none';
       if (codeEditorContainer) codeEditorContainer.style.display = 'flex'; // Cambiato a flex per il layout
-      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
+      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
       ensureLargeScriptEditor();
       ensureScriptEditor();
       initScriptsUI();
@@ -5354,10 +5356,12 @@ window.selectRoom = function(roomId) {
     } else {
       const canvasContainer = document.getElementById('canvasContainer');
       const codeEditorContainer = document.getElementById('codeEditorContainer');
-      const logsContainer = document.getElementById('logs-container');
       if (canvasContainer) canvasContainer.style.display = 'block';
       if (codeEditorContainer) codeEditorContainer.style.display = 'none';
-      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
+      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     }
   });
 
@@ -8290,19 +8294,65 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         .doc(userId)
         .collection('projects');
 
-      const snapshot = await projectsRef.get();
       const projects = [];
+      let lastDoc = null;
+      let hasMore = true;
+      const batchSize = 100; // Firestore default limit
 
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        projects.push({
-          id: doc.id,
-          name: data.name || doc.id,
-          updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+      // Implementa paginazione per recuperare TUTTI i progetti
+      // Usa documentId come campo di ordinamento (sempre disponibile)
+      try {
+        const firebaseObj = window.firebase || firebase;
+        const FieldPath = firebaseObj.firestore.FieldPath;
+        
+        while (hasMore) {
+          let query = projectsRef.orderBy(FieldPath.documentId()).limit(batchSize);
+          
+          if (lastDoc) {
+            query = query.startAfter(lastDoc);
+          }
+
+          const snapshot = await query.get();
+          
+          if (snapshot.empty) {
+            hasMore = false;
+            break;
+          }
+
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            projects.push({
+              id: doc.id,
+              name: data.name || doc.id,
+              updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+              createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+            });
+          });
+
+          // Se abbiamo meno documenti del batch size, non ci sono più documenti
+          if (snapshot.size < batchSize) {
+            hasMore = false;
+          } else {
+            // Prendi l'ultimo documento per la prossima query
+            lastDoc = snapshot.docs[snapshot.docs.length - 1];
+          }
+        }
+      } catch (orderByError) {
+        // Fallback: se orderBy fallisce, prova una query semplice
+        console.warn('[Firestore] Errore con orderBy, uso query semplice:', orderByError);
+        const snapshot = await projectsRef.get();
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          projects.push({
+            id: doc.id,
+            name: data.name || doc.id,
+            updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+            createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+          });
         });
-      });
+      }
 
+      console.log(`[Firestore] Recuperati ${projects.length} progetti totali con paginazione`);
       return projects;
     } catch (error) {
       // Distingui tra errori di permesso e altri errori
@@ -11385,6 +11435,71 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Inizializza il resize handle quando il DOM è pronto
   initializeConsoleResize();
+
+  // ============================================
+  // Console Log Toggle - nascondi/mostra console log
+  // ============================================
+  function initializeConsoleLogToggle() {
+    const toggleBtn = document.getElementById('console-log-toggle');
+    const toggleIcon = document.getElementById('console-log-toggle-icon');
+    const logsContainer = document.getElementById('logs-container');
+    const resizeHandle = document.getElementById('console-resize-handle');
+    
+    if (!toggleBtn || !toggleIcon || !logsContainer || !resizeHandle) {
+      return;
+    }
+
+    // Funzione per ottenere lo stato salvato (default: visibile)
+    function getConsoleLogVisibility() {
+      const saved = localStorage.getItem('amiantoConsoleLogVisible');
+      return saved === null ? true : saved === 'true';
+    }
+
+    // Funzione per salvare lo stato
+    function setConsoleLogVisibility(visible) {
+      localStorage.setItem('amiantoConsoleLogVisible', visible.toString());
+    }
+
+    // Funzione per applicare lo stato
+    function applyConsoleLogVisibility(visible) {
+      if (visible) {
+        logsContainer.style.display = 'flex';
+        resizeHandle.style.display = 'flex';
+        toggleIcon.classList.remove('fa-eye-slash');
+        toggleIcon.classList.add('fa-eye');
+        toggleBtn.title = 'Nascondi console log';
+      } else {
+        logsContainer.style.display = 'none';
+        resizeHandle.style.display = 'none';
+        toggleIcon.classList.remove('fa-eye');
+        toggleIcon.classList.add('fa-eye-slash');
+        toggleBtn.title = 'Mostra console log';
+      }
+    }
+
+    // Carica lo stato salvato all'avvio
+    const isVisible = getConsoleLogVisibility();
+    applyConsoleLogVisibility(isVisible);
+
+    // Gestisci il click sul toggle
+    toggleBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentVisibility = getConsoleLogVisibility();
+      const newVisibility = !currentVisibility;
+      setConsoleLogVisibility(newVisibility);
+      applyConsoleLogVisibility(newVisibility);
+    });
+
+    // Esponi la funzione per applicare lo stato quando si cambia tab
+    window.applyConsoleLogVisibilityState = function() {
+      const isVisible = getConsoleLogVisibility();
+      applyConsoleLogVisibility(isVisible);
+    };
+  }
+
+  // Inizializza il toggle quando il DOM è pronto
+  initializeConsoleLogToggle();
 
   // Gestione sottomenu File nel dropdown del profilo
   const submenuItems = document.querySelectorAll('.dropdown-submenu > .dropdown-item');

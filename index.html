@@ -264,11 +264,16 @@
         </div>
 
         <!-- Script Log e Engine Log Panel - sotto al canvas, sempre visibili -->
-        <!-- Resize handle per ridimensionare verticalmente le console -->
-        <div id="console-resize-handle" class="console-resize-handle" title="Trascina per ridimensionare le console">
-          <i class="fas fa-grip-lines"></i>
-        </div>
-        <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
+        <div class="console-logs-wrapper" style="position: relative;">
+          <!-- Toggle button per nascondere/mostrare le console log -->
+          <button id="console-log-toggle" class="btn btn-sm console-log-toggle-btn" title="Nascondi/Mostra console log">
+            <i class="fas fa-eye" id="console-log-toggle-icon"></i>
+          </button>
+          <!-- Resize handle per ridimensionare verticalmente le console -->
+          <div id="console-resize-handle" class="console-resize-handle" title="Trascina per ridimensionare le console">
+            <i class="fas fa-grip-lines"></i>
+          </div>
+          <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
           <!-- Script Log Panel -->
           <div id="script-log-container" style="flex: 1;">
             <div class="d-flex justify-content-between align-items-center mb-1">
@@ -306,6 +311,7 @@
               [INFO] Canvas ready for rendering
             </div>
           </div>
+        </div>
         </div>
       </div>
       <!-- Sidebar -->
