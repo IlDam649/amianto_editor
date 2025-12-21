@@ -168,15 +168,24 @@ header {
   flex-direction: column;
 }
 
+/* Canvas Container - allargato per prendere tutto lo spazio */
+#canvasContainer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
 /* Canvas */
 #editorCanvas {
   background-color: #111;
   border: none;
   border-radius: 8px;
   display: block;
-  margin: 0 auto;
   max-width: 100%;
-  max-height: 70vh;
+  max-height: 100%;
 }
 
 /* Code editor container shown in Scripts tab */
@@ -752,7 +761,12 @@ header {
   padding: 4px 8px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, top 0.2s ease;
+}
+
+/* Alza il toggle quando la console è nascosta */
+.console-logs-wrapper.console-hidden .console-log-toggle-btn {
+  top: -40px;
 }
 
 .console-log-toggle-btn:hover {

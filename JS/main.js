@@ -789,10 +789,11 @@ document.addEventListener("DOMContentLoaded", () => {
     ctx.scale(editorState.zoom, editorState.zoom);
 
     // Default (Rooms tab): draw scene
-    // Draw background at original size
+    // Draw background scaled to viewport size (always matches the green rectangle)
     // L'origine (0,0) è ora nell'angolo in alto a sinistra del contenuto centrato
     if (background) {
-      drawImageAtOriginalSize(background, 0, 0);
+      // Draw background scaled to viewport dimensions
+      ctx.drawImage(background, 0, 0, gameViewport.width, gameViewport.height);
     } else {
       // Placeholder background
       ctx.fillStyle = "#111";
@@ -982,6 +983,18 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       ctx.restore();
     }
+
+    // Draw green rectangle representing the current viewport resolution
+    // This rectangle is drawn in the same transformed context as the background image
+    // so it will always align perfectly with the background (both at position 0,0 with viewport dimensions)
+    ctx.save();
+    ctx.strokeStyle = '#39ff14'; // Green color
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    // Draw the rectangle at the same position and size as the background image
+    // Both are at (0,0) with gameViewport dimensions, so they will perfectly overlap
+    ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+    ctx.restore();
 
     // Restore transformations
     ctx.restore();
@@ -1875,10 +1888,38 @@ for (const hs of hotspots) {
     const zoomY = containerHeight / gameViewport.height;
     const zoom = Math.min(zoomX, zoomY, 1.0); // Don't zoom in beyond 100%
     
-    // Imposta lo zoom e resetta il pan (il centraggio è automatico in redraw)
+    // Imposta lo zoom
     editorState.zoom = zoom;
-    editorState.panX = 0;
-    editorState.panY = 0;
+    
+    // Calcola il pan necessario per posizionare l'angolo in alto a sinistra del viewport in (0, 0) del canvas
+    // Dobbiamo compensare l'offset di centratura che viene applicato in redraw()
+    const canvasRect = canvas.getBoundingClientRect();
+    let panX = 0;
+    let panY = 0;
+    
+    if (canvasRect.width > 0 && canvasRect.height > 0) {
+      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
+      const scaleX = canvas.width / canvasRect.width;
+      const scaleY = canvas.height / canvasRect.height;
+      
+      // Calcola l'offset che verrebbe applicato per centrare il contenuto
+      const scaledContentWidth = gameViewport.width * zoom;
+      const scaledContentHeight = gameViewport.height * zoom;
+      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+      
+      // Converti l'offset da coordinate CSS a coordinate canvas interne
+      const centerOffsetX = cssOffsetX * scaleX;
+      const centerOffsetY = cssOffsetY * scaleY;
+      
+      // Imposta il pan per compensare l'offset di centratura, così l'angolo (0,0) del viewport
+      // sarà posizionato in (0,0) del canvas
+      panX = -centerOffsetX;
+      panY = -centerOffsetY;
+    }
+    
+    editorState.panX = panX;
+    editorState.panY = panY;
     
     updateEditorDisplay();
     redraw();
@@ -1889,8 +1930,37 @@ for (const hs of hotspots) {
   // Reset editor zoom and pan
   window.resetEditorZoom = function() {
     editorState.zoom = 1.0;
-    editorState.panX = 0;
-    editorState.panY = 0;
+    
+    // Calcola il pan necessario per posizionare l'angolo in alto a sinistra del viewport in (0, 0) del canvas
+    // Dobbiamo compensare l'offset di centratura che viene applicato in redraw()
+    const canvasRect = canvas.getBoundingClientRect();
+    let panX = 0;
+    let panY = 0;
+    
+    if (canvasRect.width > 0 && canvasRect.height > 0) {
+      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
+      const scaleX = canvas.width / canvasRect.width;
+      const scaleY = canvas.height / canvasRect.height;
+      
+      // Calcola l'offset che verrebbe applicato per centrare il contenuto
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+      
+      // Converti l'offset da coordinate CSS a coordinate canvas interne
+      const centerOffsetX = cssOffsetX * scaleX;
+      const centerOffsetY = cssOffsetY * scaleY;
+      
+      // Imposta il pan per compensare l'offset di centratura, così l'angolo (0,0) del viewport
+      // sarà posizionato in (0,0) del canvas
+      panX = -centerOffsetX;
+      panY = -centerOffsetY;
+    }
+    
+    editorState.panX = panX;
+    editorState.panY = panY;
+    
     updateEditorDisplay();
     redraw();
     showNotification('Editor zoom and pan reset', 'info');
@@ -6546,6 +6616,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Project Settings functionality
   window.openProjectSettings = function() {
+    // Verifica che ci sia un progetto aperto
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('Nessun progetto aperto. Apri o crea un progetto prima di modificare le impostazioni.', 'warning');
+      return;
+    }
+
+    // Recupera il progetto corrente
+    let currentSettings = {
+      name: activeProjectName,
+      author: '',
+      version: '1.0.0',
+      description: '',
+      canvasWidth: gameViewport.width || 800,
+      canvasHeight: gameViewport.height || 600,
+      enableFullscreen: true,
+      enableSound: true,
+      enableMusic: true
+    };
+
+    // Prova a recuperare le impostazioni dal progetto serializzato
+    try {
+      const projectObj = window.serializeProject();
+      if (projectObj && projectObj.settings) {
+        const s = projectObj.settings;
+        currentSettings.name = s.name || activeProjectName;
+        currentSettings.author = s.author || '';
+        currentSettings.version = s.version || '1.0.0';
+        currentSettings.description = s.description || '';
+        currentSettings.canvasWidth = s.canvasWidth || gameViewport.width || 800;
+        currentSettings.canvasHeight = s.canvasHeight || gameViewport.height || 600;
+        currentSettings.enableFullscreen = s.enableFullscreen !== undefined ? s.enableFullscreen : true;
+        currentSettings.enableSound = s.enableSound !== undefined ? s.enableSound : true;
+        currentSettings.enableMusic = s.enableMusic !== undefined ? s.enableMusic : true;
+      }
+    } catch (error) {
+      console.warn('[ProjectSettings] Errore recupero impostazioni progetto:', error);
+      // Fallback: prova a caricare da localStorage
+      const savedSettings = localStorage.getItem('amiantoProjectSettings');
+      if (savedSettings) {
+        try {
+          const parsed = JSON.parse(savedSettings);
+          Object.assign(currentSettings, parsed);
+        } catch (e) {
+          console.warn('[ProjectSettings] Errore parsing localStorage:', e);
+        }
+      }
+    }
+
     // Create modal for project settings
     const modal = document.createElement('div');
     modal.className = 'modal fade';
@@ -6565,31 +6684,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             <form>
               <div class="mb-3">
                 <label for="projectName" class="form-label">Project Name</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectName" value="Untitled Project">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectName" value="${(currentSettings.name || 'Untitled Project').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectAuthor" class="form-label">Author</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectAuthor" placeholder="Your name">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectAuthor" placeholder="Your name" value="${(currentSettings.author || '').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectVersion" class="form-label">Version</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectVersion" value="1.0.0">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectVersion" value="${(currentSettings.version || '1.0.0').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectDescription" class="form-label">Description</label>
-                <textarea class="form-control bg-secondary text-light border-secondary" id="projectDescription" rows="3" placeholder="Brief description of your game..."></textarea>
+                <textarea class="form-control bg-secondary text-light border-secondary" id="projectDescription" rows="3" placeholder="Brief description of your game...">${(currentSettings.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
               </div>
               <div class="mb-3">
                 <label for="canvasWidth" class="form-label">Canvas Width</label>
-                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasWidth" value="800">
+                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasWidth" value="${currentSettings.canvasWidth || 800}">
               </div>
               <div class="mb-3">
                 <label for="canvasHeight" class="form-label">Canvas Height</label>
-                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="600">
+                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="${currentSettings.canvasHeight || 600}">
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableFullscreen" checked>
+                  <input class="form-check-input" type="checkbox" id="enableFullscreen" ${currentSettings.enableFullscreen ? 'checked' : ''}>
                   <label class="form-check-label" for="enableFullscreen">
                     Enable Fullscreen Mode
                   </label>
@@ -6597,7 +6716,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableSound" checked>
+                  <input class="form-check-input" type="checkbox" id="enableSound" ${currentSettings.enableSound ? 'checked' : ''}>
                   <label class="form-check-label" for="enableSound">
                     Enable Sound Effects
                   </label>
@@ -6605,7 +6724,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableMusic" checked>
+                  <input class="form-check-input" type="checkbox" id="enableMusic" ${currentSettings.enableMusic ? 'checked' : ''}>
                   <label class="form-check-label" for="enableMusic">
                     Enable Background Music
                   </label>
@@ -6638,11 +6757,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Save project settings function
   window.saveProjectSettings = function() {
+    if (!currentUser) {
+      showNotification('Devi essere loggato per salvare le impostazioni del progetto', 'warning');
+      return;
+    }
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('Nessun progetto aperto. Apri o crea un progetto prima di salvare le impostazioni.', 'warning');
+      return;
+    }
+
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
+    const newProjectName = document.getElementById('projectName').value.trim();
+    
+    if (!newProjectName) {
+      showNotification('Il nome del progetto non può essere vuoto', 'warning');
+      return;
+    }
     
     const settings = {
-      name: document.getElementById('projectName').value,
+      name: newProjectName,
       author: document.getElementById('projectAuthor').value,
       version: document.getElementById('projectVersion').value,
       description: document.getElementById('projectDescription').value,
@@ -6665,17 +6801,82 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     updateEditorDisplay();
     redraw();
     
-    // Save to localStorage
+    // Se il nome del progetto è cambiato, aggiorna il progetto attivo
+    if (newProjectName !== activeProjectName) {
+      console.log(`[ProjectSettings] Nome progetto cambiato: "${activeProjectName}" -> "${newProjectName}"`);
+      localStorage.setItem('amiantoActiveProjectName', newProjectName);
+      
+      // Aggiorna anche la lista progetti nella cache
+      try {
+        const userProjects = loadProjectsFromCache(currentUser.username);
+        const projectIndex = userProjects.findIndex(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
+          return name === activeProjectName;
+        });
+        
+        if (projectIndex >= 0) {
+          // Aggiorna il nome nel progetto nella cache
+          if (!userProjects[projectIndex].settings) {
+            userProjects[projectIndex].settings = {};
+          }
+          userProjects[projectIndex].settings.name = newProjectName;
+          saveProjectsToCache(currentUser.username, userProjects);
+          console.log('[ProjectSettings] Cache progetti aggiornata con nuovo nome');
+        }
+      } catch (error) {
+        console.warn('[ProjectSettings] Errore aggiornamento cache progetti:', error);
+      }
+    }
+    
+    // Salva le impostazioni in localStorage
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
+    
+    // Salva il progetto completo con le nuove impostazioni
+    // Questo assicura che le impostazioni siano persistenti nel progetto stesso
+    try {
+      const projectObj = window.serializeProject();
+      if (projectObj) {
+        // Aggiorna le impostazioni nel progetto
+        if (!projectObj.settings) {
+          projectObj.settings = {};
+        }
+        Object.assign(projectObj.settings, settings);
+        
+        // Salva il progetto aggiornato
+        // Usa saveCurrentProject se disponibile, altrimenti salva manualmente
+        if (typeof window.saveCurrentProject === 'function') {
+          // Salva il progetto (questo aggiornerà anche Firestore se disponibile)
+          window.saveCurrentProject().catch(error => {
+            console.warn('[ProjectSettings] Errore salvataggio progetto:', error);
+            showNotification('Impostazioni salvate localmente, ma errore nel salvataggio completo del progetto', 'warning');
+          });
+        } else {
+          // Fallback: salva solo in cache locale
+          const jsonString = JSON.stringify(projectObj);
+          const projectKey = `amiantoProject_${currentUser.username}:${newProjectName}`;
+          localStorage.setItem(projectKey, jsonString);
+          console.log('[ProjectSettings] Progetto salvato in cache locale');
+        }
+      }
+    } catch (error) {
+      console.warn('[ProjectSettings] Errore aggiornamento progetto:', error);
+    }
     
     // Close modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('projectSettingsModal'));
-    modal.hide();
+    if (modal) {
+      modal.hide();
+    }
     
-    showNotification(`Project settings saved! Game viewport: ${newWidth}×${newHeight}`, 'success');
+    showNotification(`Impostazioni progetto salvate! Viewport: ${newWidth}×${newHeight}`, 'success');
     
     // Log settings for debugging
     console.log('Project settings saved:', settings);
+    
+    // Aggiorna la UI se necessario (es. nome progetto nella sidebar)
+    if (typeof updateProjectsTab === 'function') {
+      updateProjectsTab();
+    }
   };
 
   // Load project settings on page load
@@ -9229,7 +9430,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         canvasWidth: 800,
         canvasHeight: 600
       },
-      rooms: [],
+      rooms: [
+        {
+          id: 'room_1',
+          name: 'Room 1',
+          background: null,
+          foregrounds: [],
+          sceneObjects: [],
+          walkableArea: [],
+          hotspots: []
+        }
+      ],
       guis: [],
       characters: [],
       inventory: [],
@@ -10473,7 +10684,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     showNotification('Project deleted', 'success');
     
-    // 10. Se non ci sono più progetti, mostra il modale di selezione
+    // 10. Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
     if (remainingProjects.length === 0) {
       console.log('[Delete] Nessun progetto rimasto, mostro modale selezione');
       // Rimuovi progetto attivo se ancora presente
@@ -10488,6 +10699,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       guis = [];
       characters = [];
       contextualCursors = [];
+      
+      // Disabilita altre tab (non c'è più un progetto aperto)
+      enableOtherTabs(false);
+      
+      // Torna alla tab Projects
+      if (typeof showSectionById === 'function') {
+        showSectionById('projects', false);
+      } else {
+        // Fallback: usa il bottone direttamente
+        const projectsButton = document.querySelector(`[data-section="projects"]`);
+        if (projectsButton) {
+          projectsButton.click();
+        }
+      }
+      
       // Mostra il modale (forzato, anche se c'era un progetto attivo)
       await showProjectSelectionModal(true);
     }
@@ -10834,7 +11060,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       showNotification('Project deleted successfully!', 'success');
       
-      // Se non ci sono più progetti, mostra il modale di selezione
+      // Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
       if (remainingProjects.length === 0) {
         console.log('[DeleteCurrent] Nessun progetto rimasto, mostro modale selezione');
         // Rimuovi progetto attivo se ancora presente
@@ -10849,6 +11075,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         guis = [];
         characters = [];
         contextualCursors = [];
+        
+        // Disabilita altre tab (non c'è più un progetto aperto)
+        enableOtherTabs(false);
+        
+        // Torna alla tab Projects
+        if (typeof showSectionById === 'function') {
+          showSectionById('projects', false);
+        } else {
+          // Fallback: usa il bottone direttamente
+          const projectsButton = document.querySelector(`[data-section="projects"]`);
+          if (projectsButton) {
+            projectsButton.click();
+          }
+        }
+        
         // Mostra il modale (forzato, anche se c'era un progetto attivo)
         await showProjectSelectionModal(true);
       }
@@ -11462,18 +11703,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Funzione per applicare lo stato
     function applyConsoleLogVisibility(visible) {
+      const wrapper = document.querySelector('.console-logs-wrapper');
       if (visible) {
         logsContainer.style.display = 'flex';
         resizeHandle.style.display = 'flex';
         toggleIcon.classList.remove('fa-eye-slash');
         toggleIcon.classList.add('fa-eye');
         toggleBtn.title = 'Nascondi console log';
+        if (wrapper) wrapper.classList.remove('console-hidden');
       } else {
         logsContainer.style.display = 'none';
         resizeHandle.style.display = 'none';
         toggleIcon.classList.remove('fa-eye');
         toggleIcon.classList.add('fa-eye-slash');
         toggleBtn.title = 'Mostra console log';
+        if (wrapper) wrapper.classList.add('console-hidden');
       }
     }
 
