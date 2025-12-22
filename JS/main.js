@@ -7216,7 +7216,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           localStorage.setItem('amiantoCurrentUser', AppState.user.username);
           showDashboard();
           
-          // Mostra modale selezione progetto
+          // Verifica che i progetti siano stati caricati
+          console.log('[AuthObserver] Progetti caricati:', AppState.projects.length);
+          
+          // Mostra modale selezione progetto (AppState.projects è già popolato da bootstrapApp)
           showProjectSelectionModal(false);
         }
       } else {
@@ -7747,10 +7750,35 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
       
       try {
-        const projects = await syncProjectsFromFirestore(user.uid);
-        console.log('[Login] ✅ Sincronizzazione progetti completata:', projects.length, 'progetti');
+        // STEP 1: Sincronizza progetti (salva in localStorage)
+        await syncProjectsFromFirestore(user.uid);
+        console.log('[Login] ✅ Sincronizzazione progetti completata');
+        
+        // STEP 2: Carica progetti da Firestore e aggiorna AppState
+        const projects = await loadProjectsDirectlyFromFirestore(user.uid);
+        console.log('[Login] ✅ Progetti caricati:', projects.length);
+        
+        // STEP 3: Aggiorna AppState con i progetti caricati
+        updateAppState({ projects: projects });
+        
+        // STEP 4: Aggiorna anche la cache localStorage
+        if (user.username) {
+          saveProjectsToCache(user.username, projects);
+        }
+        
       } catch (error) {
         console.error('[Login] Errore durante sincronizzazione progetti:', error);
+        
+        // In caso di errore, prova a caricare dalla cache come fallback
+        if (user.username) {
+          console.log('[Login] Fallback a cache localStorage...');
+          const cachedProjects = loadProjectsFromCache(user.username);
+          updateAppState({ projects: cachedProjects });
+          console.log('[Login] Progetti da cache:', cachedProjects.length);
+        } else {
+          updateAppState({ projects: [] });
+        }
+        
         // Per dispositivi senza cache (primo accesso), questo è normale se non ci sono progetti
         // Mostra un messaggio informativo ma non bloccante
         if (error.code === 'permission-denied') {
@@ -7768,6 +7796,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     } else {
       console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
+      updateAppState({ projects: [] });
     }
 
     // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
