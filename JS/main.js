@@ -4923,25 +4923,9 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Se il runtime non è inizializzato, non eseguire lo script
-    if (!embeddedRuntime.isInitialized || !embeddedRuntime.sandboxIframe) {
-      addDebugMessage(`[Script] Runtime not initialized, skipping handler "${handlerName}"`, 'warning');
-      return;
-    }
-    
-    // Esegui lo script nell'iframe sandboxed
-    const context = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: null,
-      variables: {}
-    };
-    
-    // Copia variabili dal gameState
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      context.variables[key] = value;
-    });
-    
-    executeScriptInSandbox(`handler_${handlerName}_${Date.now()}`, scriptContent, handlerName, argsArray, context);
+    // Script handler non più supportato in modalità iframe
+    // Gli script vengono eseguiti nel runtime standalone
+    addDebugMessage(`[Script] Handler "${handlerName}" - gli script vengono eseguiti nel runtime standalone`, 'info');
   }
 
   window.newScript = function() {
@@ -5001,30 +4985,25 @@ window.selectRoom = function(roomId) {
       return;
     }
     
-    // Serializza il progetto completo (come fa startPlayTest) per avere tutte le variabili e il contesto
+    // Per eseguire script, apri il runtime in una nuova finestra
+    // Il runtime caricherà automaticamente il progetto da localStorage
     const jsonString = window.serializeProjectToJsonString(true);
+    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     
-    // Inizializza sempre il sandbox con i dati aggiornati del progetto
-    // Questo garantisce che lo script abbia accesso a tutte le variabili e al contesto corretto
-    initializeSandboxRuntime(jsonString);
-    
-    // Aspetta che l'iframe sia pronto e poi esegui lo script
-    const checkReady = setInterval(() => {
-      if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
-        clearInterval(checkReady);
-        // Esegui lo script selezionato nel sandbox
-        executeScriptInSandbox('run_script_' + Date.now(), content, null, [], {});
-        showNotification('Script eseguito in sandbox!', 'success');
-      }
-    }, 100);
-    
-    // Timeout dopo 5 secondi
-    setTimeout(() => {
-      clearInterval(checkReady);
-      if (!embeddedRuntime.isReady) {
-        showNotification('Errore: sandbox non inizializzato', 'danger');
-      }
-    }, 5000);
+    // Apri runtime in nuova finestra
+    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeWindow = window.open(
+      runtimeUrl,
+      'AmiantoRuntime',
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+
+    if (!runtimeWindow) {
+      showNotification('Impossibile aprire la finestra runtime. Verifica che i popup non siano bloccati.', 'error');
+      return;
+    }
+
+    showNotification('Runtime aperto in nuova finestra. Lo script verrà eseguito automaticamente.', 'info');
   };
 
   window.deleteScript = function() {
@@ -6316,16 +6295,95 @@ window.selectRoom = function(roomId) {
   let playTestState = {
     isRunning: false,
     isPaused: false,
-    startTime: null
+    startTime: null,
+    runtimeWindow: null
   };
 
   window.startPlayTest = async function() {
-    if (playTestState.isRunning) return;
+    if (playTestState.isRunning) {
+      // Se già in esecuzione, porta la finestra in primo piano
+      if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
+        playTestState.runtimeWindow.focus();
+        return;
+      } else {
+        // Finestra chiusa, riavvia
+        playTestState.isRunning = false;
+      }
+    }
 
-    // Ensure latest project is serialized and saved for runtime
-    const jsonString = window.serializeProjectToJsonString(true);
-    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-    const projectObj = window.serializeProject();
+    // Verifica se c'è un progetto attivo e se è stato caricato da Firebase
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    const currentUser = AppState.user;
+    
+    let projectObj = null;
+    let jsonString = null;
+
+    // Se c'è un progetto attivo e un utente autenticato, prova a ricaricarlo da Firebase
+    if (activeProjectName && currentUser && currentUser.uid && window.firebaseDB) {
+      try {
+        addDebugMessage('Caricamento progetto da Firebase per playtest...', 'info');
+        
+        // Cerca il progetto nella lista progetti per ottenere l'ID
+        const projects = AppState.projects || [];
+        const projectInfo = projects.find(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : p.name || '';
+          return name === activeProjectName;
+        });
+
+        if (projectInfo && projectInfo.id) {
+          // Carica il progetto completo da Firebase
+          const firebaseProject = await loadProjectFromFirestore(currentUser.uid, projectInfo.id);
+          
+          if (firebaseProject) {
+            projectObj = firebaseProject;
+            
+            // Aggiungi metadata per il runtime (userId, projectId per risolvere assetId)
+            if (!projectObj._meta) {
+              projectObj._meta = {};
+            }
+            projectObj._meta.userId = currentUser.uid;
+            projectObj._meta.projectId = projectInfo.id;
+            
+            jsonString = JSON.stringify(projectObj, null, 2);
+            addDebugMessage('Progetto caricato da Firebase per playtest', 'success');
+          }
+        }
+      } catch (error) {
+        console.error('[PlayTest] Errore caricamento da Firebase:', error);
+        addDebugMessage('Errore caricamento da Firebase, uso progetto corrente', 'warning');
+      }
+    }
+
+    // Fallback: serializza il progetto corrente
+    if (!projectObj || !jsonString) {
+      jsonString = window.serializeProjectToJsonString(true);
+      projectObj = window.serializeProject();
+      addDebugMessage('Uso progetto corrente serializzato', 'info');
+    }
+
+    // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
+    try {
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      addDebugMessage('Progetto salvato in localStorage per runtime', 'success');
+    } catch (error) {
+      console.error('[PlayTest] Errore salvataggio localStorage:', error);
+      addDebugMessage('Errore salvataggio localStorage: ' + error.message, 'error');
+    }
+    
+    // Salva anche in cache locale con chiave progetto (backup)
+    try {
+      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'Untitled';
+      const currentUser = AppState.user;
+      if (currentUser && currentUser.username) {
+        const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+        localStorage.setItem(projectKey, jsonString);
+        localStorage.setItem('amiantoActiveProjectName', projectName);
+        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        addDebugMessage('Progetto salvato in cache locale', 'info');
+      }
+    } catch (error) {
+      console.error('[PlayTest] Errore salvataggio cache:', error);
+    }
     
     // Save game.json depending on mode
     if (window.AMIANTO_PLAYTEST_MODE === 'server') {
@@ -6335,23 +6393,47 @@ window.selectRoom = function(roomId) {
       saveGameJsonLocal(jsonString);
     }
     
-    // Salva anche con nome progetto (non duplicare se già salvato sopra)
+    // Salva anche con nome progetto in OPFS (backup aggiuntivo)
     // Usa setTimeout per evitare chiamate simultanee
     setTimeout(() => {
       saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
     }, 100);
 
-    // Inizializza solo l'iframe sandboxed (senza rendering canvas nell'editor)
-    initializeSandboxRuntime(jsonString);
+    // Apri runtime.html in una nuova finestra
+    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeWindow = window.open(
+      runtimeUrl,
+      'AmiantoRuntime',
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+
+    if (!runtimeWindow) {
+      showNotification('Impossibile aprire la finestra runtime. Verifica che i popup non siano bloccati.', 'error');
+      return;
+    }
 
     playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
+    playTestState.runtimeWindow = runtimeWindow;
     updateGameStatus('Test running...');
-    addDebugMessage('Sandbox runtime initialized', 'success');
-    
-    // NOTA: Gli script globali vengono già eseguiti da initializeEmbeddedRuntimeScripts()
-    // Non duplicare l'esecuzione qui
+    addDebugMessage('Runtime avviato in finestra separata', 'success');
+
+    // Non inviare postMessage se localStorage è disponibile (priorità a localStorage)
+    // Il runtime caricherà automaticamente da localStorage all'avvio
+    // PostMessage è solo un fallback se localStorage non funziona
+    addDebugMessage('Progetto salvato in localStorage, il runtime lo caricherà automaticamente', 'info');
+
+    // Monitora se la finestra viene chiusa
+    const checkWindowClosed = setInterval(() => {
+      if (runtimeWindow.closed) {
+        clearInterval(checkWindowClosed);
+        playTestState.isRunning = false;
+        playTestState.runtimeWindow = null;
+        updateGameStatus('Test stopped (finestra chiusa)');
+        addDebugMessage('Runtime window closed', 'info');
+      }
+    }, 500);
   };
 
   window.pausePlayTest = function() {
@@ -6373,11 +6455,13 @@ window.selectRoom = function(roomId) {
   window.stopPlayTest = function() {
     if (!playTestState.isRunning) return;
     
+    // Chiudi la finestra runtime se aperta
+    if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
+      playTestState.runtimeWindow.close();
+    }
+    
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
     const durationSeconds = Math.round(duration / 1000);
-    
-    // Ferma il runtime incorporato
-    stopEmbeddedRuntime();
     
     playTestState.isRunning = false;
     playTestState.isPaused = false;
@@ -8182,6 +8266,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Normalize start config types
     if (typeof settings.startX !== 'undefined') settings.startX = Number(settings.startX) || 0;
     if (typeof settings.startY !== 'undefined') settings.startY = Number(settings.startY) || 0;
+    // Map startRoomId to startRoom for runtime compatibility
+    if (settings.startRoomId && !settings.startRoom) {
+      settings.startRoom = settings.startRoomId;
+    }
     return settings;
   }
 
@@ -8222,7 +8310,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   window.serializeProject = function() {
-    return {
+    const projectObj = {
       format: 'amianto-game',
       version: 1,
       meta: {
@@ -8241,6 +8329,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       variables: serializeVariables(),
       eventConditions: serializeEventConditions()
     };
+    
+    // Aggiungi _meta con userId e projectId per il runtime (per risolvere assetId)
+    if (currentUser && currentUser.uid) {
+      projectObj._meta = projectObj._meta || {};
+      projectObj._meta.userId = currentUser.uid;
+      
+      // Prova a ottenere projectId da settings.id o normalizzando settings.name
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (projectObj.settings && projectObj.settings.id) {
+        projectObj._meta.projectId = projectObj.settings.id;
+      } else if (projectObj.settings && projectObj.settings.name) {
+        // Normalizza il nome come viene fatto in saveCurrentProject
+        projectObj._meta.projectId = projectObj.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      } else if (activeProjectName) {
+        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      }
+    }
+    
+    return projectObj;
   }
 
   window.serializeProjectToJsonString = function(pretty = true) {
@@ -9745,14 +9852,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       case 'sprite':
         return 'sprites';
       case 'gui':
+        return 'gui';
       case 'character':
+        return 'characters';
       case 'cursor':
-        // Questi tipi vanno in sprites per compatibilità
-        return 'sprites';
+        return 'cursors';
       case 'audio':
         return 'audio';
       default:
-        return 'sprites';
+        // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
+        return assetType ? assetType.toLowerCase() : 'sprites';
     }
   }
 

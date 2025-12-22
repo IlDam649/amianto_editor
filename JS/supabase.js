@@ -148,14 +148,16 @@ function getSupabaseFolderForType(assetType) {
     case 'sprite':
       return 'sprites';
     case 'gui':
+      return 'gui';
     case 'character':
+      return 'characters';
     case 'cursor':
-      // Questi tipi vanno in sprites per compatibilità
-      return 'sprites';
+      return 'cursors';
     case 'audio':
       return 'audio';
     default:
-      return 'sprites';
+      // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
+      return assetType ? assetType.toLowerCase() : 'sprites';
   }
 }
 
