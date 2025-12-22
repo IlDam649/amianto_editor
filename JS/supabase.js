@@ -184,9 +184,11 @@ function buildStoragePath(userId, projectId, category, fileName) {
  * @param {string} projectId - ID del progetto
  * @param {string} category - Categoria (backgrounds, foregrounds, sprites, audio)
  * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
+ * @param {boolean} overwrite - Se true sovrascrive il file esistente (upsert)
+ * @param {string|null} fileNameOverride - Nome file forzato (usa per mantenere stesso path)
  * @returns {Promise<{id: string, name: string, type: string, url: string}>} - Metadata dell'asset caricato
  */
-async function uploadAsset(file, projectId, category, assetId = null) {
+async function uploadAsset(file, projectId, category, assetId = null, overwrite = false, fileNameOverride = null) {
   try {
     // Verifica disponibilità Supabase
     if (!isSupabaseAvailable()) {
@@ -214,7 +216,7 @@ async function uploadAsset(file, projectId, category, assetId = null) {
     const folder = getSupabaseFolderForType(category);
     
     // Genera nome file univoco
-    const fileName = generateUniqueFileName(file.name, assetId);
+    const fileName = fileNameOverride || generateUniqueFileName(file.name, assetId);
     
     // Costruisci percorso completo con userId per sicurezza
     const storagePath = buildStoragePath(userId, projectId, folder, fileName);
@@ -226,7 +228,7 @@ async function uploadAsset(file, projectId, category, assetId = null) {
       .from(SUPABASE_BUCKET_NAME)
       .upload(storagePath, file, {
         cacheControl: '3600',
-        upsert: false // Non sovrascrivere file esistenti
+        upsert: !!overwrite // Se true sovrascrive il file esistente
       });
 
     if (error) {

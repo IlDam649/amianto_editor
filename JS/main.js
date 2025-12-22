@@ -463,6 +463,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let background = null;
   let foregrounds = [];
   let sceneObjects = [];
+  let selectedForegroundId = null;
+  let selectedSceneObjectId = null;
   // GUI overlay: background image and button rectangles
   let guiBackground = null;
   let guiButtons = []; // { id, name, x, y, w, h, backgroundImage: Image|null, text: string }
@@ -556,12 +558,16 @@ document.addEventListener("DOMContentLoaded", () => {
     background = r.background;
     foregrounds = r.foregrounds;
     sceneObjects = r.sceneObjects;
+    selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
+    selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
     walkableArea = r.walkableArea;
     // initialize hotspots container if missing for backward compatibility
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
-    // auto select first hotspot if none
-    if (!activeHotspotId && hotspots.length > 0) activeHotspotId = hotspots[0].id;
+    // auto select first hotspot if none or if previous selection non valido
+    if (!activeHotspotId || !hotspots.some(h => h.id === activeHotspotId)) {
+      activeHotspotId = hotspots.length > 0 ? hotspots[0].id : null;
+    }
   }
 
   // Update editor display (zoom and info)
@@ -824,7 +830,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         
         // Draw selection outline if this is the dragged object
-        if (isDraggingObject && draggedObject && draggedObject.id === obj.id) {
+        // Only draw outline if no hotspot is selected (scene objects are locked)
+        if (!activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id) {
           ctx.save();
           ctx.strokeStyle = 'rgba(57,255,20,0.8)';
           ctx.lineWidth = 3;
@@ -1113,6 +1120,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
         
         if (clickedObject) {
+          // Lock scene objects if a hotspot is selected
+          if (activeHotspotId) {
+            return;
+          }
           e.preventDefault();
           isDraggingObject = true;
           draggedObject = clickedObject;
@@ -1149,6 +1160,13 @@ document.addEventListener("DOMContentLoaded", () => {
         
         redraw();
       } else if (isDraggingObject && draggedObject) {
+        // Lock scene objects if a hotspot is selected
+        if (activeHotspotId) {
+          isDraggingObject = false;
+          draggedObject = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
         e.preventDefault();
         const worldPos = screenToWorld(e.clientX, e.clientY);
         
@@ -1484,32 +1502,37 @@ for (const hs of hotspots) {
       const item = document.createElement('div');
       item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
       item.dataset.hotspotId = hs.id;
+      const isSelected = activeHotspotId === hs.id;
 
       const name = document.createElement('div');
-      name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>` +
-        `<br><small>Points: ${(hs.points && hs.points.length) || 0}</small>` +
-        `<br><span class="badge ${hs.visible === false ? 'bg-dark' : 'bg-warning text-dark'}">${hs.visible === false ? 'Hidden' : 'Visible'}</span>` +
-        (activeHotspotId === hs.id ? ' <span class="badge bg-info text-dark">Active</span>' : '');
+      name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>`;
 
       const controls = document.createElement('div');
 
       const btnSelect = document.createElement('button');
-      btnSelect.className = 'btn btn-sm btn-outline-light me-1';
+      btnSelect.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
       btnSelect.title = 'Select';
-      btnSelect.textContent = '✔';
+      btnSelect.textContent = isSelected ? 'Selected' : 'Select';
       btnSelect.addEventListener('click', () => {
         activeHotspotId = hs.id;
+        selectedSceneObjectId = null; // Lock scene objects when hotspot is selected
         isDrawingHotspot = false; // stop drawing when switching
         selectedHotspotVertexIndex = -1;
         refreshHotspotsListUI();
+        refreshSceneObjectsListUI();
         redraw();
       });
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
-      btnEdit.title = 'Rename';
+      btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
       btnEdit.textContent = '✏️';
+      btnEdit.disabled = !isSelected;
       btnEdit.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
@@ -1521,9 +1544,14 @@ for (const hs of hotspots) {
 
       const btnToggle = document.createElement('button');
       btnToggle.className = 'btn btn-sm btn-outline-warning me-1';
-      btnToggle.title = 'Show/Hide';
+      btnToggle.title = isSelected ? 'Show/Hide' : 'Select before editing';
       btnToggle.textContent = '👁️';
+      btnToggle.disabled = !isSelected;
       btnToggle.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         hs.visible = hs.visible === false ? true : false;
         const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
         refreshHotspotsListUI();
@@ -1532,9 +1560,14 @@ for (const hs of hotspots) {
 
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
-      btnClear.title = 'Svuota punti';
+      btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
       btnClear.textContent = '🧹';
+      btnClear.disabled = !isSelected;
       btnClear.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         hs.points = [];
         if (activeHotspotId === hs.id) selectedHotspotVertexIndex = -1;
         const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
@@ -1544,9 +1577,14 @@ for (const hs of hotspots) {
 
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
-      btnDelete.title = 'Delete';
+      btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
       btnDelete.textContent = '🗑️';
+      btnDelete.disabled = !isSelected;
       btnDelete.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         if (!confirm('Delete this hotspot?')) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
@@ -1931,29 +1969,28 @@ for (const hs of hotspots) {
   window.resetEditorZoom = function() {
     editorState.zoom = 1.0;
     
-    // Calcola il pan necessario per posizionare l'angolo in alto a sinistra del viewport in (0, 0) del canvas
-    // Dobbiamo compensare l'offset di centratura che viene applicato in redraw()
+    // Position top-left corner of viewport at top-left corner of canvas
     const canvasRect = canvas.getBoundingClientRect();
     let panX = 0;
     let panY = 0;
     
     if (canvasRect.width > 0 && canvasRect.height > 0) {
-      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
+      // Calculate scaling between internal canvas and displayed canvas (CSS)
       const scaleX = canvas.width / canvasRect.width;
       const scaleY = canvas.height / canvasRect.height;
       
-      // Calcola l'offset che verrebbe applicato per centrare il contenuto
+      // Calculate the offset that would be applied to center the content
       const scaledContentWidth = gameViewport.width * editorState.zoom;
       const scaledContentHeight = gameViewport.height * editorState.zoom;
       const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
       const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
       
-      // Converti l'offset da coordinate CSS a coordinate canvas interne
+      // Convert offset from CSS coordinates to internal canvas coordinates
       const centerOffsetX = cssOffsetX * scaleX;
       const centerOffsetY = cssOffsetY * scaleY;
       
-      // Imposta il pan per compensare l'offset di centratura, così l'angolo (0,0) del viewport
-      // sarà posizionato in (0,0) del canvas
+      // Set pan to compensate for centering offset, so top-left corner (0,0) of viewport
+      // will be positioned at top-left corner (0,0) of the displayed canvas
       panX = -centerOffsetX;
       panY = -centerOffsetY;
     }
@@ -1963,7 +2000,7 @@ for (const hs of hotspots) {
     
     updateEditorDisplay();
     redraw();
-    showNotification('Editor zoom and pan reset', 'info');
+    showNotification('Viewport at 100% with top-left corner aligned', 'info');
   };
 
   // Zoom in function
@@ -2014,10 +2051,25 @@ for (const hs of hotspots) {
     ul.className = "list-group";
     ul.style.background = "transparent";
 
+    if (foregrounds.length > 0 && (!selectedForegroundId || !foregrounds.some(f => f.id === selectedForegroundId))) {
+      selectedForegroundId = foregrounds[0].id || uid('fg');
+      foregrounds[0].id = selectedForegroundId;
+    }
+    if (foregrounds.length === 0) {
+      selectedForegroundId = null;
+    }
+
     foregrounds.forEach((layer, idx) => {
+      const layerId = layer.id || uid("fg");
+      layer.id = layerId;
+      const isSelected = selectedForegroundId === layerId;
+
       const li = document.createElement("li");
       li.className = "list-group-item d-flex justify-content-between align-items-center bg-secondary text-light";
       li.dataset.index = idx;
+      if (isSelected) {
+        li.classList.add('border', 'border-info');
+      }
 
       const label = document.createElement("span");
       label.textContent = layer.name || `Layer ${idx + 1}`;
@@ -2025,13 +2077,30 @@ for (const hs of hotspots) {
 
       const controls = document.createElement("div");
 
+      const selectBtn = document.createElement("button");
+      selectBtn.className = isSelected ? "btn btn-sm btn-success me-1" : "btn btn-sm btn-outline-success me-1";
+      selectBtn.textContent = isSelected ? "Selected" : "Select";
+      selectBtn.title = isSelected ? "Active layer" : "Make this layer editable";
+      selectBtn.addEventListener("click", () => {
+        selectedForegroundId = layerId;
+        refreshForegroundListUI();
+        redraw();
+      });
+
       // delete
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-danger ms-2";
       del.textContent = "✕";
       del.title = "Delete layer";
       del.addEventListener("click", () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
         foregrounds.splice(idx, 1);
+        if (selectedForegroundId === layerId) {
+          selectedForegroundId = foregrounds[0] ? foregrounds[0].id : null;
+        }
         refreshForegroundListUI();
         redraw();
       });
@@ -2042,6 +2111,10 @@ for (const hs of hotspots) {
       up.textContent = "↑";
       up.title = "Move up";
       up.addEventListener("click", () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
         if (idx <= 0) return;
         [foregrounds[idx - 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx - 1]];
         refreshForegroundListUI();
@@ -2053,12 +2126,24 @@ for (const hs of hotspots) {
       down.textContent = "↓";
       down.title = "Move down";
       down.addEventListener("click", () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
         if (idx >= foregrounds.length - 1) return;
         [foregrounds[idx + 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx + 1]];
         refreshForegroundListUI();
         redraw();
       });
 
+      if (!isSelected) {
+        up.disabled = true;
+        down.disabled = true;
+        del.disabled = true;
+        up.title = down.title = del.title = "Select the layer to modify it";
+      }
+
+      controls.appendChild(selectBtn);
       controls.appendChild(up);
       controls.appendChild(down);
       controls.appendChild(del);
@@ -2113,6 +2198,9 @@ for (const hs of hotspots) {
     rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
     currentRoomId = rid;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
     redraw();
     try {
@@ -2142,6 +2230,9 @@ for (const hs of hotspots) {
     const first = rooms.keys().next().value;
     currentRoomId = first;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
     redraw();
     try {
@@ -2159,6 +2250,9 @@ window.selectRoom = function(roomId) {
     const prevRoomId = currentRoomId;
     currentRoomId = roomId;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
     redraw();
     
@@ -2206,9 +2300,21 @@ window.selectRoom = function(roomId) {
         
         try {
           showNotification('Uploading background...', 'info');
+
+          const room = rooms.get(currentRoomId);
+          const existingBgInfo = room && room.background ? imageAssetMap.get(room.background) : null;
+          const existingAssetId = existingBgInfo && existingBgInfo.assetId ? existingBgInfo.assetId : null;
+          if (room && room.background) {
+            imageAssetMap.delete(room.background);
+          }
           
           // Upload immagine su Firebase Storage
-          const { assetId, downloadURL } = await uploadImage(file, projectId, 'background');
+          const { assetId, downloadURL, fileName } = await uploadImage(
+            file,
+            projectId,
+            'background',
+            { assetId: existingAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null }
+          );
           
           // Carica immagine dall'URL
           const img = await loadImageFromUrl(downloadURL);
@@ -2266,12 +2372,11 @@ window.selectRoom = function(roomId) {
           });
           
           // Registra nella mappa asset
-          imageAssetMap.set(img, { assetId, type: 'background', projectId });
+          imageAssetMap.set(img, { assetId, type: 'background', projectId, fileName: fileName || null });
           
           // Imposta come background corrente
           background = img;
-          const r = rooms.get(currentRoomId);
-          if (r) r.background = img;
+          if (room) room.background = img;
           
           showNotification(`Background uploaded: ${finalWidth}×${finalHeight}`, 'success');
           redraw();
@@ -2340,6 +2445,7 @@ window.selectRoom = function(roomId) {
           foregrounds.push(layer);
           const r = rooms.get(currentRoomId);
           if (r) r.foregrounds = foregrounds;
+          selectedForegroundId = layer.id;
           
           refreshForegroundListUI();
           showNotification('Foreground layer uploaded', 'success');
@@ -2360,6 +2466,7 @@ window.selectRoom = function(roomId) {
             };
             foregrounds.push(layer);
             const r = rooms.get(currentRoomId); if (r) r.foregrounds = foregrounds;
+            selectedForegroundId = layer.id;
             refreshForegroundListUI();
             showNotification('Foreground loaded locally (not saved)', 'warning');
             redraw();
@@ -2857,6 +2964,96 @@ window.selectRoom = function(roomId) {
   };
 
   // Functions for Scene Objects (in Rooms tab)
+  function ensureSceneObjectSelection() {
+    // Don't auto-select scene objects if a hotspot is active
+    if (activeHotspotId) {
+      selectedSceneObjectId = null;
+      return;
+    }
+    if (sceneObjects.length > 0 && (!selectedSceneObjectId || !sceneObjects.some(o => o.id === selectedSceneObjectId))) {
+      selectedSceneObjectId = sceneObjects[0].id;
+    }
+    if (sceneObjects.length === 0) {
+      selectedSceneObjectId = null;
+    }
+  }
+
+  function selectSceneObject(objectId) {
+    selectedSceneObjectId = objectId;
+    activeHotspotId = null; // Lock hotspots when scene object is selected
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
+    redraw();
+  }
+
+  function createSceneObjectListItem(sceneObject) {
+    const isSelected = sceneObject.id === selectedSceneObjectId;
+    const item = document.createElement('div');
+    item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+    if (isSelected) {
+      item.classList.add('border', 'border-info');
+    }
+    item.dataset.objectId = sceneObject.id;
+
+    const info = document.createElement('div');
+    info.innerHTML = `<strong>${sceneObject.name}</strong>`;
+
+    const controls = document.createElement('div');
+
+    const selectBtn = document.createElement('button');
+    selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+    selectBtn.title = isSelected ? 'Active object' : 'Select to edit';
+    selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+    selectBtn.addEventListener('click', () => selectSceneObject(sceneObject.id));
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn btn-sm btn-outline-light me-1';
+    editBtn.title = isSelected ? 'Edit' : 'Select before editing';
+    editBtn.textContent = '✏️';
+    editBtn.disabled = !isSelected;
+    editBtn.addEventListener('click', () => {
+      if (!isSelected) {
+        showNotification('Select the object before editing it', 'warning');
+        return;
+      }
+      editSceneObject(editBtn);
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-sm btn-outline-danger';
+    deleteBtn.title = isSelected ? 'Delete' : 'Select before editing';
+    deleteBtn.textContent = '🗑️';
+    deleteBtn.disabled = !isSelected;
+    deleteBtn.addEventListener('click', () => {
+      if (!isSelected) {
+        showNotification('Select the object before editing it', 'warning');
+        return;
+      }
+      removeSceneObject(deleteBtn);
+    });
+
+    controls.appendChild(selectBtn);
+    controls.appendChild(editBtn);
+    controls.appendChild(deleteBtn);
+
+    item.appendChild(info);
+    item.appendChild(controls);
+    return item;
+  }
+
+  function refreshSceneObjectsListUI() {
+    const sceneObjectsList = document.getElementById('scene-objects-list');
+    if (!sceneObjectsList) return;
+    ensureSceneObjectSelection();
+    sceneObjectsList.innerHTML = '';
+    sceneObjects.forEach((obj) => {
+      if (!obj.id) {
+        obj.id = uid('scene');
+      }
+      sceneObjectsList.appendChild(createSceneObjectListItem(obj));
+    });
+  }
+
   window.addSceneObject = function() {
     document.getElementById('scene-object-upload').click();
   };
@@ -2911,28 +3108,11 @@ window.selectRoom = function(roomId) {
       // Add to scene objects array (room-scoped)
       sceneObjects.push(sceneObject);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      selectedSceneObjectId = sceneObject.id;
       
       showNotification('Scene object uploaded', 'success');
       
-      // Add to UI list
-      const sceneObjectsList = document.getElementById('scene-objects-list');
-      const newObject = document.createElement('div');
-      newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-      newObject.dataset.objectId = sceneObject.id;
-      newObject.innerHTML = `
-        <div>
-          <strong>${objectName}</strong>
-          <br><small>Scene object</small>
-          <br><span class="badge bg-warning">Interactive</span>
-          <br><small style="color: #888;">Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}</small>
-        </div>
-        <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-        </div>
-      `;
-      
-      sceneObjectsList.appendChild(newObject);
+      refreshSceneObjectsListUI();
       
       // Redraw canvas to show the new object
       redraw();
@@ -2965,24 +3145,9 @@ window.selectRoom = function(roomId) {
         
         sceneObjects.push(sceneObject);
         const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+        selectedSceneObjectId = sceneObject.id;
         
-        const sceneObjectsList = document.getElementById('scene-objects-list');
-        const newObject = document.createElement('div');
-        newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-        newObject.dataset.objectId = sceneObject.id;
-        newObject.innerHTML = `
-          <div>
-            <strong>${objectName}</strong>
-            <br><small>Scene object</small>
-            <br><span class="badge bg-warning">Interactive</span>
-            <br><small style="color: #888;">Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}</small>
-          </div>
-          <div>
-            <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-            <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-          </div>
-        `;
-        sceneObjectsList.appendChild(newObject);
+        refreshSceneObjectsListUI();
         
         showNotification(`Scene object "${objectName}" loaded locally (not saved)`, 'warning');
         redraw();
@@ -3007,13 +3172,18 @@ window.selectRoom = function(roomId) {
     if (confirm('Are you sure you want to delete this scene object?')) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
+      if (objectId !== selectedSceneObjectId) {
+        showNotification('Seleziona l\'oggetto prima di eliminarlo', 'warning');
+        return;
+      }
       
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      selectedSceneObjectId = sceneObjects[0] ? sceneObjects[0].id : null;
       
       // Remove from UI
-      listItem.remove();
+      refreshSceneObjectsListUI();
       
       // Redraw canvas
       redraw();
@@ -3026,6 +3196,10 @@ window.selectRoom = function(roomId) {
     const listItem = button.closest('.list-group-item');
     const objectId = listItem.dataset.objectId;
     const sceneObject = sceneObjects.find(obj => obj.id === objectId);
+    if (objectId !== selectedSceneObjectId) {
+      showNotification('Select the object before editing it', 'warning');
+      return;
+    }
     
     if (!sceneObject) return;
     
@@ -3067,6 +3241,7 @@ window.selectRoom = function(roomId) {
       }
       redraw();
     }
+    refreshSceneObjectsListUI();
   };
 
   // Functions for Characters tab
@@ -4586,28 +4761,11 @@ window.selectRoom = function(roomId) {
         };
         sceneObjects.push(newObj);
         const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+        selectedSceneObjectId = newObj.id;
 
         // Add to UI list
         try {
-          const list = document.getElementById('scene-objects-list');
-          if (list) {
-            const item = document.createElement('div');
-            item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-            item.dataset.objectId = newObj.id;
-            item.innerHTML = `
-              <div>
-                <strong>${newObj.name}</strong>
-                <br><small>Scene object</small>
-                <br><span class="badge bg-warning">Interactive</span>
-                <br><small style="color: #888;">Position: ${Math.round(newObj.x)}, ${Math.round(newObj.y)}</small>
-              </div>
-              <div>
-                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-              </div>
-            `;
-            list.appendChild(item);
-          }
+          refreshSceneObjectsListUI();
         } catch (_) {}
 
         redraw();
@@ -9584,7 +9742,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
    * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string, fileName: string}>} - Metadata dell'asset caricato
    */
-  async function uploadImageToStorage(file, projectId, assetType, assetId = null) {
+  async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null) {
     try {
       // Verifica che Supabase Storage sia disponibile
       if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
@@ -9604,17 +9762,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         assetId = generateAssetId();
       }
 
+      let forcedFileName = fileNameOverride;
+      if (!forcedFileName && overwriteExisting && assetId) {
+        const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop() : 'png';
+        forcedFileName = `${assetId}.${(ext || 'png').toLowerCase()}`;
+      }
+
       // Determina categoria (backgrounds, foregrounds, sprites, audio)
       const category = getStorageFolderForType(assetType);
       
       console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId });
 
       // Usa la funzione uploadAsset da supabase.js
-      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId);
+      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName);
       
       // Costruisci storagePath per compatibilità con il resto del codice
       // Usa il fileName generato da Supabase (include assetId)
-      const generatedFileName = result.fileName || result.url.split('/').pop().split('?')[0];
+      const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
       const storagePath = `${projectId}/${category}/${generatedFileName}`;
       
       console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName });
@@ -9905,21 +10069,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} assetType - Tipo di asset
    * @returns {Promise<{assetId: string, downloadURL: string}>} - Risultato upload
    */
-  async function uploadImage(file, projectId, assetType) {
+  async function uploadImage(file, projectId, assetType, options = {}) {
     try {
+      const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null } = options || {};
       // Upload su Supabase Storage
-      const { assetId, storagePath, downloadURL, fileName } = await uploadImageToStorage(file, projectId, assetType);
+      const { assetId: finalAssetId, storagePath, downloadURL, fileName } = await uploadImageToStorage(
+        file,
+        projectId,
+        assetType,
+        assetId,
+        overwriteExisting,
+        fileNameOverride
+      );
       
       // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
       // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
       // perché l'asset è già caricato su Supabase Storage
-      const metadataSaved = await saveAssetMetadata(projectId, assetId, file.name, assetType, storagePath, fileName, downloadURL);
+      const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL);
       
       if (!metadataSaved) {
         console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
       }
       
-      return { assetId, downloadURL };
+      return { assetId: finalAssetId, downloadURL, fileName };
     } catch (error) {
       console.error('[Asset] ❌ Errore upload immagine completo:', error);
       throw error;
@@ -10148,29 +10320,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 }
               }
               // ricrea lista oggetti
-              const list = document.getElementById('scene-objects-list');
-              if (list) {
-                list.innerHTML = '';
-                roomVal.sceneObjects.forEach(obj => {
-                  const item = document.createElement('div');
-                  item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-                  item.dataset.objectId = obj.id;
-                  item.innerHTML = `
-        <div>
-          <strong>${obj.name}</strong>
-          <br><small>Scene object</small>
-          <br><span class="badge bg-warning">Interactive</span>
-          <br><small style="color: #888;">Position: ${Math.round(obj.x)}, ${Math.round(obj.y)}</small>
-        </div>
-        <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-        </div>
-                  `;
-                  list.appendChild(item);
-                });
+              if (roomId === currentRoomId) {
+                sceneObjects = roomVal.sceneObjects;
+                refreshSceneObjectsListUI();
+                redraw();
               }
-              redraw();
             }
             refreshHotspotsListUI();
           });
@@ -10184,6 +10338,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const firstRoom = rooms.keys().next().value;
       currentRoomId = firstRoom;
       bindRoomRefs();
+      refreshForegroundListUI();
+      refreshSceneObjectsListUI();
+      refreshHotspotsListUI();
       refreshRoomsSelector();
       try { refreshStartRoomSelector(); } catch(_) {}
       redraw();
