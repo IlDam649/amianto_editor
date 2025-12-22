@@ -128,10 +128,10 @@ function normalizeFileName(fileName) {
  */
 function generateUniqueFileName(originalName, assetId) {
   const ext = originalName.split('.').pop() || 'png';
-  const baseName = normalizeFileName(originalName.replace(`.${ext}`, ''));
   
-  // Usa assetId per garantire unicità
-  return `${assetId}_${baseName}.${ext}`;
+  // Usa lo stesso formato dei background: solo assetId.estensione (senza baseName)
+  // Questo garantisce coerenza tra tutti gli asset (background, foreground, sprite, gui, ecc.)
+  return `${assetId}.${ext}`;
 }
 
 /**

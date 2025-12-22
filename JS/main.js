@@ -554,9 +554,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function bindRoomRefs() {
     const r = rooms.get(currentRoomId);
-    if (!r) return;
+    if (!r) {
+      console.warn(`[bindRoomRefs] Room ${currentRoomId} non trovata`);
+      return;
+    }
+    
     background = r.background;
-    foregrounds = r.foregrounds;
+    
+    // IMPORTANTE: Non sovrascrivere foregrounds se sono già caricati e la room ha foregrounds
+    // Questo previene la perdita di foreground durante il reload
+    if (Array.isArray(r.foregrounds) && r.foregrounds.length > 0) {
+      foregrounds = r.foregrounds;
+      console.log(`[bindRoomRefs] ✓ Foreground ripristinati da room: ${foregrounds.length} layer`);
+    } else if (!Array.isArray(foregrounds) || foregrounds.length === 0) {
+      // Solo se non ci sono foreground nello stato globale, inizializza array vuoto
+      foregrounds = [];
+      console.log(`[bindRoomRefs] Nessun foreground nella room, inizializzato array vuoto`);
+    } else {
+      // Mantieni i foreground esistenti se la room non ne ha
+      console.log(`[bindRoomRefs] Mantenuti foreground esistenti nello stato globale: ${foregrounds.length} layer`);
+    }
+    
     sceneObjects = r.sceneObjects;
     selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
     selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
@@ -842,10 +860,40 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // Draw foregrounds at original sizes
+    // Draw foregrounds - after scene objects, before GUI
+    // Support same transforms as scene objects: x, y, rotationRad, scaleX, scaleY, visible
     for (let layer of foregrounds) {
-      if (layer.img) {
-        drawImageAtOriginalSize(layer.img, layer.offsetX || 0, layer.offsetY || 0);
+      if (!layer || !layer.img) continue;
+      if (layer.visible === false) continue;
+      
+      // Support both x/y and offsetX/offsetY for backward compatibility
+      const layerX = (typeof layer.x === 'number') ? layer.x : (layer.offsetX || 0);
+      const layerY = (typeof layer.y === 'number') ? layer.y : (layer.offsetY || 0);
+      const rot = Number(layer.rotationRad || 0);
+      const sx = (typeof layer.scaleX === 'number') ? layer.scaleX : 1;
+      const sy = (typeof layer.scaleY === 'number') ? layer.scaleY : 1;
+
+      if (rot !== 0 || sx !== 1 || sy !== 1) {
+        ctx.save();
+        ctx.translate(layerX, layerY);
+        if (rot !== 0) ctx.rotate(rot);
+        if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
+        // draw image at origin with its natural size
+        ctx.drawImage(layer.img, 0, 0, layer.img.width, layer.img.height);
+        ctx.restore();
+      } else {
+        // Draw layer without transforms
+        drawImageAtOriginalSize(layer.img, layerX, layerY);
+      }
+      
+      // Draw selection outline if this is the selected foreground layer
+      if (selectedForegroundId === layer.id) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0, 200, 255, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(layerX, layerY, layer.img.width, layer.img.height);
+        ctx.restore();
       }
     }
 
@@ -2058,6 +2106,9 @@ for (const hs of hotspots) {
     if (foregrounds.length === 0) {
       selectedForegroundId = null;
     }
+    // Assicura che i foreground siano sempre sincronizzati con la room
+    const r = rooms.get(currentRoomId);
+    if (r) r.foregrounds = foregrounds;
 
     foregrounds.forEach((layer, idx) => {
       const layerId = layer.id || uid("fg");
@@ -2098,6 +2149,8 @@ for (const hs of hotspots) {
           return;
         }
         foregrounds.splice(idx, 1);
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
         if (selectedForegroundId === layerId) {
           selectedForegroundId = foregrounds[0] ? foregrounds[0].id : null;
         }
@@ -2117,6 +2170,8 @@ for (const hs of hotspots) {
         }
         if (idx <= 0) return;
         [foregrounds[idx - 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx - 1]];
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
         refreshForegroundListUI();
         redraw();
       });
@@ -2132,6 +2187,8 @@ for (const hs of hotspots) {
         }
         if (idx >= foregrounds.length - 1) return;
         [foregrounds[idx + 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx + 1]];
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
         refreshForegroundListUI();
         redraw();
       });
@@ -2166,6 +2223,8 @@ for (const hs of hotspots) {
           if (oldI === newI) return;
           const moved = foregrounds.splice(oldI, 1)[0];
           foregrounds.splice(newI, 0, moved);
+          const r = rooms.get(currentRoomId);
+          if (r) r.foregrounds = foregrounds;
           refreshForegroundListUI();
           redraw();
         }
@@ -8098,17 +8157,34 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   function serializeRooms() {
     const serialized = [];
     rooms.forEach((r) => {
+      // DEBUG: Log foreground prima della serializzazione
+      if (Array.isArray(r.foregrounds)) {
+        console.log(`[Serialize] Room ${r.id}: serializzando ${r.foregrounds.length} foreground`, r.foregrounds.map(f => ({ id: f.id, name: f.name, hasImg: !!f.img })));
+      } else {
+        console.log(`[Serialize] Room ${r.id}: r.foregrounds non è un array`, typeof r.foregrounds, r.foregrounds);
+      }
       serialized.push({
         id: r.id,
         name: r.name || r.id,
         background: serializeImage(r.background),
-        foregrounds: Array.isArray(r.foregrounds) ? r.foregrounds.map(f => ({
-          id: f.id,
-          name: f.name,
-          image: serializeImage(f.img),
-          offsetX: Number(f.offsetX) || 0,
-          offsetY: Number(f.offsetY) || 0
-        })) : [],
+        foregrounds: Array.isArray(r.foregrounds) ? r.foregrounds.map(f => {
+          // Support both x/y and offsetX/offsetY for backward compatibility
+          const x = (typeof f.x === 'number') ? f.x : (f.offsetX || 0);
+          const y = (typeof f.y === 'number') ? f.y : (f.offsetY || 0);
+          return {
+            id: f.id,
+            name: f.name || 'Layer',
+            image: serializeImage(f.img),
+            x: Number(x) || 0,
+            y: Number(y) || 0,
+            offsetX: Number(x) || 0, // Mantieni per compatibilità
+            offsetY: Number(y) || 0, // Mantieni per compatibilità
+            rotationRad: Number(f.rotationRad) || 0,
+            scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
+            scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
+            visible: (typeof f.visible === 'boolean') ? f.visible : true
+          };
+        }) : [],
         sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
           id: o.id,
           name: o.name,
@@ -8125,6 +8201,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           visible: !!h.visible
         })) : []
       });
+      
+      // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
+      const serializedRoom = serialized[serialized.length - 1];
+      if (serializedRoom && Array.isArray(serializedRoom.foregrounds)) {
+        console.log(`[Serialize] ✓ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
+      } else {
+        console.warn(`[Serialize] ⚠️ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
+      }
     });
     return serialized;
   }
@@ -9598,6 +9682,146 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Save current project for current user
   // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  /**
+   * Converte un dataURL in un File object per l'upload
+   * @param {string} dataURL - Data URL dell'immagine
+   * @param {string} fileName - Nome del file
+   * @returns {Promise<File|null>} - File object o null se errore
+   */
+  async function dataURLtoFile(dataURL, fileName) {
+    try {
+      const arr = dataURL.split(',');
+      const mime = arr[0].match(/:(.*?);/)[1];
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new File([u8arr], fileName, { type: mime });
+    } catch (error) {
+      console.error('[Asset] Errore conversione dataURL to File:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica su Supabase
+   * @param {Object} projectObj - Oggetto progetto serializzato
+   * @param {string} projectId - ID del progetto
+   * @returns {Promise<Object>} - Progetto aggiornato con assetId invece di dataURL
+   */
+  async function saveAllAssetsToStorage(projectObj, projectId) {
+    const updatedProject = JSON.parse(JSON.stringify(projectObj)); // Deep clone
+    let savedCount = 0;
+    let errorCount = 0;
+
+    // Funzione helper per processare un asset
+    const processAsset = async (assetValue, assetType, assetName) => {
+      // Se è già un assetId (prefisso "asset:"), salta
+      if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
+        return assetValue;
+      }
+      
+      // Se è un dataURL, convertilo e caricalo
+      if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
+        try {
+          const fileName = assetName || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.png`;
+          const file = await dataURLtoFile(assetValue, fileName);
+          if (!file) {
+            console.warn(`[Asset] Impossibile convertire dataURL in File per ${assetName}`);
+            errorCount++;
+            return assetValue; // Mantieni dataURL originale se fallisce
+          }
+
+          const { assetId } = await uploadImage(file, projectId, assetType);
+          console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}`);
+          savedCount++;
+          return `asset:${assetId}`;
+        } catch (error) {
+          console.error(`[Asset] ❌ Errore salvataggio asset ${assetName}:`, error);
+          errorCount++;
+          return assetValue; // Mantieni dataURL originale se fallisce
+        }
+      }
+      
+      return assetValue;
+    };
+
+    // Processa tutti i background delle room
+    if (updatedProject.rooms && Array.isArray(updatedProject.rooms)) {
+      for (const room of updatedProject.rooms) {
+        if (room.background) {
+          room.background = await processAsset(room.background, 'background', `room_${room.id}_background`);
+        }
+        
+        // Processa foregrounds
+        if (room.foregrounds && Array.isArray(room.foregrounds)) {
+          for (const fg of room.foregrounds) {
+            if (fg.image) {
+              fg.image = await processAsset(fg.image, 'foreground', `room_${room.id}_fg_${fg.id || 'unknown'}`);
+            }
+          }
+        }
+        
+        // Processa scene objects
+        if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+          for (const obj of room.sceneObjects) {
+            if (obj.image) {
+              obj.image = await processAsset(obj.image, 'sprite', `room_${room.id}_obj_${obj.id || 'unknown'}`);
+            }
+          }
+        }
+      }
+    }
+
+    // Processa GUI backgrounds e button images
+    if (updatedProject.guis && Array.isArray(updatedProject.guis)) {
+      for (const gui of updatedProject.guis) {
+        if (gui.background) {
+          gui.background = await processAsset(gui.background, 'gui', `gui_${gui.id}_background`);
+        }
+        
+        if (gui.buttons && Array.isArray(gui.buttons)) {
+          for (const btn of gui.buttons) {
+            if (btn.backgroundImage) {
+              btn.backgroundImage = await processAsset(btn.backgroundImage, 'gui', `gui_${gui.id}_btn_${btn.id || 'unknown'}`);
+            }
+          }
+        }
+      }
+    }
+
+    // Processa character frames
+    if (updatedProject.characters && Array.isArray(updatedProject.characters)) {
+      for (const char of updatedProject.characters) {
+        if (char.directions) {
+          for (const [dir, dirData] of Object.entries(char.directions)) {
+            if (dirData.frames && Array.isArray(dirData.frames)) {
+              for (let i = 0; i < dirData.frames.length; i++) {
+                if (dirData.frames[i]) {
+                  dirData.frames[i] = await processAsset(dirData.frames[i], 'character', `char_${char.name}_${dir}_${i}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Processa cursors
+    if (updatedProject.cursors && Array.isArray(updatedProject.cursors)) {
+      for (const cursor of updatedProject.cursors) {
+        if (cursor.image) {
+          cursor.image = await processAsset(cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
+        }
+      }
+    }
+
+    console.log(`[Asset] Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    return updatedProject;
+  }
+
   window.saveCurrentProject = async function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
@@ -9611,8 +9835,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
-    const jsonString = window.serializeProjectToJsonString(true);
-    const projectObj = window.serializeProject();
+    let projectObj = window.serializeProject();
     const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : activeProjectName;
     
     // Verifica che il progetto serializzato corrisponda al progetto attivo
@@ -9635,6 +9858,38 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Continua con cache locale come fallback
     }
 
+    // 0. SALVA TUTTI GLI ASSET NON ANCORA CARICATI
+    showNotification('Saving all assets to storage...', 'info');
+    
+    // DEBUG: Verifica foreground prima del salvataggio asset
+    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
+      projectObj.rooms.forEach(room => {
+        if (Array.isArray(room.foregrounds)) {
+          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground prima del salvataggio asset`);
+        }
+      });
+    }
+    
+    try {
+      projectObj = await saveAllAssetsToStorage(projectObj, projectId);
+      console.log('[Save] Tutti gli asset salvati su Supabase');
+    } catch (error) {
+      console.error('[Save] Errore salvataggio asset:', error);
+      showNotification('Warning: Some assets could not be saved', 'warning');
+    }
+
+    // DEBUG: Verifica foreground dopo il salvataggio asset e prima di Firestore
+    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
+      projectObj.rooms.forEach(room => {
+        if (Array.isArray(room.foregrounds)) {
+          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground nel JSON da salvare su Firestore`, 
+            room.foregrounds.map(f => ({ id: f.id, name: f.name, image: f.image ? f.image.substring(0, 50) + '...' : 'null' })));
+        } else {
+          console.warn(`[Save] ⚠️ Room ${room.id}: foregrounds non è un array!`, typeof room.foregrounds, room.foregrounds);
+        }
+      });
+    }
+
     // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
     let firestoreSuccess = false;
     if (userId) {
@@ -9646,6 +9901,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
+    // Usa il progetto aggiornato con assetId invece di dataURL
+    const jsonString = JSON.stringify(projectObj, null, 2);
     autosaveToCache(projectName, jsonString);
 
     // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
@@ -10423,25 +10680,62 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             }
             if (Array.isArray(r.foregrounds)) {
+              console.log(`[Load] Caricamento ${r.foregrounds.length} foreground per room ${roomId}`, r.foregrounds);
               const out = [];
               for (const f of r.foregrounds) {
-                const img = f.image ? await createImageFromDataUrl(f.image, projectId) : null;
-                out.push({
+                if (!f || !f.image) {
+                  console.warn(`[Load] Foreground senza image, skip:`, f);
+                  continue;
+                }
+                
+                const img = await createImageFromDataUrl(f.image, projectId);
+                if (!img) {
+                  console.warn(`[Load] Impossibile caricare immagine foreground:`, f.image);
+                  continue;
+                }
+                
+                // Support both x/y and offsetX/offsetY for backward compatibility
+                const x = (typeof f.x === 'number') ? f.x : (f.offsetX || 0);
+                const y = (typeof f.y === 'number') ? f.y : (f.offsetY || 0);
+                
+                const foregroundObj = {
                   id: f.id || uid('fg'),
                   name: f.name || 'Layer',
                   img: img,
-                  offsetX: Number(f.offsetX)||0,
-                  offsetY: Number(f.offsetY)||0
-                });
+                  x: Number(x) || 0,
+                  y: Number(y) || 0,
+                  offsetX: Number(x) || 0, // Mantieni per compatibilità
+                  offsetY: Number(y) || 0, // Mantieni per compatibilità
+                  rotationRad: Number(f.rotationRad) || 0,
+                  scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
+                  scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
+                  visible: (typeof f.visible === 'boolean') ? f.visible : true
+                };
+                
+                out.push(foregroundObj);
+                
                 // Se è un assetId, registra nella mappa
-                if (img && f.image && f.image.startsWith('asset:')) {
+                if (f.image && f.image.startsWith('asset:')) {
                   const assetId = f.image.replace('asset:', '');
                   imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
                 }
+                
+                console.log(`[Load] ✓ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
               }
+              
+              console.log(`[Load] Foreground caricati per room ${roomId}: ${out.length}/${r.foregrounds.length}`);
               roomVal.foregrounds = out;
+              
+              // IMPORTANTE: Se questa è la room corrente, aggiorna anche lo stato globale
+              if (roomId === currentRoomId) {
+                foregrounds = out;
+                console.log(`[Load] ✓ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
+              }
+              
               refreshForegroundListUI();
               redraw();
+            } else {
+              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non è un array o è vuoto)`);
             }
             if (Array.isArray(r.sceneObjects)) {
               for (let i = 0; i < r.sceneObjects.length; i++) {

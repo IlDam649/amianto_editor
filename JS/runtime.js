@@ -105,7 +105,7 @@
           }
           
           if (actualProjectId) {
-            log(`[Runtime] resolveAssetId: tentativo recupero da Firestore (userId: ${userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}...)`, 'info');
+            log(`[Runtime] resolveAssetId: tentativo recupero da Firestore (userId: ${userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}..., assetId: ${assetId})`, 'info');
             const assetRef = window.firebaseDB
               .collection('users')
               .doc(userId)
@@ -118,28 +118,43 @@
             
             if (doc.exists) {
               const data = doc.data();
+              log(`[Runtime] resolveAssetId: metadata trovato in Firestore per assetId '${assetId}'`, 'info');
+              log(`[Runtime] resolveAssetId: hasPublicUrl=${!!data.publicUrl}, hasFileName=${!!data.fileName}, fileName='${data.fileName || 'N/A'}', type='${data.type || 'N/A'}'`, 'info');
+              
               if (data.publicUrl) {
                 log(`[Runtime] resolveAssetId: ✓ URL trovato in Firestore: ${data.publicUrl.substring(0, 80)}...`, 'success');
                 return data.publicUrl;
               } else if (data.fileName) {
-                // Se abbiamo il fileName ma non l'URL, costruiamo l'URL usando userId da Firebase Auth
-                log(`[Runtime] resolveAssetId: fileName trovato in Firestore: ${data.fileName}`, 'info');
+                // IMPORTANTE: Usa sempre il fileName da Firestore, è la fonte più affidabile
+                // Il fileName include il baseName originale: assetId_baseName.ext
+                // Esempio: asset_1766443609527_ml2znk9_occhio_n1.png
+                // IMPORTANTE: Usa getSupabaseFolderForType per mappare correttamente la categoria
+                // "foreground" -> "foregrounds", "background" -> "backgrounds", ecc.
                 const folder = window.supabaseStorage.getSupabaseFolderForType ? window.supabaseStorage.getSupabaseFolderForType(category) : category;
+                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', categoria '${category}' -> folder '${folder}'`, 'info');
                 const url = window.supabaseStorage.getAssetPublicUrl(
                   userId, // Usa userId da Firebase Auth corrente
                   actualProjectId,
-                  category,
-                  data.fileName
+                  category, // Passa la categoria originale (getSupabaseFolderForType la mapperà internamente)
+                  data.fileName // Usa il fileName esatto salvato in Firestore (include baseName)
                 );
                 if (url) {
-                  log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName: ${url}`, 'success');
+                  log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName Firestore: ${url}`, 'success');
                   return url;
+                } else {
+                  log(`[Runtime] resolveAssetId: ⚠️ fileName trovato ma URL non generato. fileName='${data.fileName}', category='${category}', folder='${folder}'`, 'warning');
                 }
               } else {
-                log(`[Runtime] resolveAssetId: metadata trovato in Firestore ma publicUrl e fileName mancanti`, 'info');
+                log(`[Runtime] resolveAssetId: ⚠️ ERRORE CRITICO - metadata trovato in Firestore ma publicUrl e fileName mancanti!`, 'error');
+                log(`[Runtime] resolveAssetId: Questo significa che l'asset è stato caricato ma il metadata è incompleto.`, 'error');
+                log(`[Runtime] resolveAssetId: Data completa:`, data, 'error');
+                log(`[Runtime] resolveAssetId: Soluzione: ricarica l'asset o verifica che saveAssetMetadata venga chiamato correttamente.`, 'error');
               }
             } else {
-              log(`[Runtime] resolveAssetId: asset non trovato in Firestore`, 'info');
+              log(`[Runtime] resolveAssetId: ⚠️ ATTENZIONE - asset non trovato in Firestore (assetId: '${assetId}')`, 'warning');
+              log(`[Runtime] resolveAssetId: Questo significa che il metadata dell'asset non è stato salvato correttamente.`, 'warning');
+              log(`[Runtime] resolveAssetId: Proverò pattern di fallback, ma potrebbero non funzionare se il fileName include un baseName.`, 'warning');
+              log(`[Runtime] resolveAssetId: Soluzione: assicurati che saveAssetMetadata venga chiamato dopo ogni upload.`, 'warning');
             }
           }
         } catch (firestoreError) {
@@ -187,17 +202,31 @@
       log(`[Runtime] resolveAssetId: folder=${folder}, testerò pattern alternativi`, 'info');
 
       // Pattern da provare (in ordine di probabilità basato su URL reale trovato)
+      // IMPORTANTE: I fileName in Supabase sono generati come: ${assetId}_${baseName}.${ext}
+      // Quindi se assetId è "asset_1766444323872_dtnhv7k", il fileName sarà "asset_1766444323872_dtnhv7k_${baseName}.png"
+      // Ma proviamo anche pattern senza baseName per compatibilità
       const patterns = [
         // Pattern 1: assetId.ext (pattern più comune, come nell'URL reale: asset_1766438238305_wbpjsbf.png)
+        // Questo funziona se il fileName è stato generato senza baseName o se il baseName è vuoto
         ...extensions.map(ext => `${assetId}.${ext}`),
         // Pattern 2: assetId_file.ext (pattern legacy)
         ...extensions.map(ext => `${assetId}_file.${ext}`),
         // Pattern 3: assetId_${category}.ext
         ...extensions.map(ext => `${assetId}_${category}.${ext}`),
         // Pattern 4: assetId_${normalizedCategory}.ext
-        ...extensions.map(ext => `${assetId}_${folder}.${ext}`)
+        ...extensions.map(ext => `${assetId}_${folder}.${ext}`),
+        // Pattern 5: Se assetId contiene già "asset_", proviamo anche senza quel prefisso
+        // (per gestire casi dove l'assetId è stato salvato con prefisso ma il file no)
+        ...(assetId.startsWith('asset_') ? extensions.map(ext => `${assetId.substring(6)}.${ext}`) : [])
       ];
 
+      // Prova pattern e verifica se il file esiste effettivamente
+      // NOTA: I pattern senza baseName potrebbero non funzionare se il file reale ha un baseName
+      // Esempio: se il file è "asset_xxx_nomefile.png", il pattern "asset_xxx.png" non funzionerà
+      log(`[Runtime] resolveAssetId: proverò ${patterns.length} pattern alternativi (senza baseName)`, 'info');
+      log(`[Runtime] resolveAssetId: ⚠️ ATTENZIONE: Se il file ha un baseName, questi pattern potrebbero non funzionare.`, 'warning');
+      log(`[Runtime] resolveAssetId: Soluzione: assicurati che Firestore abbia il fileName corretto per questo asset.`, 'warning');
+      
       for (const fileName of patterns) {
         log(`[Runtime] resolveAssetId: tentativo fileName=${fileName}`, 'info');
         
@@ -210,12 +239,44 @@
         );
 
         if (url) {
-          log(`[Runtime] resolveAssetId: ✓ URL generato per ${fileName}`, 'success');
-          log(`[Runtime] resolveAssetId: URL completo: ${url}`, 'info');
-          // Nota: getAssetPublicUrl genera sempre un URL, anche se il file non esiste
-          // Non possiamo verificare se il file esiste senza fare una richiesta HTTP
-          // Quindi restituiamo l'URL e lasciamo che loadImage verifichi se è valido
-          return url;
+          log(`[Runtime] resolveAssetId: URL generato per ${fileName}: ${url.substring(0, 100)}...`, 'info');
+          
+          // Verifica se il file esiste effettivamente facendo una richiesta HEAD
+          // NOTA: Con CORS potrebbe non funzionare, ma proviamo comunque
+          try {
+            log(`[Runtime] resolveAssetId: verifica esistenza file per ${fileName}...`, 'info');
+            
+            // Prova a verificare con una richiesta HEAD
+            const testResponse = await fetch(url, { 
+              method: 'HEAD',
+              cache: 'no-cache',
+              mode: 'cors' // Prova con CORS per leggere lo status
+            }).catch(async () => {
+              // Se CORS fallisce, prova senza CORS (ma non possiamo leggere lo status)
+              log(`[Runtime] resolveAssetId: CORS fallito, provo senza CORS...`, 'info');
+              return fetch(url, { method: 'HEAD', mode: 'no-cors' }).catch(() => null);
+            });
+            
+            // Se la richiesta HEAD fallisce o restituisce 404, prova il prossimo pattern
+            if (testResponse && testResponse.ok) {
+              log(`[Runtime] resolveAssetId: ✓ File verificato esistente per ${fileName}`, 'success');
+              return url;
+            } else if (testResponse && testResponse.status === 404) {
+              log(`[Runtime] resolveAssetId: ✗ File non trovato (404) per ${fileName}, provo prossimo pattern`, 'info');
+              continue;
+            } else {
+              // Se non possiamo verificare (CORS o altro), restituiamo l'URL e lasciamo che loadImage verifichi
+              // Questo è un fallback: loadImage verificherà se l'immagine si carica correttamente
+              log(`[Runtime] resolveAssetId: ⚠️ Impossibile verificare esistenza file (CORS o altro), userò URL generato`, 'warning');
+              log(`[Runtime] resolveAssetId: loadImage verificherà se l'immagine si carica correttamente: ${url}`, 'info');
+              return url;
+            }
+          } catch (fetchError) {
+            // Se la verifica fallisce, restituiamo l'URL comunque e lasciamo che loadImage verifichi
+            log(`[Runtime] resolveAssetId: errore verifica file per ${fileName}: ${fetchError.message}`, 'warning');
+            log(`[Runtime] resolveAssetId: userò URL generato e lascerò che loadImage verifichi: ${url}`, 'info');
+            return url; // Restituiamo l'URL e lasciamo che loadImage verifichi
+          }
         } else {
           log(`[Runtime] resolveAssetId: ✗ URL non generato per ${fileName}`, 'info');
         }
@@ -257,6 +318,7 @@
       }
 
       let imageUrl = src;
+      let resolvedCategory = null; // Variabile per tracciare la categoria risolta
 
       // Se l'URL inizia con "asset:", risolvi l'assetId
       if (src.startsWith('asset:')) {
@@ -264,7 +326,6 @@
         log(`[Runtime] Risoluzione assetId: ${assetId}${categoryHint ? ` (categoria suggerita: ${categoryHint})` : ''}`, 'info');
         
         let resolvedUrl = null;
-        let resolvedCategory = null;
         
         // Se abbiamo un hint sulla categoria, proviamo prima quella
         if (categoryHint) {
@@ -273,17 +334,19 @@
             if (resolvedUrl) {
               resolvedCategory = categoryHint;
               log(`[Runtime] AssetId risolto in categoria '${categoryHint}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'success');
+            } else {
+              log(`[Runtime] resolveAssetId ha restituito null per categoria '${categoryHint}'`, 'warning');
             }
           } catch (e) {
-            log(`[Runtime] Tentativo risoluzione categoria '${categoryHint}' fallito: ${e.message}`, 'info');
+            log(`[Runtime] Tentativo risoluzione categoria '${categoryHint}' fallito: ${e.message}`, 'error');
           }
         }
         
         // Se non abbiamo ancora risolto, prova tutte le categorie in ordine
         // Ordine ottimizzato: background prima (ora sono in backgrounds, non più in sprites)
-        // Poi sprite, foreground, gui
+        // Poi foreground, sprite, gui (foreground prima di sprite perché potrebbe essere confuso)
         if (!resolvedUrl) {
-          const categories = ['background', 'sprite', 'foreground', 'gui'];
+          const categories = ['background', 'foreground', 'sprite', 'gui'];
           
           for (const category of categories) {
             // Salta la categoria già provata
@@ -295,10 +358,12 @@
                 resolvedCategory = category;
                 log(`[Runtime] AssetId risolto in categoria '${category}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'info');
                 break;
+              } else {
+                log(`[Runtime] resolveAssetId ha restituito null per categoria '${category}'`, 'info');
               }
             } catch (e) {
               // Continua con la prossima categoria
-              log(`[Runtime] Tentativo risoluzione categoria '${category}' fallito: ${e.message}`, 'info');
+              log(`[Runtime] Tentativo risoluzione categoria '${category}' fallito: ${e.message}`, 'error');
               continue;
             }
           }
@@ -306,6 +371,7 @@
 
         if (resolvedUrl) {
           imageUrl = resolvedUrl;
+          log(`[Runtime] URL finale per assetId '${assetId}': ${imageUrl.substring(0, 100)}${imageUrl.length > 100 ? '...' : ''}`, 'info');
         } else {
           // Se non riesce a risolvere, logga e restituisci null
           log(`[Runtime] Impossibile risolvere assetId '${assetId}' in nessuna categoria. Verifica che Supabase sia configurato correttamente.`, 'warning');
@@ -336,8 +402,16 @@
           return;
         }
         // Salva sia in AssetRegistry che in loadedImages (per compatibilità)
+        // IMPORTANTE: Salva con ENTRAMBE le chiavi per garantire che la ricerca funzioni sempre
+        // 1. Chiave originale (assetId o URL originale)
         AssetRegistry.images.set(src, img);
         loadedImages.set(src, img);
+        // 2. Se abbiamo risolto un URL diverso da src, salva anche con quell'URL come chiave
+        if (imageUrl !== src && imageUrl) {
+          AssetRegistry.images.set(imageUrl, img);
+          loadedImages.set(imageUrl, img);
+          log(`[Runtime] Immagine salvata anche con URL risolto come chiave`, 'info');
+        }
         log(`[Runtime] ✓ Immagine caricata con successo: ${src.substring(0, 50)}${src.length > 50 ? '...' : ''} (${img.naturalWidth}x${img.naturalHeight})`, 'success');
         resolve(img);
       };
@@ -345,6 +419,7 @@
         clearTimeout(timeout);
         log(`[Runtime] ✗ Errore caricamento immagine '${src.substring(0, 50)}${src.length > 50 ? '...' : ''}'`, 'error');
         log(`[Runtime] URL tentato: ${imageUrl}`, 'error');
+        log(`[Runtime] Categoria usata: ${resolvedCategory || categoryHint || 'sconosciuta'}`, 'error');
         log(`[Runtime] Possibili cause: CORS, file inesistente, formato non supportato, path errato`, 'warning');
         
         // Prova a verificare se l'URL è raggiungibile (solo per debug)
@@ -364,6 +439,7 @@
         console.error('Errore caricamento immagine:', {
           src,
           imageUrl,
+          category: resolvedCategory || categoryHint || 'sconosciuta',
           error,
           imgError: img.error,
           naturalWidth: img.naturalWidth,
@@ -757,7 +833,7 @@
               offsetY: Number(fg.offsetY) || 0
             });
           } else {
-            log(`[Runtime] Foreground non trovato in registry: ${fg.image.substring(0, 50)}`, 'warning');
+            log(`[Runtime] Foreground non trovato in registry per room ${roomId}, URL: ${fg.image.substring(0, 50)}`, 'warning');
           }
         }
       }
