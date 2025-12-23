@@ -318,9 +318,10 @@ function getAssetPublicUrl(userId, projectId, category, fileName) {
  * @param {string} assetId - ID dell'asset
  * @param {string} category - Categoria dell'asset
  * @param {string} originalFileName - Nome originale del file (opzionale)
+ * @param {string|null} userIdOverride - userId da usare per costruire il path (facoltativo)
  * @returns {Promise<string|null>} - URL pubblico o null
  */
-async function resolveAssetUrl(projectId, assetId, category, originalFileName = null) {
+async function resolveAssetUrl(projectId, assetId, category, originalFileName = null, userIdOverride = null) {
   try {
     if (!isSupabaseAvailable()) {
       return null;
@@ -329,16 +330,71 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
     // Se abbiamo il nome originale, possiamo ricostruire il percorso
     if (originalFileName) {
       const fileName = generateUniqueFileName(originalFileName, assetId);
-      return getAssetPublicUrl(projectId, category, fileName);
+      // Usa sempre l'userIdOverride se fornito, altrimenti prova da Firebase Auth
+      const userIdForUrl = userIdOverride || (window.firebaseAuth && window.firebaseAuth.currentUser
+        ? window.firebaseAuth.currentUser.uid
+        : null);
+      return getAssetPublicUrl(userIdForUrl, projectId, category, fileName);
     }
 
-    // Altrimenti, dobbiamo cercare il file nel bucket
-    // Nota: Supabase Storage non supporta ricerca diretta per nome parziale,
-    // quindi questa è una limitazione. In produzione, si dovrebbe salvare
-    // il mapping assetId -> fileName in Firestore o nel JSON del progetto.
-    
-    console.warn('[Supabase] Risoluzione asset senza fileName. Assicurati di salvare il fileName nel progetto.');
-    return null;
+    // Altrimenti, cerchiamo nel folder del progetto il file che inizia con assetId
+    // usando una list() sulla cartella specifica dell'utente/progetto.
+    console.warn('[Supabase] Risoluzione asset senza fileName: proverò a cercare nel folder Supabase per assetId.');
+
+    // userId prioritario: quello passato esplicitamente dal chiamante (runtime)
+    let userId = userIdOverride || null;
+
+    // Se non è stato passato esplicitamente, prova comunque da Firebase Auth (fallback)
+    if (!userId && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      userId = window.firebaseAuth.currentUser.uid;
+    }
+
+    const folder = getSupabaseFolderForType(category);
+    const basePath = userId
+      ? `${userId}/${projectId}/${folder}`
+      : `${projectId}/${folder}`; // fallback legacy senza userId
+
+    const { data: files, error } = await supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .list(basePath, {
+        limit: 1000,
+        offset: 0,
+        sortBy: { column: 'name', order: 'asc' }
+      });
+
+    if (error) {
+      console.error('[Supabase] ❌ Errore list() per resolveAssetUrl:', error);
+      return null;
+    }
+
+    if (!files || files.length === 0) {
+      console.warn('[Supabase] Nessun file trovato nel folder per resolveAssetUrl:', basePath);
+      return null;
+    }
+
+    // Cerca il primo file il cui nome inizia con assetId (assetId.ext o assetId_qualcosa.ext)
+    const match = files.find(item => {
+      if (!item || !item.name) return false;
+      return item.name.startsWith(assetId + '.') || item.name.startsWith(assetId + '_');
+    });
+
+    if (!match) {
+      console.warn('[Supabase] Nessun file corrispondente ad assetId trovato in resolveAssetUrl:', {
+        assetId,
+        basePath
+      });
+      return null;
+    }
+
+    const fileName = match.name;
+    console.log('[Supabase] ✓ File trovato per assetId in resolveAssetUrl:', {
+      assetId,
+      basePath,
+      fileName
+    });
+
+    // Usa helper standard per ottenere l'URL pubblico
+    return getAssetPublicUrl(userId, projectId, category, fileName);
   } catch (error) {
     console.error('[Supabase] ❌ Errore risoluzione asset:', error);
     return null;
@@ -353,19 +409,23 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
  * @param {string} fileName - Nome del file
  * @returns {Promise<boolean>} - true se eliminato con successo
  */
-async function deleteAsset(projectId, category, fileName) {
+async function deleteAsset(projectId, category, fileName, userIdOverride = null) {
   try {
     if (!isSupabaseAvailable()) {
       return false;
     }
 
-    // Verifica autenticazione
-    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      console.warn('[Supabase] ❌ Autenticazione richiesta per eliminare asset');
+    // Determina userId: prima override esplicito, poi Firebase Auth se disponibile
+    let userId = userIdOverride || null;
+    if (!userId && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      userId = window.firebaseAuth.currentUser.uid;
+    }
+
+    if (!userId) {
+      console.warn('[Supabase] ❌ userId mancante per eliminare asset (né override né Firebase Auth)');
       return false;
     }
 
-    const userId = window.firebaseAuth.currentUser.uid;
     const folder = getSupabaseFolderForType(category);
     const storagePath = buildStoragePath(userId, projectId, folder, fileName);
 
@@ -386,6 +446,136 @@ async function deleteAsset(projectId, category, fileName) {
   }
 }
 
+/**
+ * Elimina l'intera cartella del progetto da Supabase Storage
+ * REQUISITO: L'utente deve essere autenticato su Firebase Auth
+ * @param {string} projectId - ID del progetto
+ * @returns {Promise<boolean>} - true se eliminato con successo
+ */
+async function deleteProjectFolder(projectId) {
+  try {
+    if (!isSupabaseAvailable()) {
+      console.warn('[Supabase] ⚠️ Supabase non disponibile, impossibile eliminare cartella progetto');
+      return false;
+    }
+
+    // Verifica autenticazione
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      console.warn('[Supabase] ❌ Autenticazione richiesta per eliminare cartella progetto');
+      return false;
+    }
+
+    const userId = window.firebaseAuth.currentUser.uid;
+    const projectFolderPath = `${userId}/${projectId}`;
+
+    console.log(`[Supabase] Eliminazione cartella progetto: ${projectFolderPath}`);
+
+    // Lista tutti i file nella cartella del progetto
+    // Il path è: {userId}/{projectId}/...
+    const { data: files, error: listError } = await supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .list(projectFolderPath, {
+        limit: 1000, // Limite massimo di file da elencare
+        offset: 0,
+        sortBy: { column: 'name', order: 'asc' }
+      });
+
+    if (listError) {
+      // Se la cartella non esiste, non è un errore critico
+      if (listError.statusCode === '404' || listError.message?.includes('not found')) {
+        console.log(`[Supabase] Cartella progetto non trovata (già eliminata o mai esistita): ${projectFolderPath}`);
+        return true; // Considera come successo se la cartella non esiste
+      }
+      console.error('[Supabase] ❌ Errore elenco file cartella progetto:', listError);
+      return false;
+    }
+
+    // Se non ci sono file, la cartella è già vuota
+    if (!files || files.length === 0) {
+      console.log(`[Supabase] ✅ Cartella progetto vuota o già eliminata: ${projectFolderPath}`);
+      return true;
+    }
+
+    // Raccogli tutti i percorsi dei file da eliminare
+    // Nota: Supabase Storage non supporta eliminazione ricorsiva diretta,
+    // quindi dobbiamo eliminare tutti i file manualmente
+    const pathsToDelete = [];
+    
+    // Funzione ricorsiva per elencare tutti i file nelle sottocartelle
+    async function collectAllFiles(folderPath, currentFiles) {
+      for (const item of currentFiles) {
+        const itemPath = folderPath ? `${folderPath}/${item.name}` : item.name;
+        
+        // Se è una cartella, elenca i suoi contenuti
+        if (item.id === null) {
+          // È una cartella, elenca i suoi contenuti
+          const { data: subFiles, error: subError } = await supabaseClient.storage
+            .from(SUPABASE_BUCKET_NAME)
+            .list(itemPath, {
+              limit: 1000,
+              offset: 0,
+              sortBy: { column: 'name', order: 'asc' }
+            });
+          
+          if (!subError && subFiles && subFiles.length > 0) {
+            await collectAllFiles(itemPath, subFiles);
+          }
+        } else {
+          // È un file, aggiungilo alla lista
+          pathsToDelete.push(itemPath);
+        }
+      }
+    }
+
+    // Raccogli tutti i file (inclusi quelli nelle sottocartelle)
+    await collectAllFiles(projectFolderPath, files);
+
+    if (pathsToDelete.length === 0) {
+      console.log(`[Supabase] ✅ Nessun file da eliminare nella cartella progetto: ${projectFolderPath}`);
+      return true;
+    }
+
+    console.log(`[Supabase] Trovati ${pathsToDelete.length} file da eliminare nella cartella progetto`);
+
+    // Elimina tutti i file in batch
+    // Supabase Storage supporta eliminazione multipla con un array di path
+    // Dividiamo in batch di 100 file alla volta per evitare problemi con troppi file
+    const BATCH_SIZE = 100;
+    let deletedCount = 0;
+    
+    for (let i = 0; i < pathsToDelete.length; i += BATCH_SIZE) {
+      const batch = pathsToDelete.slice(i, i + BATCH_SIZE);
+      
+      const { error: deleteError } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .remove(batch);
+
+      if (deleteError) {
+        console.error(`[Supabase] ❌ Errore eliminazione batch ${Math.floor(i / BATCH_SIZE) + 1}:`, deleteError);
+        // Continua con il prossimo batch anche se questo fallisce
+        continue;
+      }
+      
+      deletedCount += batch.length;
+      console.log(`[Supabase] Eliminati ${deletedCount}/${pathsToDelete.length} file...`);
+    }
+
+    if (deletedCount === pathsToDelete.length) {
+      console.log(`[Supabase] ✅ Cartella progetto eliminata con successo: ${projectFolderPath} (${deletedCount} file eliminati)`);
+      return true;
+    } else if (deletedCount > 0) {
+      console.warn(`[Supabase] ⚠️ Cartella progetto parzialmente eliminata: ${projectFolderPath} (${deletedCount}/${pathsToDelete.length} file eliminati)`);
+      return true; // Considera comunque un successo parziale
+    } else {
+      console.error(`[Supabase] ❌ Impossibile eliminare file nella cartella progetto: ${projectFolderPath}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('[Supabase] ❌ Errore eliminazione cartella progetto:', error);
+    return false;
+  }
+}
+
 // ============================================
 // ESPORTAZIONE FUNZIONI GLOBALI
 // ============================================
@@ -400,6 +590,7 @@ if (typeof window !== 'undefined') {
     getAssetPublicUrl: getAssetPublicUrl,
     resolveAssetUrl: resolveAssetUrl,
     deleteAsset: deleteAsset,
+    deleteProjectFolder: deleteProjectFolder,
     getSupabaseFolderForType: getSupabaseFolderForType,
     buildStoragePath: buildStoragePath
   };

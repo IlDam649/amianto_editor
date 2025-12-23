@@ -2143,11 +2143,25 @@ for (const hs of hotspots) {
       del.className = "btn btn-sm btn-danger ms-2";
       del.textContent = "✕";
       del.title = "Delete layer";
-      del.addEventListener("click", () => {
+      del.addEventListener("click", async () => {
         if (!isSelected) {
           showNotification('Select the layer before modifying it', 'warning');
           return;
         }
+        
+        // Salva il layer prima di eliminarlo per poter eliminare l'asset
+        const layerToDelete = foregrounds[idx];
+        
+        // Elimina l'asset da Supabase se presente
+        if (layerToDelete && layerToDelete.img) {
+          try {
+            await deleteAssetFromImage(layerToDelete.img);
+          } catch (error) {
+            console.error('[Asset] Errore eliminazione asset foreground:', error);
+            // Continua comunque con l'eliminazione del layer anche se l'asset non viene eliminato
+          }
+        }
+        
         foregrounds.splice(idx, 1);
         const r = rooms.get(currentRoomId);
         if (r) r.foregrounds = foregrounds;
@@ -2480,9 +2494,28 @@ window.selectRoom = function(roomId) {
         
         try {
           showNotification('Uploading foreground layer...', 'info');
-          
-          // Upload immagine su Firebase Storage
-          const { assetId, downloadURL } = await uploadImage(file, projectId, 'foreground');
+
+          // Se esiste un layer selezionato, prova a riutilizzarne l'assetId/fileName per sovrascrivere
+          let existingAssetId = null;
+          let existingFileName = null;
+          const selectedLayer = foregrounds.find(fg => fg.id === selectedForegroundId);
+          if (selectedLayer && selectedLayer.img) {
+            const existingInfo = imageAssetMap.get(selectedLayer.img);
+            if (existingInfo && existingInfo.assetId) {
+              existingAssetId = existingInfo.assetId;
+              existingFileName = existingInfo.fileName || null;
+            }
+          }
+
+          // Upload immagine su Supabase Storage
+          const { assetId, downloadURL, fileName } = await uploadImage(
+            file,
+            projectId,
+            'foreground',
+            existingAssetId
+              ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
+              : {}
+          );
           
           // Carica immagine dall'URL
           const img = await loadImageFromUrl(downloadURL);
@@ -2490,24 +2523,31 @@ window.selectRoom = function(roomId) {
             throw new Error('Failed to load image from URL');
           }
           
-          // Registra nella mappa asset
-          imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
-          
-          // Crea layer foreground
-          const layer = {
-            id: uid("fg"),
-            name: file.name || `Layer ${foregrounds.length + 1}`,
-            img: img,
-            offsetX: 0,
-            offsetY: 0
-          };
-          foregrounds.push(layer);
-          const r = rooms.get(currentRoomId);
-          if (r) r.foregrounds = foregrounds;
-          selectedForegroundId = layer.id;
+          // Registra nella mappa asset (include fileName per eliminazione futura)
+          imageAssetMap.set(img, { assetId, type: 'foreground', projectId, fileName: fileName || null });
+
+          let r = rooms.get(currentRoomId);
+
+          if (selectedLayer) {
+            // Sostituisci immagine nel layer selezionato
+            selectedLayer.img = img;
+            if (r) r.foregrounds = foregrounds;
+          } else {
+            // Crea nuovo layer foreground
+            const layer = {
+              id: uid("fg"),
+              name: file.name || `Layer ${foregrounds.length + 1}`,
+              img: img,
+              offsetX: 0,
+              offsetY: 0
+            };
+            foregrounds.push(layer);
+            if (r) r.foregrounds = foregrounds;
+            selectedForegroundId = layer.id;
+          }
           
           refreshForegroundListUI();
-          showNotification('Foreground layer uploaded', 'success');
+          showNotification(selectedLayer ? 'Foreground layer replaced' : 'Foreground layer uploaded', 'success');
           redraw();
         } catch (error) {
           console.error('[Asset] Errore upload foreground:', error);
@@ -3134,7 +3174,7 @@ window.selectRoom = function(roomId) {
       showNotification('Uploading scene object...', 'info');
       
       // Upload immagine su Firebase Storage
-      const { assetId, downloadURL } = await uploadImage(file, projectId, 'sprite');
+      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite');
       
       // Carica immagine dall'URL
       const img = await loadImageFromUrl(downloadURL);
@@ -3142,8 +3182,8 @@ window.selectRoom = function(roomId) {
         throw new Error('Failed to load image from URL');
       }
       
-      // Registra nella mappa asset
-      imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
+      // Registra nella mappa asset (include fileName per eliminazione futura)
+      imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null });
       
       // Generate unique name even for same image
       const baseName = file.name.replace(/\.[^/.]+$/, "");
@@ -3227,13 +3267,26 @@ window.selectRoom = function(roomId) {
     });
   };
 
-  window.removeSceneObject = function(button) {
+  window.removeSceneObject = async function(button) {
     if (confirm('Are you sure you want to delete this scene object?')) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
       if (objectId !== selectedSceneObjectId) {
         showNotification('Seleziona l\'oggetto prima di eliminarlo', 'warning');
         return;
+      }
+      
+      // Trova l'oggetto prima di rimuoverlo per eliminare l'asset
+      const sceneObject = sceneObjects.find(obj => obj.id === objectId);
+      
+      // Elimina l'asset da Supabase se presente
+      if (sceneObject && sceneObject.img) {
+        try {
+          await deleteAssetFromImage(sceneObject.img);
+        } catch (error) {
+          console.error('[Asset] Errore eliminazione asset oggetto di scena:', error);
+          // Continua comunque con l'eliminazione dell'oggetto anche se l'asset non viene eliminato
+        }
       }
       
       // Remove from scene objects array (room-scoped)
@@ -3265,19 +3318,91 @@ window.selectRoom = function(roomId) {
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent;
     
-    // Create edit dialog
-    const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
-    if (newName && newName.trim() !== '') {
-      sceneObject.name = newName.trim();
-      nameElement.textContent = newName.trim();
-      
-      // Update position info in UI
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+    // Semplice menu di scelta: rinomina o cambia immagine
+    const action = window.prompt(
+      `Edit scene object "${currentName}"\n` +
+      `Scrivi:\n` +
+      `- "name" per rinominare\n` +
+      `- "image" per sostituire l'immagine`,
+      'name'
+    );
+
+    if (!action) return;
+
+    const normalized = String(action).toLowerCase().trim();
+
+    if (normalized === 'name') {
+      const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
+      if (newName && newName.trim() !== '') {
+        sceneObject.name = newName.trim();
+        nameElement.textContent = newName.trim();
+        
+        // Update position info in UI
+        const positionInfo = listItem.querySelector('small[style*="color: #888"]');
+        if (positionInfo) {
+          positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+        }
+        
+        showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
       }
-      
-      showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
+    } else if (normalized === 'image') {
+      // Sostituzione immagine: riusa assetId/fileName se esistono
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files ? e.target.files[0] : null;
+        if (!file) return;
+
+        if (!currentUser || !currentUser.uid) {
+          showNotification('Please login to upload images', 'warning');
+          return;
+        }
+
+        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
+        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+
+        try {
+          showNotification('Replacing scene object image...', 'info');
+
+          let existingAssetId = null;
+          let existingFileName = null;
+          if (sceneObject.img) {
+            const existingInfo = imageAssetMap.get(sceneObject.img);
+            if (existingInfo && existingInfo.assetId) {
+              existingAssetId = existingInfo.assetId;
+              existingFileName = existingInfo.fileName || null;
+            }
+          }
+
+          const { assetId, downloadURL, fileName } = await uploadImage(
+            file,
+            projectId,
+            'sprite',
+            existingAssetId
+              ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
+              : {}
+          );
+
+          const img = await loadImageFromUrl(downloadURL);
+          if (!img) {
+            throw new Error('Failed to load image from URL');
+          }
+
+          // Aggiorna mappa asset e oggetto di scena
+          imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null });
+          sceneObject.img = img;
+
+          redraw();
+          showNotification('Scene object image replaced', 'success');
+        } catch (err) {
+          console.error('[Asset] Errore sostituzione immagine oggetto di scena:', err);
+          showNotification(`Failed to replace scene object image: ${err.message}`, 'error');
+        } finally {
+          input.value = '';
+        }
+      };
+      input.click();
     }
     
     // Ask for position change
@@ -10315,6 +10440,118 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
+   * Elimina un asset da Supabase Storage dato un'immagine
+   * @param {Image} img - Oggetto Image che rappresenta l'asset
+   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
+   */
+  async function deleteAssetFromImage(img) {
+    try {
+      if (!img) {
+        return false;
+      }
+
+      // Verifica se l'immagine ha un assetId associato
+      const assetInfo = imageAssetMap.get(img);
+      if (!assetInfo || !assetInfo.assetId) {
+        // Non è un asset caricato su Supabase, potrebbe essere una dataURL o URL esterno
+        console.log('[Asset] Immagine non ha assetId associato, non è necessario eliminarla da Supabase');
+        return true; // Non è un errore, semplicemente non c'è nulla da eliminare
+      }
+
+      const { assetId, type, projectId, fileName } = assetInfo;
+
+      // Verifica che Supabase Storage sia disponibile
+      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
+        console.warn('[Asset] Supabase Storage non disponibile, impossibile eliminare asset:', assetId);
+        return false;
+      }
+
+      // Se non abbiamo fileName, cerchiamo prima nei metadata Firestore
+      let finalFileName = fileName;
+      if (!finalFileName && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          const userId = window.firebaseAuth.currentUser.uid;
+          const assetRef = window.firebaseDB
+            .collection('users')
+            .doc(userId)
+            .collection('projects')
+            .doc(projectId)
+            .collection('assets')
+            .doc(assetId);
+
+          const doc = await assetRef.get();
+          if (doc.exists) {
+            const data = doc.data();
+            if (data && data.fileName) {
+              finalFileName = data.fileName;
+              console.log(`[Asset] fileName recuperato da Firestore per eliminazione: ${finalFileName}`);
+            }
+          }
+        } catch (metaErr) {
+          console.warn('[Asset] Impossibile recuperare fileName da Firestore per eliminazione asset:', metaErr);
+        }
+      }
+
+      // Come ultimo fallback, prova a ricostruire il nome file dall'URL dell'immagine
+      if (!finalFileName) {
+        if (img.src && img.src.includes('.')) {
+          const ext = img.src.split('.').pop().split('?')[0].toLowerCase();
+          finalFileName = `${assetId}.${ext}`;
+        } else {
+          // Fallback storico: usa png come estensione predefinita
+          finalFileName = `${assetId}.png`;
+        }
+        console.log(`[Asset] fileName non trovato nei metadata, ricostruito da URL: ${finalFileName}`);
+      }
+
+      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName})`);
+
+      // Elimina da Supabase Storage (passa userId per path corretto)
+      let userIdOverride = null;
+      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+        userIdOverride = window.firebaseAuth.currentUser.uid;
+      }
+
+      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride);
+      
+      if (deleted) {
+        console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
+        
+        // Rimuovi anche da imageAssetMap
+        imageAssetMap.delete(img);
+        
+        // Opzionale: elimina anche da Firestore se disponibile
+        if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+          try {
+            const userId = window.firebaseAuth.currentUser.uid;
+            const assetRef = window.firebaseDB
+              .collection('users')
+              .doc(userId)
+              .collection('projects')
+              .doc(projectId)
+              .collection('assets')
+              .doc(assetId);
+            
+            await assetRef.delete();
+            console.log(`[Asset] ✅ Metadata eliminato da Firestore: ${assetId}`);
+          } catch (firestoreError) {
+            console.warn(`[Asset] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
+            // Non blocchiamo il successo se Firestore fallisce
+          }
+        }
+        
+        return true;
+      } else {
+        console.warn(`[Asset] ⚠️ Impossibile eliminare asset da Supabase: ${assetId}`);
+        return false;
+      }
+    } catch (error) {
+      console.error('[Asset] ❌ Errore eliminazione asset:', error);
+      return false;
+    }
+  }
+
+  /**
    * Risolve un assetId in un URL di download da Supabase Storage
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID dell'asset
@@ -11198,6 +11435,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } catch (error) {
         console.error('[Firestore] Errore eliminazione:', error);
         addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+      }
+    }
+
+    // 1.5. ELIMINA CARTELLA PROGETTO DA SUPABASE STORAGE (se disponibile) - AGGIUNTO
+    if (userId && window.supabaseStorage && window.supabaseStorage.deleteProjectFolder) {
+      try {
+        const deleted = await window.supabaseStorage.deleteProjectFolder(projectId);
+        if (deleted) {
+          console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
+          addDebugMessage(`[Supabase] Cartella progetto eliminata: ${projectName}`, 'success');
+        } else {
+          console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
+          addDebugMessage(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`, 'warning');
+        }
+      } catch (error) {
+        console.error('[Supabase] Errore eliminazione cartella progetto:', error);
+        addDebugMessage(`[Supabase] Errore eliminazione cartella: ${error.message || error}`, 'error');
       }
     }
     

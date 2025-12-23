@@ -190,99 +190,48 @@
 
       const hasUserId = !!projectInfo.userId;
       if (!hasUserId) {
-        log(`[Runtime] resolveAssetId: ERRORE CRITICO - userId mancante. Gli asset sono salvati con userId nel path, impossibile risolvere senza userId.`, 'error');
-        log(`[Runtime] resolveAssetId: Verifica che _meta.userId sia presente nel JSON del progetto o che Firebase Auth sia disponibile.`, 'error');
-        return null; // Non provare path legacy, fallire in modo chiaro
+        log(`[Runtime] resolveAssetId: userId mancante in projectInfo, proverò comunque risoluzione diretta via Supabase (path legacy senza userId).`, 'warning');
+      } else {
+        log(`[Runtime] resolveAssetId: projectInfo disponibile (userId: ${projectInfo.userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}...)`, 'info');
       }
-      log(`[Runtime] resolveAssetId: projectInfo disponibile (userId: ${projectInfo.userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}...)`, 'info');
 
-      // Prova con estensioni comuni e pattern alternativi
-      const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
-      const folder = window.supabaseStorage.getSupabaseFolderForType ? window.supabaseStorage.getSupabaseFolderForType(category) : category;
-      log(`[Runtime] resolveAssetId: folder=${folder}, testerò pattern alternativi`, 'info');
-
-      // Pattern da provare (in ordine di probabilità basato su URL reale trovato)
-      // IMPORTANTE: I fileName in Supabase sono generati come: ${assetId}_${baseName}.${ext}
-      // Quindi se assetId è "asset_1766444323872_dtnhv7k", il fileName sarà "asset_1766444323872_dtnhv7k_${baseName}.png"
-      // Ma proviamo anche pattern senza baseName per compatibilità
-      const patterns = [
-        // Pattern 1: assetId.ext (pattern più comune, come nell'URL reale: asset_1766438238305_wbpjsbf.png)
-        // Questo funziona se il fileName è stato generato senza baseName o se il baseName è vuoto
-        ...extensions.map(ext => `${assetId}.${ext}`),
-        // Pattern 2: assetId_file.ext (pattern legacy)
-        ...extensions.map(ext => `${assetId}_file.${ext}`),
-        // Pattern 3: assetId_${category}.ext
-        ...extensions.map(ext => `${assetId}_${category}.${ext}`),
-        // Pattern 4: assetId_${normalizedCategory}.ext
-        ...extensions.map(ext => `${assetId}_${folder}.${ext}`),
-        // Pattern 5: Se assetId contiene già "asset_", proviamo anche senza quel prefisso
-        // (per gestire casi dove l'assetId è stato salvato con prefisso ma il file no)
-        ...(assetId.startsWith('asset_') ? extensions.map(ext => `${assetId.substring(6)}.${ext}`) : [])
-      ];
-
-      // Prova pattern e verifica se il file esiste effettivamente
-      // NOTA: I pattern senza baseName potrebbero non funzionare se il file reale ha un baseName
-      // Esempio: se il file è "asset_xxx_nomefile.png", il pattern "asset_xxx.png" non funzionerà
-      log(`[Runtime] resolveAssetId: proverò ${patterns.length} pattern alternativi (senza baseName)`, 'info');
-      log(`[Runtime] resolveAssetId: ⚠️ ATTENZIONE: Se il file ha un baseName, questi pattern potrebbero non funzionare.`, 'warning');
-      log(`[Runtime] resolveAssetId: Soluzione: assicurati che Firestore abbia il fileName corretto per questo asset.`, 'warning');
-      
-      for (const fileName of patterns) {
-        log(`[Runtime] resolveAssetId: tentativo fileName=${fileName}`, 'info');
-        
-        // Usa sempre userId (già verificato che esiste sopra)
-        const url = window.supabaseStorage.getAssetPublicUrl(
-          projectInfo.userId,
-          actualProjectId,
-          category,
-          fileName
-        );
-
-        if (url) {
-          log(`[Runtime] resolveAssetId: URL generato per ${fileName}: ${url.substring(0, 100)}...`, 'info');
-          
-          // Verifica se il file esiste effettivamente facendo una richiesta HEAD
-          // NOTA: Con CORS potrebbe non funzionare, ma proviamo comunque
-          try {
-            log(`[Runtime] resolveAssetId: verifica esistenza file per ${fileName}...`, 'info');
-            
-            // Prova a verificare con una richiesta HEAD
-            const testResponse = await fetch(url, { 
-              method: 'HEAD',
-              cache: 'no-cache',
-              mode: 'cors' // Prova con CORS per leggere lo status
-            }).catch(async () => {
-              // Se CORS fallisce, prova senza CORS (ma non possiamo leggere lo status)
-              log(`[Runtime] resolveAssetId: CORS fallito, provo senza CORS...`, 'info');
-              return fetch(url, { method: 'HEAD', mode: 'no-cors' }).catch(() => null);
-            });
-            
-            // Se la richiesta HEAD fallisce o restituisce 404, prova il prossimo pattern
-            if (testResponse && testResponse.ok) {
-              log(`[Runtime] resolveAssetId: ✓ File verificato esistente per ${fileName}`, 'success');
-              return url;
-            } else if (testResponse && testResponse.status === 404) {
-              log(`[Runtime] resolveAssetId: ✗ File non trovato (404) per ${fileName}, provo prossimo pattern`, 'info');
-              continue;
-            } else {
-              // Se non possiamo verificare (CORS o altro), restituiamo l'URL e lasciamo che loadImage verifichi
-              // Questo è un fallback: loadImage verificherà se l'immagine si carica correttamente
-              log(`[Runtime] resolveAssetId: ⚠️ Impossibile verificare esistenza file (CORS o altro), userò URL generato`, 'warning');
-              log(`[Runtime] resolveAssetId: loadImage verificherà se l'immagine si carica correttamente: ${url}`, 'info');
-              return url;
-            }
-          } catch (fetchError) {
-            // Se la verifica fallisce, restituiamo l'URL comunque e lasciamo che loadImage verifichi
-            log(`[Runtime] resolveAssetId: errore verifica file per ${fileName}: ${fetchError.message}`, 'warning');
-            log(`[Runtime] resolveAssetId: userò URL generato e lascerò che loadImage verifichi: ${url}`, 'info');
-            return url; // Restituiamo l'URL e lasciamo che loadImage verifichi
+      // PRIMO TENTATIVO: chiedi direttamente a Supabase lo storagePath reale,
+      // evitando di indovinare l'estensione. Usa resolveAssetUrl che fa una list()
+      // nella cartella del progetto e cerca un file che inizi con assetId.
+      if (window.supabaseStorage.resolveAssetUrl) {
+        try {
+          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl`, 'info');
+          const directUrl = await window.supabaseStorage.resolveAssetUrl(
+            actualProjectId,
+            assetId,
+            category,
+            null,
+            projectInfo.userId || null // Passa esplicitamente l'userId del progetto
+          );
+          if (directUrl) {
+            log(
+              `[Runtime] resolveAssetId: ✓ URL ottenuto direttamente da Supabase: ${directUrl.substring(0, 100)}${directUrl.length > 100 ? '...' : ''}`,
+              'success'
+            );
+            return directUrl;
+          } else {
+            log(`[Runtime] resolveAssetId: resolveAssetUrl ha restituito null, interrompo risoluzione`, 'warning');
           }
-        } else {
-          log(`[Runtime] resolveAssetId: ✗ URL non generato per ${fileName}`, 'info');
+        } catch (directErr) {
+          log(`[Runtime] resolveAssetId: errore in resolveAssetUrl Supabase: ${directErr.message}`, 'warning');
         }
+      } else {
+        log(`[Runtime] resolveAssetId: window.supabaseStorage.resolveAssetUrl non disponibile`, 'warning');
       }
 
-      log(`[Runtime] resolveAssetId: ✗ Nessun URL generato con i pattern provati`, 'warning');
+      // Se siamo arrivati qui significa che:
+      // - Firestore non aveva un publicUrl/fileName utilizzabile, e
+      // - Supabase.resolveAssetUrl non è riuscito a trovare un file reale.
+      // Non proviamo più a "indovinare" l'URL con pattern: falliamo in modo esplicito.
+      log(
+        `[Runtime] resolveAssetId: ✗ Nessun URL trovato (Firestore+Supabase), interrompo senza tentare pattern di fallback`,
+        'warning'
+      );
       return null;
     } catch (error) {
       log(`[Runtime] resolveAssetId: errore: ${error.message}`, 'error');
