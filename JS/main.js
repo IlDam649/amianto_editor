@@ -4381,6 +4381,138 @@ window.selectRoom = function(roomId) {
     });
     if (guiItems.length) buildGroup('GUI', guiItems);
 
+    // Tutti gli script ordinati alfabeticamente
+    const allScripts = [];
+    jsScripts.forEach((content, key) => {
+      if (!key || !content || typeof content !== 'string' || content.trim() === '') return;
+      
+      // Estrai scope e target dalla chiave (formato: "Scope:target")
+      const parts = key.split(':');
+      const scope = parts[0] || 'Unknown';
+      const target = parts.slice(1).join(':') || 'unknown';
+      
+      // Determina il nome visualizzato
+      let displayName = key;
+      if (scope === 'Room' && rooms.has(target)) {
+        const room = rooms.get(target);
+        displayName = `Room: ${room.name || target}`;
+      } else if (scope === 'Object' && sceneObjects) {
+        const obj = sceneObjects.find(o => o.id === target);
+        if (obj) displayName = `Object: ${obj.name || target}`;
+      } else if (scope === 'GUI' && typeof guiButtons !== 'undefined') {
+        const btn = guiButtons.find(b => b.id === target);
+        if (btn) displayName = `GUI: ${btn.name || target}`;
+      } else if (scope === 'Hotspot') {
+        // Cerca l'hotspot in tutte le room
+        let hotspotName = target;
+        rooms.forEach(room => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            const hs = room.hotspots.find(h => h.id === target);
+            if (hs) hotspotName = hs.name || target;
+          }
+        });
+        displayName = `Hotspot: ${hotspotName}`;
+      } else if (scope === 'Character') {
+        displayName = `Character: ${target}`;
+      } else if (scope === 'Global') {
+        displayName = 'Global';
+      }
+      
+      const handlers = extractHandlersFromScript(content);
+      const handlerNames = Array.from(handlers).sort();
+      
+      allScripts.push({
+        scope,
+        target,
+        label: displayName,
+        key: key,
+        handlers: handlerNames,
+        hasContent: content.trim().length > 0
+      });
+    });
+    
+    // Ordina alfabeticamente per nome
+    allScripts.sort((a, b) => {
+      const nameA = a.label.toLowerCase();
+      const nameB = b.label.toLowerCase();
+      return nameA.localeCompare(nameB, 'it', { numeric: true, sensitivity: 'base' });
+    });
+    
+    if (allScripts.length > 0) {
+      const allScriptsGroup = document.createElement('div');
+      allScriptsGroup.className = 'mb-3 mt-3';
+      const h = document.createElement('div');
+      h.textContent = 'Tutti gli Script (Ordinati)';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      allScriptsGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      allScripts.forEach(script => {
+        const li = document.createElement('li');
+        li.style.margin = '4px 0';
+        li.style.padding = '4px 0';
+        
+        const label = document.createElement('span');
+        label.textContent = script.label;
+        label.style.cursor = 'pointer';
+        label.style.color = script.hasContent ? '#eee' : '#888';
+        label.style.display = 'inline-block';
+        label.style.width = '100%';
+        label.onclick = () => {
+          // Determina l'evento da aprire (primo handler o null)
+          const handlerId = script.handlers.length > 0 ? script.handlers[0] : null;
+          openScriptFromTree(script.scope, script.target, handlerId);
+        };
+        
+        // Aggiungi badge con numero di handler se presenti
+        if (script.handlers.length > 0) {
+          const badge = document.createElement('span');
+          badge.textContent = ` (${script.handlers.length})`;
+          badge.style.color = '#39ff14';
+          badge.style.fontSize = '11px';
+          badge.style.marginLeft = '4px';
+          label.appendChild(badge);
+        }
+        
+        li.appendChild(label);
+        
+        // Mostra gli handler come sottolista
+        if (script.handlers.length > 0) {
+          const sub = document.createElement('ul');
+          sub.style.paddingLeft = '20px';
+          sub.style.marginTop = '2px';
+          sub.style.listStyleType = 'disc';
+          script.handlers.forEach(handlerId => {
+            const evLi = document.createElement('li');
+            evLi.style.margin = '2px 0';
+            const a = document.createElement('a');
+            a.href = '#';
+            a.textContent = handlerId;
+            a.style.color = '#39ff14';
+            a.style.textDecoration = 'none';
+            a.onclick = (e) => {
+              e.preventDefault();
+              openScriptFromTree(script.scope, script.target, handlerId);
+            };
+            evLi.appendChild(a);
+            sub.appendChild(evLi);
+          });
+          li.appendChild(sub);
+        }
+        
+        ul.appendChild(li);
+      });
+      
+      allScriptsGroup.appendChild(ul);
+      container.appendChild(allScriptsGroup);
+    }
+
     tree.appendChild(container);
   }
 

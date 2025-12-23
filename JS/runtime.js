@@ -566,6 +566,9 @@
       gameState.initialized = true;
       hideLoadingOverlay();
 
+      // Assicurati che l'interazione sia configurata
+      setupInteraction();
+
       // Avvia game loop solo se tutto è pronto
       if (gameState.currentRoom && AssetRegistry.loadComplete) {
         log('[Runtime] Tutti gli asset caricati, avvio rendering...', 'info');
@@ -812,18 +815,39 @@
       }
     }
 
+    // Carica hotspot della room
+    const hotspots = [];
+    if (room.hotspots && Array.isArray(room.hotspots)) {
+      for (const hotspotData of room.hotspots) {
+        if (hotspotData.points && Array.isArray(hotspotData.points) && hotspotData.points.length >= 3) {
+          hotspots.push({
+            id: hotspotData.id || `hotspot_${Date.now()}`,
+            name: hotspotData.name || 'Hotspot',
+            points: hotspotData.points.map(p => ({
+              x: Number(p.x) || 0,
+              y: Number(p.y) || 0
+            })),
+            visible: typeof hotspotData.visible === 'boolean' ? hotspotData.visible : true
+          });
+        } else {
+          log(`[Runtime] Hotspot ${hotspotData.id || 'unknown'} ignorato: punti insufficienti (< 3)`, 'warning');
+        }
+      }
+    }
+
     // Salva nello stato
     gameState.currentRoom = {
       ...room,
       backgroundImg,
       foregrounds,
-      objects
+      objects,
+      hotspots
     };
 
     // Esegui script on_room_change se presente
     await executeRoomChangeScripts(oldRoomId, roomId);
 
-    log(`[Runtime] Room cambiata: ${roomId} (bg: ${backgroundImg ? 'ok' : 'mancante'}, fg: ${foregrounds.length}, obj: ${objects.length})`, 'info');
+    log(`[Runtime] Room cambiata: ${roomId} (bg: ${backgroundImg ? 'ok' : 'mancante'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length})`, 'info');
   }
 
   // ============================================
@@ -970,11 +994,16 @@
   }
 
   // Esegue un handler specifico da uno script
+  // IMPORTANTE: Questa funzione esegue lo script per definire le funzioni, poi chiama SOLO l'handler specifico
+  // Se lo script contiene codice libero, viene eseguito una volta durante la definizione delle funzioni
+  // Poi chiamiamo esplicitamente solo la funzione handler richiesta
   async function executeScriptHandler(scriptContent, handlerName, argsArray = []) {
     if (!scriptContent || !handlerName) return;
 
     try {
-      // Crea funzione wrapper che espone GameAPI e cerca l'handler
+      log(`[Runtime] executeScriptHandler: Esecuzione handler '${handlerName}' con ${argsArray.length} argomenti`, 'info');
+      
+      // Crea funzione wrapper che espone GameAPI e definisce l'handler
       const scriptFunction = new Function(
         'Game',
         'GameAPI',
@@ -995,21 +1024,22 @@
         'on_gui_click',
         `
         try {
+          // Esegui lo script per definire le funzioni
+          // NOTA: Se lo script contiene codice libero o chiamate dirette alle funzioni,
+          // quello viene eseguito qui. Questo è il comportamento atteso.
           ${scriptContent}
           
-          // Cerca e chiama l'handler se esiste
-          if (typeof ${handlerName} === 'function') {
-            ${handlerName}.apply(null, ${JSON.stringify(argsArray)});
-          }
+          // Restituisci la funzione handler se esiste
+          return typeof ${handlerName} === 'function' ? ${handlerName} : null;
         } catch (e) {
-          GameAPI.error('Errore handler ${handlerName}: ' + (e && e.message ? e.message : String(e)));
-          throw e;
+          GameAPI.error('Errore esecuzione script per handler ${handlerName}: ' + (e && e.message ? e.message : String(e)));
+          return null;
         }
         `
       );
-
-      // Esegui con GameAPI e funzioni helper eventi
-      scriptFunction(
+      
+      // Esegui lo script per ottenere la funzione handler
+      const handlerFunction = scriptFunction(
         GameAPI,
         GameAPI,
         GameAPI.print,
@@ -1028,6 +1058,18 @@
         GameAPI.on_hotspot_click,
         GameAPI.on_gui_click
       );
+      
+      // Chiama l'handler solo se esiste
+      // IMPORTANTE: Se lo script ha già chiamato la funzione durante l'esecuzione sopra,
+      // quella chiamata è già stata eseguita. Chiamiamo comunque la funzione con i parametri corretti
+      // per garantire che venga chiamata con i parametri dell'evento corrente
+      if (handlerFunction && typeof handlerFunction === 'function') {
+        log(`[Runtime] executeScriptHandler: Chiamata funzione '${handlerName}'`, 'info');
+        handlerFunction.apply(null, argsArray);
+        log(`[Runtime] executeScriptHandler: Funzione '${handlerName}' completata`, 'info');
+      } else {
+        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' non trovato nello script`, 'info');
+      }
     } catch (error) {
       log(`Errore esecuzione handler ${handlerName}: ${error.message}`, 'error');
       console.error(error);
@@ -1035,33 +1077,46 @@
   }
 
   async function executeGameStartScripts() {
-    // Esegui script globali on_game_start
+    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
+    const executedScripts = new Set();
+    
+    // PRIORITÀ 1: Esegui script collegati esplicitamente tramite attachments
     const globalScripts = gameState.attachments.globalScripts || {};
     if (typeof globalScripts === 'object') {
       for (const [eventName, scriptName] of Object.entries(globalScripts)) {
         if (eventName === 'on_game_start' && scriptName && gameState.scripts[scriptName]) {
+          executedScripts.add(scriptName);
           await executeScriptHandler(gameState.scripts[scriptName], 'on_game_start', []);
         }
       }
     }
 
-    // Cerca anche script chiamati "on_game_start" direttamente
-    if (gameState.scripts.on_game_start) {
+    // PRIORITÀ 2: Cerca script con nome riservato "on_game_start" (solo se non già eseguito)
+    if (gameState.scripts.on_game_start && !executedScripts.has('on_game_start')) {
+      executedScripts.add('on_game_start');
       await executeScriptHandler(gameState.scripts.on_game_start, 'on_game_start', []);
     }
 
-    // Cerca tutti gli script per handler on_game_start
+    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
+    // IMPORTANTE: Esegui questa scansione solo se necessario, evitando di scansionare
+    // tutti gli script se abbiamo già trovato gli script tramite attachments
     for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+      // Salta script già eseguiti
+      if (executedScripts.has(scriptName)) {
+        continue;
+      }
+      
       if (scriptContent && typeof scriptContent === 'string') {
         // Controlla se lo script contiene la funzione on_game_start
         const hasHandler = /function\s+on_game_start\s*\(/.test(scriptContent);
         if (hasHandler) {
+          executedScripts.add(scriptName);
           await executeScriptHandler(scriptContent, 'on_game_start', []);
         }
       }
     }
 
-    // Esegui handler registrati tramite on_game_start(function() {...})
+    // PRIORITÀ 4: Esegui handler registrati tramite on_game_start(function() {...})
     for (const handler of eventHandlers.game_start) {
       try {
         handler();
@@ -1072,32 +1127,43 @@
   }
 
   async function executeRoomChangeScripts(oldRoomId, newRoomId) {
-    // Esegui script collegati alla room
+    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
+    const executedScripts = new Set();
+    
+    // PRIORITÀ 1: Esegui script collegati esplicitamente alla room tramite attachments
     const roomScripts = gameState.attachments.roomScripts || {};
     if (typeof roomScripts === 'object') {
       for (const [roomId, scriptName] of Object.entries(roomScripts)) {
         if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
+          executedScripts.add(scriptName);
           await executeScriptHandler(gameState.scripts[scriptName], 'on_room_change', [oldRoomId, newRoomId]);
         }
       }
     }
 
-    // Cerca anche script on_room_change globale
-    if (gameState.scripts.on_room_change) {
+    // PRIORITÀ 2: Cerca script con nome riservato "on_room_change" (solo se non già eseguito)
+    if (gameState.scripts.on_room_change && !executedScripts.has('on_room_change')) {
+      executedScripts.add('on_room_change');
       await executeScriptHandler(gameState.scripts.on_room_change, 'on_room_change', [oldRoomId, newRoomId]);
     }
 
-    // Cerca tutti gli script per handler on_room_change
+    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
     for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+      // Salta script già eseguiti
+      if (executedScripts.has(scriptName)) {
+        continue;
+      }
+      
       if (scriptContent && typeof scriptContent === 'string') {
         const hasHandler = /function\s+on_room_change\s*\(/.test(scriptContent);
         if (hasHandler) {
+          executedScripts.add(scriptName);
           await executeScriptHandler(scriptContent, 'on_room_change', [oldRoomId, newRoomId]);
         }
       }
     }
 
-    // Esegui handler registrati tramite on_room_change(function() {...})
+    // PRIORITÀ 4: Esegui handler registrati tramite on_room_change(function() {...})
     for (const handler of eventHandlers.room_change) {
       try {
         handler(oldRoomId, newRoomId);
@@ -1108,36 +1174,116 @@
   }
 
   async function executeObjectClickScripts(objectId, x, y) {
-    // Esegui script collegati all'oggetto
+    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
+    const executedScripts = new Set();
+    
+    // PRIORITÀ 1: Esegui script collegati esplicitamente all'oggetto tramite attachments
     const objectScripts = gameState.attachments.objectScripts || {};
     if (typeof objectScripts === 'object' && objectScripts[objectId]) {
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
+        executedScripts.add(scriptName);
         await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y]);
       }
     }
 
-    // Cerca anche script on_object_click globale
-    if (gameState.scripts.on_object_click) {
+    // PRIORITÀ 2: Cerca script con nome riservato "on_object_click" (solo se non già eseguito)
+    if (gameState.scripts.on_object_click && !executedScripts.has('on_object_click')) {
+      executedScripts.add('on_object_click');
       await executeScriptHandler(gameState.scripts.on_object_click, 'on_object_click', [objectId, x, y]);
     }
 
-    // Cerca tutti gli script per handler on_object_click
+    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
     for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+      // Salta script già eseguiti
+      if (executedScripts.has(scriptName)) {
+        continue;
+      }
+      
       if (scriptContent && typeof scriptContent === 'string') {
         const hasHandler = /function\s+on_object_click\s*\(/.test(scriptContent);
         if (hasHandler) {
+          executedScripts.add(scriptName);
           await executeScriptHandler(scriptContent, 'on_object_click', [objectId, x, y]);
         }
       }
     }
 
-    // Esegui handler registrati tramite on_object_click(function() {...})
+    // PRIORITÀ 4: Esegui handler registrati tramite on_object_click(function() {...})
     for (const handler of eventHandlers.object_click) {
       try {
         handler(objectId, x, y);
       } catch (error) {
         log(`Errore handler on_object_click: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  // Verifica se un punto è dentro un poligono (ray casting algorithm)
+  function isPointInPolygon(points, px, py) {
+    if (!Array.isArray(points) || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x, yi = points[i].y;
+      const xj = points[j].x, yj = points[j].y;
+      const intersect = ((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  async function executeHotspotClickScripts(hotspotId, x, y) {
+    log(`[Runtime] Esecuzione script hotspot: ${hotspotId}`, 'info');
+    
+    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
+    const executedScripts = new Set();
+    
+    // Esegui script collegati all'hotspot
+    const hotspotScripts = gameState.attachments.hotspotScripts || {};
+    if (typeof hotspotScripts === 'object' && hotspotScripts[hotspotId]) {
+      const scriptName = hotspotScripts[hotspotId];
+      if (gameState.scripts[scriptName]) {
+        log(`[Runtime] Trovato script collegato: ${scriptName}`, 'info');
+        executedScripts.add(scriptName);
+        await executeScriptHandler(gameState.scripts[scriptName], 'on_hotspot_click', [hotspotId, x, y]);
+      } else {
+        log(`[Runtime] Script ${scriptName} non trovato in gameState.scripts`, 'warning');
+      }
+    } else {
+      log(`[Runtime] Nessuno script collegato all'hotspot ${hotspotId}`, 'info');
+    }
+
+    // Cerca anche script on_hotspot_click globale (solo se non già eseguito)
+    if (gameState.scripts.on_hotspot_click && !executedScripts.has('on_hotspot_click')) {
+      log(`[Runtime] Esecuzione script globale on_hotspot_click`, 'info');
+      executedScripts.add('on_hotspot_click');
+      await executeScriptHandler(gameState.scripts.on_hotspot_click, 'on_hotspot_click', [hotspotId, x, y]);
+    }
+
+    // Cerca tutti gli script per handler on_hotspot_click (evita di eseguire script già eseguiti)
+    for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+      if (executedScripts.has(scriptName)) {
+        log(`[Runtime] Script ${scriptName} già eseguito, skip`, 'info');
+        continue;
+      }
+      
+      if (scriptContent && typeof scriptContent === 'string') {
+        const hasHandler = /function\s+on_hotspot_click\s*\(/.test(scriptContent);
+        if (hasHandler) {
+          log(`[Runtime] Trovato handler on_hotspot_click nello script: ${scriptName}`, 'info');
+          executedScripts.add(scriptName);
+          await executeScriptHandler(scriptContent, 'on_hotspot_click', [hotspotId, x, y]);
+        }
+      }
+    }
+
+    // Esegui handler registrati tramite on_hotspot_click(function() {...})
+    for (const handler of eventHandlers.hotspot_click) {
+      try {
+        log(`[Runtime] Esecuzione handler registrato on_hotspot_click`, 'info');
+        handler(hotspotId, x, y);
+      } catch (error) {
+        log(`Errore handler on_hotspot_click: ${error.message}`, 'error');
       }
     }
   }
@@ -1475,37 +1621,115 @@
   // ============================================
   // INTERAZIONE
   // ============================================
+  let clickListenerAttached = false;
+  
   function setupInteraction() {
-    if (!canvas) return;
+    if (!canvas) {
+      log('[Runtime] setupInteraction: Canvas non disponibile', 'warning');
+      return;
+    }
 
+    // Evita di aggiungere listener multipli
+    if (clickListenerAttached) {
+      log('[Runtime] setupInteraction: Listener già attaccato, skip', 'info');
+      return;
+    }
+
+    log('[Runtime] setupInteraction: Attacco listener click al canvas', 'info');
+    
     canvas.addEventListener('click', function(e) {
+      if (!canvas) {
+        log('[Runtime] Click handler: Canvas non disponibile', 'error');
+        return;
+      }
+
       const rect = canvas.getBoundingClientRect();
+      if (!rect || rect.width === 0 || rect.height === 0) {
+        log('[Runtime] Click handler: Canvas rect invalido', 'error');
+        return;
+      }
+
+      // Conversione coordinate: da coordinate viewport a coordinate canvas
+      // Considera scaling CSS e devicePixelRatio
       const scaleX = canvas.width / rect.width;
       const scaleY = canvas.height / rect.height;
       const x = (e.clientX - rect.left) * scaleX;
       const y = (e.clientY - rect.top) * scaleY;
 
+      log(`[Runtime] Click handler: Coordinate viewport (${Math.round(e.clientX)}, ${Math.round(e.clientY)}), rect (${Math.round(rect.left)}, ${Math.round(rect.top)}, ${Math.round(rect.width)}x${Math.round(rect.height)}), canvas (${canvas.width}x${canvas.height}), scale (${scaleX.toFixed(2)}, ${scaleY.toFixed(2)}), coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
+
       handleClick(x, y);
-    });
+    }, { passive: true });
 
     canvas.style.cursor = 'pointer';
+    clickListenerAttached = true;
+    log('[Runtime] setupInteraction: Listener click attaccato con successo', 'success');
   }
 
   async function handleClick(x, y) {
-    if (!gameState.currentRoom) return;
+    if (!gameState.currentRoom) {
+      log(`[Runtime] handleClick: Nessuna room corrente`, 'warning');
+      return;
+    }
+
+    log(`[Runtime] handleClick: Click rilevato alle coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
+
+    // Controlla click su hotspot PRIMA degli oggetti (priorità più alta)
+    if (gameState.currentRoom.hotspots && Array.isArray(gameState.currentRoom.hotspots)) {
+      const hotspotCount = gameState.currentRoom.hotspots.length;
+      log(`[Runtime] handleClick: Verifica ${hotspotCount} hotspot(s)`, 'info');
+      
+      for (const hotspot of gameState.currentRoom.hotspots) {
+        if (!hotspot.visible) {
+          log(`[Runtime] handleClick: Hotspot ${hotspot.id} ignorato (visible=false)`, 'info');
+          continue;
+        }
+
+        if (!hotspot.points || hotspot.points.length < 3) {
+          log(`[Runtime] handleClick: Hotspot ${hotspot.id} ignorato (punti insufficienti: ${hotspot.points ? hotspot.points.length : 0})`, 'warning');
+          continue;
+        }
+
+        const isInside = isPointInPolygon(hotspot.points, x, y);
+        log(`[Runtime] handleClick: Hotspot ${hotspot.id} (${hotspot.name}): hit-test = ${isInside}`, 'info');
+        
+        if (isInside) {
+          log(`[Runtime] handleClick: ✓ Click su hotspot: ${hotspot.name} (${hotspot.id})`, 'success');
+          await executeHotspotClickScripts(hotspot.id, x, y);
+          return; // Hotspot ha priorità, esci subito
+        }
+      }
+      
+      log(`[Runtime] handleClick: Nessun hotspot colpito`, 'info');
+    } else {
+      log(`[Runtime] handleClick: Nessun hotspot nella room corrente`, 'info');
+    }
 
     // Controlla click su oggetti
     if (gameState.currentRoom.objects && Array.isArray(gameState.currentRoom.objects)) {
+      const objectCount = gameState.currentRoom.objects.length;
+      log(`[Runtime] handleClick: Verifica ${objectCount} oggetto/i`, 'info');
+      
       for (const obj of gameState.currentRoom.objects) {
-        if (!obj.visible || !obj.enabled || !obj.img) continue;
+        if (!obj.visible || !obj.enabled || !obj.img) {
+          log(`[Runtime] handleClick: Oggetto ${obj.id} ignorato (visible=${obj.visible}, enabled=${obj.enabled}, img=${!!obj.img})`, 'info');
+          continue;
+        }
 
-        if (x >= obj.x && x <= obj.x + obj.img.width &&
-            y >= obj.y && y <= obj.y + obj.img.height) {
-          log(`Click su oggetto: ${obj.name}`, 'info');
+        const isInside = x >= obj.x && x <= obj.x + obj.img.width &&
+                         y >= obj.y && y <= obj.y + obj.img.height;
+        log(`[Runtime] handleClick: Oggetto ${obj.id} (${obj.name}): hit-test = ${isInside}`, 'info');
+
+        if (isInside) {
+          log(`[Runtime] handleClick: ✓ Click su oggetto: ${obj.name} (${obj.id})`, 'success');
           await executeObjectClickScripts(obj.id, x, y);
-      return;
+          return;
         }
       }
+      
+      log(`[Runtime] handleClick: Nessun oggetto colpito`, 'info');
+    } else {
+      log(`[Runtime] handleClick: Nessun oggetto nella room corrente`, 'info');
     }
 
     // Controlla click su pulsanti GUI
@@ -1768,25 +1992,32 @@
   // ============================================
   // INIZIALIZZAZIONE AUTOMATICA
   // ============================================
+  // Flag per tracciare se RUNTIME_READY è già stato inviato (evita invii multipli)
+  let runtimeReadySent = false;
+  
   function initializeRuntime() {
     if (isInIframe) {
       // Siamo in un iframe - modalità playtest (sandboxed)
       log('[Runtime] Modalità iframe rilevata - playtest mode', 'info');
       
       function initIframeMode() {
-        // Invia RUNTIME_READY immediatamente
-        log('[Runtime] Invio RUNTIME_READY all\'editor', 'info');
-        sendRuntimeReady();
-        
-        // Re-invia dopo un breve delay come backup
-        setTimeout(() => {
-          log('[Runtime] Re-invio RUNTIME_READY (backup)', 'info');
+        // Invia RUNTIME_READY solo se non è già stato inviato
+        if (!runtimeReadySent) {
+          log('[Runtime] Invio RUNTIME_READY all\'editor', 'info');
           sendRuntimeReady();
-        }, 100);
-        setTimeout(() => {
-          log('[Runtime] Re-invio RUNTIME_READY (backup 2)', 'info');
-          sendRuntimeReady();
-        }, 500);
+          runtimeReadySent = true;
+          
+          // Re-invia dopo un breve delay come backup (solo una volta)
+          setTimeout(() => {
+            if (!runtimeReadySent) {
+              log('[Runtime] Re-invio RUNTIME_READY (backup)', 'info');
+              sendRuntimeReady();
+              runtimeReadySent = true;
+            }
+          }, 200);
+        } else {
+          log('[Runtime] RUNTIME_READY già inviato, skip', 'info');
+        }
       }
 
       if (document.readyState === 'loading') {
