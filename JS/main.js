@@ -11249,6 +11249,30 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           opt0.value = ''; opt0.textContent = 'Select a script...';
           selector.appendChild(opt0);
         }
+        
+        // ⚠️ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
+        // Questo previene che script di progetti eliminati compaiano in progetti nuovi
+        try {
+          const projectScriptNames = new Set();
+          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+            Object.keys(projectObj.scripts).forEach(name => {
+              if (name) projectScriptNames.add(String(name));
+            });
+          }
+          // Rimuovi tutti gli script da localStorage che non sono nel progetto corrente
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('script-')) {
+              const scriptName = key.slice('script-'.length);
+              if (!projectScriptNames.has(scriptName)) {
+                localStorage.removeItem(key);
+              }
+            }
+          }
+        } catch (cleanupError) {
+          console.warn('[applyProjectObject] Errore pulizia script localStorage:', cleanupError);
+        }
+        
         if (projectObj.scripts && typeof projectObj.scripts === 'object') {
           Object.entries(projectObj.scripts).forEach(([name, content]) => {
             if (!name) return;
