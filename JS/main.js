@@ -2243,7 +2243,39 @@ document.addEventListener("DOMContentLoaded", () => {
       if (room.id === currentRoomId) opt.selected = true;
       sel.appendChild(opt);
     });
+    refreshRoomIdDisplay();
   }
+
+  function refreshRoomIdDisplay() {
+    const roomIdInput = document.getElementById('room-id-display');
+    if (!roomIdInput) return;
+    if (currentRoomId) {
+      roomIdInput.value = currentRoomId;
+    } else {
+      roomIdInput.value = '';
+    }
+  }
+
+  window.copyRoomId = function() {
+    const roomIdInput = document.getElementById('room-id-display');
+    if (!roomIdInput || !roomIdInput.value) {
+      showNotification('No room selected', 'warning');
+      return;
+    }
+    roomIdInput.select();
+    roomIdInput.setSelectionRange(0, 99999); // Per mobile
+    try {
+      document.execCommand('copy');
+      showNotification('Room ID copied to clipboard!', 'success');
+    } catch (err) {
+      // Fallback per browser moderni
+      navigator.clipboard.writeText(roomIdInput.value).then(() => {
+        showNotification('Room ID copied to clipboard!', 'success');
+      }).catch(() => {
+        showNotification('Failed to copy Room ID', 'error');
+      });
+    }
+  };
 
   window.createRoom = function() {
     const name = prompt('Room name:', `Room ${rooms.size + 1}`);
@@ -2257,6 +2289,7 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshSceneObjectsListUI();
     refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
@@ -2289,6 +2322,7 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshSceneObjectsListUI();
     refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
@@ -2309,6 +2343,7 @@ window.selectRoom = function(roomId) {
     refreshSceneObjectsListUI();
     refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     
     // Trigger global room change event

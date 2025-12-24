@@ -85,6 +85,44 @@
     }
   }
 
+  // Funzione per mostrare messaggi visibili a schermo
+  function showGameMessage(text, duration = 3000) {
+    if (!text) return;
+    
+    // Rimuovi notifiche precedenti se ce ne sono troppe
+    const existingNotifications = document.querySelectorAll('.game-notification');
+    if (existingNotifications.length > 5) {
+      existingNotifications[0].remove();
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = 'game-notification';
+    notification.innerHTML = `
+      <button class="close-btn" onclick="this.parentElement.remove()" title="Chiudi">×</button>
+      <div style="padding-right: 24px;">${escapeHtml(text)}</div>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Rimuovi automaticamente dopo la durata specificata
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.classList.add('fade-out');
+        setTimeout(() => {
+          if (notification.parentNode) {
+            notification.remove();
+          }
+        }, 300);
+      }
+    }, duration);
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
   // ============================================
   // CARICAMENTO IMMAGINI
   // ============================================
@@ -1007,10 +1045,11 @@
         'getVariable',
         'setVariable',
         'getCurrentRoom',
-        'changeRoom',
+        'load_room',
         'enableObject',
         'disableObject',
         'showText',
+        'show_message',
         'log',
         'on_game_start',
         'on_room_change',
@@ -1050,10 +1089,11 @@
         GameAPI.getVariable,
         GameAPI.setVariable,
         GameAPI.getCurrentRoom,
-        GameAPI.changeRoom,
+        GameAPI.load_room,
         GameAPI.enableObject,
         GameAPI.disableObject,
         GameAPI.showText,
+        GameAPI.show_message,
         GameAPI.log,
         noOpHandlers.on_game_start,      // ⚠️ NO-OP durante compilazione
         noOpHandlers.on_room_change,     // ⚠️ NO-OP durante compilazione
@@ -1183,10 +1223,11 @@
         'getVariable',
         'setVariable',
         'getCurrentRoom',
-        'changeRoom',
+        'load_room',
         'enableObject',
         'disableObject',
         'showText',
+        'show_message',
         'log',
         'on_game_start',
         'on_room_change',
@@ -1212,10 +1253,11 @@
         GameAPI.getVariable,
         GameAPI.setVariable,
         GameAPI.getCurrentRoom,
-        GameAPI.changeRoom,
+        GameAPI.load_room,
         GameAPI.enableObject,
         GameAPI.disableObject,
         GameAPI.showText,
+        GameAPI.show_message,
         GameAPI.log,
         GameAPI.on_game_start,
         GameAPI.on_room_change,
@@ -1622,12 +1664,13 @@
       return gameState.currentRoomId;
     },
 
-    changeRoom: function(roomId) {
-      if (typeof roomId !== 'string' && typeof roomId !== 'number') {
-        GameAPI.error('changeRoom: roomId must be a string or number');
-        return;
+    load_room: function(roomIdOrName) {
+      if (typeof roomIdOrName !== 'string' && typeof roomIdOrName !== 'number') {
+        GameAPI.error('load_room: roomIdOrName must be a string or number');
+        return false;
       }
-      changeRoom(String(roomId));
+      changeRoom(String(roomIdOrName));
+      return true;
     },
 
     // Oggetti
@@ -1651,9 +1694,13 @@
 
     // UI
     showText: function(text) {
-      // Mostra testo come messaggio (implementazione base)
-      log(`[Messaggio] ${text}`, 'info');
-      // TODO: Implementare sistema di messaggi UI più avanzato
+      // Mostra testo come messaggio visibile
+      showGameMessage(String(text));
+    },
+
+    show_message: function(text) {
+      // Alias di showText per compatibilità con l'editor
+      showGameMessage(String(text));
     },
 
     // Event System - Funzioni helper per registrare handler
@@ -1707,6 +1754,16 @@
   // Override print() globale
   window.print = function() {
     GameAPI.print.apply(GameAPI, arguments);
+  };
+
+  // Esponi load_room globalmente per compatibilità con l'editor
+  window.load_room = function(roomIdOrName) {
+    return GameAPI.load_room(roomIdOrName);
+  };
+
+  // Esponi show_message globalmente per compatibilità con l'editor
+  window.show_message = function(text) {
+    return GameAPI.show_message(text);
   };
 
   // Esponi funzioni helper eventi globalmente

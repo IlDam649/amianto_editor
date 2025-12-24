@@ -66,7 +66,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
   - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
-  - **GameAPI**: Complete API exposed to user scripts (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **GameAPI**: Complete API exposed to user scripts (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
   - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
@@ -134,7 +134,7 @@ The JavaScript scripting system currently provides **24 working APIs** organized
 ### Runtime Context APIs (GameAPI)
 - **`GameAPI.getCurrentRoom()`** - Returns the current room ID
 - **`GameAPI.getCurrentObject()`** - Returns the current object ID (if any)
-- **`GameAPI.changeRoom(roomId)`** - Requests a room change (sends ROOM_CHANGE_REQUEST message)
+- **`load_room(roomIdOrName)`** - Loads a room by ID or name
 
 ### Usage Examples
 ```javascript
@@ -332,7 +332,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato con `sandbox="allow-scripts"` per sicurezza
-  - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
   - **Messaggistica Robusta**: Sistema MessageQueue con buffer, retry (3 tentativi) e fallback a console
   - **Script Logging**: ScriptLogService integrato con log timestamped e livelli (info, warning, error)
   - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
@@ -400,7 +400,7 @@ Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** o
 ### API Contesto Runtime (GameAPI)
 - **`GameAPI.getCurrentRoom()`** - Restituisce l'ID della stanza corrente
 - **`GameAPI.getCurrentObject()`** - Restituisce l'ID dell'oggetto corrente (se presente)
-- **`GameAPI.changeRoom(roomId)`** - Richiede un cambio stanza (invia messaggio ROOM_CHANGE_REQUEST)
+- **`load_room(roomIdOrName)`** - Carica una stanza per ID o nome
 
 ### Esempi di Utilizzo
 ```javascript

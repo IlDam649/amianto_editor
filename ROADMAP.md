@@ -271,7 +271,7 @@
 **✅ COMPLETATO - Sistema Runtime Sandboxed**:
 - ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
 - ✅ Sistema MessageQueue robusto (buffer, retry, fallback)
-- ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `changeRoom()`, `getCurrentRoom()`, `getCurrentObject()`)
+- ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `load_room()`, `getCurrentRoom()`, `getCurrentObject()`)
 - ✅ ScriptLogService integrato con logging timestamped e livelli
 - ✅ Gestione contesto esecuzione (roomId, objectId, variables)
 - ✅ Sistema di inizializzazione con RUNTIME_READY e script pending
@@ -289,7 +289,7 @@
   - ✅ `GameAPI.print()` - Logging con serializzazione valori
   - ✅ `GameAPI.error()` - Error logging
   - ✅ `GameAPI.getVariable()` / `GameAPI.setVariable()` - Gestione variabili
-  - ✅ `GameAPI.changeRoom()` - Richiesta cambio stanza
+  - ✅ `load_room()` - Carica una stanza per ID o nome
   - ✅ `GameAPI.getCurrentRoom()` / `GameAPI.getCurrentObject()` - Info contesto
 - **ScriptLogService**: Sistema di logging integrato nell'editor con timestamp e livelli (info, warning, error)
 

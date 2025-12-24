@@ -368,7 +368,16 @@
             <button class="btn btn-outline-danger" onclick="deleteRoom()">Delete</button>
           </div>
         </div>
-        <select class="form-select form-select-sm" id="rooms-selector" onchange="selectRoom(this.value)"></select>
+        <select class="form-select form-select-sm mb-2" id="rooms-selector" onchange="selectRoom(this.value)"></select>
+        <div class="mb-2">
+          <label class="form-label text-light" style="font-size: 0.85rem; margin-bottom: 0.25rem;">Room ID:</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="room-id-display" readonly style="background-color: #2a2a2a; color: #39ff14; font-family: monospace; font-size: 0.85rem; cursor: text;" value="">
+            <button class="btn btn-outline-secondary" type="button" onclick="copyRoomId()" title="Copy Room ID">
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Bottoni per aggiungere immagini -->

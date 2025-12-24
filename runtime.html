@@ -202,6 +202,75 @@
     #file-input {
       display: none;
     }
+
+    /* Notifiche messaggi */
+    .game-notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      min-width: 300px;
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 2px solid #39ff14;
+      border-radius: 8px;
+      padding: 16px 20px;
+      color: #eee;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 14px;
+      z-index: 10000;
+      box-shadow: 0 4px 20px rgba(57, 255, 20, 0.3);
+      animation: slideInRight 0.3s ease-out;
+      word-wrap: break-word;
+    }
+
+    @keyframes slideInRight {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    .game-notification.fade-out {
+      animation: fadeOut 0.3s ease-out forwards;
+    }
+
+    @keyframes fadeOut {
+      from {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      to {
+        opacity: 0;
+        transform: translateX(100%);
+      }
+    }
+
+    .game-notification .close-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: transparent;
+      border: none;
+      color: #39ff14;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+
+    .game-notification .close-btn:hover {
+      color: #fff;
+    }
   </style>
 </head>
 <body>
