@@ -1403,45 +1403,27 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-if (playTestState && playTestState.isRunning) {
-      const obj = getObjectAtPoint(x, y);
-      if (obj && !isDraggingObject) {
-        // Trigger global object click event
-        triggerObjectClick(obj.id, Math.round(x), Math.round(y));
-        
-        try {
-          // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-        } catch(_) {}
-        const scriptName = objectScripts.get(obj.id);
-        if (scriptName) {
-          const content = jsScripts.get(scriptName);
-          const eventConditions = objectEventConditions.get(obj.id);
-          const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-          addDebugMessage(`[Object:onClick] ${obj.id}`, 'info');
-          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)], conditions);
-        }
-        return;
-      }
-for (const hs of hotspots) {
-        if (!hs || hs.visible === false) continue;
-        if (isPointInPolygon(hs.points || [], x, y)) {
-          // Trigger global hotspot click event
-          triggerHotspotClick(hs.id);
-          
-          try {
-            // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-          } catch(_) {}
-          const hScript = hotspotScripts.get(hs.id);
-          if (hScript) {
-            const hContent = jsScripts.get(hScript);
-            const eventConditions = hotspotEventConditions.get(hs.id);
-            const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-            addDebugMessage(`[Hotspot:onClick] ${hs.id}`, 'info');
-            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id], conditions);
-          }
-          break;
-        }
-      }
+    // ⚠️ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
+    // sul canvas dell'EDITOR, causando doppia esecuzione perché:
+    // 1. Il listener in main.js gestiva i click sul canvas dell'editor
+    // 2. Il listener in runtime.js gestiva i click sul canvas del runtime (finestra separata)
+    // 3. Quando il playtest è attivo, il runtime dovrebbe essere l'unico a gestire i click
+    // 
+    // SOLUZIONE: Rimuoviamo completamente la gestione playtest dal listener dell'editor.
+    // Il runtime nella finestra separata gestirà TUTTI i click durante il playtest.
+    // L'editor gestisce solo click per editing (walkable, hotspot drawing, GUI selection).
+    //
+    // NOTA: executeScriptHandler() è vuoto (non esegue nulla), quindi non causava
+    // doppia esecuzione di script, ma triggerObjectClick() e triggerHotspotClick()
+    // potevano comunque causare effetti collaterali indesiderati.
+    //
+    // ORA: Durante il playtest, i click sul canvas dell'editor vengono ignorati
+    // per oggetti/hotspot, e solo il runtime gestisce l'interazione.
+    if (playTestState && playTestState.isRunning) {
+      // Durante il playtest, NON gestiamo click su oggetti/hotspot nel canvas dell'editor.
+      // Il runtime nella finestra separata gestisce TUTTA l'interazione durante il playtest.
+      // Questo previene doppia esecuzione e conflitti tra editor e runtime.
+      return;
     }
   });
 
@@ -11542,7 +11524,120 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Il modale verrà chiuso dal chiamante dopo questa funzione completa
   }
 
-  // MODIFICATO: Ora elimina anche da Firestore
+  /**
+   * Elimina completamente un progetto da Firestore, incluse tutte le subcollezioni
+   * IMPORTANTE: In Firestore, eliminare un documento padre NON elimina automaticamente le subcollezioni
+   * Questa funzione elimina prima tutte le subcollezioni, poi il documento principale
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto
+   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
+   */
+  async function deleteProjectFromFirestoreCompletely(userId, projectId) {
+    if (!userId || !projectId || !window.firebaseDB) {
+      console.warn('[Firestore] Parametri mancanti per eliminazione completa progetto');
+      return false;
+    }
+
+    try {
+      // Ottieni riferimento a Firebase per accedere a batch()
+      const firebaseObj = window.firebase || firebase;
+      if (!firebaseObj) {
+        console.error('[Firestore] Firebase non disponibile');
+        return false;
+      }
+
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      // STEP 1: Elimina tutte le subcollezioni (es: assets)
+      // Firestore non supporta eliminazione ricorsiva automatica, quindi dobbiamo farlo manualmente
+      const subcollections = ['assets']; // Aggiungi altre subcollezioni se necessario
+      
+      for (const subcollectionName of subcollections) {
+        try {
+          const subcollectionRef = projectRef.collection(subcollectionName);
+          
+          // Elenca tutti i documenti nella subcollezione
+          // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
+          const snapshot = await subcollectionRef.get({ source: 'server' });
+          
+          if (!snapshot.empty) {
+            console.log(`[Firestore] Eliminazione ${snapshot.size} documenti dalla subcollezione '${subcollectionName}'...`);
+            
+            // Elimina tutti i documenti in batch (Firestore supporta batch fino a 500 operazioni)
+            const BATCH_SIZE = 500;
+            const batches = [];
+            let currentBatch = window.firebaseDB.batch();
+            let operationCount = 0;
+            
+            snapshot.forEach((doc) => {
+              currentBatch.delete(doc.ref);
+              operationCount++;
+              
+              if (operationCount >= BATCH_SIZE) {
+                batches.push(currentBatch);
+                currentBatch = window.firebaseDB.batch();
+                operationCount = 0;
+              }
+            });
+            
+            // Aggiungi l'ultimo batch se ha operazioni
+            if (operationCount > 0) {
+              batches.push(currentBatch);
+            }
+            
+            // Esegui tutti i batch
+            for (const batch of batches) {
+              await batch.commit();
+            }
+            
+            console.log(`[Firestore] ✅ Subcollezione '${subcollectionName}' eliminata completamente`);
+          } else {
+            console.log(`[Firestore] Subcollezione '${subcollectionName}' già vuota`);
+          }
+        } catch (subError) {
+          console.error(`[Firestore] Errore eliminazione subcollezione '${subcollectionName}':`, subError);
+          // Continua anche se una subcollezione fallisce
+        }
+      }
+
+      // STEP 2: Verifica che il documento esista prima di eliminarlo
+      // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
+      const projectDoc = await projectRef.get({ source: 'server' });
+      
+      if (!projectDoc.exists) {
+        console.log(`[Firestore] Progetto ${projectId} non esiste già su Firestore`);
+        return true; // Considera come successo se non esiste
+      }
+
+      // STEP 3: Elimina il documento principale
+      await projectRef.delete();
+      
+      // STEP 4: Verifica che l'eliminazione sia stata applicata (forza lettura dal server)
+      // Questo previene problemi con la cache offline di Firestore
+      // Attendi un breve momento per permettere la propagazione
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const verifyDoc = await projectRef.get({ source: 'server' });
+      
+      if (verifyDoc.exists) {
+        console.error(`[Firestore] ⚠️ ATTENZIONE: Il progetto ${projectId} esiste ancora dopo l'eliminazione!`);
+        addDebugMessage(`[Firestore] ⚠️ Il progetto potrebbe non essere stato eliminato permanentemente`, 'warning');
+        return false;
+      }
+      
+      console.log(`[Firestore] ✅ Progetto ${projectId} eliminato permanentemente da Firestore`);
+      return true;
+    } catch (error) {
+      console.error('[Firestore] Errore eliminazione completa progetto:', error);
+      addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+      return false;
+    }
+  }
+
+  // MODIFICATO: Ora elimina anche da Firestore (con eliminazione completa delle subcollezioni)
   async function deleteProjectByName(projectName) {
     if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
     if (!projectName) return;
@@ -11553,20 +11648,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
     const userId = currentUser.uid;
 
-    // 1. ELIMINA DA FIRESTORE (se disponibile) - AGGIUNTO
+    // 1. ELIMINA COMPLETAMENTE DA FIRESTORE (incluse subcollezioni) - MODIFICATO
     if (userId && window.firebaseDB) {
       try {
-        const projectRef = window.firebaseDB
-          .collection('users')
-          .doc(userId)
-          .collection('projects')
-          .doc(projectId);
-        await projectRef.delete();
-        console.log(`[Firestore] Progetto eliminato: ${projectName}`);
-        addDebugMessage(`[Firestore] Progetto eliminato: ${projectName}`, 'success');
+        const deleted = await deleteProjectFromFirestoreCompletely(userId, projectId);
+        if (deleted) {
+          console.log(`[Firestore] Progetto eliminato permanentemente: ${projectName}`);
+          addDebugMessage(`[Firestore] Progetto eliminato permanentemente: ${projectName}`, 'success');
+        } else {
+          console.error(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`);
+          addDebugMessage(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`, 'error');
+          // Continua comunque con l'eliminazione locale
+        }
       } catch (error) {
         console.error('[Firestore] Errore eliminazione:', error);
         addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+        // Continua comunque con l'eliminazione locale
       }
     }
 

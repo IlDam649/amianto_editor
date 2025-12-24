@@ -29,7 +29,12 @@
     attachments: {}, // script collegati a eventi
     isRunning: false,
     lastFrameTime: 0,
-    animationFrameId: null
+    animationFrameId: null,
+    // ⚠️ CACHE SCRIPT COMPILATI: Memorizza gli handler estratti dagli script
+    // Struttura: Map<scriptName, { on_hotspot_click: function, on_object_click: function, ... }>
+    // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
+    // Questo previene riesecuzione di codice JS a ogni evento
+    compiledScripts: new Map()
   };
 
   // Canvas e rendering
@@ -461,6 +466,11 @@
       gameState.scripts = projectData.scripts || {};
       gameState.attachments = projectData.attachments || {};
       
+      // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati quando viene caricato un nuovo progetto
+      // Questo garantisce che gli script vengano ricompilati con il nuovo contenuto
+      gameState.compiledScripts.clear();
+      log('[Runtime] Cache script compilati resettata', 'info');
+      
       // Reset AssetRegistry
       AssetRegistry.images.clear();
       AssetRegistry.isLoading = false;
@@ -566,7 +576,10 @@
       gameState.initialized = true;
       hideLoadingOverlay();
 
-      // Assicurati che l'interazione sia configurata
+      // ⚠️ SETUP INTERAZIONE: Configura listener click centralizzato
+      // IMPORTANTE: setupInteraction() viene chiamato QUI, dopo che il canvas è pronto
+      // e PRIMA di avviare il game loop. Questo garantisce che il listener sia
+      // registrato solo quando il runtime è completamente inizializzato.
       setupInteraction();
 
       // Avvia game loop solo se tutto è pronto
@@ -918,6 +931,230 @@
   }
 
   // ============================================
+  // COMPILAZIONE E CACHE SCRIPT
+  // ============================================
+  // ⚠️ SISTEMA DI CACHE SCRIPT:
+  // Ogni script viene compilato UNA SOLA VOLTA e gli handler vengono estratti e cache-ati.
+  // Questo previene riesecuzione di codice JS a ogni evento, garantendo:
+  // - Un click = una sola chiamata handler
+  // - Nessun handler duplicato
+  // - Nessuna riesecuzione di codice JS
+  // - Runtime deterministico e stabile
+  
+  /**
+   * Compila uno script UNA SOLA VOLTA e estrae solo gli handler.
+   * Gli handler vengono cache-ati e riutilizzati senza rieseguire il codice.
+   * @param {string} scriptName - Nome dello script (chiave nella cache)
+   * @param {string} scriptContent - Contenuto dello script da compilare
+   * @returns {Object|null} Oggetto con gli handler estratti: { on_hotspot_click: function, on_object_click: function, ... }
+   */
+  function compileScript(scriptName, scriptContent) {
+    if (!scriptName || !scriptContent || typeof scriptContent !== 'string') {
+      return null;
+    }
+    
+    // ⚠️ PROTEZIONE: Se lo script è già stato compilato, restituisci la cache
+    if (gameState.compiledScripts.has(scriptName)) {
+      log(`[Runtime] compileScript: Script '${scriptName}' già compilato, uso cache`, 'info');
+      return gameState.compiledScripts.get(scriptName);
+    }
+    
+    log(`[Runtime] compileScript: Compilazione script '${scriptName}' (prima volta)`, 'info');
+    
+    try {
+      // Crea un contesto isolato per eseguire lo script
+      // Questo contesto cattura solo le definizioni di funzioni handler
+      const handlers = {};
+      
+      // Lista degli handler supportati
+      const supportedHandlers = [
+        'on_game_start',
+        'on_room_change',
+        'on_object_click',
+        'on_character_click',
+        'on_hotspot_click',
+        'on_gui_click'
+      ];
+      
+      // ⚠️ STRATEGIA DI ESTRAZIONE HANDLER:
+      // Creiamo un contesto isolato dove eseguire lo script.
+      // Le funzioni handler definite nello script vengono catturate dopo l'esecuzione.
+      // Questo garantisce che il codice libero venga eseguito UNA SOLA VOLTA durante la compilazione.
+      // ⚠️ PROTEZIONE: Creiamo wrapper "no-op" per gli handler durante la compilazione
+      // per prevenire esecuzione accidentale se lo script chiama direttamente gli handler.
+      
+      // Crea un oggetto per catturare gli handler definiti nello script
+      const handlerContainer = {};
+      
+      // ⚠️ WRAPPER NO-OP: Crea funzioni wrapper che NON eseguono nulla durante la compilazione
+      // Questo previene esecuzione accidentale se lo script chiama direttamente gli handler
+      const noOpHandlers = {};
+      supportedHandlers.forEach(h => {
+        noOpHandlers[h] = function() {
+          // Durante la compilazione, gli handler non vengono eseguiti
+          // Vengono solo estratti e salvati nella cache
+          // ⚠️ IMPORTANTE: Se lo script chiama direttamente l'handler durante la compilazione,
+          // questa chiamata viene ignorata per prevenire doppia esecuzione
+          log(`[Runtime] compileScript: Chiamata a ${h} ignorata durante compilazione (previene doppia esecuzione)`, 'warning');
+        };
+      });
+      
+      // Crea funzione wrapper che espone GameAPI e cattura gli handler
+      const scriptFunction = new Function(
+        'Game',
+        'GameAPI',
+        'print',
+        'getVariable',
+        'setVariable',
+        'getCurrentRoom',
+        'changeRoom',
+        'enableObject',
+        'disableObject',
+        'showText',
+        'log',
+        'on_game_start',
+        'on_room_change',
+        'on_object_click',
+        'on_character_click',
+        'on_hotspot_click',
+        'on_gui_click',
+        'handlerContainer', // Container per catturare gli handler
+        `
+        try {
+          // Esegui lo script per definire le funzioni handler
+          // ⚠️ IMPORTANTE: Se lo script contiene codice libero, viene eseguito UNA SOLA VOLTA qui
+          // ⚠️ PROTEZIONE: Se lo script chiama direttamente gli handler (es: on_hotspot_click(...)),
+          // quelli vengono ignorati durante la compilazione per prevenire doppia esecuzione
+          ${scriptContent}
+          
+          // ⚠️ ESTRAZIONE HANDLER: Dopo l'esecuzione, estraiamo solo le funzioni handler
+          // definite nello script e le salviamo nel container
+          ${supportedHandlers.map(h => `
+          if (typeof ${h} === 'function') {
+            handlerContainer['${h}'] = ${h};
+          }
+          `).join('')}
+        } catch (e) {
+          GameAPI.error('Errore compilazione script: ' + (e && e.message ? e.message : String(e)));
+        }
+        `
+      );
+      
+      // Esegui lo script per ottenere gli handler estratti
+      // ⚠️ IMPORTANTE: Passa i wrapper no-op invece delle funzioni reali di GameAPI
+      // Questo previene esecuzione accidentale durante la compilazione
+      scriptFunction(
+        GameAPI,
+        GameAPI,
+        GameAPI.print,
+        GameAPI.getVariable,
+        GameAPI.setVariable,
+        GameAPI.getCurrentRoom,
+        GameAPI.changeRoom,
+        GameAPI.enableObject,
+        GameAPI.disableObject,
+        GameAPI.showText,
+        GameAPI.log,
+        noOpHandlers.on_game_start,      // ⚠️ NO-OP durante compilazione
+        noOpHandlers.on_room_change,     // ⚠️ NO-OP durante compilazione
+        noOpHandlers.on_object_click,    // ⚠️ NO-OP durante compilazione
+        noOpHandlers.on_character_click, // ⚠️ NO-OP durante compilazione
+        noOpHandlers.on_hotspot_click,   // ⚠️ NO-OP durante compilazione
+        noOpHandlers.on_gui_click,       // ⚠️ NO-OP durante compilazione
+        handlerContainer // Container per catturare gli handler
+      );
+      
+      // Gli handler estratti sono ora in handlerContainer
+      const extractedHandlers = handlerContainer;
+      
+      // Salva nella cache
+      gameState.compiledScripts.set(scriptName, extractedHandlers);
+      
+      const handlerCount = Object.keys(extractedHandlers).length;
+      log(`[Runtime] compileScript: Script '${scriptName}' compilato con successo (${handlerCount} handler estratti)`, 'success');
+      
+      if (handlerCount === 0) {
+        log(`[Runtime] compileScript: ATTENZIONE - Script '${scriptName}' non contiene handler definiti`, 'warning');
+      }
+      
+      return extractedHandlers;
+    } catch (error) {
+      log(`[Runtime] compileScript: Errore compilazione script '${scriptName}': ${error.message}`, 'error');
+      console.error(error);
+      
+      // Salva cache vuota per evitare tentativi ripetuti
+      gameState.compiledScripts.set(scriptName, {});
+      return {};
+    }
+  }
+  
+  /**
+   * Ottiene un handler compilato dalla cache.
+   * Se lo script non è ancora stato compilato, lo compila prima.
+   * @param {string} scriptName - Nome dello script
+   * @param {string} scriptContent - Contenuto dello script (usato solo se non in cache)
+   * @param {string} handlerName - Nome dell'handler da recuperare (es: 'on_hotspot_click')
+   * @returns {Function|null} Funzione handler o null se non trovata
+   */
+  function getCompiledHandler(scriptName, scriptContent, handlerName) {
+    // Compila lo script se non è già in cache
+    if (!gameState.compiledScripts.has(scriptName)) {
+      compileScript(scriptName, scriptContent);
+    }
+    
+    // Recupera gli handler dalla cache
+    const handlers = gameState.compiledScripts.get(scriptName);
+    if (!handlers || typeof handlers !== 'object') {
+      return null;
+    }
+    
+    // Restituisci l'handler richiesto
+    const handler = handlers[handlerName];
+    if (typeof handler === 'function') {
+      // ⚠️ WRAPPER ANTI-DOPPIA-ESECUZIONE: Avvolge l'handler in un wrapper
+      // che previene esecuzione multipla nello stesso tick
+      // Usa un Map per tracciare gli handler in esecuzione per script
+      if (!window._handlerExecutionTracker) {
+        window._handlerExecutionTracker = new Map();
+      }
+      
+      const executionKey = `${scriptName}_${handlerName}`;
+      const wrappedHandler = function(...args) {
+        const tracker = window._handlerExecutionTracker;
+        const isExecuting = tracker.get(executionKey) || false;
+        
+        if (isExecuting) {
+          log(`[Runtime] getCompiledHandler: Handler '${handlerName}' già in esecuzione (key: ${executionKey}), ignoro chiamata duplicata`, 'warning');
+          console.trace('Stack trace chiamata duplicata:');
+          return;
+        }
+        
+        tracker.set(executionKey, true);
+        log(`[Runtime] getCompiledHandler: Avvio esecuzione handler '${handlerName}' (key: ${executionKey})`, 'info');
+        
+        try {
+          const result = handler.apply(this, args);
+          return result;
+        } finally {
+          // Reset flag al prossimo tick per permettere chiamate successive
+          setTimeout(() => {
+            tracker.set(executionKey, false);
+            log(`[Runtime] getCompiledHandler: Handler '${handlerName}' completato, flag reset (key: ${executionKey})`, 'info');
+          }, 0);
+        }
+      };
+      
+      // Copia proprietà dell'handler originale (se presenti)
+      Object.setPrototypeOf(wrappedHandler, Object.getPrototypeOf(handler));
+      Object.defineProperty(wrappedHandler, 'name', { value: handler.name || handlerName });
+      
+      return wrappedHandler;
+    }
+    
+    return null;
+  }
+
+  // ============================================
   // ESECUZIONE SCRIPT
   // ============================================
   async function executeScript(scriptName, context = {}) {
@@ -993,85 +1230,64 @@
     }
   }
 
-  // Esegue un handler specifico da uno script
-  // IMPORTANTE: Questa funzione esegue lo script per definire le funzioni, poi chiama SOLO l'handler specifico
-  // Se lo script contiene codice libero, viene eseguito una volta durante la definizione delle funzioni
-  // Poi chiamiamo esplicitamente solo la funzione handler richiesta
-  async function executeScriptHandler(scriptContent, handlerName, argsArray = []) {
-    if (!scriptContent || !handlerName) return;
+  // ⚠️ SISTEMA DI ESECUZIONE HANDLER CON CACHE:
+  // Questa funzione NON riesegue più lo script a ogni chiamata.
+  // Usa la cache degli handler compilati per chiamare direttamente la funzione.
+  // Questo garantisce: un click = una sola chiamata handler, nessuna riesecuzione di codice JS.
+  
+  /**
+   * Esegue un handler specifico da uno script usando la cache compilata.
+   * ⚠️ IMPORTANTE: Lo script viene compilato UNA SOLA VOLTA, gli handler vengono cache-ati.
+   * A ogni chiamata, recupera l'handler dalla cache e lo esegue direttamente.
+   * @param {string} scriptContent - Contenuto dello script (usato solo per compilazione iniziale)
+   * @param {string} handlerName - Nome dell'handler da eseguire (es: 'on_hotspot_click')
+   * @param {Array} argsArray - Argomenti da passare all'handler
+   * @param {string} scriptName - Nome dello script (opzionale, usato come chiave cache)
+   */
+  async function executeScriptHandler(scriptContent, handlerName, argsArray = [], scriptName = null) {
+    if (!scriptContent || !handlerName) {
+      return;
+    }
+    
+    // Se scriptName non è fornito, genera una chiave basata sul contenuto (hash semplice)
+    // NOTA: Idealmente scriptName dovrebbe essere sempre fornito per garantire cache corretta
+    if (!scriptName) {
+      // Genera un nome basato su un hash semplice del contenuto
+      // Questo non è ideale ma funziona per retrocompatibilità
+      let hash = 0;
+      for (let i = 0; i < scriptContent.length; i++) {
+        const char = scriptContent.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash; // Convert to 32bit integer
+      }
+      scriptName = `script_${Math.abs(hash)}`;
+      log(`[Runtime] executeScriptHandler: ScriptName non fornito, uso hash: ${scriptName}`, 'warning');
+    }
 
     try {
-      log(`[Runtime] executeScriptHandler: Esecuzione handler '${handlerName}' con ${argsArray.length} argomenti`, 'info');
+      log(`[Runtime] executeScriptHandler: Recupero handler '${handlerName}' da script '${scriptName}'`, 'info');
       
-      // Crea funzione wrapper che espone GameAPI e definisce l'handler
-      const scriptFunction = new Function(
-        'Game',
-        'GameAPI',
-        'print',
-        'getVariable',
-        'setVariable',
-        'getCurrentRoom',
-        'changeRoom',
-        'enableObject',
-        'disableObject',
-        'showText',
-        'log',
-        'on_game_start',
-        'on_room_change',
-        'on_object_click',
-        'on_character_click',
-        'on_hotspot_click',
-        'on_gui_click',
-        `
-        try {
-          // Esegui lo script per definire le funzioni
-          // NOTA: Se lo script contiene codice libero o chiamate dirette alle funzioni,
-          // quello viene eseguito qui. Questo è il comportamento atteso.
-          ${scriptContent}
-          
-          // Restituisci la funzione handler se esiste
-          return typeof ${handlerName} === 'function' ? ${handlerName} : null;
-        } catch (e) {
-          GameAPI.error('Errore esecuzione script per handler ${handlerName}: ' + (e && e.message ? e.message : String(e)));
-          return null;
-        }
-        `
-      );
+      // ⚠️ CORE: Recupera l'handler dalla cache (compila se necessario)
+      // Questo NON riesegue lo script, usa solo la cache compilata
+      const handlerFunction = getCompiledHandler(scriptName, scriptContent, handlerName);
       
-      // Esegui lo script per ottenere la funzione handler
-      const handlerFunction = scriptFunction(
-        GameAPI,
-        GameAPI,
-        GameAPI.print,
-        GameAPI.getVariable,
-        GameAPI.setVariable,
-        GameAPI.getCurrentRoom,
-        GameAPI.changeRoom,
-        GameAPI.enableObject,
-        GameAPI.disableObject,
-        GameAPI.showText,
-        GameAPI.log,
-        GameAPI.on_game_start,
-        GameAPI.on_room_change,
-        GameAPI.on_object_click,
-        GameAPI.on_character_click,
-        GameAPI.on_hotspot_click,
-        GameAPI.on_gui_click
-      );
-      
-      // Chiama l'handler solo se esiste
-      // IMPORTANTE: Se lo script ha già chiamato la funzione durante l'esecuzione sopra,
-      // quella chiamata è già stata eseguita. Chiamiamo comunque la funzione con i parametri corretti
-      // per garantire che venga chiamata con i parametri dell'evento corrente
       if (handlerFunction && typeof handlerFunction === 'function') {
-        log(`[Runtime] executeScriptHandler: Chiamata funzione '${handlerName}'`, 'info');
+        log(`[Runtime] executeScriptHandler: Esecuzione handler '${handlerName}' con ${argsArray.length} argomenti`, 'info');
+        log(`[Runtime] executeScriptHandler: Handler function: ${handlerFunction.toString().substring(0, 100)}...`, 'info');
+        
+        // ⚠️ ESECUZIONE DIRETTA: Chiama direttamente l'handler dalla cache
+        // NON riesegue lo script, NON ridefinisce handler, chiama solo la funzione
+        // ⚠️ PROTEZIONE: Verifica che l'handler non sia già stato eseguito in questo contesto
+        const handlerId = `${scriptName}_${handlerName}_${Date.now()}`;
+        log(`[Runtime] executeScriptHandler: Esecuzione handler ID: ${handlerId}`, 'info');
         handlerFunction.apply(null, argsArray);
-        log(`[Runtime] executeScriptHandler: Funzione '${handlerName}' completata`, 'info');
+        
+        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' completato (ID: ${handlerId})`, 'info');
       } else {
-        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' non trovato nello script`, 'info');
+        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' non trovato nello script '${scriptName}'`, 'info');
       }
     } catch (error) {
-      log(`Errore esecuzione handler ${handlerName}: ${error.message}`, 'error');
+      log(`[Runtime] executeScriptHandler: Errore esecuzione handler '${handlerName}': ${error.message}`, 'error');
       console.error(error);
     }
   }
@@ -1086,7 +1302,8 @@
       for (const [eventName, scriptName] of Object.entries(globalScripts)) {
         if (eventName === 'on_game_start' && scriptName && gameState.scripts[scriptName]) {
           executedScripts.add(scriptName);
-          await executeScriptHandler(gameState.scripts[scriptName], 'on_game_start', []);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(gameState.scripts[scriptName], 'on_game_start', [], scriptName);
         }
       }
     }
@@ -1094,7 +1311,8 @@
     // PRIORITÀ 2: Cerca script con nome riservato "on_game_start" (solo se non già eseguito)
     if (gameState.scripts.on_game_start && !executedScripts.has('on_game_start')) {
       executedScripts.add('on_game_start');
-      await executeScriptHandler(gameState.scripts.on_game_start, 'on_game_start', []);
+      // ⚠️ Passa scriptName per garantire cache corretta
+      await executeScriptHandler(gameState.scripts.on_game_start, 'on_game_start', [], 'on_game_start');
     }
 
     // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
@@ -1111,7 +1329,8 @@
         const hasHandler = /function\s+on_game_start\s*\(/.test(scriptContent);
         if (hasHandler) {
           executedScripts.add(scriptName);
-          await executeScriptHandler(scriptContent, 'on_game_start', []);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(scriptContent, 'on_game_start', [], scriptName);
         }
       }
     }
@@ -1136,7 +1355,8 @@
       for (const [roomId, scriptName] of Object.entries(roomScripts)) {
         if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
           executedScripts.add(scriptName);
-          await executeScriptHandler(gameState.scripts[scriptName], 'on_room_change', [oldRoomId, newRoomId]);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(gameState.scripts[scriptName], 'on_room_change', [oldRoomId, newRoomId], scriptName);
         }
       }
     }
@@ -1144,7 +1364,8 @@
     // PRIORITÀ 2: Cerca script con nome riservato "on_room_change" (solo se non già eseguito)
     if (gameState.scripts.on_room_change && !executedScripts.has('on_room_change')) {
       executedScripts.add('on_room_change');
-      await executeScriptHandler(gameState.scripts.on_room_change, 'on_room_change', [oldRoomId, newRoomId]);
+      // ⚠️ Passa scriptName per garantire cache corretta
+      await executeScriptHandler(gameState.scripts.on_room_change, 'on_room_change', [oldRoomId, newRoomId], 'on_room_change');
     }
 
     // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
@@ -1158,7 +1379,8 @@
         const hasHandler = /function\s+on_room_change\s*\(/.test(scriptContent);
         if (hasHandler) {
           executedScripts.add(scriptName);
-          await executeScriptHandler(scriptContent, 'on_room_change', [oldRoomId, newRoomId]);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(scriptContent, 'on_room_change', [oldRoomId, newRoomId], scriptName);
         }
       }
     }
@@ -1183,14 +1405,16 @@
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
         executedScripts.add(scriptName);
-        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y]);
+        // ⚠️ Passa scriptName per garantire cache corretta
+        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y], scriptName);
       }
     }
 
     // PRIORITÀ 2: Cerca script con nome riservato "on_object_click" (solo se non già eseguito)
     if (gameState.scripts.on_object_click && !executedScripts.has('on_object_click')) {
       executedScripts.add('on_object_click');
-      await executeScriptHandler(gameState.scripts.on_object_click, 'on_object_click', [objectId, x, y]);
+      // ⚠️ Passa scriptName per garantire cache corretta
+      await executeScriptHandler(gameState.scripts.on_object_click, 'on_object_click', [objectId, x, y], 'on_object_click');
     }
 
     // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
@@ -1204,7 +1428,8 @@
         const hasHandler = /function\s+on_object_click\s*\(/.test(scriptContent);
         if (hasHandler) {
           executedScripts.add(scriptName);
-          await executeScriptHandler(scriptContent, 'on_object_click', [objectId, x, y]);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(scriptContent, 'on_object_click', [objectId, x, y], scriptName);
         }
       }
     }
@@ -1245,7 +1470,8 @@
       if (gameState.scripts[scriptName]) {
         log(`[Runtime] Trovato script collegato: ${scriptName}`, 'info');
         executedScripts.add(scriptName);
-        await executeScriptHandler(gameState.scripts[scriptName], 'on_hotspot_click', [hotspotId, x, y]);
+        // ⚠️ Passa scriptName per garantire cache corretta
+        await executeScriptHandler(gameState.scripts[scriptName], 'on_hotspot_click', [hotspotId, x, y], scriptName);
       } else {
         log(`[Runtime] Script ${scriptName} non trovato in gameState.scripts`, 'warning');
       }
@@ -1257,7 +1483,8 @@
     if (gameState.scripts.on_hotspot_click && !executedScripts.has('on_hotspot_click')) {
       log(`[Runtime] Esecuzione script globale on_hotspot_click`, 'info');
       executedScripts.add('on_hotspot_click');
-      await executeScriptHandler(gameState.scripts.on_hotspot_click, 'on_hotspot_click', [hotspotId, x, y]);
+      // ⚠️ Passa scriptName per garantire cache corretta
+      await executeScriptHandler(gameState.scripts.on_hotspot_click, 'on_hotspot_click', [hotspotId, x, y], 'on_hotspot_click');
     }
 
     // Cerca tutti gli script per handler on_hotspot_click (evita di eseguire script già eseguiti)
@@ -1272,7 +1499,8 @@
         if (hasHandler) {
           log(`[Runtime] Trovato handler on_hotspot_click nello script: ${scriptName}`, 'info');
           executedScripts.add(scriptName);
-          await executeScriptHandler(scriptContent, 'on_hotspot_click', [hotspotId, x, y]);
+          // ⚠️ Passa scriptName per garantire cache corretta
+          await executeScriptHandler(scriptContent, 'on_hotspot_click', [hotspotId, x, y], scriptName);
         }
       }
     }
@@ -1301,6 +1529,12 @@
     gui_click: []
   };
 
+  // ⚠️ PROTEZIONE ANTI-DOPPIA-ESECUZIONE PER PRINT:
+  // Traccia le chiamate a print per prevenire esecuzioni multiple nello stesso tick
+  if (!window._printExecutionTracker) {
+    window._printExecutionTracker = new Map();
+  }
+  
   const GameAPI = {
     // Logging
     print: function() {
@@ -1317,7 +1551,43 @@
         }
         return String(arg);
       }).join(' ');
+      
+      // ⚠️ PROTEZIONE: Previene chiamate duplicate a print nello stesso tick
+      // Usa un Set per tracciare i messaggi già stampati in questo tick
+      const tracker = window._printExecutionTracker;
+      const callId = `${message}_${performance.now()}`;
+      const callKey = `print_${message}`;
+      
+      // Verifica se questo messaggio è già stato stampato negli ultimi 50ms
+      const lastCallTime = tracker.get(callKey);
+      const now = performance.now();
+      
+      if (lastCallTime && (now - lastCallTime) < 50) {
+        // Chiamata duplicata nello stesso tick (entro 50ms), ignora
+        log(`[Runtime] GameAPI.print: Chiamata duplicata BLOCCATA: "${message}" (ultima chiamata: ${(now - lastCallTime).toFixed(2)}ms fa)`, 'warning');
+        console.trace('Stack trace chiamata print duplicata:');
+        return;
+      }
+      
+      // Registra questa chiamata
+      tracker.set(callKey, now);
+      log(`[Runtime] GameAPI.print: Chiamata registrata: "${message}" (ID: ${callId})`, 'info');
+      
+      // ⚠️ DEBUG: Log stack trace per capire da dove viene chiamato print
+      if (window.DEBUG_PRINT_CALLS) {
+        console.trace('Stack trace chiamata print:');
+      }
+      
+      // Esegui il log
       log(message, 'info');
+      
+      // Pulisci tracker dopo 100ms per evitare accumulo
+      setTimeout(() => {
+        const currentTime = tracker.get(callKey);
+        if (currentTime === now) {
+          tracker.delete(callKey);
+        }
+      }, 100);
     },
 
     log: function() {
@@ -1616,17 +1886,59 @@
       cancelAnimationFrame(gameState.animationFrameId);
       gameState.animationFrameId = null;
     }
+    
+    // ⚠️ CLEANUP: Rimuovi listener quando il game loop si ferma
+    // Questo previene listener persistenti tra start/stop playtest
+    cleanupInteraction();
   }
 
   // ============================================
-  // INTERAZIONE
+  // INTERAZIONE - SISTEMA CENTRALIZZATO
   // ============================================
+  // ⚠️ CAUSA RADICE DEL BUG (RISOLTO):
+  // Il doppio click era causato da:
+  // 1. Listener in main.js che gestiva click sul canvas dell'editor durante playtest
+  // 2. Listener in runtime.js che gestiva click sul canvas del runtime
+  // 3. Entrambi i listener erano attivi contemporaneamente, causando doppia esecuzione
+  //
+  // SOLUZIONE IMPLEMENTATA:
+  // - Rimossa gestione playtest dal listener dell'editor (main.js)
+  // - Sistema centralizzato nel runtime con protezioni anti-double-fire
+  // - Flag per frame, stopImmediatePropagation, cleanup automatico
+  //
+  // PERCHÉ ORA NON PUÒ PIÙ ACCADERE:
+  // 1. ✅ Separazione responsabilità: Editor gestisce solo editing, Runtime gestisce solo playtest
+  // 2. ✅ Un solo listener attivo: Il runtime registra UN SOLO listener con cleanup automatico
+  // 3. ✅ Protezioni multiple:
+  //    - stopImmediatePropagation() blocca propagazione eventi
+  //    - Flag per frame previene doppia esecuzione nello stesso frame
+  //    - Debounce previene click troppo ravvicinati
+  //    - Cleanup automatico quando playtest termina
+  // 4. ✅ Verifica stato: Il listener controlla che gameState.isRunning === true
+  // 5. ✅ Rimozione preventiva: Listener esistente viene rimosso prima di aggiungerne uno nuovo
+  //
+  // ORA: Solo il runtime gestisce i click durante il playtest, garantendo
+  // una singola esecuzione per click. Il sistema è estendibile per touch, mobile, controller.
+  
   let clickListenerAttached = false;
+  let clickHandlerFunction = null; // Riferimento alla funzione per cleanup
+  let clickHandledThisFrame = false; // Flag anti-double-fire per frame
+  let lastClickTime = 0; // Timestamp ultimo click per debounce
+  const CLICK_DEBOUNCE_MS = 50; // Debounce di 50ms tra click
   
   function setupInteraction() {
     if (!canvas) {
       log('[Runtime] setupInteraction: Canvas non disponibile', 'warning');
       return;
+    }
+
+    // ⚠️ PROTEZIONE: Rimuovi listener esistente prima di aggiungerne uno nuovo
+    // Questo previene registrazioni multiple durante reinizializzazioni
+    if (clickListenerAttached && clickHandlerFunction) {
+      log('[Runtime] setupInteraction: Rimozione listener esistente prima di riaggiungere', 'warning');
+      canvas.removeEventListener('click', clickHandlerFunction);
+      clickListenerAttached = false;
+      clickHandlerFunction = null;
     }
 
     // Evita di aggiungere listener multipli
@@ -1635,11 +1947,41 @@
       return;
     }
 
-    log('[Runtime] setupInteraction: Attacco listener click al canvas', 'info');
+    log('[Runtime] setupInteraction: Registrazione listener click centralizzato', 'info');
     
-    canvas.addEventListener('click', function(e) {
+    // Crea funzione handler con riferimento per cleanup
+    clickHandlerFunction = function(e) {
+      // ⚠️ PROTEZIONE 1: Blocca propagazione immediata per prevenire doppia esecuzione
+      e.stopImmediatePropagation();
+      
+      // ⚠️ PROTEZIONE 2: Debounce - ignora click troppo ravvicinati
+      const now = Date.now();
+      if (now - lastClickTime < CLICK_DEBOUNCE_MS) {
+        log(`[Runtime] Click handler: Click ignorato (debounce: ${now - lastClickTime}ms < ${CLICK_DEBOUNCE_MS}ms)`, 'warning');
+        return;
+      }
+      lastClickTime = now;
+      
+      // ⚠️ PROTEZIONE 3: Flag per frame - previene doppia esecuzione nello stesso frame
+      if (clickHandledThisFrame) {
+        log('[Runtime] Click handler: Click ignorato (già gestito in questo frame)', 'warning');
+        return;
+      }
+      clickHandledThisFrame = true;
+      
+      // Reset flag al prossimo frame (usando requestAnimationFrame)
+      requestAnimationFrame(() => {
+        clickHandledThisFrame = false;
+      });
+
       if (!canvas) {
         log('[Runtime] Click handler: Canvas non disponibile', 'error');
+        return;
+      }
+
+      // ⚠️ PROTEZIONE 4: Verifica che il runtime sia attivo
+      if (!gameState.isRunning) {
+        log('[Runtime] Click handler: Runtime non in esecuzione, ignoro click', 'info');
         return;
       }
 
@@ -1657,13 +1999,41 @@
       const y = (e.clientY - rect.top) * scaleY;
 
       log(`[Runtime] Click handler: Coordinate viewport (${Math.round(e.clientX)}, ${Math.round(e.clientY)}), rect (${Math.round(rect.left)}, ${Math.round(rect.top)}, ${Math.round(rect.width)}x${Math.round(rect.height)}), canvas (${canvas.width}x${canvas.height}), scale (${scaleX.toFixed(2)}, ${scaleY.toFixed(2)}), coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
+      
+      // Log call stack per debug (solo in sviluppo)
+      if (window.DEBUG_RUNTIME_CLICKS) {
+        log('[Runtime] Click handler: Call stack:\n' + new Error().stack, 'info');
+      }
 
-      handleClick(x, y);
-    }, { passive: true });
+      // Dispatch centralizzato
+      handleCanvasClick(x, y);
+    };
+    
+    canvas.addEventListener('click', clickHandlerFunction, { passive: false }); // passive: false per permettere stopImmediatePropagation
 
     canvas.style.cursor = 'pointer';
     clickListenerAttached = true;
-    log('[Runtime] setupInteraction: Listener click attaccato con successo', 'success');
+    log('[Runtime] setupInteraction: Listener click centralizzato registrato con successo', 'success');
+  }
+  
+  // Funzione di cleanup per rimuovere listener
+  function cleanupInteraction() {
+    if (canvas && clickHandlerFunction && clickListenerAttached) {
+      log('[Runtime] cleanupInteraction: Rimozione listener click', 'info');
+      canvas.removeEventListener('click', clickHandlerFunction);
+      clickListenerAttached = false;
+      clickHandlerFunction = null;
+      clickHandledThisFrame = false;
+      lastClickTime = 0;
+      log('[Runtime] cleanupInteraction: Listener rimosso con successo', 'success');
+    }
+  }
+  
+  // Funzione dispatch centralizzata
+  async function handleCanvasClick(x, y) {
+    // Questa funzione è il punto di ingresso UNICO per tutti i click nel runtime
+    // Garantisce che ogni click venga processato UNA SOLA VOLTA
+    await handleClick(x, y);
   }
 
   async function handleClick(x, y) {
@@ -1746,7 +2116,8 @@
             if (typeof guiScripts === 'object' && guiScripts[btn.id]) {
               const scriptName = guiScripts[btn.id];
               if (gameState.scripts[scriptName]) {
-                await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y]);
+                // ⚠️ Passa scriptName per garantire cache corretta
+                await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y], scriptName);
               }
             }
 
@@ -1765,12 +2136,14 @@
     }
   }
 
-  // Setup interazione quando il DOM è pronto
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupInteraction);
-  } else {
-    setupInteraction();
-  }
+  // ⚠️ NOTA: setupInteraction() viene chiamato in initRuntime() dopo che il canvas è pronto.
+  // NON chiamiamo setupInteraction() qui automaticamente perché:
+  // 1. Il canvas potrebbe non essere ancora disponibile
+  // 2. initRuntime() gestisce l'inizializzazione completa
+  // 3. Questo previene registrazioni multiple di listener
+  //
+  // Se il runtime viene usato in modalità standalone (non iframe), initRuntime() chiamerà
+  // setupInteraction() quando tutto è pronto.
 
   // ============================================
   // RILEVAMENTO MODALITÀ
@@ -1847,7 +2220,10 @@
         if (message.code) {
           (async () => {
             try {
-              await executeScriptHandler(message.code, message.handlerName || null, message.handlerArgs || []);
+              // ⚠️ Per RUN_SCRIPT, usa un nome generato basato su timestamp o hash
+              // Questo garantisce che script diversi vengano compilati separatamente
+              const scriptName = message.scriptName || `run_script_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+              await executeScriptHandler(message.code, message.handlerName || null, message.handlerArgs || [], scriptName);
               sendScriptDone();
             } catch (error) {
               sendToEditor({
@@ -1890,6 +2266,9 @@
         gameState.attachments = {};
         gameState.initialized = false;
         
+        // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati durante il reset
+        gameState.compiledScripts.clear();
+        
         // Reset AssetRegistry
         AssetRegistry.images.clear();
         AssetRegistry.isLoading = false;
@@ -1929,6 +2308,8 @@
   log = originalLogFunction;
 
   // Override GameAPI.print per inviare anche all'editor
+  // ⚠️ IMPORTANTE: originalPrint già chiama log() che chiama addRuntimeLog()
+  // NON dobbiamo chiamare addRuntimeLog() di nuovo qui per evitare doppia esecuzione
   const originalPrint = GameAPI.print;
   GameAPI.print = function() {
     const args = Array.from(arguments);
@@ -1945,22 +2326,23 @@
       return String(arg);
     }).join(' ');
 
-    // Log locale (solo se standalone)
+    // ⚠️ CORREZIONE: originalPrint già chiama log() che gestisce addRuntimeLog()
+    // Chiamiamo originalPrint che gestisce tutto il logging
     if (!isInIframe) {
+      // In modalità standalone, originalPrint chiama log() che chiama addRuntimeLog()
       originalPrint.apply(GameAPI, arguments);
-    }
-    
-    // Invia sempre all'editor se in iframe, altrimenti solo se addRuntimeLog disponibile
-    if (isInIframe) {
+    } else {
+      // In modalità iframe, inviamo solo all'editor (originalPrint non chiama log in iframe)
       sendToEditor({
         type: 'SCRIPT_LOG',
         message: message,
         level: 'info',
         timestamp: Date.now()
       });
-    } else if (window.addRuntimeLog) {
-      window.addRuntimeLog(message, 'info');
     }
+    
+    // ⚠️ RIMOSSO: Non chiamiamo più addRuntimeLog() qui perché originalPrint già lo fa
+    // Questo previene doppia esecuzione
   };
 
   // Override GameAPI.error per inviare anche all'editor
