@@ -4313,6 +4313,48 @@ window.selectRoom = function(roomId) {
     return handlers;
   }
 
+  // Helper function per salvare il contenuto dello script corrente
+  function saveCurrentScriptIfNeeded() {
+    if (!currentScriptName) return;
+    
+    ensureLargeScriptEditor();
+    ensureScriptEditor();
+    let currentContent = '';
+    if (largeCodeMirrorEditor) {
+      currentContent = largeCodeMirrorEditor.getValue();
+    } else if (codeMirrorEditor) {
+      currentContent = codeMirrorEditor.getValue();
+    } else {
+      const taLarge = document.getElementById('script-editor-large');
+      const taSmall = document.getElementById('script-editor');
+      currentContent = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
+    }
+    
+    // Salva il contenuto corrente
+    const currentKey = String(currentScriptName);
+    if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
+      jsScripts.set(currentKey, currentContent);
+      try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
+      
+      // Se è uno script hotspot, salva anche nell'hotspot
+      if (currentKey.startsWith('Hotspot:')) {
+        const hotspotId = currentKey.replace('Hotspot:', '');
+        rooms.forEach((room, roomId) => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            const hotspot = room.hotspots.find(h => h.id === hotspotId);
+            if (hotspot) {
+              if (!hotspot.scripts) hotspot.scripts = {};
+              hotspot.scripts.onClick = {
+                code: String(currentContent),
+                enabled: true
+              };
+            }
+          }
+        });
+      }
+    }
+  }
+
   function rebuildScriptsTree() {
     const tree = document.getElementById('scripts-tree');
     if (!tree) return;
@@ -4375,21 +4417,95 @@ window.selectRoom = function(roomId) {
 
     // Helper per aprire script hotspot (gestione speciale)
     const openHotspotScript = (roomId, hotspotId) => {
-      const room = rooms.get(roomId);
-      if (!room || !room.hotspots) return;
+      // Salva il contenuto dello script corrente prima di aprire un nuovo script
+      saveCurrentScriptIfNeeded();
       
-      const hotspot = room.hotspots.find(h => h.id === hotspotId);
-      if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
-        showNotification('Hotspot script not found', 'warning');
+      // Imposta currentScriptName PRIMA di qualsiasi controllo, così deleteScript funziona anche se l'hotspot non viene trovato
+      const hotspotKey = `Hotspot:${hotspotId}`;
+      currentScriptName = hotspotKey;
+      
+      // Cerca l'hotspot nella room specificata
+      const room = rooms.get(roomId);
+      let hotspot = null;
+      if (room && room.hotspots) {
+        hotspot = room.hotspots.find(h => h.id === hotspotId);
+      }
+      
+      // Se non trovato nella room, cerca nell'array globale hotspots
+      if (!hotspot && typeof hotspots !== 'undefined') {
+        hotspot = hotspots.find(h => h.id === hotspotId);
+      }
+      
+      if (!hotspot) {
+        // Anche se l'hotspot non viene trovato, carica lo script se esiste
+        const content = jsScripts.get(hotspotKey) || localStorage.getItem(`script-${hotspotKey}`) || '';
+        if (content) {
+          ensureLargeScriptEditor();
+          ensureScriptEditor();
+          if (largeCodeMirrorEditor) {
+            largeCodeMirrorEditor.setValue(content);
+            setTimeout(() => {
+              if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+                largeCodeMirrorEditor.refresh();
+              }
+            }, 10);
+          }
+          if (codeMirrorEditor) {
+            codeMirrorEditor.setValue(content);
+            setTimeout(() => {
+              if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+                codeMirrorEditor.refresh();
+              }
+            }, 10);
+          }
+          // Imposta i dropdown
+          const scopeSel = document.getElementById('script-scope');
+          const targetSel = document.getElementById('script-target');
+          if (scopeSel && targetSel) {
+            scopeSel.value = 'Hotspot';
+            populateTargetsForScope('Hotspot');
+            const hotspotValue = `hotspot:${hotspotId}`;
+            if (targetSel.querySelector(`option[value="${hotspotValue}"]`)) {
+              targetSel.value = hotspotValue;
+            }
+          }
+          return;
+        }
+        showNotification('Hotspot not found', 'warning');
         return;
       }
       
-      const content = hotspot.scripts.onClick.code || '';
+      // Carica il contenuto dall'hotspot (sempre la fonte più aggiornata)
+      const content = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code) 
+        ? String(hotspot.scripts.onClick.code) 
+        : '';
+      
       ensureLargeScriptEditor();
       ensureScriptEditor();
-      currentScriptName = `Hotspot:${hotspotId}`;
-      if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
-      if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+      
+      // Aggiorna l'editor con il contenuto corrente dell'hotspot
+      if (largeCodeMirrorEditor) {
+        largeCodeMirrorEditor.setValue(content);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+        }, 0);
+      }
+      if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(content);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+            codeMirrorEditor.refresh();
+          }
+        }, 0);
+      }
+      
+      // Sincronizza anche in jsScripts per coerenza
+      jsScripts.set(`Hotspot:${hotspotId}`, content);
+      try { localStorage.setItem(`script-Hotspot:${hotspotId}`, content); } catch(_) {}
       
       // Imposta i dropdown
       const scopeSel = document.getElementById('script-scope');
@@ -4445,9 +4561,13 @@ window.selectRoom = function(roomId) {
       
       // Script della stanza
       const roomKey = `Room:${roomId}`;
-      const roomContent = jsScripts.get(roomKey) || localStorage.getItem(`script-${roomKey}`) || '';
       const roomScriptName = roomScripts.get(roomId);
-      if (roomContent.trim().length > 0 || roomScriptName) {
+      // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
+      // Altrimenti usa la chiave standard Room:${roomId}
+      const scriptKeyToUse = roomScriptName || roomKey;
+      const roomContent = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
+      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
+      if (roomScriptName || roomContent.trim().length > 0) {
         const handlers = extractHandlersFromScript(roomContent);
         const handlerNames = Array.from(handlers).sort();
         scriptsInRoom.push({
@@ -4464,8 +4584,13 @@ window.selectRoom = function(roomId) {
       if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
         room.sceneObjects.forEach(obj => {
           const objKey = `Object:${obj.id}`;
-          const objContent = jsScripts.get(objKey) || localStorage.getItem(`script-${objKey}`) || '';
-          if (objContent.trim().length > 0 || objectScripts.get(obj.id)) {
+          const objScriptName = objectScripts.get(obj.id);
+          // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
+          // Altrimenti usa la chiave standard Object:${obj.id}
+          const scriptKeyToUse = objScriptName || objKey;
+          const objContent = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
+          // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
+          if (objScriptName || objContent.trim().length > 0) {
             const handlers = extractHandlersFromScript(objContent);
             const handlerNames = Array.from(handlers).sort();
             scriptsInRoom.push({
@@ -4556,9 +4681,14 @@ window.selectRoom = function(roomId) {
     // GUI attached
     const guiItems = [];
     (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
-      const key = (typeof guiScripts !== 'undefined' && guiScripts.get) ? (guiScripts.get(b.id) || `GUI:${b.id}`) : `GUI:${b.id}`;
+      const guiScriptName = (typeof guiScripts !== 'undefined' && guiScripts.get) ? guiScripts.get(b.id) : null;
+      const defaultKey = `GUI:${b.id}`;
+      // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
+      // Altrimenti usa la chiave standard GUI:${b.id}
+      const key = guiScriptName || defaultKey;
       const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !(typeof guiScripts !== 'undefined' && guiScripts.get && guiScripts.get(b.id))) return;
+      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
+      if (!guiScriptName && !content.trim()) return;
       const handlers = extractHandlersFromScript(content);
       const handlerNames = Array.from(handlers).sort();
       guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
@@ -4593,18 +4723,112 @@ window.selectRoom = function(roomId) {
     tree.appendChild(container);
   }
 
+  // Helper function per salvare il contenuto dello script corrente
+  function saveCurrentScriptIfNeeded() {
+    if (!currentScriptName) return;
+    
+    ensureLargeScriptEditor();
+    ensureScriptEditor();
+    let currentContent = '';
+    if (largeCodeMirrorEditor) {
+      currentContent = largeCodeMirrorEditor.getValue();
+    } else if (codeMirrorEditor) {
+      currentContent = codeMirrorEditor.getValue();
+    } else {
+      const taLarge = document.getElementById('script-editor-large');
+      const taSmall = document.getElementById('script-editor');
+      currentContent = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
+    }
+    
+    // Salva il contenuto corrente
+    const currentKey = String(currentScriptName);
+    if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
+      jsScripts.set(currentKey, currentContent);
+      try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
+      
+      // Se è uno script hotspot, salva anche nell'hotspot
+      if (currentKey.startsWith('Hotspot:')) {
+        const hotspotId = currentKey.replace('Hotspot:', '');
+        rooms.forEach((room, roomId) => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            const hotspot = room.hotspots.find(h => h.id === hotspotId);
+            if (hotspot) {
+              if (!hotspot.scripts) hotspot.scripts = {};
+              hotspot.scripts.onClick = {
+                code: String(currentContent),
+                enabled: true
+              };
+            }
+          }
+        });
+      }
+    }
+  }
+
   function openScriptFromTree(scope, target, handlerId) {
+    // Salva il contenuto dello script corrente prima di aprire un nuovo script
+    saveCurrentScriptIfNeeded();
+    
     ensureLargeScriptEditor();
     ensureScriptEditor();
     const key = `${scope}:${target}`;
-    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-    if (!content) {
-      showNotification('Script not found', 'warning');
-      return;
+    // Verifica se c'è un'associazione tramite attachments e usa il nome dello script dalla mappa
+    let scriptKeyToUse = key;
+    if (scope === 'Room' && roomScripts.has(target)) {
+      scriptKeyToUse = roomScripts.get(target);
+    } else if (scope === 'Object' && objectScripts.has(target)) {
+      scriptKeyToUse = objectScripts.get(target);
+    } else if (scope === 'Character' && characterScripts.has(target)) {
+      scriptKeyToUse = characterScripts.get(target);
+    } else if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
+      scriptKeyToUse = guiScripts.get(target);
     }
-    currentScriptName = key;
-    if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
-    if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+    let content = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
+    // Permetti di aprire script vuoti (potrebbero essere appena creati)
+    // Se lo script non esiste affatto, crealo vuoto
+    if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
+      // Verifica se c'è un attachment che indica che lo script dovrebbe esistere
+      const hasAttachment = (scope === 'Room' && roomScripts.has(target)) ||
+                            (scope === 'Object' && objectScripts.has(target)) ||
+                            (scope === 'Character' && characterScripts.has(target)) ||
+                            (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target));
+      if (!hasAttachment) {
+        showNotification('Script not found', 'warning');
+        return;
+      }
+      // Crea lo script vuoto se ha un attachment
+      content = '';
+      jsScripts.set(scriptKeyToUse, content);
+      try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
+    }
+    currentScriptName = scriptKeyToUse;
+    
+    // Aggiorna entrambi gli editor con il nuovo contenuto
+    if (largeCodeMirrorEditor) {
+      largeCodeMirrorEditor.setValue(content);
+      // Refresh e focus per assicurarsi che l'editor si aggiorni visivamente
+      setTimeout(() => {
+        if (largeCodeMirrorEditor) {
+          if (typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+          // Forza il focus se l'editor è visibile
+          const editorContainer = document.getElementById('codeEditorContainer');
+          if (editorContainer && editorContainer.style.display !== 'none') {
+            largeCodeMirrorEditor.focus();
+          }
+        }
+      }, 10);
+    }
+    if (codeMirrorEditor) {
+      codeMirrorEditor.setValue(content);
+      // Refresh per assicurarsi che l'editor si aggiorni visivamente
+      setTimeout(() => {
+        if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+          codeMirrorEditor.refresh();
+        }
+      }, 10);
+    }
 
     // Reflect dropdowns and optionally lock
     const scopeSel = document.getElementById('script-scope');
@@ -4689,6 +4913,43 @@ window.selectRoom = function(roomId) {
       roomScripts.set(target, key);
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
+    } else if (scope === 'Hotspot') {
+      // Per hotspot, estrai l'ID dall'opzione (formato: "hotspot:${hotspotId}")
+      const hotspotId = target.startsWith('hotspot:') ? target.replace('hotspot:', '') : target;
+      // Salva direttamente nell'hotspot
+      let hotspotFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (!hotspot.scripts) hotspot.scripts = {};
+            hotspot.scripts.onClick = {
+              code: String(content),
+              enabled: true
+            };
+            // Aggiungi metadata per tracciare lo script
+            if (!hotspot._meta) hotspot._meta = {};
+            hotspot._meta.linkedScriptName = key;
+            hotspotFound = true;
+          }
+        }
+      });
+      // Aggiorna anche l'hotspot globale se esiste
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const globalHotspot = hotspots.find(h => h.id === hotspotId);
+        if (globalHotspot) {
+          if (!globalHotspot.scripts) globalHotspot.scripts = {};
+          globalHotspot.scripts.onClick = {
+            code: String(content),
+            enabled: true
+          };
+          if (!globalHotspot._meta) globalHotspot._meta = {};
+          globalHotspot._meta.linkedScriptName = key;
+        }
+      }
+      if (!hotspotFound) {
+        console.warn(`[createScriptFromDropdown] Hotspot ${hotspotId} non trovato`);
+      }
     } else if (scope === 'GUI') {
       if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
     }
@@ -5500,6 +5761,8 @@ window.selectRoom = function(roomId) {
     // refresh attach targets
     refreshScriptSelector();
     refreshSceneObjectScriptTargets();
+    
+    // Aggiorna sempre l'albero degli script per riflettere le modifiche
     rebuildScriptsTree();
   };
 
@@ -5552,6 +5815,42 @@ window.selectRoom = function(roomId) {
       return;
     }
     
+    // Gestione speciale per script hotspot (chiave Hotspot:${hotspotId})
+    // Se si sta eliminando uno script hotspot, rimuovi anche la struttura hotspot.scripts.onClick
+    if (scriptName.startsWith('Hotspot:')) {
+      const hotspotId = scriptName.replace('Hotspot:', '');
+      
+      // Rimuovi script dagli hotspot in tutte le stanze
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              hotspot.scripts.onClick.code = '';
+              hotspot.scripts.onClick.enabled = false;
+            }
+            if (hotspot._meta) {
+              delete hotspot._meta.linkedScriptName;
+            }
+          }
+        }
+      });
+      
+      // Rimuovi anche dagli hotspot globali se esistono
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hotspot = hotspots.find(h => h.id === hotspotId);
+        if (hotspot) {
+          if (hotspot.scripts && hotspot.scripts.onClick) {
+            hotspot.scripts.onClick.code = '';
+            hotspot.scripts.onClick.enabled = false;
+          }
+          if (hotspot._meta) {
+            delete hotspot._meta.linkedScriptName;
+          }
+        }
+      }
+    }
+    
     // Rimuovi lo script da jsScripts
     jsScripts.delete(scriptName);
     
@@ -5589,11 +5888,44 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Hotspot scripts
+    // Hotspot scripts - Rimuovi anche dalla struttura hotspot.scripts.onClick
+    // Gli hotspot ora salvano gli script direttamente in hotspot.scripts.onClick
     for (const [hotspotId, attachedScript] of hotspotScripts.entries()) {
       if (attachedScript === scriptName) {
         hotspotScripts.delete(hotspotId);
       }
+    }
+    
+    // Rimuovi script dagli hotspot che hanno questo script associato
+    // Cerca in tutte le stanze
+    rooms.forEach((room, roomId) => {
+      if (room.hotspots && Array.isArray(room.hotspots)) {
+        room.hotspots.forEach(hotspot => {
+          // Verifica se l'hotspot ha uno script associato tramite _meta.linkedScriptName
+          if (hotspot._meta && hotspot._meta.linkedScriptName === scriptName) {
+            // Rimuovi lo script dall'hotspot
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              hotspot.scripts.onClick.code = '';
+              hotspot.scripts.onClick.enabled = false;
+            }
+            // Rimuovi il riferimento
+            delete hotspot._meta.linkedScriptName;
+          }
+        });
+      }
+    });
+    
+    // Rimuovi anche dagli hotspot globali se esistono
+    if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+      hotspots.forEach(hotspot => {
+        if (hotspot._meta && hotspot._meta.linkedScriptName === scriptName) {
+          if (hotspot.scripts && hotspot.scripts.onClick) {
+            hotspot.scripts.onClick.code = '';
+            hotspot.scripts.onClick.enabled = false;
+          }
+          delete hotspot._meta.linkedScriptName;
+        }
+      });
     }
     
     // GUI scripts
@@ -5647,15 +5979,31 @@ window.selectRoom = function(roomId) {
   window.loadScript = function(scriptName) {
     if (!scriptName) return;
     
-    const savedScript = localStorage.getItem(`script-${scriptName}`);
+    // Salva il contenuto dello script corrente prima di caricare un nuovo script
+    saveCurrentScriptIfNeeded();
+    
+    const savedScript = jsScripts.get(scriptName) || localStorage.getItem(`script-${scriptName}`);
     if (savedScript) {
       ensureLargeScriptEditor();
       ensureScriptEditor();
+      currentScriptName = scriptName;
       if (largeCodeMirrorEditor) {
         largeCodeMirrorEditor.setValue(savedScript);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+        }, 0);
       }
       if (codeMirrorEditor) {
         codeMirrorEditor.setValue(savedScript);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+            codeMirrorEditor.refresh();
+          }
+        }, 0);
       } else {
         const taSmall = document.getElementById('script-editor');
         if (taSmall) taSmall.value = savedScript;
@@ -6116,6 +6464,10 @@ window.selectRoom = function(roomId) {
     }
     
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
+    
+    // Aggiorna l'albero degli script per mostrare il nuovo script associato
+    rebuildScriptsTree();
+    
     redraw();
   };
 
