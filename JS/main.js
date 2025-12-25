@@ -4762,6 +4762,23 @@ window.selectRoom = function(roomId) {
           }
         });
       }
+      
+      // Se è uno script oggetto, mantieni l'attachment in objectScripts
+      if (currentKey.startsWith('Object:')) {
+        const objId = currentKey.replace('Object:', '');
+        // Verifica che l'oggetto esista
+        let objectExists = false;
+        rooms.forEach((room) => {
+          if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+            if (room.sceneObjects.find(o => o.id === objId)) {
+              objectExists = true;
+            }
+          }
+        });
+        if (objectExists) {
+          objectScripts.set(objId, currentKey);
+        }
+      }
     }
   }
 
@@ -4792,14 +4809,21 @@ window.selectRoom = function(roomId) {
                             (scope === 'Object' && objectScripts.has(target)) ||
                             (scope === 'Character' && characterScripts.has(target)) ||
                             (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target));
-      if (!hasAttachment) {
+      // Per gli oggetti, permetti sempre di creare uno script vuoto (l'attachment verrà creato quando viene salvato)
+      if (!hasAttachment && scope !== 'Object') {
         showNotification('Script not found', 'warning');
         return;
       }
-      // Crea lo script vuoto se ha un attachment
+      // Crea lo script vuoto se ha un attachment o se è un oggetto
       content = '';
       jsScripts.set(scriptKeyToUse, content);
       try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
+      
+      // Per gli oggetti, crea subito l'attachment quando si apre lo script per la prima volta
+      // Questo garantisce che lo script sia associato all'oggetto anche prima di essere salvato
+      if (scope === 'Object' && !hasAttachment) {
+        objectScripts.set(target, scriptKeyToUse);
+      }
     }
     currentScriptName = scriptKeyToUse;
     
@@ -5652,6 +5676,31 @@ window.selectRoom = function(roomId) {
       });
       if (!hotspotFound) {
         console.warn(`[saveScript] Hotspot ${hotspotId} non trovato in nessuna stanza`);
+      }
+    }
+    
+    // ⚠️ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se è uno script oggetto
+    if (key.startsWith('Object:')) {
+      const objId = key.replace('Object:', '');
+      // Verifica che l'oggetto esista in almeno una stanza
+      let objectFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+          const obj = room.sceneObjects.find(o => o.id === objId);
+          if (obj) {
+            objectFound = true;
+          }
+        }
+      });
+      
+      if (objectFound) {
+        // Crea o aggiorna l'attachment per questo oggetto specifico
+        objectScripts.set(objId, key);
+        console.log(`[saveScript] [OBJECT] Script "${key}" associato all'oggetto "${objId}"`);
+      } else {
+        console.warn(`[saveScript] [OBJECT] Oggetto ${objId} non trovato in nessuna stanza, ma creo comunque l'attachment`);
+        // Crea comunque l'attachment, potrebbe essere che l'oggetto venga aggiunto in seguito
+        objectScripts.set(objId, key);
       }
     }
     

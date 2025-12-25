@@ -1632,52 +1632,28 @@
   }
 
   async function executeObjectClickScripts(objectId, x, y) {
-    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
-    const executedScripts = new Set();
+    // ⚠️ MODIFICATO: Esegui SOLO lo script specifico dell'oggetto cliccato
+    // Non eseguire script generici o script di altri oggetti
     
-    // PRIORITÀ 1: Esegui script collegati esplicitamente all'oggetto tramite attachments
+    // Esegui SOLO lo script collegato esplicitamente all'oggetto tramite attachments
+    // Questo garantisce che ogni oggetto esegua solo il proprio script, non quello di altri oggetti
     const objectScripts = gameState.attachments.objectScripts || {};
     if (typeof objectScripts === 'object' && objectScripts[objectId]) {
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
-        executedScripts.add(scriptName);
         // ⚠️ Passa scriptName per garantire cache corretta
         await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y], scriptName);
+        return; // Esegui SOLO lo script specifico dell'oggetto, poi esci
+      } else {
+        log(`[executeObjectClickScripts] Script "${scriptName}" associato all'oggetto "${objectId}" non trovato`, 'warning');
       }
+    } else {
+      log(`[executeObjectClickScripts] Nessuno script associato all'oggetto "${objectId}"`, 'info');
     }
-
-    // PRIORITÀ 2: Cerca script con nome riservato "on_object_click" (solo se non già eseguito)
-    if (gameState.scripts.on_object_click && !executedScripts.has('on_object_click')) {
-      executedScripts.add('on_object_click');
-      // ⚠️ Passa scriptName per garantire cache corretta
-      await executeScriptHandler(gameState.scripts.on_object_click, 'on_object_click', [objectId, x, y], 'on_object_click');
-    }
-
-    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
-    for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
-      // Salta script già eseguiti
-      if (executedScripts.has(scriptName)) {
-        continue;
-      }
-      
-      if (scriptContent && typeof scriptContent === 'string') {
-        const hasHandler = /function\s+on_object_click\s*\(/.test(scriptContent);
-        if (hasHandler) {
-          executedScripts.add(scriptName);
-          // ⚠️ Passa scriptName per garantire cache corretta
-          await executeScriptHandler(scriptContent, 'on_object_click', [objectId, x, y], scriptName);
-        }
-      }
-    }
-
-    // PRIORITÀ 4: Esegui handler registrati tramite on_object_click(function() {...})
-    for (const handler of eventHandlers.object_click) {
-      try {
-        handler(objectId, x, y);
-      } catch (error) {
-        log(`Errore handler on_object_click: ${error.message}`, 'error');
-      }
-    }
+    
+    // ⚠️ PRIORITÀ 2, 3 e 4 RIMOSSE: Non eseguire più script generici, scansioni o handler dinamici
+    // Questo previene che script di altri oggetti vengano eseguiti quando si clicca su un oggetto specifico
+    // Ogni oggetto deve avere il proprio script associato tramite attachments.objectScripts
   }
 
   // Verifica se un punto è dentro un poligono (ray casting algorithm)
