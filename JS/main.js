@@ -12005,6 +12005,45 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Scripts
       try {
         jsScripts.clear();
+        
+        // ⚠️ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
+        // Questo assicura che anche se la cache del browser non è stata svuotata,
+        // l'editor sarà vuoto quando si crea un nuovo progetto
+        currentScriptName = null;
+        ensureLargeScriptEditor();
+        ensureScriptEditor();
+        if (largeCodeMirrorEditor) {
+          largeCodeMirrorEditor.setValue('');
+          setTimeout(() => {
+            if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+              largeCodeMirrorEditor.refresh();
+            }
+          }, 0);
+        }
+        if (codeMirrorEditor) {
+          codeMirrorEditor.setValue('');
+          setTimeout(() => {
+            if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+              codeMirrorEditor.refresh();
+            }
+          }, 0);
+        }
+        // Pulisci anche i textarea se esistono
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+        
+        // Reset dropdowns
+        const scopeSel = document.getElementById('script-scope');
+        const targetSel = document.getElementById('script-target');
+        if (scopeSel && targetSel) {
+          scopeSel.value = 'Global';
+          populateTargetsForScope('Global');
+          targetSel.disabled = true;
+          scopeSel.disabled = false;
+        }
+        
         const selector = document.getElementById('script-selector');
         if (selector) {
           // reset, mantieni placeholder
@@ -12225,6 +12264,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } catch(_) {}
 
       redraw();
+      
+      // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
+      rebuildScriptsTree();
+      
       showNotification('Project loaded', 'success');
     } catch (err) {
       addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
