@@ -663,18 +663,25 @@ document.addEventListener("DOMContentLoaded", () => {
     const internalY = canvasY * scaleY;
     
     // Calcola l'offset di centratura (stesso calcolo usato in redraw)
+    // Questo offset viene applicato per centrare il contenuto nel canvas visualizzato
     let centerOffsetX = 0;
     let centerOffsetY = 0;
     if (rect.width > 0 && rect.height > 0) {
+      // Calcola le dimensioni del contenuto scalato dopo lo zoom
       const scaledContentWidth = gameViewport.width * editorState.zoom;
       const scaledContentHeight = gameViewport.height * editorState.zoom;
+      
+      // Calcola l'offset CSS necessario per centrare il contenuto nel canvas visualizzato
       const cssOffsetX = (rect.width - scaledContentWidth) / 2;
       const cssOffsetY = (rect.height - scaledContentHeight) / 2;
+      
+      // Converti l'offset da coordinate CSS a coordinate canvas interne
       centerOffsetX = cssOffsetX * scaleX;
       centerOffsetY = cssOffsetY * scaleY;
     }
     
     // Apply inverse transformations (considerando anche l'offset di centratura)
+    // L'ordine inverso delle trasformazioni: prima rimuoviamo lo zoom, poi il pan, poi l'offset di centratura
     const worldX = (internalX - centerOffsetX - editorState.panX) / editorState.zoom;
     const worldY = (internalY - centerOffsetY - editorState.panY) / editorState.zoom;
     
@@ -687,6 +694,8 @@ document.addEventListener("DOMContentLoaded", () => {
         scale: { x: scaleX, y: scaleY },
         internal: { x: internalX, y: internalY },
         centerOffset: { x: centerOffsetX, y: centerOffsetY },
+        pan: { x: editorState.panX, y: editorState.panY },
+        zoom: editorState.zoom,
         world: { x: worldX, y: worldY }
       });
     }
@@ -4311,85 +4320,238 @@ window.selectRoom = function(roomId) {
 
     const container = document.createElement('div');
 
-    // Helper to build a group
-    const buildGroup = (title, items) => {
-      const group = document.createElement('div');
-      group.className = 'mb-2';
-      const h = document.createElement('div');
-      h.textContent = title;
-      h.style.color = '#39ff14';
-      h.style.fontWeight = '600';
-      group.appendChild(h);
-      const ul = document.createElement('ul');
-      ul.style.paddingLeft = '16px';
+    // Helper per creare un elemento script nella lista
+    const createScriptItem = (scriptInfo, onClickHandler) => {
+      const li = document.createElement('li');
+      li.style.margin = '4px 0';
+      li.style.padding = '4px 0';
+      
+      const label = document.createElement('span');
+      label.textContent = scriptInfo.label;
+      label.style.cursor = 'pointer';
+      label.style.color = scriptInfo.hasContent ? '#eee' : '#888';
+      label.style.display = 'inline-block';
+      label.style.width = '100%';
+      label.onclick = onClickHandler;
+      
+      // Aggiungi badge con numero di handler se presenti
+      if (scriptInfo.handlers && scriptInfo.handlers.length > 0) {
+        const badge = document.createElement('span');
+        badge.textContent = ` (${scriptInfo.handlers.length})`;
+        badge.style.color = '#39ff14';
+        badge.style.fontSize = '11px';
+        badge.style.marginLeft = '4px';
+        label.appendChild(badge);
+      }
+      
+      li.appendChild(label);
+      
+      // Mostra gli handler come sottolista
+      if (scriptInfo.handlers && scriptInfo.handlers.length > 0) {
+        const sub = document.createElement('ul');
+        sub.style.paddingLeft = '20px';
+        sub.style.marginTop = '2px';
+        sub.style.listStyleType = 'disc';
+        scriptInfo.handlers.forEach(handlerId => {
+          const evLi = document.createElement('li');
+          evLi.style.margin = '2px 0';
+          const a = document.createElement('a');
+          a.href = '#';
+          a.textContent = handlerId;
+          a.style.color = '#39ff14';
+          a.style.textDecoration = 'none';
+          a.onclick = (e) => {
+            e.preventDefault();
+            onClickHandler(handlerId);
+          };
+          evLi.appendChild(a);
+          sub.appendChild(evLi);
+        });
+        li.appendChild(sub);
+      }
+      
+      return li;
+    };
 
-      items.forEach(it => {
-        const li = document.createElement('li');
-        li.style.margin = '4px 0';
-        const label = document.createElement('span');
-        label.textContent = it.label;
-        label.style.cursor = 'pointer';
-        label.onclick = () => openScriptFromTree(it.scope, it.target, null);
-        li.appendChild(label);
-
-        if (it.events && it.events.length) {
-          const sub = document.createElement('ul');
-          sub.style.paddingLeft = '16px';
-          it.events.forEach(ev => {
-            const evLi = document.createElement('li');
-            const a = document.createElement('a');
-            a.href = '#';
-            a.textContent = ev.label;
-            a.onclick = (e) => { e.preventDefault(); openScriptFromTree(it.scope, it.target, ev.id); };
-            evLi.appendChild(a);
-            sub.appendChild(evLi);
-          });
-          li.appendChild(sub);
+    // Helper per aprire script hotspot (gestione speciale)
+    const openHotspotScript = (roomId, hotspotId) => {
+      const room = rooms.get(roomId);
+      if (!room || !room.hotspots) return;
+      
+      const hotspot = room.hotspots.find(h => h.id === hotspotId);
+      if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
+        showNotification('Hotspot script not found', 'warning');
+        return;
+      }
+      
+      const content = hotspot.scripts.onClick.code || '';
+      ensureLargeScriptEditor();
+      ensureScriptEditor();
+      currentScriptName = `Hotspot:${hotspotId}`;
+      if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
+      if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+      
+      // Imposta i dropdown
+      const scopeSel = document.getElementById('script-scope');
+      const targetSel = document.getElementById('script-target');
+      if (scopeSel && targetSel) {
+        scopeSel.value = 'Hotspot';
+        populateTargetsForScope('Hotspot');
+        const hotspotValue = `hotspot:${hotspotId}`;
+        if (targetSel.querySelector(`option[value="${hotspotValue}"]`)) {
+          targetSel.value = hotspotValue;
         }
-        ul.appendChild(li);
-      });
-      group.appendChild(ul);
-      container.appendChild(group);
+      }
     };
 
     // Global (single)
     const globalKey = 'Global:main';
     let globalContent = jsScripts.get(globalKey) || localStorage.getItem(`script-${globalKey}`) || '';
     const globalHandlers = extractHandlersFromScript(globalContent);
-    const globalEvents = [];
-    SCRIPT_EVENTS.Global.forEach(def => { if (globalHandlers.has(def.id)) globalEvents.push(def); });
+    const globalHandlerNames = Array.from(globalHandlers).sort();
 
-    if (globalContent && globalEvents.length) {
-      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: globalEvents }]);
-    } else if (globalContent) {
-      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: [] }]);
+    if (globalContent.trim().length > 0) {
+      const globalGroup = document.createElement('div');
+      globalGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Global';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      globalGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      const scriptItem = createScriptItem({
+        label: 'Global',
+        handlers: globalHandlerNames,
+        hasContent: globalContent.trim().length > 0
+      }, (handlerId) => {
+        openScriptFromTree('Global', 'main', handlerId || null);
+      });
+      ul.appendChild(scriptItem);
+      
+      globalGroup.appendChild(ul);
+      container.appendChild(globalGroup);
     }
 
-    // Rooms attached
-    const roomItems = [];
-    rooms.forEach((r) => {
-      const key = roomScripts.get(r.id) || `Room:${r.id}`;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !roomScripts.get(r.id)) return;
-      const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.Room.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      roomItems.push({ scope: 'Room', target: r.id, label: `Room: ${r.name || r.id}`, events });
+    // Scripts organizzati per stanza
+    const roomsWithScripts = [];
+    rooms.forEach((room, roomId) => {
+      const scriptsInRoom = [];
+      
+      // Script della stanza
+      const roomKey = `Room:${roomId}`;
+      const roomContent = jsScripts.get(roomKey) || localStorage.getItem(`script-${roomKey}`) || '';
+      const roomScriptName = roomScripts.get(roomId);
+      if (roomContent.trim().length > 0 || roomScriptName) {
+        const handlers = extractHandlersFromScript(roomContent);
+        const handlerNames = Array.from(handlers).sort();
+        scriptsInRoom.push({
+          type: 'room',
+          scope: 'Room',
+          target: roomId,
+          label: `📋 Room: ${room.name || roomId}`,
+          handlers: handlerNames,
+          hasContent: roomContent.trim().length > 0
+        });
+      }
+      
+      // Oggetti nella stanza con script
+      if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+        room.sceneObjects.forEach(obj => {
+          const objKey = `Object:${obj.id}`;
+          const objContent = jsScripts.get(objKey) || localStorage.getItem(`script-${objKey}`) || '';
+          if (objContent.trim().length > 0 || objectScripts.get(obj.id)) {
+            const handlers = extractHandlersFromScript(objContent);
+            const handlerNames = Array.from(handlers).sort();
+            scriptsInRoom.push({
+              type: 'object',
+              scope: 'Object',
+              target: obj.id,
+              label: `📦 Object: ${obj.name || obj.id}`,
+              handlers: handlerNames,
+              hasContent: objContent.trim().length > 0
+            });
+          }
+        });
+      }
+      
+      // Hotspot nella stanza con script
+      if (room.hotspots && Array.isArray(room.hotspots)) {
+        room.hotspots.forEach(hotspot => {
+          if (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code) {
+            const hotspotCode = hotspot.scripts.onClick.code;
+            const handlers = extractHandlersFromScript(hotspotCode);
+            const handlerNames = Array.from(handlers).sort();
+            scriptsInRoom.push({
+              type: 'hotspot',
+              scope: 'Hotspot',
+              target: hotspot.id,
+              roomId: roomId,
+              label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
+              handlers: handlerNames,
+              hasContent: hotspotCode.trim().length > 0
+            });
+          }
+        });
+      }
+      
+      if (scriptsInRoom.length > 0) {
+        roomsWithScripts.push({
+          roomId: roomId,
+          roomName: room.name || roomId,
+          scripts: scriptsInRoom
+        });
+      }
     });
-    if (roomItems.length) buildGroup('Room', roomItems);
-
-    // Objects attached
-    const objectItems = [];
-    (sceneObjects || []).forEach(o => {
-      const key = objectScripts.get(o.id) || `Object:${o.id}`;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !objectScripts.get(o.id)) return;
-      const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.Object.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      objectItems.push({ scope: 'Object', target: o.id, label: `Object: ${o.name || o.id}`, events });
+    
+    // Ordina le stanze per nome
+    roomsWithScripts.sort((a, b) => {
+      const nameA = a.roomName.toLowerCase();
+      const nameB = b.roomName.toLowerCase();
+      return nameA.localeCompare(nameB, 'it', { numeric: true, sensitivity: 'base' });
     });
-    if (objectItems.length) buildGroup('Object', objectItems);
+    
+    // Crea gruppo per ogni stanza
+    roomsWithScripts.forEach(roomData => {
+      const roomGroup = document.createElement('div');
+      roomGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = `🏠 ${roomData.roomName}`;
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      roomGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      roomData.scripts.forEach(scriptInfo => {
+        let onClickHandler;
+        if (scriptInfo.type === 'hotspot') {
+          // Gestione speciale per hotspot
+          onClickHandler = (handlerId) => {
+            openHotspotScript(scriptInfo.roomId, scriptInfo.target);
+          };
+        } else {
+          onClickHandler = (handlerId) => {
+            openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+          };
+        }
+        
+        const scriptItem = createScriptItem(scriptInfo, onClickHandler);
+        ul.appendChild(scriptItem);
+      });
+      
+      roomGroup.appendChild(ul);
+      container.appendChild(roomGroup);
+    });
 
     // GUI attached
     const guiItems = [];
@@ -4398,142 +4560,34 @@ window.selectRoom = function(roomId) {
       const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
       if (!content && !(typeof guiScripts !== 'undefined' && guiScripts.get && guiScripts.get(b.id))) return;
       const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.GUI.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, events });
-    });
-    if (guiItems.length) buildGroup('GUI', guiItems);
-
-    // Tutti gli script ordinati alfabeticamente
-    const allScripts = [];
-    jsScripts.forEach((content, key) => {
-      if (!key || !content || typeof content !== 'string' || content.trim() === '') return;
-      
-      // Estrai scope e target dalla chiave (formato: "Scope:target")
-      const parts = key.split(':');
-      const scope = parts[0] || 'Unknown';
-      const target = parts.slice(1).join(':') || 'unknown';
-      
-      // Determina il nome visualizzato
-      let displayName = key;
-      if (scope === 'Room' && rooms.has(target)) {
-        const room = rooms.get(target);
-        displayName = `Room: ${room.name || target}`;
-      } else if (scope === 'Object' && sceneObjects) {
-        const obj = sceneObjects.find(o => o.id === target);
-        if (obj) displayName = `Object: ${obj.name || target}`;
-      } else if (scope === 'GUI' && typeof guiButtons !== 'undefined') {
-        const btn = guiButtons.find(b => b.id === target);
-        if (btn) displayName = `GUI: ${btn.name || target}`;
-      } else if (scope === 'Hotspot') {
-        // Cerca l'hotspot in tutte le room
-        let hotspotName = target;
-        rooms.forEach(room => {
-          if (room.hotspots && Array.isArray(room.hotspots)) {
-            const hs = room.hotspots.find(h => h.id === target);
-            if (hs) hotspotName = hs.name || target;
-          }
-        });
-        displayName = `Hotspot: ${hotspotName}`;
-      } else if (scope === 'Character') {
-        displayName = `Character: ${target}`;
-      } else if (scope === 'Global') {
-        displayName = 'Global';
-      }
-      
-      const handlers = extractHandlersFromScript(content);
       const handlerNames = Array.from(handlers).sort();
-      
-      allScripts.push({
-        scope,
-        target,
-        label: displayName,
-        key: key,
-        handlers: handlerNames,
-        hasContent: content.trim().length > 0
-      });
+      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
     });
     
-    // Ordina alfabeticamente per nome
-    allScripts.sort((a, b) => {
-      const nameA = a.label.toLowerCase();
-      const nameB = b.label.toLowerCase();
-      return nameA.localeCompare(nameB, 'it', { numeric: true, sensitivity: 'base' });
-    });
-    
-    if (allScripts.length > 0) {
-      const allScriptsGroup = document.createElement('div');
-      allScriptsGroup.className = 'mb-3 mt-3';
+    if (guiItems.length > 0) {
+      const guiGroup = document.createElement('div');
+      guiGroup.className = 'mb-3';
       const h = document.createElement('div');
-      h.textContent = 'Tutti gli Script (Ordinati)';
+      h.textContent = 'GUI';
       h.style.color = '#39ff14';
       h.style.fontWeight = '600';
       h.style.fontSize = '14px';
       h.style.marginBottom = '8px';
-      allScriptsGroup.appendChild(h);
+      guiGroup.appendChild(h);
       
       const ul = document.createElement('ul');
       ul.style.paddingLeft = '16px';
       ul.style.listStyleType = 'none';
       
-      allScripts.forEach(script => {
-        const li = document.createElement('li');
-        li.style.margin = '4px 0';
-        li.style.padding = '4px 0';
-        
-        const label = document.createElement('span');
-        label.textContent = script.label;
-        label.style.cursor = 'pointer';
-        label.style.color = script.hasContent ? '#eee' : '#888';
-        label.style.display = 'inline-block';
-        label.style.width = '100%';
-        label.onclick = () => {
-          // Determina l'evento da aprire (primo handler o null)
-          const handlerId = script.handlers.length > 0 ? script.handlers[0] : null;
-          openScriptFromTree(script.scope, script.target, handlerId);
-        };
-        
-        // Aggiungi badge con numero di handler se presenti
-        if (script.handlers.length > 0) {
-          const badge = document.createElement('span');
-          badge.textContent = ` (${script.handlers.length})`;
-          badge.style.color = '#39ff14';
-          badge.style.fontSize = '11px';
-          badge.style.marginLeft = '4px';
-          label.appendChild(badge);
-        }
-        
-        li.appendChild(label);
-        
-        // Mostra gli handler come sottolista
-        if (script.handlers.length > 0) {
-          const sub = document.createElement('ul');
-          sub.style.paddingLeft = '20px';
-          sub.style.marginTop = '2px';
-          sub.style.listStyleType = 'disc';
-          script.handlers.forEach(handlerId => {
-            const evLi = document.createElement('li');
-            evLi.style.margin = '2px 0';
-            const a = document.createElement('a');
-            a.href = '#';
-            a.textContent = handlerId;
-            a.style.color = '#39ff14';
-            a.style.textDecoration = 'none';
-            a.onclick = (e) => {
-              e.preventDefault();
-              openScriptFromTree(script.scope, script.target, handlerId);
-            };
-            evLi.appendChild(a);
-            sub.appendChild(evLi);
-          });
-          li.appendChild(sub);
-        }
-        
-        ul.appendChild(li);
+      guiItems.forEach(item => {
+        const scriptItem = createScriptItem(item, (handlerId) => {
+          openScriptFromTree(item.scope, item.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
       });
       
-      allScriptsGroup.appendChild(ul);
-      container.appendChild(allScriptsGroup);
+      guiGroup.appendChild(ul);
+      container.appendChild(guiGroup);
     }
 
     tree.appendChild(container);
@@ -5307,7 +5361,40 @@ window.selectRoom = function(roomId) {
     // ⚠️ SINCRONIZZAZIONE AGGRESSIVA: Recupera il vecchio contenuto dello script
     const oldContent = jsScripts.get(key) || '';
     
-    // Salva il nuovo contenuto
+    // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
+    if (key.startsWith('Hotspot:')) {
+      const hotspotId = key.replace('Hotspot:', '');
+      // Trova l'hotspot in tutte le stanze
+      let hotspotFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (!hotspot.scripts) hotspot.scripts = {};
+            hotspot.scripts.onClick = {
+              code: String(content),
+              enabled: true
+            };
+            hotspotFound = true;
+            
+            // Aggiorna anche l'hotspot globale se esiste
+            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspotId) : null;
+            if (globalHotspot) {
+              if (!globalHotspot.scripts) globalHotspot.scripts = {};
+              globalHotspot.scripts.onClick = {
+                code: String(content),
+                enabled: true
+              };
+            }
+          }
+        }
+      });
+      if (!hotspotFound) {
+        console.warn(`[saveScript] Hotspot ${hotspotId} non trovato in nessuna stanza`);
+      }
+    }
+    
+    // Salva il nuovo contenuto (anche per hotspot, per mantenere sincronizzazione)
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
     

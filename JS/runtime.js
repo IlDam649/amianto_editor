@@ -129,6 +129,68 @@
   }
 
   // ============================================
+  // SISTEMA CODA COMANDI API SEQUENZIALE
+  // ============================================
+  // Coda globale per garantire esecuzione sequenziale dei comandi API
+  // Impedisce che più comandi (show_message, move_object, ecc.) vengano eseguiti contemporaneamente
+  const commandQueue = [];
+  let isProcessingQueue = false;
+
+  /**
+   * Aggiunge un comando alla coda e avvia il processing se necessario
+   * @param {Function} commandFn - Funzione async che esegue il comando
+   * @param {number} delay - Delay opzionale dopo l'esecuzione (ms)
+   * @returns {Promise} Promise che si risolve quando il comando è completato
+   */
+  function queueCommand(commandFn, delay = 0) {
+    return new Promise((resolve, reject) => {
+      commandQueue.push({
+        execute: async () => {
+          try {
+            await commandFn();
+            // Delay opzionale tra comandi (utile per animazioni o messaggi)
+            if (delay > 0) {
+              await new Promise(res => setTimeout(res, delay));
+            }
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }
+      });
+      
+      // Avvia il processing se non è già in corso
+      processCommandQueue();
+    });
+  }
+
+  /**
+   * Processa la coda di comandi sequenzialmente
+   * Esegue un comando alla volta fino a svuotare la coda
+   */
+  async function processCommandQueue() {
+    if (isProcessingQueue || commandQueue.length === 0) {
+      return;
+    }
+    
+    isProcessingQueue = true;
+    log(`[Runtime] Inizio processing coda comandi (${commandQueue.length} comandi in attesa)`, 'info');
+    
+    while (commandQueue.length > 0) {
+      const command = commandQueue.shift();
+      try {
+        await command.execute();
+        log(`[Runtime] Comando completato (${commandQueue.length} rimanenti)`, 'info');
+      } catch (error) {
+        log(`[Runtime] Errore esecuzione comando: ${error.message}`, 'error');
+      }
+    }
+    
+    isProcessingQueue = false;
+    log(`[Runtime] Coda comandi completata`, 'info');
+  }
+
+  // ============================================
   // CARICAMENTO IMMAGINI
   // ============================================
   // Informazioni progetto per risolvere assetId
@@ -1456,8 +1518,19 @@
     // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
     const executedScripts = new Set();
     
-    // PRIORITÀ 1: Esegui script collegati esplicitamente alla room tramite attachments
+    // Set di script collegati a stanze specifiche (devono essere eseguiti SOLO quando si entra in quella stanza)
+    const roomSpecificScripts = new Set();
     const roomScripts = gameState.attachments.roomScripts || {};
+    if (typeof roomScripts === 'object') {
+      for (const [roomId, scriptName] of Object.entries(roomScripts)) {
+        if (scriptName) {
+          roomSpecificScripts.add(scriptName);
+        }
+      }
+    }
+    
+    // PRIORITÀ 1: Esegui script collegati esplicitamente alla room tramite attachments
+    // ⚠️ IMPORTANTE: Esegue SOLO quando si entra nella stanza (newRoomId === roomId)
     if (typeof roomScripts === 'object') {
       for (const [roomId, scriptName] of Object.entries(roomScripts)) {
         if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
@@ -1468,17 +1541,23 @@
       }
     }
 
-    // PRIORITÀ 2: Cerca script con nome riservato "on_room_change" (solo se non già eseguito)
-    if (gameState.scripts.on_room_change && !executedScripts.has('on_room_change')) {
+    // PRIORITÀ 2: Cerca script con nome riservato "on_room_change" (solo se non già eseguito e non collegato a una stanza specifica)
+    if (gameState.scripts.on_room_change && !executedScripts.has('on_room_change') && !roomSpecificScripts.has('on_room_change')) {
       executedScripts.add('on_room_change');
       // ⚠️ Passa scriptName per garantire cache corretta
       await executeScriptHandler(gameState.scripts.on_room_change, 'on_room_change', [oldRoomId, newRoomId], 'on_room_change');
     }
 
-    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti)
+    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti e NON collegati a stanze specifiche)
+    // ⚠️ IMPORTANTE: Salta gli script collegati a stanze specifiche - questi vengono eseguiti SOLO nella PRIORITÀ 1
     for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
       // Salta script già eseguiti
       if (executedScripts.has(scriptName)) {
+        continue;
+      }
+      
+      // ⚠️ Salta script collegati a stanze specifiche - devono essere eseguiti SOLO quando si entra in quella stanza
+      if (roomSpecificScripts.has(scriptName)) {
         continue;
       }
       
@@ -1784,15 +1863,42 @@
       }
     },
 
+    move_object: function(objectId, x, y) {
+      // Sposta un oggetto nella room corrente (con coda sequenziale)
+      queueCommand(async () => {
+        if (!gameState.currentRoom || !gameState.currentRoom.objects) {
+          GameAPI.error('move_object: Nessuna room corrente o oggetti non disponibili');
+          return;
+        }
+        
+        const obj = gameState.currentRoom.objects.find(o => o.id === String(objectId) || o.name === String(objectId));
+        if (!obj) {
+          GameAPI.error(`move_object: Oggetto ${objectId} non trovato`);
+          return;
+        }
+        
+        obj.x = Number(x) || 0;
+        obj.y = Number(y) || 0;
+        
+        // Il rendering avviene automaticamente nel game loop
+        log(`[Runtime] Oggetto ${objectId} spostato a (${obj.x}, ${obj.y})`, 'info');
+      });
+    },
+
     // UI
     showText: function(text) {
-      // Mostra testo come messaggio visibile
-      showGameMessage(String(text));
+      // Mostra testo come messaggio visibile (con coda sequenziale)
+      const messageText = String(text);
+      queueCommand(async () => {
+        showGameMessage(messageText);
+        // Attendi che il messaggio sia mostrato (durata default 3000ms)
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      });
     },
 
     show_message: function(text) {
-      // Alias di showText per compatibilità con l'editor
-      showGameMessage(String(text));
+      // Alias di showText per compatibilità con l'editor (con coda sequenziale)
+      GameAPI.showText(text);
     },
 
     // Event System - Funzioni helper per registrare handler
@@ -1856,6 +1962,11 @@
   // Esponi show_message globalmente per compatibilità con l'editor
   window.show_message = function(text) {
     return GameAPI.show_message(text);
+  };
+
+  // Esponi move_object globalmente per compatibilità con l'editor
+  window.move_object = function(objectId, x, y) {
+    return GameAPI.move_object(objectId, x, y);
   };
 
   // Esponi funzioni helper eventi globalmente
