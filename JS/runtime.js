@@ -1234,17 +1234,67 @@
       // Gli handler estratti sono ora in handlerContainer
       const extractedHandlers = handlerContainer;
       
-      // Salva nella cache
-      gameState.compiledScripts.set(scriptName, extractedHandlers);
+      // ⚠️ NUOVO: Wrappare gli handler per iniettare le variabili come variabili accessibili direttamente
+      // Ottieni la lista dei nomi delle variabili (per riferimento durante l'esecuzione)
+      const varNames = Array.from(gameState.variables.keys());
       
-      const handlerCount = Object.keys(extractedHandlers).length;
-      log(`[Runtime] compileScript: Script '${scriptName}' compilato con successo (${handlerCount} handler estratti)`, 'success');
+      // Crea handler wrappati che espongono le variabili
+      const wrappedHandlers = {};
+      for (const [handlerName, handlerFunc] of Object.entries(extractedHandlers)) {
+        if (typeof handlerFunc === 'function') {
+          wrappedHandlers[handlerName] = function(...args) {
+            // Crea un contesto di esecuzione isolato per questo handler
+            const executionContext = {};
+            
+            // Esponi ogni variabile come proprietà del contesto usando getter/setter
+            varNames.forEach(varName => {
+              // Sanitizza il nome per essere valido in JavaScript
+              const safeVarName = varName.replace(/[^a-zA-Z0-9_$]/g, '_');
+              
+              // Crea getter/setter che si collegano direttamente a gameState.variables
+              Object.defineProperty(executionContext, safeVarName, {
+                get: () => gameState.variables.get(varName),
+                set: (value) => gameState.variables.set(varName, value),
+                configurable: true,
+                enumerable: true
+              });
+            });
+            
+            // Usa with statement per esporre le variabili nello scope
+            // Nota: with è deprecato ma è l'unico modo affidabile per esporre variabili nello scope
+            // senza modificare il codice dello script
+            try {
+              const handlerCode = handlerFunc.toString();
+              
+              // Crea una funzione wrapper che usa with per esporre le variabili
+              const wrappedCode = `
+                with (executionContext) {
+                  return (${handlerCode}).apply(this, arguments);
+                }
+              `;
+              
+              const wrappedFunc = new Function('executionContext', 'handlerFunc', 'args', wrappedCode);
+              return wrappedFunc.call(executionContext, executionContext, handlerFunc, args);
+            } catch (e) {
+              // Fallback: esegui normalmente senza iniezione variabili
+              log(`[Runtime] compileScript: Errore iniezione variabili per ${handlerName}: ${e.message}. Usando fallback.`, 'warning');
+              return handlerFunc.apply(executionContext, args);
+            }
+          };
+        }
+      }
+      
+      // Salva nella cache gli handler wrappati
+      gameState.compiledScripts.set(scriptName, wrappedHandlers);
+      
+      const handlerCount = Object.keys(wrappedHandlers).length;
+      log(`[Runtime] compileScript: Script '${scriptName}' compilato con successo (${handlerCount} handler estratti, variabili iniettate)`, 'success');
       
       if (handlerCount === 0) {
         log(`[Runtime] compileScript: ATTENZIONE - Script '${scriptName}' non contiene handler definiti`, 'warning');
       }
       
-      return extractedHandlers;
+      return wrappedHandlers;
     } catch (error) {
       log(`[Runtime] compileScript: Errore compilazione script '${scriptName}': ${error.message}`, 'error');
       console.error(error);
