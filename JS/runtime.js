@@ -37,6 +37,11 @@
     compiledScripts: new Map()
   };
 
+  // ⚠️ FLAG PROTEZIONE DOPPI EVENTI
+  const runtime = {
+    eventsBound: false
+  };
+
   // Canvas e rendering
   let canvas = null;
   let ctx = null;
@@ -509,6 +514,11 @@
       gameState.compiledScripts.clear();
       log('[Runtime] Cache script compilati resettata', 'info');
       
+      // ⚠️ RESET FLAG EVENTI: Quando viene caricato un nuovo progetto, reset flag eventi
+      // Questo permette di bindare nuovamente gli eventi dopo il cleanup
+      runtime.eventsBound = false;
+      log('[Runtime] Flag eventi resettato (runtime.eventsBound=false)', 'info');
+      
       // Reset AssetRegistry
       AssetRegistry.images.clear();
       AssetRegistry.isLoading = false;
@@ -866,20 +876,75 @@
       }
     }
 
-    // Carica hotspot della room
+    // ⚠️ NUOVA STRUTTURA: Carica hotspot con scripts.onClick integrato
     const hotspots = [];
     if (room.hotspots && Array.isArray(room.hotspots)) {
       for (const hotspotData of room.hotspots) {
         if (hotspotData.points && Array.isArray(hotspotData.points) && hotspotData.points.length >= 3) {
-          hotspots.push({
+          // Ricostruisci hotspot con struttura scripts.onClick
+          const hotspot = {
             id: hotspotData.id || `hotspot_${Date.now()}`,
             name: hotspotData.name || 'Hotspot',
             points: hotspotData.points.map(p => ({
               x: Number(p.x) || 0,
               y: Number(p.y) || 0
             })),
-            visible: typeof hotspotData.visible === 'boolean' ? hotspotData.visible : true
-          });
+            visible: typeof hotspotData.visible === 'boolean' ? hotspotData.visible : true,
+            scripts: {}
+          };
+          
+          // ⚠️ NUOVA STRUTTURA: Carica scripts.onClick direttamente dall'hotspot (nessuna retrocompatibilità)
+          if (hotspotData.scripts && hotspotData.scripts.onClick) {
+            const onClickData = hotspotData.scripts.onClick;
+            
+            // DEBUG: Log dati raw per diagnosticare problemi
+            log(`[Runtime] changeRoom: [DEBUG] Hotspot ${hotspot.id} - onClickData: ${JSON.stringify({ 
+              hasCode: !!onClickData.code, 
+              codeType: typeof onClickData.code, 
+              codeLength: onClickData.code ? String(onClickData.code).length : 0,
+              enabled: onClickData.enabled,
+              enabledType: typeof onClickData.enabled
+            })}`, 'info');
+            
+            const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
+            
+            // ⚠️ NORMALIZZAZIONE: enabled = true di default se non definito o undefined
+            // BUG FIX: Garantisce che enabled=true quando c'è codice e enabled non è esplicitamente definito come false
+            // - Se enabled è esplicitamente definito come boolean (true o false), usa quel valore
+            // - Se enabled non è definito (undefined/null) e c'è codice, imposta true
+            // - Se enabled non è definito e non c'è codice, imposta false
+            let normalizedEnabled;
+            if (typeof onClickData.enabled === 'boolean') {
+              // enabled è esplicitamente true o false, rispetta il valore
+              normalizedEnabled = onClickData.enabled;
+            } else {
+              // enabled non è definito: usa true se c'è codice, altrimenti false
+              normalizedEnabled = hasCode ? true : false;
+            }
+            
+            // BUG FIX CRITICO: Se c'è codice ma enabled è false, forza enabled=true
+            // Questo risolve il caso in cui enabled=false viene salvato erroneamente quando c'è codice
+            if (hasCode && normalizedEnabled === false) {
+              log(`[Runtime] changeRoom: [BUG FIX] Hotspot ${hotspot.id} ha codice ma enabled=false, forzo enabled=true`, 'warning');
+              normalizedEnabled = true;
+            }
+            
+            hotspot.scripts.onClick = {
+              code: String(onClickData.code || ''),
+              enabled: normalizedEnabled
+            };
+            
+            log(`[Runtime] changeRoom: Hotspot ${hotspot.id} caricato con script onClick (enabled: ${normalizedEnabled}, code length: ${hotspot.scripts.onClick.code.length}, wasUndefined: ${typeof onClickData.enabled !== 'boolean'})`, 'info');
+          } else {
+            // Nessuno script associato
+            hotspot.scripts.onClick = {
+              code: '',
+              enabled: false
+            };
+            log(`[Runtime] changeRoom: Hotspot ${hotspot.id} caricato senza script onClick`, 'info');
+          }
+          
+          hotspots.push(hotspot);
         } else {
           log(`[Runtime] Hotspot ${hotspotData.id || 'unknown'} ignorato: punti insufficienti (< 3)`, 'warning');
         }
@@ -1499,62 +1564,89 @@
     return inside;
   }
 
-  async function executeHotspotClickScripts(hotspotId, x, y) {
-    log(`[Runtime] Esecuzione script hotspot: ${hotspotId}`, 'info');
+  /**
+   * ⚠️ NUOVA FUNZIONE: Esegue SOLO lo script dell'hotspot cliccato
+   * Questa funzione riceve l'hotspot completo e esegue SOLO il suo script onClick
+   * NON esegue script globali o altri script
+   * 
+   * DEBUG OBBLIGATORIO:
+   * - Log quando viene bindato il click
+   * - Log quando un hotspot viene rilevato
+   * - Log ID hotspot cliccato
+   * - Log script eseguito
+   * - Errore se più di uno script viene eseguito
+   */
+  async function executeHotspotScript(hotspotId, hotspot, x, y) {
+    log(`[Runtime] [DEBUG] executeHotspotScript: INIZIO esecuzione script hotspot ${hotspotId}`, 'info');
+    log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot name: ${hotspot.name || 'unnamed'}`, 'info');
+    log(`[Runtime] [DEBUG] executeHotspotScript: Coordinate click: (${Math.round(x)}, ${Math.round(y)})`, 'info');
     
-    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
-    const executedScripts = new Set();
+    // Verifica che l'hotspot abbia la struttura scripts.onClick
+    if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
+      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ Hotspot ${hotspotId} non ha struttura scripts.onClick`, 'warning');
+      log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot structure: ${JSON.stringify({ id: hotspot?.id, hasScripts: !!hotspot?.scripts, hasOnClick: !!hotspot?.scripts?.onClick })}`, 'info');
+      return;
+    }
     
-    // Esegui script collegati all'hotspot
-    const hotspotScripts = gameState.attachments.hotspotScripts || {};
-    if (typeof hotspotScripts === 'object' && hotspotScripts[hotspotId]) {
-      const scriptName = hotspotScripts[hotspotId];
-      if (gameState.scripts[scriptName]) {
-        log(`[Runtime] Trovato script collegato: ${scriptName}`, 'info');
-        executedScripts.add(scriptName);
-        // ⚠️ Passa scriptName per garantire cache corretta
-        await executeScriptHandler(gameState.scripts[scriptName], 'on_hotspot_click', [hotspotId, x, y], scriptName);
-      } else {
-        log(`[Runtime] Script ${scriptName} non trovato in gameState.scripts`, 'warning');
-      }
-    } else {
-      log(`[Runtime] Nessuno script collegato all'hotspot ${hotspotId}`, 'info');
+    const onClickScript = hotspot.scripts.onClick;
+    
+    // ⚠️ LOG DI SICUREZZA: Logga stato enabled, hotspot id e script info prima dell'esecuzione
+    const enabledStatus = typeof onClickScript.enabled === 'boolean' ? onClickScript.enabled : 'undefined';
+    const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
+    log(`[Runtime] [DEBUG] executeHotspotScript: [SICUREZZA] Hotspot ID: ${hotspotId}, Enabled: ${enabledStatus}, Has Code: ${hasCode}, Code Length: ${onClickScript.code ? onClickScript.code.length : 0}`, 'info');
+    
+    // AUTOMATIZZAZIONE: Se c'è codice, lo script deve essere eseguito (ignorando enabled=false)
+    // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+    if (!hasCode) {
+      log(`[Runtime] [DEBUG] executeHotspotScript: Script onClick dell'hotspot ${hotspotId} è vuoto o non valido`, 'info');
+      return;
     }
-
-    // Cerca anche script on_hotspot_click globale (solo se non già eseguito)
-    if (gameState.scripts.on_hotspot_click && !executedScripts.has('on_hotspot_click')) {
-      log(`[Runtime] Esecuzione script globale on_hotspot_click`, 'info');
-      executedScripts.add('on_hotspot_click');
-      // ⚠️ Passa scriptName per garantire cache corretta
-      await executeScriptHandler(gameState.scripts.on_hotspot_click, 'on_hotspot_click', [hotspotId, x, y], 'on_hotspot_click');
+    
+    // Se c'è codice, esegui sempre (ignorando enabled=false)
+    // Questo permette agli hotspot di funzionare automaticamente quando hanno codice
+    if (onClickScript.enabled === false) {
+      log(`[Runtime] [DEBUG] executeHotspotScript: [AUTO-ENABLE] Hotspot ${hotspotId} ha codice ma enabled=false, esecuzione forzata per presenza codice`, 'warning');
     }
-
-    // Cerca tutti gli script per handler on_hotspot_click (evita di eseguire script già eseguiti)
-    for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
-      if (executedScripts.has(scriptName)) {
-        log(`[Runtime] Script ${scriptName} già eseguito, skip`, 'info');
-        continue;
-      }
+    
+    log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script valido e abilitato per hotspot ${hotspotId}`, 'success');
+    log(`[Runtime] [DEBUG] executeHotspotScript: Script code length: ${onClickScript.code.length} caratteri`, 'info');
+    
+    // ⚠️ CONTROLLO ANTI-DOPPIA ESECUZIONE: Traccia esecuzioni in corso
+    if (!window._hotspotScriptExecutions) {
+      window._hotspotScriptExecutions = new Set();
+    }
+    
+    const executionKey = `${hotspotId}_${Date.now()}`;
+    if (window._hotspotScriptExecutions.has(hotspotId)) {
+      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ ERRORE: Script per hotspot ${hotspotId} già in esecuzione!`, 'error');
+      log(`[Runtime] [DEBUG] executeHotspotScript: Questo NON dovrebbe mai accadere con la nuova struttura`, 'error');
+      return;
+    }
+    
+    window._hotspotScriptExecutions.add(hotspotId);
+    
+    try {
+      // Log di conferma esecuzione come richiesto
+      const hotspotName = hotspot.name || hotspotId;
+      log(`[Runtime] Esecuzione script per hotspot: ${hotspotName}`, 'info');
+      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Esecuzione script onClick per hotspot ${hotspotId} (${hotspot.name})`, 'success');
       
-      if (scriptContent && typeof scriptContent === 'string') {
-        const hasHandler = /function\s+on_hotspot_click\s*\(/.test(scriptContent);
-        if (hasHandler) {
-          log(`[Runtime] Trovato handler on_hotspot_click nello script: ${scriptName}`, 'info');
-          executedScripts.add(scriptName);
-          // ⚠️ Passa scriptName per garantire cache corretta
-          await executeScriptHandler(scriptContent, 'on_hotspot_click', [hotspotId, x, y], scriptName);
-        }
-      }
-    }
-
-    // Esegui handler registrati tramite on_hotspot_click(function() {...})
-    for (const handler of eventHandlers.hotspot_click) {
-      try {
-        log(`[Runtime] Esecuzione handler registrato on_hotspot_click`, 'info');
-        handler(hotspotId, x, y);
-      } catch (error) {
-        log(`Errore handler on_hotspot_click: ${error.message}`, 'error');
-      }
+      // Esegui SOLO lo script dell'hotspot cliccato
+      // Usa uno scriptName univoco basato sull'hotspotId per la cache
+      const scriptName = `hotspot_${hotspotId}_onClick`;
+      log(`[Runtime] [DEBUG] executeHotspotScript: Script name: ${scriptName}`, 'info');
+      
+      await executeScriptHandler(onClickScript.code, 'on_hotspot_click', [hotspotId, x, y], scriptName);
+      
+      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato con successo per hotspot ${hotspotId}`, 'success');
+    } catch (error) {
+      log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Errore esecuzione script per hotspot ${hotspotId}: ${error.message}`, 'error');
+      console.error('[Runtime] executeHotspotScript error:', error);
+    } finally {
+      // Rimuovi dal set dopo un breve delay per permettere eventuali callback asincroni
+      setTimeout(() => {
+        window._hotspotScriptExecutions.delete(hotspotId);
+      }, 100);
     }
   }
 
@@ -1989,6 +2081,12 @@
       return;
     }
 
+    // ⚠️ PROTEZIONE DOPPI EVENTI: Se già bindato, NON bindare di nuovo
+    if (runtime.eventsBound) {
+      log('[Runtime] setupInteraction: Eventi già bindati (runtime.eventsBound=true), skip', 'info');
+      return;
+    }
+
     // ⚠️ PROTEZIONE: Rimuovi listener esistente prima di aggiungerne uno nuovo
     // Questo previene registrazioni multiple durante reinizializzazioni
     if (clickListenerAttached && clickHandlerFunction) {
@@ -2070,7 +2168,8 @@
 
     canvas.style.cursor = 'pointer';
     clickListenerAttached = true;
-    log('[Runtime] setupInteraction: Listener click centralizzato registrato con successo', 'success');
+    runtime.eventsBound = true; // ⚠️ Marca eventi come bindati
+    log('[Runtime] setupInteraction: Listener click centralizzato registrato con successo (runtime.eventsBound=true)', 'success');
   }
   
   // Funzione di cleanup per rimuovere listener
@@ -2082,7 +2181,8 @@
       clickHandlerFunction = null;
       clickHandledThisFrame = false;
       lastClickTime = 0;
-      log('[Runtime] cleanupInteraction: Listener rimosso con successo', 'success');
+      runtime.eventsBound = false; // ⚠️ Reset flag quando viene fatto cleanup
+      log('[Runtime] cleanupInteraction: Listener rimosso con successo (runtime.eventsBound=false)', 'success');
     }
   }
   
@@ -2101,30 +2201,35 @@
 
     log(`[Runtime] handleClick: Click rilevato alle coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
 
-    // Controlla click su hotspot PRIMA degli oggetti (priorità più alta)
+    // ⚠️ NUOVA LOGICA: Usa find() invece di forEach per trovare UN SOLO hotspot
+    // Questo garantisce che venga eseguito SOLO lo script dell'hotspot cliccato
     if (gameState.currentRoom.hotspots && Array.isArray(gameState.currentRoom.hotspots)) {
       const hotspotCount = gameState.currentRoom.hotspots.length;
       log(`[Runtime] handleClick: Verifica ${hotspotCount} hotspot(s)`, 'info');
       
-      for (const hotspot of gameState.currentRoom.hotspots) {
+      // Trova UN SOLO hotspot colpito (find si ferma al primo match)
+      const clickedHotspot = gameState.currentRoom.hotspots.find(hotspot => {
         if (!hotspot.visible) {
           log(`[Runtime] handleClick: Hotspot ${hotspot.id} ignorato (visible=false)`, 'info');
-          continue;
+          return false;
         }
 
         if (!hotspot.points || hotspot.points.length < 3) {
           log(`[Runtime] handleClick: Hotspot ${hotspot.id} ignorato (punti insufficienti: ${hotspot.points ? hotspot.points.length : 0})`, 'warning');
-          continue;
+          return false;
         }
 
         const isInside = isPointInPolygon(hotspot.points, x, y);
         log(`[Runtime] handleClick: Hotspot ${hotspot.id} (${hotspot.name}): hit-test = ${isInside}`, 'info');
-        
-        if (isInside) {
-          log(`[Runtime] handleClick: ✓ Click su hotspot: ${hotspot.name} (${hotspot.id})`, 'success');
-          await executeHotspotClickScripts(hotspot.id, x, y);
-          return; // Hotspot ha priorità, esci subito
-        }
+        return isInside;
+      });
+      
+      if (clickedHotspot) {
+        log(`[Runtime] [DEBUG] handleClick: ✓ Hotspot rilevato: ${clickedHotspot.name} (ID: ${clickedHotspot.id})`, 'success');
+        log(`[Runtime] [DEBUG] handleClick: Esecuzione script per hotspot ${clickedHotspot.id}`, 'info');
+        await executeHotspotScript(clickedHotspot.id, clickedHotspot, x, y);
+        log(`[Runtime] [DEBUG] handleClick: ✓ Script completato per hotspot ${clickedHotspot.id}, uscita da handleClick`, 'success');
+        return; // Hotspot ha priorità, esci subito
       }
       
       log(`[Runtime] handleClick: Nessun hotspot colpito`, 'info');
@@ -2193,14 +2298,8 @@
     }
   }
 
-  // ⚠️ NOTA: setupInteraction() viene chiamato in initRuntime() dopo che il canvas è pronto.
-  // NON chiamiamo setupInteraction() qui automaticamente perché:
-  // 1. Il canvas potrebbe non essere ancora disponibile
-  // 2. initRuntime() gestisce l'inizializzazione completa
-  // 3. Questo previene registrazioni multiple di listener
-  //
-  // Se il runtime viene usato in modalità standalone (non iframe), initRuntime() chiamerà
-  // setupInteraction() quando tutto è pronto.
+  // ⚠️ PROTEZIONE DOPPI EVENTI: Flag per prevenire registrazioni multiple
+  // Se runtime.eventsBound === true, NON registrare di nuovo i listener
 
   // ============================================
   // RILEVAMENTO MODALITÀ

@@ -1662,7 +1662,13 @@ document.addEventListener("DOMContentLoaded", () => {
       id: uid('hotspot'),
       name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
       points: [],
-      visible: true
+      visible: true,
+      scripts: {
+        onClick: {
+          code: '',
+          enabled: false
+        }
+      }
     };
     hotspots.push(hs);
     activeHotspotId = hs.id;
@@ -5298,8 +5304,110 @@ window.selectRoom = function(roomId) {
       key = (selector && selector.value) || 'new-script';
     }
 
+    // ⚠️ SINCRONIZZAZIONE AGGRESSIVA: Recupera il vecchio contenuto dello script
+    const oldContent = jsScripts.get(key) || '';
+    
+    // Salva il nuovo contenuto
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
+    
+    // ⚠️ SINCRONIZZAZIONE AGGRESSIVA: Se il contenuto è cambiato e non è vuoto, sincronizza tutti gli hotspot
+    // Questo garantisce che gli hotspot siano sempre aggiornati quando uno script viene modificato
+    if (content.trim() !== '') {
+      let syncedCount = 0;
+      const syncedHotspotIds = new Set(); // Traccia hotspot già sincronizzati per evitare duplicati
+      const contentNormalized = content.trim();
+      const oldContentNormalized = oldContent.trim();
+      
+      // Funzione helper per aggiornare un hotspot
+      const updateHotspotCode = (hotspot, hotspotId, source) => {
+        if (syncedHotspotIds.has(hotspotId)) return false; // Già sincronizzato
+        
+        if (!hotspot.scripts) hotspot.scripts = {};
+        if (!hotspot.scripts.onClick) {
+          hotspot.scripts.onClick = { code: '', enabled: false };
+        }
+        
+        const hotspotCode = String(hotspot.scripts.onClick.code || '');
+        const hotspotCodeNormalized = hotspotCode.trim();
+        
+        // ⚠️ SINCRONIZZAZIONE INTELLIGENTE: Usa _meta.linkedScriptName se disponibile, altrimenti confronta codice
+        // 1. PRIORITÀ: Se l'hotspot ha _meta.linkedScriptName che corrisponde a key, aggiorna sempre
+        // 2. FALLBACK: Se il codice dell'hotspot corrisponde al vecchio contenuto dello script (match esatto)
+        // 3. FALLBACK: Se il vecchio contenuto è vuoto e l'hotspot ha codice (caso edge: script appena creato)
+        // 4. FALLBACK: Se il codice dell'hotspot è vuoto (hotspot senza script, potrebbe essere un nuovo collegamento)
+        const hasLinkedScriptName = hotspot._meta && hotspot._meta.linkedScriptName === key;
+        const shouldUpdate = 
+          hasLinkedScriptName || // Match per nome script collegato (più affidabile)
+          hotspotCodeNormalized === oldContentNormalized || // Match esatto con vecchio contenuto
+          (oldContentNormalized === '' && hotspotCodeNormalized !== '') || // Script appena creato
+          hotspotCodeNormalized === ''; // Hotspot senza codice (nuovo collegamento)
+        
+        if (shouldUpdate) {
+          hotspot.scripts.onClick = {
+            code: String(content),
+            enabled: true // Auto-enable se c'è codice
+          };
+          
+          // Aggiorna anche il riferimento allo script se non presente
+          if (!hotspot._meta) hotspot._meta = {};
+          hotspot._meta.linkedScriptName = key;
+          
+          syncedHotspotIds.add(hotspotId);
+          const syncReason = hasLinkedScriptName ? 'linked-script-name' : 
+                            (hotspotCodeNormalized === oldContentNormalized ? 'code-match' : 
+                            (oldContentNormalized === '' ? 'new-script' : 'empty-hotspot'));
+          console.log(`[saveScript] [SYNC] Hotspot ${hotspotId} (${hotspot.name || 'unnamed'}) sincronizzato con script "${key}" [${source}] reason:${syncReason}`);
+          return true;
+        }
+        
+        return false;
+      };
+      
+      // Scansiona tutti gli hotspot in tutte le room
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          room.hotspots.forEach(hotspot => {
+            if (updateHotspotCode(hotspot, hotspot.id, `room:${roomId}`)) {
+              syncedCount++;
+              
+              // Aggiorna anche l'hotspot globale (se esiste)
+              const globalHotspot = hotspots.find(h => h.id === hotspot.id);
+              if (globalHotspot) {
+                updateHotspotCode(globalHotspot, hotspot.id, 'global');
+              }
+            }
+          });
+        }
+      });
+      
+      // Scansiona anche gli hotspot globali (hotspots array) per sicurezza
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        hotspots.forEach(hotspot => {
+          if (updateHotspotCode(hotspot, hotspot.id, 'global-only')) {
+            syncedCount++;
+            
+            // Aggiorna anche nella room corrispondente (se esiste)
+            rooms.forEach((room) => {
+              if (room.hotspots && Array.isArray(room.hotspots)) {
+                const roomHotspot = room.hotspots.find(h => h.id === hotspot.id);
+                if (roomHotspot) {
+                  updateHotspotCode(roomHotspot, hotspot.id, `room:${room.id}`);
+                }
+              }
+            });
+          }
+        });
+      }
+      
+      if (syncedCount > 0) {
+        console.log(`[saveScript] [SYNC] ✅ ${syncedCount} hotspot sincronizzati con script "${key}"`);
+      } else if (oldContentNormalized !== contentNormalized) {
+        // Se il contenuto è cambiato ma nessun hotspot è stato sincronizzato, potrebbe essere un problema
+        console.log(`[saveScript] [SYNC] ⚠️ Script "${key}" modificato ma nessun hotspot sincronizzato (potrebbe essere normale se non ci sono hotspot collegati)`);
+      }
+    }
+    
     showNotification(`Script "${key}" saved!`, 'success');
 
     // refresh attach targets
@@ -5859,8 +5967,69 @@ window.selectRoom = function(roomId) {
     }
     
     const hotspotId = targetValue.replace('hotspot:', '');
-    hotspotScripts.set(hotspotId, scriptName);
+    
+    // ⚠️ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
+    const hotspot = hotspots.find(h => h.id === hotspotId);
+    if (!hotspot) {
+      showNotification('Hotspot not found', 'error');
+      return;
+    }
+    
+    const scriptContent = jsScripts.get(scriptName) || '';
+    
+    // DEBUG: Verifica che il contenuto dello script sia disponibile
+    if (!scriptContent || scriptContent.trim() === '') {
+      console.warn(`[attachScriptToHotspot] Script "${scriptName}" è vuoto o non trovato!`);
+      showNotification(`Script "${scriptName}" is empty or not found`, 'warning');
+      return;
+    }
+    
+    console.log(`[attachScriptToHotspot] Associazione script a hotspot:`, {
+      hotspotId: hotspotId,
+      scriptName: scriptName,
+      codeLength: scriptContent.length,
+      codePreview: scriptContent.substring(0, 50)
+    });
+    
+    // Inizializza struttura scripts se non esiste
+    if (!hotspot.scripts) {
+      hotspot.scripts = {};
+    }
+    
+    // Salva script direttamente nell'hotspot
+    hotspot.scripts.onClick = {
+      code: String(scriptContent),
+      enabled: true
+    };
+    
+    // Aggiorna anche nella room
+    const r = rooms.get(currentRoomId);
+    if (r && r.hotspots) {
+      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
+      if (roomHotspot) {
+        if (!roomHotspot.scripts) roomHotspot.scripts = {};
+        roomHotspot.scripts.onClick = {
+          code: String(scriptContent),
+          enabled: true
+        };
+      }
+    }
+    
+    // ⚠️ SINCRONIZZAZIONE: Salva anche il nome dello script in un campo meta per tracciamento futuro
+    // Questo ci permette di sapere quale script è collegato all'hotspot per sincronizzazioni future
+    // (nota: questo campo non viene serializzato, è solo per uso interno)
+    if (!hotspot._meta) hotspot._meta = {};
+    hotspot._meta.linkedScriptName = scriptName;
+    if (r && r.hotspots) {
+      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
+      if (roomHotspot) {
+        if (!roomHotspot._meta) roomHotspot._meta = {};
+        roomHotspot._meta.linkedScriptName = scriptName;
+      }
+    }
+    
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
+    redraw();
   };
 
   // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
@@ -6931,24 +7100,39 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     addDebugMessage(`Testing hotspot interaction: ${hotspot.name}...`, 'info');
     
-    // Check if hotspot has an attached script
-    const scriptName = hotspotScripts.get(activeHotspotId);
-    if (!scriptName) {
+    // ⚠️ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
+    if (!hotspot.scripts || !hotspot.scripts.onClick) {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
     }
-    try {
-      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-    } catch(_) {}
-    const scriptContent = jsScripts.get(scriptName);
-    if (!scriptContent) {
-      addDebugMessage(`Script "${scriptName}" not found`, 'error');
+    
+    const onClickScript = hotspot.scripts.onClick;
+    
+    // BUG FIX: Usa la stessa logica di normalizzazione del runtime
+    // Se enabled non è definito e c'è codice, considera enabled=true
+    const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
+    const isEnabled = (typeof onClickScript.enabled === 'boolean') 
+      ? onClickScript.enabled 
+      : (hasCode ? true : false);
+    
+    if (!isEnabled) {
+      addDebugMessage('Hotspot script is disabled', 'warning');
       return;
     }
-    const eventConditions = hotspotEventConditions.get(activeHotspotId);
-    const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId], conditions);
-    addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
+    
+    if (!onClickScript.code || onClickScript.code.trim() === '') {
+      addDebugMessage('Hotspot script is empty', 'warning');
+      return;
+    }
+    
+    try {
+      const eventConditions = hotspotEventConditions.get(activeHotspotId);
+      const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+      executeScriptHandler(onClickScript.code, 'on_hotspot_click', [activeHotspotId], conditions);
+      addDebugMessage(`Hotspot script executed`, 'success');
+    } catch(error) {
+      addDebugMessage(`Error executing hotspot script: ${error.message}`, 'error');
+    }
   };
 
   window.testCharacterDialog = function() {
@@ -8468,12 +8652,71 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           image: serializeImage(o.img)
         })) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-        hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
-          id: h.id,
-          name: h.name,
-          points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-          visible: !!h.visible
-        })) : []
+        hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
+          // ⚠️ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
+          const hotspotObj = {
+            id: h.id,
+            name: h.name,
+            points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+            visible: !!h.visible,
+            scripts: {}
+          };
+          
+          // ⚠️ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
+          // enabled = true di default se non definito e c'è codice
+          // BUG FIX CRITICO: Garantisce che enabled=true quando c'è codice e enabled non è esplicitamente definito come false
+          if (h.scripts && h.scripts.onClick) {
+            const onClickData = h.scripts.onClick;
+            
+            // DEBUG AGGIUNTIVO: Log sempre per diagnosticare
+            console.log(`[Serialize] Hotspot ${h.id} - Serializzazione script:`, {
+              hasCode: !!onClickData.code,
+              codeLength: onClickData.code ? String(onClickData.code).length : 0,
+              codePreview: onClickData.code ? String(onClickData.code).substring(0, 50) : '(vuoto)',
+              enabled: onClickData.enabled,
+              codeType: typeof onClickData.code
+            });
+            
+            const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
+            
+            // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
+            // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+            let normalizedEnabled;
+            if (hasCode) {
+              // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+              normalizedEnabled = true;
+              if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
+                console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
+              }
+            } else {
+              // Se non c'è codice, enabled può essere false
+              normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
+            }
+            
+            // DEBUG: Verifica che il codice venga salvato correttamente
+            const codeToSave = String(onClickData.code || '');
+            if (hasCode && codeToSave.length === 0) {
+              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave è vuoto!`, {
+                originalCode: onClickData.code,
+                codeType: typeof onClickData.code,
+                codeLength: onClickData.code ? String(onClickData.code).length : 0
+              });
+            }
+            
+            hotspotObj.scripts.onClick = {
+              code: codeToSave,
+              enabled: normalizedEnabled
+            };
+          } else {
+            // Se non c'è script, imposta struttura vuota e disabilitata
+            hotspotObj.scripts.onClick = {
+              code: '',
+              enabled: false
+            };
+          }
+          
+          return hotspotObj;
+        }) : []
       });
       
       // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
@@ -8589,8 +8832,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       objectScripts: mapToObject(objectScripts),
       characterScripts: mapToObject(characterScripts),
       inventoryScripts: mapToObject(inventoryScripts),
-      guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {},
-      hotspotScripts: mapToObject(hotspotScripts)
+      guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {}
+      // ⚠️ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
     };
   }
 
@@ -11025,12 +11268,59 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               img: null
             })) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
-              id: h.id || uid('hotspot'),
-              name: h.name || 'Hotspot',
-              points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-              visible: (typeof h.visible === 'boolean') ? h.visible : true
-            })) : []
+            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
+              const hotspotObj = {
+                id: h.id || uid('hotspot'),
+                name: h.name || 'Hotspot',
+                points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+                visible: (typeof h.visible === 'boolean') ? h.visible : true
+              };
+              
+              // ⚠️ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
+              // BUG FIX: Inizializza sempre la struttura scripts.onClick per garantire consistenza
+              hotspotObj.scripts = {};
+          if (h.scripts && h.scripts.onClick) {
+            const onClickData = h.scripts.onClick;
+            
+            // DEBUG AGGIUNTIVO: Log sempre per diagnosticare
+            console.log(`[Serialize] Hotspot ${h.id} - Serializzazione script:`, {
+              hasCode: !!onClickData.code,
+              codeLength: onClickData.code ? String(onClickData.code).length : 0,
+              codePreview: onClickData.code ? String(onClickData.code).substring(0, 50) : '(vuoto)',
+              enabled: onClickData.enabled,
+              codeType: typeof onClickData.code
+            });
+            
+            const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
+                
+                // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
+                // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+                let normalizedEnabled;
+                if (hasCode) {
+                  // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+                  normalizedEnabled = true;
+                  if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
+                    console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
+                  }
+                } else {
+                  // Se non c'è codice, enabled può essere false
+                  normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
+                }
+                
+                hotspotObj.scripts.onClick = {
+                  code: String(onClickData.code || ''),
+                  enabled: normalizedEnabled
+                };
+              } else {
+                // Se non c'è script, imposta struttura vuota e disabilitata
+                hotspotObj.scripts.onClick = {
+                  code: '',
+                  enabled: false
+                };
+              }
+              
+              return hotspotObj;
+            }) : []
           };
           rooms.set(roomId, roomVal);
           // carica immagini async (background, foregrounds, scene objects)
@@ -11348,7 +11638,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         roomScripts.clear();
         characterScripts.clear();
         inventoryScripts.clear();
-        hotspotScripts.clear();
+        hotspotScripts.clear(); // ⚠️ hotspotScripts Map non più usata per gli hotspot (script salvati in hotspot.scripts.onClick)
         if (projectObj.attachments && typeof projectObj.attachments === 'object') {
           const A = projectObj.attachments;
           if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
@@ -11356,7 +11646,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           if (A.characterScripts && typeof A.characterScripts === 'object') Object.entries(A.characterScripts).forEach(([k,v]) => { if (k && v) characterScripts.set(String(k), String(v)); });
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
-          if (A.hotspotScripts && typeof A.hotspotScripts === 'object') Object.entries(A.hotspotScripts).forEach(([k,v]) => { if (k && v) hotspotScripts.set(String(k), String(v)); });
+          // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
         }
       } catch(_) {}
       
@@ -11425,6 +11715,52 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
         }
       } catch(_) {}
+
+      // ⚠️ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
+      // Questo assicura che gli hotspot con codice siano sempre attivi, anche se il progetto salvato aveva enabled=false
+      try {
+        let cleanedCount = 0;
+        rooms.forEach((room, roomId) => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            room.hotspots.forEach(hotspot => {
+              if (hotspot.scripts && hotspot.scripts.onClick) {
+                const hasCode = hotspot.scripts.onClick.code && 
+                              typeof hotspot.scripts.onClick.code === 'string' && 
+                              hotspot.scripts.onClick.code.trim() !== '';
+                
+                if (hasCode && hotspot.scripts.onClick.enabled === false) {
+                  console.log(`[Cleanup] Auto-enable hotspot ${hotspot.id} (${hotspot.name}) - ha codice ma enabled=false`);
+                  hotspot.scripts.onClick.enabled = true;
+                  cleanedCount++;
+                }
+              }
+            });
+          }
+        });
+        
+        // Aggiorna anche gli hotspot globali se esistenti
+        if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+          hotspots.forEach(hotspot => {
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              const hasCode = hotspot.scripts.onClick.code && 
+                            typeof hotspot.scripts.onClick.code === 'string' && 
+                            hotspot.scripts.onClick.code.trim() !== '';
+              
+              if (hasCode && hotspot.scripts.onClick.enabled === false) {
+                console.log(`[Cleanup] Auto-enable hotspot globale ${hotspot.id} (${hotspot.name}) - ha codice ma enabled=false`);
+                hotspot.scripts.onClick.enabled = true;
+                cleanedCount++;
+              }
+            }
+          });
+        }
+        
+        if (cleanedCount > 0) {
+          console.log(`[Cleanup] ✅ Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
+        }
+      } catch (cleanupError) {
+        console.warn('[Cleanup] Errore durante pulizia hotspot:', cleanupError);
+      }
 
       // Cursors contestuali
       try {
