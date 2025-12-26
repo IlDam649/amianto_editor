@@ -163,16 +163,18 @@ function getSupabaseFolderForType(assetType) {
 
 /**
  * Costruisce il percorso completo del file in Supabase Storage
- * Struttura: {userId}/{projectId}/{category}/{fileName}
+ * Struttura: {userId}/{projectId}/{subfolder || category}/{fileName}
  * Questo permette alle Storage Policies di limitare l'accesso per userId
  * @param {string} userId - ID utente (da Firebase Auth)
  * @param {string} projectId - ID del progetto
  * @param {string} category - Categoria (backgrounds, foregrounds, sprites, audio)
  * @param {string} fileName - Nome del file
+ * @param {string|null} subfolder - Sottocartella opzionale (es: "rooms/roomname")
  * @returns {string} - Percorso completo
  */
-function buildStoragePath(userId, projectId, category, fileName) {
-  return `${userId}/${projectId}/${category}/${fileName}`;
+function buildStoragePath(userId, projectId, category, fileName, subfolder = null) {
+  const folder = subfolder || category;
+  return `${userId}/${projectId}/${folder}/${fileName}`;
 }
 
 // ============================================
@@ -190,7 +192,7 @@ function buildStoragePath(userId, projectId, category, fileName) {
  * @param {string|null} fileNameOverride - Nome file forzato (usa per mantenere stesso path)
  * @returns {Promise<{id: string, name: string, type: string, url: string}>} - Metadata dell'asset caricato
  */
-async function uploadAsset(file, projectId, category, assetId = null, overwrite = false, fileNameOverride = null) {
+async function uploadAsset(file, projectId, category, assetId = null, overwrite = false, fileNameOverride = null, subfolder = null) {
   try {
     // Verifica disponibilità Supabase
     if (!isSupabaseAvailable()) {
@@ -214,14 +216,15 @@ async function uploadAsset(file, projectId, category, assetId = null, overwrite 
       assetId = 'asset_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
     }
 
-    // Determina cartella in base alla categoria
+    // Determina cartella in base alla categoria (usata solo se subfolder non fornito)
     const folder = getSupabaseFolderForType(category);
     
     // Genera nome file univoco
     const fileName = fileNameOverride || generateUniqueFileName(file.name, assetId);
     
     // Costruisci percorso completo con userId per sicurezza
-    const storagePath = buildStoragePath(userId, projectId, folder, fileName);
+    // Se subfolder è fornito, usa quello invece della categoria
+    const storagePath = buildStoragePath(userId, projectId, folder, fileName, subfolder);
     
     console.log('[Supabase] Upload asset...', { storagePath, userId, category, assetId, fileName });
 
@@ -282,7 +285,7 @@ async function uploadAsset(file, projectId, category, assetId = null, overwrite 
  * @param {string} fileName - Nome del file
  * @returns {string|null} - URL pubblico o null se non trovato
  */
-function getAssetPublicUrl(userId, projectId, category, fileName) {
+function getAssetPublicUrl(userId, projectId, category, fileName, subfolder = null) {
   try {
     if (!isSupabaseAvailable()) {
       return null;
@@ -294,10 +297,11 @@ function getAssetPublicUrl(userId, projectId, category, fileName) {
     // Per asset legacy senza userId, usa il path vecchio
     let storagePath;
     if (userId) {
-      storagePath = buildStoragePath(userId, projectId, folder, fileName);
+      storagePath = buildStoragePath(userId, projectId, folder, fileName, subfolder);
     } else {
       // Fallback per asset legacy (senza userId nel path)
-      storagePath = `${projectId}/${folder}/${fileName}`;
+      const actualFolder = subfolder || folder;
+      storagePath = `${projectId}/${actualFolder}/${fileName}`;
     }
 
     const { data } = supabaseClient.storage
@@ -319,9 +323,10 @@ function getAssetPublicUrl(userId, projectId, category, fileName) {
  * @param {string} category - Categoria dell'asset
  * @param {string} originalFileName - Nome originale del file (opzionale)
  * @param {string|null} userIdOverride - userId da usare per costruire il path (facoltativo)
+ * @param {string|null} subfolder - Sottocartella opzionale (es: "rooms/roomname")
  * @returns {Promise<string|null>} - URL pubblico o null
  */
-async function resolveAssetUrl(projectId, assetId, category, originalFileName = null, userIdOverride = null) {
+async function resolveAssetUrl(projectId, assetId, category, originalFileName = null, userIdOverride = null, subfolder = null) {
   try {
     if (!isSupabaseAvailable()) {
       return null;
@@ -334,7 +339,55 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
       const userIdForUrl = userIdOverride || (window.firebaseAuth && window.firebaseAuth.currentUser
         ? window.firebaseAuth.currentUser.uid
         : null);
-      return getAssetPublicUrl(userIdForUrl, projectId, category, fileName);
+      
+      // Se abbiamo il subfolder, usalo direttamente
+      if (subfolder) {
+        return getAssetPublicUrl(userIdForUrl, projectId, category, fileName, subfolder);
+      }
+      
+      // Per background, foreground e sprite, cerca SOLO nelle sottocartelle rooms/{roomname}/
+      // NON cercare mai nella cartella categoria
+      if (category === 'background' || category === 'foreground' || category === 'sprite') {
+        const roomsBasePath = userIdForUrl
+          ? `${userIdForUrl}/${projectId}/rooms`
+          : `${projectId}/rooms`;
+
+        // Lista tutte le sottocartelle rooms
+        const { data: roomDirs } = await supabaseClient.storage
+          .from(SUPABASE_BUCKET_NAME)
+          .list(roomsBasePath, {
+            limit: 100,
+            offset: 0
+          });
+
+        if (roomDirs && roomDirs.length > 0) {
+          // Cerca in ogni sottocartella room
+          for (const roomDir of roomDirs) {
+            if (roomDir.id && roomDir.name) {
+              const roomSubfolder = `rooms/${roomDir.name}`;
+              const url = getAssetPublicUrl(userIdForUrl, projectId, category, fileName, roomSubfolder);
+              if (url) {
+                console.log('[Supabase] ✓ File trovato in sottocartella room (con originalFileName):', {
+                  assetId,
+                  roomSubfolder,
+                  fileName
+                });
+                return url;
+              }
+            }
+          }
+        }
+        // NON cercare nella cartella categoria per background/foreground/sprite
+        console.warn('[Supabase] Asset non trovato in nessuna sottocartella room:', {
+          assetId,
+          category,
+          fileName
+        });
+        return null;
+      } else {
+        // Per altre categorie (gui, character, cursor, audio), cerca nella cartella principale
+        return getAssetPublicUrl(userIdForUrl, projectId, category, fileName);
+      }
     }
 
     // Altrimenti, cerchiamo nel folder del progetto il file che inizia con assetId
@@ -349,52 +402,158 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
       userId = window.firebaseAuth.currentUser.uid;
     }
 
-    const folder = getSupabaseFolderForType(category);
-    const basePath = userId
-      ? `${userId}/${projectId}/${folder}`
-      : `${projectId}/${folder}`; // fallback legacy senza userId
+    // Se abbiamo un subfolder esplicito (es: rooms/{roomName}), cerca direttamente lì
+    if (subfolder) {
+      console.log('[Supabase] Cerca asset con subfolder specificato:', { assetId, category, subfolder });
+      const subfolderPath = userId
+        ? `${userId}/${projectId}/${subfolder}`
+        : `${projectId}/${subfolder}`;
+      
+      const { data: files, error } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .list(subfolderPath, {
+          limit: 1000,
+          offset: 0,
+          sortBy: { column: 'name', order: 'asc' }
+        });
 
-    const { data: files, error } = await supabaseClient.storage
-      .from(SUPABASE_BUCKET_NAME)
-      .list(basePath, {
-        limit: 1000,
-        offset: 0,
-        sortBy: { column: 'name', order: 'asc' }
+      if (!error && files && files.length > 0) {
+        const match = files.find(item => {
+          if (!item || !item.name) return false;
+          return item.name.startsWith(assetId + '.') || item.name.startsWith(assetId + '_');
+        });
+
+        if (match) {
+          const url = getAssetPublicUrl(userId, projectId, category, match.name, subfolder);
+          if (url) {
+            console.log('[Supabase] ✓ File trovato nel subfolder specificato:', {
+              assetId,
+              subfolder,
+              fileName: match.name
+            });
+            return url;
+          }
+        }
+      }
+      // Se subfolder specificato ma non trovato, non cercare altrove (asset deve essere in quella stanza)
+      if (category === 'background' || category === 'foreground' || category === 'sprite') {
+        console.warn('[Supabase] Asset non trovato nel subfolder specificato:', {
+          assetId,
+          subfolder
+        });
+        return null;
+      }
+    }
+
+    // Funzione helper per cercare file in un percorso
+    const searchInPath = async (searchPath) => {
+      const { data: files, error } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .list(searchPath, {
+          limit: 1000,
+          offset: 0,
+          sortBy: { column: 'name', order: 'asc' }
+        });
+
+      if (error) {
+        return null;
+      }
+
+      if (!files || files.length === 0) {
+        return null;
+      }
+
+      // Cerca il primo file il cui nome inizia con assetId
+      const match = files.find(item => {
+        if (!item || !item.name) return false;
+        return item.name.startsWith(assetId + '.') || item.name.startsWith(assetId + '_');
       });
 
-    if (error) {
-      console.error('[Supabase] ❌ Errore list() per resolveAssetUrl:', error);
-      return null;
+      return match ? { fileName: match.name, path: searchPath } : null;
+    };
+
+    // Per background, foreground e sprite, NON cercare mai nella cartella categoria
+    // Cerca SOLO nelle sottocartelle rooms/{roomname}/
+    let result = null;
+    if (category === 'background' || category === 'foreground' || category === 'sprite') {
+      // Se non abbiamo subfolder specificato, cerca in tutte le sottocartelle rooms/*/
+      // (fallback per asset vecchi o quando roomName non è disponibile)
+      const roomsBasePath = userId
+        ? `${userId}/${projectId}/rooms`
+        : `${projectId}/rooms`;
+
+      // Lista tutte le sottocartelle rooms
+      const { data: roomDirs } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .list(roomsBasePath, {
+          limit: 100,
+          offset: 0
+        });
+
+      if (roomDirs && roomDirs.length > 0) {
+        // Cerca in ogni sottocartella room
+        for (const roomDir of roomDirs) {
+          if (roomDir.id && roomDir.name) {
+            const roomPath = `${roomsBasePath}/${roomDir.name}`;
+            result = await searchInPath(roomPath);
+            if (result) {
+              // Costruisci il subfolder per getAssetPublicUrl
+              const roomSubfolder = `rooms/${roomDir.name}`;
+              const url = getAssetPublicUrl(userId, projectId, category, result.fileName, roomSubfolder);
+              if (url) {
+                console.log('[Supabase] ✓ File trovato in sottocartella room:', {
+                  assetId,
+                  roomPath,
+                  fileName: result.fileName
+                });
+                return url;
+              }
+            }
+          }
+        }
+      }
+      // NON cercare nella cartella categoria per background/foreground/sprite
+      // questi asset sono sempre in rooms/{roomname}/
+    } else {
+      // Per altre categorie (gui, character, cursor, audio), cerca solo nella cartella principale
+      const folder = getSupabaseFolderForType(category);
+      const basePath = userId
+        ? `${userId}/${projectId}/${folder}`
+        : `${projectId}/${folder}`; // fallback legacy senza userId
+      result = await searchInPath(basePath);
     }
 
-    if (!files || files.length === 0) {
-      console.warn('[Supabase] Nessun file trovato nel folder per resolveAssetUrl:', basePath);
-      return null;
-    }
-
-    // Cerca il primo file il cui nome inizia con assetId (assetId.ext o assetId_qualcosa.ext)
-    const match = files.find(item => {
-      if (!item || !item.name) return false;
-      return item.name.startsWith(assetId + '.') || item.name.startsWith(assetId + '_');
-    });
-
-    if (!match) {
+    if (!result) {
+      const searchLocation = (category === 'background' || category === 'foreground' || category === 'sprite')
+        ? 'sottocartelle rooms/*/'
+        : 'cartella categoria';
       console.warn('[Supabase] Nessun file corrispondente ad assetId trovato in resolveAssetUrl:', {
         assetId,
-        basePath
+        category,
+        searchLocation
       });
       return null;
     }
 
-    const fileName = match.name;
+    const fileName = result.fileName;
     console.log('[Supabase] ✓ File trovato per assetId in resolveAssetUrl:', {
       assetId,
-      basePath,
+      basePath: result.path,
       fileName
     });
 
     // Usa helper standard per ottenere l'URL pubblico
-    return getAssetPublicUrl(userId, projectId, category, fileName);
+    // Se il risultato è da una sottocartella, estrai il subfolder dal path
+    let finalSubfolder = null;
+    if (result.path && result.path.includes('/rooms/')) {
+      const pathParts = result.path.split('/rooms/');
+      if (pathParts.length > 1) {
+        const roomName = pathParts[1].split('/')[0];
+        finalSubfolder = `rooms/${roomName}`;
+      }
+    }
+    
+    return getAssetPublicUrl(userId, projectId, category, fileName, finalSubfolder);
   } catch (error) {
     console.error('[Supabase] ❌ Errore risoluzione asset:', error);
     return null;
@@ -407,9 +566,11 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
  * @param {string} projectId - ID del progetto
  * @param {string} category - Categoria
  * @param {string} fileName - Nome del file
+ * @param {string|null} userIdOverride - userId da usare (opzionale)
+ * @param {string|null} subfolder - Sottocartella opzionale (es: "rooms/roomname")
  * @returns {Promise<boolean>} - true se eliminato con successo
  */
-async function deleteAsset(projectId, category, fileName, userIdOverride = null) {
+async function deleteAsset(projectId, category, fileName, userIdOverride = null, subfolder = null) {
   try {
     if (!isSupabaseAvailable()) {
       return false;
@@ -426,8 +587,10 @@ async function deleteAsset(projectId, category, fileName, userIdOverride = null)
       return false;
     }
 
+    // Per background, foreground e sprite, usa subfolder se fornito
+    // altrimenti costruisci il path usando la categoria
     const folder = getSupabaseFolderForType(category);
-    const storagePath = buildStoragePath(userId, projectId, folder, fileName);
+    const storagePath = buildStoragePath(userId, projectId, folder, fileName, subfolder);
 
     const { error } = await supabaseClient.storage
       .from(SUPABASE_BUCKET_NAME)

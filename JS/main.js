@@ -2611,10 +2611,44 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshRoomsSelector();
   };
 
-  window.deleteRoom = function() {
+  window.deleteRoom = async function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
     if (!confirm('Delete current room?')) return;
+    
     const prevRoomId = currentRoomId;
+    const roomToDelete = rooms.get(currentRoomId);
+    
+    // Elimina tutti gli asset della stanza da Supabase
+    if (roomToDelete) {
+      try {
+        // Elimina background
+        if (roomToDelete.background) {
+          await deleteAssetFromImage(roomToDelete.background);
+        }
+        
+        // Elimina foregrounds
+        if (roomToDelete.foregrounds && Array.isArray(roomToDelete.foregrounds)) {
+          for (const fg of roomToDelete.foregrounds) {
+            if (fg.img) {
+              await deleteAssetFromImage(fg.img);
+            }
+          }
+        }
+        
+        // Elimina scene objects
+        if (roomToDelete.sceneObjects && Array.isArray(roomToDelete.sceneObjects)) {
+          for (const obj of roomToDelete.sceneObjects) {
+            if (obj.img) {
+              await deleteAssetFromImage(obj.img);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[Asset] Errore eliminazione asset stanza:', error);
+        // Continua comunque con l'eliminazione della stanza
+      }
+    }
+    
     rooms.delete(currentRoomId);
     // pick another existing room
     const first = rooms.keys().next().value;
@@ -2696,16 +2730,31 @@ window.selectRoom = function(roomId) {
           const room = rooms.get(currentRoomId);
           const existingBgInfo = room && room.background ? imageAssetMap.get(room.background) : null;
           const existingAssetId = existingBgInfo && existingBgInfo.assetId ? existingBgInfo.assetId : null;
+          
+          // Elimina il vecchio background da Supabase se presente
+          if (room && room.background && existingBgInfo && existingBgInfo.assetId) {
+            try {
+              await deleteAssetFromImage(room.background);
+            } catch (error) {
+              console.error('[Asset] Errore eliminazione vecchio background:', error);
+              // Continua comunque con l'upload del nuovo background
+            }
+          }
+          
           if (room && room.background) {
             imageAssetMap.delete(room.background);
           }
+          
+          // Costruisci subfolder per questa stanza: rooms/roomname
+          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
+          const roomSubfolder = `rooms/${roomName}`;
           
           // Upload immagine su Firebase Storage
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'background',
-            { assetId: existingAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null }
+            { assetId: existingAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null, subfolder: roomSubfolder }
           );
           
           // Carica immagine dall'URL
@@ -2763,8 +2812,8 @@ window.selectRoom = function(roomId) {
             finalHeight
           });
           
-          // Registra nella mappa asset
-          imageAssetMap.set(img, { assetId, type: 'background', projectId, fileName: fileName || null });
+          // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
+          imageAssetMap.set(img, { assetId, type: 'background', projectId, fileName: fileName || null, subfolder: roomSubfolder });
           
           // Imposta come background corrente
           background = img;
@@ -2823,17 +2872,35 @@ window.selectRoom = function(roomId) {
             if (existingInfo && existingInfo.assetId) {
               existingAssetId = existingInfo.assetId;
               existingFileName = existingInfo.fileName || null;
+            } else {
+              // Se non c'è assetId da riutilizzare, elimina il vecchio asset se presente
+              if (selectedLayer.img) {
+                try {
+                  await deleteAssetFromImage(selectedLayer.img);
+                } catch (error) {
+                  console.error('[Asset] Errore eliminazione vecchio foreground:', error);
+                  // Continua comunque con l'upload del nuovo foreground
+                }
+              }
             }
           }
+
+          // Costruisci subfolder per questa stanza: rooms/roomname
+          const room = rooms.get(currentRoomId);
+          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
+          const roomSubfolder = `rooms/${roomName}`;
 
           // Upload immagine su Supabase Storage
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'foreground',
-            existingAssetId
-              ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
-              : {}
+            {
+              ...(existingAssetId
+                ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
+                : {}),
+              subfolder: roomSubfolder
+            }
           );
           
           // Carica immagine dall'URL
@@ -2842,8 +2909,8 @@ window.selectRoom = function(roomId) {
             throw new Error('Failed to load image from URL');
           }
           
-          // Registra nella mappa asset (include fileName per eliminazione futura)
-          imageAssetMap.set(img, { assetId, type: 'foreground', projectId, fileName: fileName || null });
+          // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
+          imageAssetMap.set(img, { assetId, type: 'foreground', projectId, fileName: fileName || null, subfolder: roomSubfolder });
 
           let r = rooms.get(currentRoomId);
 
@@ -3492,8 +3559,13 @@ window.selectRoom = function(roomId) {
     try {
       showNotification('Uploading scene object...', 'info');
       
+      // Costruisci subfolder per questa stanza: rooms/roomname
+      const room = rooms.get(currentRoomId);
+      const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
+      const roomSubfolder = `rooms/${roomName}`;
+      
       // Upload immagine su Firebase Storage
-      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite');
+      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite', { subfolder: roomSubfolder });
       
       // Carica immagine dall'URL
       const img = await loadImageFromUrl(downloadURL);
@@ -3501,8 +3573,8 @@ window.selectRoom = function(roomId) {
         throw new Error('Failed to load image from URL');
       }
       
-      // Registra nella mappa asset (include fileName per eliminazione futura)
-      imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null });
+      // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
+      imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null, subfolder: roomSubfolder });
       
       // Generate unique name even for same image
       const baseName = file.name.replace(/\.[^/.]+$/, "");
@@ -3691,16 +3763,32 @@ window.selectRoom = function(roomId) {
             if (existingInfo && existingInfo.assetId) {
               existingAssetId = existingInfo.assetId;
               existingFileName = existingInfo.fileName || null;
+            } else {
+              // Se non c'è assetId da riutilizzare, elimina il vecchio asset se presente
+              try {
+                await deleteAssetFromImage(sceneObject.img);
+              } catch (error) {
+                console.error('[Asset] Errore eliminazione vecchio scene object:', error);
+                // Continua comunque con l'upload del nuovo scene object
+              }
             }
           }
+
+          // Costruisci subfolder per questa stanza: rooms/roomname
+          const room = rooms.get(currentRoomId);
+          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
+          const roomSubfolder = `rooms/${roomName}`;
 
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'sprite',
-            existingAssetId
-              ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
-              : {}
+            {
+              ...(existingAssetId
+                ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
+                : {}),
+              subfolder: roomSubfolder
+            }
           );
 
           const img = await loadImageFromUrl(downloadURL);
@@ -3709,7 +3797,7 @@ window.selectRoom = function(roomId) {
           }
 
           // Aggiorna mappa asset e oggetto di scena
-          imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null });
+          imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null, subfolder: roomSubfolder });
           sceneObject.img = img;
 
           redraw();
@@ -11070,7 +11158,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     let errorCount = 0;
 
     // Funzione helper per processare un asset
-    const processAsset = async (assetValue, assetType, assetName) => {
+    const processAsset = async (assetValue, assetType, assetName, subfolder = null) => {
       // Se è già un assetId (prefisso "asset:"), salta
       if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
         return assetValue;
@@ -11087,8 +11175,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return assetValue; // Mantieni dataURL originale se fallisce
           }
 
-          const { assetId } = await uploadImage(file, projectId, assetType);
-          console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}`);
+          const { assetId } = await uploadImage(file, projectId, assetType, { subfolder });
+          console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
           savedCount++;
           return `asset:${assetId}`;
         } catch (error) {
@@ -11104,15 +11192,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Processa tutti i background delle room
     if (updatedProject.rooms && Array.isArray(updatedProject.rooms)) {
       for (const room of updatedProject.rooms) {
+        // Costruisci subfolder per questa stanza: rooms/roomname
+        const roomName = room.name || room.id;
+        const roomSubfolder = `rooms/${roomName}`;
+        
         if (room.background) {
-          room.background = await processAsset(room.background, 'background', `room_${room.id}_background`);
+          room.background = await processAsset(room.background, 'background', `room_${room.id}_background`, roomSubfolder);
         }
         
         // Processa foregrounds
         if (room.foregrounds && Array.isArray(room.foregrounds)) {
           for (const fg of room.foregrounds) {
             if (fg.image) {
-              fg.image = await processAsset(fg.image, 'foreground', `room_${room.id}_fg_${fg.id || 'unknown'}`);
+              fg.image = await processAsset(fg.image, 'foreground', `room_${room.id}_fg_${fg.id || 'unknown'}`, roomSubfolder);
             }
           }
         }
@@ -11121,7 +11213,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
           for (const obj of room.sceneObjects) {
             if (obj.image) {
-              obj.image = await processAsset(obj.image, 'sprite', `room_${room.id}_obj_${obj.id || 'unknown'}`);
+              obj.image = await processAsset(obj.image, 'sprite', `room_${room.id}_obj_${obj.id || 'unknown'}`, roomSubfolder);
             }
           }
         }
@@ -11490,7 +11582,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
    * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string, fileName: string}>} - Metadata dell'asset caricato
    */
-  async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null) {
+  async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null, subfolder = null) {
     try {
       // Verifica che Supabase Storage sia disponibile
       if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
@@ -11519,23 +11611,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Determina categoria (backgrounds, foregrounds, sprites, audio)
       const category = getStorageFolderForType(assetType);
       
-      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId });
+      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId, subfolder });
 
       // Usa la funzione uploadAsset da supabase.js
-      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName);
+      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
       
       // Costruisci storagePath per compatibilità con il resto del codice
       // Usa il fileName generato da Supabase (include assetId)
       const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
-      const storagePath = `${projectId}/${category}/${generatedFileName}`;
+      const actualFolder = subfolder || category;
+      const storagePath = `${projectId}/${actualFolder}/${generatedFileName}`;
       
-      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName });
+      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
       
       return {
         assetId,
         storagePath,
         downloadURL: result.url,
-        fileName: generatedFileName // Nome file generato (con assetId) per risoluzione futura
+        fileName: generatedFileName, // Nome file generato (con assetId) per risoluzione futura
+        subfolder // Includi subfolder per salvare nei metadati
       };
     } catch (error) {
       console.error('[Asset] ❌ Errore upload immagine:', error);
@@ -11554,7 +11648,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} publicUrl - URL pubblico dell'asset (opzionale, per Supabase)
    * @returns {Promise<boolean>} - true se salvato con successo
    */
-  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null) {
+  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null, subfolder = null) {
     try {
       // Verifica che Firestore sia disponibile
       if (!window.firebaseDB) {
@@ -11589,6 +11683,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Aggiungi campi per Supabase Storage
         fileName: fileName || null,
         publicUrl: publicUrl || null,
+        subfolder: subfolder || null, // Sottocartella opzionale (es: "rooms/roomname")
         storageProvider: 'supabase', // Indica che usa Supabase Storage
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       };
@@ -11694,9 +11789,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return false;
       }
 
-      // Se non abbiamo fileName, cerchiamo prima nei metadata Firestore
+      // Se non abbiamo fileName o subfolder, cerchiamo prima nei metadata Firestore
       let finalFileName = fileName;
-      if (!finalFileName && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      let subfolder = assetInfo.subfolder || null;
+      if ((!finalFileName || !subfolder) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
         try {
           const userId = window.firebaseAuth.currentUser.uid;
           const assetRef = window.firebaseDB
@@ -11710,13 +11806,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const doc = await assetRef.get();
           if (doc.exists) {
             const data = doc.data();
-            if (data && data.fileName) {
+            if (data && data.fileName && !finalFileName) {
               finalFileName = data.fileName;
               console.log(`[Asset] fileName recuperato da Firestore per eliminazione: ${finalFileName}`);
             }
+            if (data && data.subfolder && !subfolder) {
+              subfolder = data.subfolder;
+              console.log(`[Asset] subfolder recuperato da Firestore per eliminazione: ${subfolder}`);
+            }
           }
         } catch (metaErr) {
-          console.warn('[Asset] Impossibile recuperare fileName da Firestore per eliminazione asset:', metaErr);
+          console.warn('[Asset] Impossibile recuperare metadata da Firestore per eliminazione asset:', metaErr);
+        }
+      }
+      
+      // Se non abbiamo subfolder ma la categoria è background/foreground/sprite, 
+      // costruisci il subfolder dal roomName corrente
+      if (!subfolder && (type === 'background' || type === 'foreground' || type === 'sprite')) {
+        const room = rooms.get(currentRoomId);
+        if (room) {
+          const roomName = room.name || room.id || currentRoomId;
+          subfolder = `rooms/${roomName}`;
+          console.log(`[Asset] subfolder costruito dal roomName corrente: ${subfolder}`);
         }
       }
 
@@ -11732,15 +11843,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.log(`[Asset] fileName non trovato nei metadata, ricostruito da URL: ${finalFileName}`);
       }
 
-      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName})`);
+      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
 
-      // Elimina da Supabase Storage (passa userId per path corretto)
+      // Elimina da Supabase Storage (passa userId e subfolder per path corretto)
       let userIdOverride = null;
       if (window.firebaseAuth && window.firebaseAuth.currentUser) {
         userIdOverride = window.firebaseAuth.currentUser.uid;
       }
 
-      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride);
+      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride, subfolder);
       
       if (deleted) {
         console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
@@ -11931,21 +12042,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function uploadImage(file, projectId, assetType, options = {}) {
     try {
-      const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null } = options || {};
+      const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null, subfolder = null } = options || {};
       // Upload su Supabase Storage
-      const { assetId: finalAssetId, storagePath, downloadURL, fileName } = await uploadImageToStorage(
+      const { assetId: finalAssetId, storagePath, downloadURL, fileName, subfolder: resultSubfolder } = await uploadImageToStorage(
         file,
         projectId,
         assetType,
         assetId,
         overwriteExisting,
-        fileNameOverride
+        fileNameOverride,
+        subfolder
       );
       
       // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
       // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
       // perché l'asset è già caricato su Supabase Storage
-      const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL);
+      const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL, resultSubfolder || subfolder);
       
       if (!metadataSaved) {
         console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');

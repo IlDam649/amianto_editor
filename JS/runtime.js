@@ -200,9 +200,9 @@
   };
 
   // Risolve un assetId in URL Supabase
-  async function resolveAssetId(assetId, category) {
+  async function resolveAssetId(assetId, category, roomName = null) {
     try {
-      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}`, 'info');
+      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}${roomName ? `, roomName=${roomName}` : ''}`, 'info');
       
       // PRIMA: Prova a recuperare URL da Firestore se disponibile (più affidabile)
       if (typeof window !== 'undefined' && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
@@ -241,18 +241,20 @@
                 // IMPORTANTE: Usa getSupabaseFolderForType per mappare correttamente la categoria
                 // "foreground" -> "foregrounds", "background" -> "backgrounds", ecc.
                 const folder = window.supabaseStorage.getSupabaseFolderForType ? window.supabaseStorage.getSupabaseFolderForType(category) : category;
-                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', categoria '${category}' -> folder '${folder}'`, 'info');
+                const subfolder = data.subfolder || null; // Usa subfolder dai metadati se presente
+                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', categoria '${category}' -> folder '${folder}'${subfolder ? `, subfolder '${subfolder}'` : ''}`, 'info');
                 const url = window.supabaseStorage.getAssetPublicUrl(
                   userId, // Usa userId da Firebase Auth corrente
                   actualProjectId,
                   category, // Passa la categoria originale (getSupabaseFolderForType la mapperà internamente)
-                  data.fileName // Usa il fileName esatto salvato in Firestore (include baseName)
+                  data.fileName, // Usa il fileName esatto salvato in Firestore (include baseName)
+                  subfolder // Passa subfolder se presente (es: "rooms/roomname")
                 );
                 if (url) {
                   log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName Firestore: ${url}`, 'success');
                   return url;
                 } else {
-                  log(`[Runtime] resolveAssetId: ⚠️ fileName trovato ma URL non generato. fileName='${data.fileName}', category='${category}', folder='${folder}'`, 'warning');
+                  log(`[Runtime] resolveAssetId: ⚠️ fileName trovato ma URL non generato. fileName='${data.fileName}', category='${category}', folder='${folder}', subfolder='${subfolder || 'N/A'}'`, 'warning');
                 }
               } else {
                 log(`[Runtime] resolveAssetId: ⚠️ ERRORE CRITICO - metadata trovato in Firestore ma publicUrl e fileName mancanti!`, 'error');
@@ -310,13 +312,16 @@
       // nella cartella del progetto e cerca un file che inizi con assetId.
       if (window.supabaseStorage.resolveAssetUrl) {
         try {
-          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl`, 'info');
+          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}`, 'info');
+          // Se abbiamo roomName, costruisci il subfolder: rooms/{roomName}
+          const subfolder = roomName ? `rooms/${roomName}` : null;
           const directUrl = await window.supabaseStorage.resolveAssetUrl(
             actualProjectId,
             assetId,
             category,
             null,
-            projectInfo.userId || null // Passa esplicitamente l'userId del progetto
+            projectInfo.userId || null, // Passa esplicitamente l'userId del progetto
+            subfolder // Passa subfolder se abbiamo roomId
           );
           if (directUrl) {
             log(
@@ -350,7 +355,7 @@
     }
   }
 
-  function loadImage(src, categoryHint = null) {
+  function loadImage(src, categoryHint = null, roomName = null) {
     return new Promise(async (resolve) => {
       if (!src || typeof src !== 'string') {
         resolve(null);
@@ -382,14 +387,14 @@
       // Se l'URL inizia con "asset:", risolvi l'assetId
       if (src.startsWith('asset:')) {
         const assetId = src.substring(6); // Rimuovi prefisso "asset:"
-        log(`[Runtime] Risoluzione assetId: ${assetId}${categoryHint ? ` (categoria suggerita: ${categoryHint})` : ''}`, 'info');
+        log(`[Runtime] Risoluzione assetId: ${assetId}${categoryHint ? ` (categoria suggerita: ${categoryHint})` : ''}${roomName ? ` (roomName: ${roomName})` : ''}`, 'info');
         
         let resolvedUrl = null;
         
         // Se abbiamo un hint sulla categoria, proviamo prima quella
         if (categoryHint) {
           try {
-            resolvedUrl = await resolveAssetId(assetId, categoryHint);
+            resolvedUrl = await resolveAssetId(assetId, categoryHint, roomName);
             if (resolvedUrl) {
               resolvedCategory = categoryHint;
               log(`[Runtime] AssetId risolto in categoria '${categoryHint}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'success');
@@ -412,7 +417,7 @@
             if (category === categoryHint) continue;
             
             try {
-              resolvedUrl = await resolveAssetId(assetId, category);
+              resolvedUrl = await resolveAssetId(assetId, category, roomName);
               if (resolvedUrl) {
                 resolvedCategory = category;
                 log(`[Runtime] AssetId risolto in categoria '${category}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'info');
@@ -759,8 +764,8 @@
     AssetRegistry.isLoading = true;
     AssetRegistry.loadComplete = false;
     
-    // Usa una Map per associare asset alla loro categoria
-    const assetsWithCategory = new Map(); // key: assetId/URL, value: category
+    // Usa una Map per associare asset alla loro categoria e roomId
+    const assetsWithCategory = new Map(); // key: assetId/URL, value: { category, roomId }
     const assetStats = {
       total: 0,
       loaded: 0,
@@ -768,40 +773,41 @@
       skipped: 0
     };
 
-    // Raccogli TUTTI gli asset con la loro categoria corretta
+    // Raccogli TUTTI gli asset con la loro categoria corretta e roomId
     // Room backgrounds e foregrounds
     if (projectData.rooms && Array.isArray(projectData.rooms)) {
       projectData.rooms.forEach(room => {
+        const roomName = room.name || room.id;
         if (room.background && typeof room.background === 'string') {
-          assetsWithCategory.set(room.background, 'background');
+          assetsWithCategory.set(room.background, { category: 'background', roomName });
         }
         if (room.foregrounds && Array.isArray(room.foregrounds)) {
           room.foregrounds.forEach(fg => {
             if (fg.image && typeof fg.image === 'string') {
-              assetsWithCategory.set(fg.image, 'foreground');
+              assetsWithCategory.set(fg.image, { category: 'foreground', roomName });
             }
           });
         }
         if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
           room.sceneObjects.forEach(obj => {
             if (obj.image && typeof obj.image === 'string') {
-              assetsWithCategory.set(obj.image, 'sprite');
+              assetsWithCategory.set(obj.image, { category: 'sprite', roomName });
             }
           });
         }
       });
     }
 
-    // GUI backgrounds e button images
+    // GUI backgrounds e button images (non hanno roomId)
     if (projectData.guis && Array.isArray(projectData.guis)) {
       projectData.guis.forEach(gui => {
         if (gui.background && typeof gui.background === 'string') {
-          assetsWithCategory.set(gui.background, 'gui');
+          assetsWithCategory.set(gui.background, { category: 'gui', roomId: null });
         }
         if (gui.buttons && Array.isArray(gui.buttons)) {
           gui.buttons.forEach(btn => {
             if (btn.backgroundImage && typeof btn.backgroundImage === 'string') {
-              assetsWithCategory.set(btn.backgroundImage, 'gui');
+              assetsWithCategory.set(btn.backgroundImage, { category: 'gui', roomId: null });
             }
           });
         }
@@ -818,11 +824,13 @@
       return assetStats;
     }
 
-    // Carica tutte le immagini in parallelo con la categoria corretta
-    const loadPromises = Array.from(assetsWithCategory.entries()).map(async ([src, category]) => {
+    // Carica tutte le immagini in parallelo con la categoria corretta e roomName
+    const loadPromises = Array.from(assetsWithCategory.entries()).map(async ([src, info]) => {
       try {
-        log(`[Runtime] Preload asset (${category}): ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}`, 'info');
-        const img = await loadImage(src, category);
+        const category = info.category;
+        const roomName = info.roomName;
+        log(`[Runtime] Preload asset (${category}${roomName ? `, room: ${roomName}` : ''}): ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}`, 'info');
+        const img = await loadImage(src, category, roomName);
         if (img && img.complete && img.naturalWidth > 0) {
           assetStats.loaded++;
           log(`[Runtime] ✓ Asset preload completato: ${src.substring(0, 50)}${src.length > 50 ? '...' : ''} (${img.naturalWidth}x${img.naturalHeight})`, 'success');
