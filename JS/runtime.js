@@ -200,9 +200,9 @@
   };
 
   // Risolve un assetId in URL Supabase
-  async function resolveAssetId(assetId, category, roomName = null) {
+  async function resolveAssetId(assetId, category, roomName = null, characterName = null) {
     try {
-      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}${roomName ? `, roomName=${roomName}` : ''}`, 'info');
+      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}${roomName ? `, roomName=${roomName}` : ''}${characterName ? `, characterName=${characterName}` : ''}`, 'info');
       
       // PRIMA: Prova a recuperare URL da Firestore se disponibile (più affidabile)
       if (typeof window !== 'undefined' && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
@@ -312,9 +312,10 @@
       // nella cartella del progetto e cerca un file che inizi con assetId.
       if (window.supabaseStorage.resolveAssetUrl) {
         try {
-          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}`, 'info');
+          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}${characterName ? ` (characterName: ${characterName})` : ''}`, 'info');
           // Se abbiamo roomName, costruisci il subfolder: rooms/{roomName}
-          const subfolder = roomName ? `rooms/${roomName}` : null;
+          // Se abbiamo characterName, costruisci il subfolder: characters/{characterName}
+          const subfolder = roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null);
           const directUrl = await window.supabaseStorage.resolveAssetUrl(
             actualProjectId,
             assetId,
@@ -355,7 +356,7 @@
     }
   }
 
-  function loadImage(src, categoryHint = null, roomName = null) {
+  function loadImage(src, categoryHint = null, roomName = null, characterName = null) {
     return new Promise(async (resolve) => {
       if (!src || typeof src !== 'string') {
         resolve(null);
@@ -387,14 +388,14 @@
       // Se l'URL inizia con "asset:", risolvi l'assetId
       if (src.startsWith('asset:')) {
         const assetId = src.substring(6); // Rimuovi prefisso "asset:"
-        log(`[Runtime] Risoluzione assetId: ${assetId}${categoryHint ? ` (categoria suggerita: ${categoryHint})` : ''}${roomName ? ` (roomName: ${roomName})` : ''}`, 'info');
+        log(`[Runtime] Risoluzione assetId: ${assetId}${categoryHint ? ` (categoria suggerita: ${categoryHint})` : ''}${roomName ? ` (roomName: ${roomName})` : ''}${characterName ? ` (characterName: ${characterName})` : ''}`, 'info');
         
         let resolvedUrl = null;
         
         // Se abbiamo un hint sulla categoria, proviamo prima quella
         if (categoryHint) {
           try {
-            resolvedUrl = await resolveAssetId(assetId, categoryHint, roomName);
+            resolvedUrl = await resolveAssetId(assetId, categoryHint, roomName, characterName);
             if (resolvedUrl) {
               resolvedCategory = categoryHint;
               log(`[Runtime] AssetId risolto in categoria '${categoryHint}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'success');
@@ -417,7 +418,7 @@
             if (category === categoryHint) continue;
             
             try {
-              resolvedUrl = await resolveAssetId(assetId, category, roomName);
+              resolvedUrl = await resolveAssetId(assetId, category, roomName, characterName);
               if (resolvedUrl) {
                 resolvedCategory = category;
                 log(`[Runtime] AssetId risolto in categoria '${category}': ${resolvedUrl.substring(0, 80)}${resolvedUrl.length > 80 ? '...' : ''}`, 'info');
@@ -773,41 +774,59 @@
       skipped: 0
     };
 
-    // Raccogli TUTTI gli asset con la loro categoria corretta e roomId
+    // Raccogli TUTTI gli asset con la loro categoria corretta, roomName e characterName
     // Room backgrounds e foregrounds
     if (projectData.rooms && Array.isArray(projectData.rooms)) {
       projectData.rooms.forEach(room => {
         const roomName = room.name || room.id;
         if (room.background && typeof room.background === 'string') {
-          assetsWithCategory.set(room.background, { category: 'background', roomName });
+          assetsWithCategory.set(room.background, { category: 'background', roomName, characterName: null });
         }
         if (room.foregrounds && Array.isArray(room.foregrounds)) {
           room.foregrounds.forEach(fg => {
             if (fg.image && typeof fg.image === 'string') {
-              assetsWithCategory.set(fg.image, { category: 'foreground', roomName });
+              assetsWithCategory.set(fg.image, { category: 'foreground', roomName, characterName: null });
             }
           });
         }
         if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
           room.sceneObjects.forEach(obj => {
             if (obj.image && typeof obj.image === 'string') {
-              assetsWithCategory.set(obj.image, { category: 'sprite', roomName });
+              assetsWithCategory.set(obj.image, { category: 'sprite', roomName, characterName: null });
             }
           });
         }
       });
     }
 
-    // GUI backgrounds e button images (non hanno roomId)
+    // GUI backgrounds e button images (non hanno roomName)
     if (projectData.guis && Array.isArray(projectData.guis)) {
       projectData.guis.forEach(gui => {
         if (gui.background && typeof gui.background === 'string') {
-          assetsWithCategory.set(gui.background, { category: 'gui', roomId: null });
+          assetsWithCategory.set(gui.background, { category: 'gui', roomName: null, characterName: null });
         }
         if (gui.buttons && Array.isArray(gui.buttons)) {
           gui.buttons.forEach(btn => {
             if (btn.backgroundImage && typeof btn.backgroundImage === 'string') {
-              assetsWithCategory.set(btn.backgroundImage, { category: 'gui', roomId: null });
+              assetsWithCategory.set(btn.backgroundImage, { category: 'gui', roomName: null, characterName: null });
+            }
+          });
+        }
+      });
+    }
+
+    // Character frames (hanno characterName invece di roomName)
+    if (projectData.characters && Array.isArray(projectData.characters)) {
+      projectData.characters.forEach(char => {
+        const characterName = char.name || char.id;
+        if (char.directions) {
+          Object.values(char.directions).forEach(dirData => {
+            if (dirData.frames && Array.isArray(dirData.frames)) {
+              dirData.frames.forEach(frame => {
+                if (frame && typeof frame === 'string') {
+                  assetsWithCategory.set(frame, { category: 'character', roomName: null, characterName });
+                }
+              });
             }
           });
         }
@@ -824,13 +843,14 @@
       return assetStats;
     }
 
-    // Carica tutte le immagini in parallelo con la categoria corretta e roomName
+    // Carica tutte le immagini in parallelo con la categoria corretta, roomName e characterName
     const loadPromises = Array.from(assetsWithCategory.entries()).map(async ([src, info]) => {
       try {
         const category = info.category;
         const roomName = info.roomName;
-        log(`[Runtime] Preload asset (${category}${roomName ? `, room: ${roomName}` : ''}): ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}`, 'info');
-        const img = await loadImage(src, category, roomName);
+        const characterName = info.characterName;
+        log(`[Runtime] Preload asset (${category}${roomName ? `, room: ${roomName}` : ''}${characterName ? `, character: ${characterName}` : ''}): ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}`, 'info');
+        const img = await loadImage(src, category, roomName, characterName);
         if (img && img.complete && img.naturalWidth > 0) {
           assetStats.loaded++;
           log(`[Runtime] ✓ Asset preload completato: ${src.substring(0, 50)}${src.length > 50 ? '...' : ''} (${img.naturalWidth}x${img.naturalHeight})`, 'success');

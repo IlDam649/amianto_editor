@@ -346,6 +346,7 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
       }
       
       // Per background, foreground e sprite, cerca SOLO nelle sottocartelle rooms/{roomname}/
+      // Per character, cerca SOLO nelle sottocartelle characters/{charactername}/
       // NON cercare mai nella cartella categoria
       if (category === 'background' || category === 'foreground' || category === 'sprite') {
         const roomsBasePath = userIdForUrl
@@ -384,8 +385,45 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
           fileName
         });
         return null;
+      } else if (category === 'character') {
+        const charactersBasePath = userIdForUrl
+          ? `${userIdForUrl}/${projectId}/characters`
+          : `${projectId}/characters`;
+
+        // Lista tutte le sottocartelle characters
+        const { data: characterDirs } = await supabaseClient.storage
+          .from(SUPABASE_BUCKET_NAME)
+          .list(charactersBasePath, {
+            limit: 100,
+            offset: 0
+          });
+
+        if (characterDirs && characterDirs.length > 0) {
+          // Cerca in ogni sottocartella character
+          for (const charDir of characterDirs) {
+            if (charDir.id && charDir.name) {
+              const charSubfolder = `characters/${charDir.name}`;
+              const url = getAssetPublicUrl(userIdForUrl, projectId, category, fileName, charSubfolder);
+              if (url) {
+                console.log('[Supabase] ✓ File trovato in sottocartella character (con originalFileName):', {
+                  assetId,
+                  charSubfolder,
+                  fileName
+                });
+                return url;
+              }
+            }
+          }
+        }
+        // NON cercare nella cartella categoria per character frames
+        console.warn('[Supabase] Asset non trovato in nessuna sottocartella character:', {
+          assetId,
+          category,
+          fileName
+        });
+        return null;
       } else {
-        // Per altre categorie (gui, character, cursor, audio), cerca nella cartella principale
+        // Per altre categorie (gui, cursor, audio), cerca nella cartella principale
         return getAssetPublicUrl(userIdForUrl, projectId, category, fileName);
       }
     }
@@ -514,8 +552,46 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
       }
       // NON cercare nella cartella categoria per background/foreground/sprite
       // questi asset sono sempre in rooms/{roomname}/
+    } else if (category === 'character') {
+      // Per character frames, cerca SOLO nelle sottocartelle characters/{charactername}/
+      const charactersBasePath = userId
+        ? `${userId}/${projectId}/characters`
+        : `${projectId}/characters`;
+
+      // Lista tutte le sottocartelle characters
+      const { data: characterDirs } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .list(charactersBasePath, {
+          limit: 100,
+          offset: 0
+        });
+
+      if (characterDirs && characterDirs.length > 0) {
+        // Cerca in ogni sottocartella character
+        for (const charDir of characterDirs) {
+          if (charDir.id && charDir.name) {
+            const charPath = `${charactersBasePath}/${charDir.name}`;
+            result = await searchInPath(charPath);
+            if (result) {
+              // Costruisci il subfolder per getAssetPublicUrl
+              const charSubfolder = `characters/${charDir.name}`;
+              const url = getAssetPublicUrl(userId, projectId, category, result.fileName, charSubfolder);
+              if (url) {
+                console.log('[Supabase] ✓ File trovato in sottocartella character:', {
+                  assetId,
+                  charPath,
+                  fileName: result.fileName
+                });
+                return url;
+              }
+            }
+          }
+        }
+      }
+      // NON cercare nella cartella categoria per character frames
+      // questi asset sono sempre in characters/{charactername}/
     } else {
-      // Per altre categorie (gui, character, cursor, audio), cerca solo nella cartella principale
+      // Per altre categorie (gui, cursor, audio), cerca solo nella cartella principale
       const folder = getSupabaseFolderForType(category);
       const basePath = userId
         ? `${userId}/${projectId}/${folder}`

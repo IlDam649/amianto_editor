@@ -3874,10 +3874,39 @@ window.selectRoom = function(roomId) {
     showNotification(`Character "${name}" added!`, 'success');
   };
 
-  window.removeCharacter = function(button) {
+  window.removeCharacter = async function(button) {
     if (confirm('Are you sure you want to delete this character?')) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
+      
+      // Elimina tutti gli asset del character da Supabase
+      const charData = characterFrames.get(characterName);
+      if (charData && charData.directions) {
+        try {
+          for (const [dir, dirData] of Object.entries(charData.directions)) {
+            if (dirData.frames && Array.isArray(dirData.frames)) {
+              for (const frame of dirData.frames) {
+                // Se il frame è un'immagine, elimina l'asset
+                if (frame && frame.img) {
+                  await deleteAssetFromImage(frame.img);
+                } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
+                  // Se è un assetId, dobbiamo recuperare l'immagine da imageAssetMap
+                  // Cerca l'immagine associata a questo assetId
+                  for (const [img, assetInfo] of imageAssetMap.entries()) {
+                    if (assetInfo.assetId === frame.replace('asset:', '') && assetInfo.type === 'character') {
+                      await deleteAssetFromImage(img);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[Asset] Errore eliminazione asset character:', error);
+          // Continua comunque con l'eliminazione del character
+        }
+      }
       
       characterElement.remove();
       
@@ -4171,12 +4200,40 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.clearCharacterFrames = function() {
+  window.clearCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     if (confirm('Clear all animation frames for this character?')) {
+      // Elimina tutti gli asset dei frame da Supabase
+      const charData = characterFrames.get(who);
+      if (charData && charData.directions) {
+        try {
+          for (const [dir, dirData] of Object.entries(charData.directions)) {
+            if (dirData.frames && Array.isArray(dirData.frames)) {
+              for (const frame of dirData.frames) {
+                // Se il frame è un'immagine, elimina l'asset
+                if (frame && frame.img) {
+                  await deleteAssetFromImage(frame.img);
+                } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
+                  // Se è un assetId, cerca l'immagine associata
+                  for (const [img, assetInfo] of imageAssetMap.entries()) {
+                    if (assetInfo.assetId === frame.replace('asset:', '') && assetInfo.type === 'character') {
+                      await deleteAssetFromImage(img);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[Asset] Errore eliminazione asset character frames:', error);
+          // Continua comunque con la cancellazione dei frame
+        }
+      }
+      
       characterFrames.delete(who);
       showNotification('Frames cleared for ' + who, 'success');
     }
@@ -4320,7 +4377,7 @@ window.selectRoom = function(roomId) {
   }
 
   // Function to delete a frame
-  function deleteFrame(frameIndex) {
+  async function deleteFrame(frameIndex) {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) return;
@@ -4329,6 +4386,29 @@ window.selectRoom = function(roomId) {
     if (!charData || !charData.directions[currentDirection]) return;
 
     if (confirm(`Delete frame ${frameIndex + 1}?`)) {
+      const frameToDelete = charData.directions[currentDirection].frames[frameIndex];
+      
+      // Elimina l'asset da Supabase se presente
+      if (frameToDelete) {
+        try {
+          // Se il frame è un'immagine, elimina l'asset
+          if (frameToDelete.img) {
+            await deleteAssetFromImage(frameToDelete.img);
+          } else if (frameToDelete && typeof frameToDelete === 'string' && frameToDelete.startsWith('asset:')) {
+            // Se è un assetId, cerca l'immagine associata
+            for (const [img, assetInfo] of imageAssetMap.entries()) {
+              if (assetInfo.assetId === frameToDelete.replace('asset:', '') && assetInfo.type === 'character') {
+                await deleteAssetFromImage(img);
+                break;
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[Asset] Errore eliminazione asset frame:', error);
+          // Continua comunque con l'eliminazione del frame
+        }
+      }
+      
       charData.directions[currentDirection].frames.splice(frameIndex, 1);
       updateDirectionInfo();
       showNotification(`Frame ${frameIndex + 1} deleted`, 'info');
@@ -11240,12 +11320,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Processa character frames
     if (updatedProject.characters && Array.isArray(updatedProject.characters)) {
       for (const char of updatedProject.characters) {
+        // Costruisci subfolder per questo character: characters/charactername
+        const characterName = char.name || char.id;
+        const characterSubfolder = `characters/${characterName}`;
+        
         if (char.directions) {
           for (const [dir, dirData] of Object.entries(char.directions)) {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               for (let i = 0; i < dirData.frames.length; i++) {
                 if (dirData.frames[i]) {
-                  dirData.frames[i] = await processAsset(dirData.frames[i], 'character', `char_${char.name}_${dir}_${i}`);
+                  dirData.frames[i] = await processAsset(dirData.frames[i], 'character', `char_${char.name}_${dir}_${i}`, characterSubfolder);
                 }
               }
             }
@@ -12473,10 +12557,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                     const img = await createImageFromDataUrl(f, projectId);
                     if (img) {
                       frames.push(img);
-                      // Se è un assetId, registra nella mappa
+                      // Se è un assetId, registra nella mappa con subfolder
                       if (f && f.startsWith('asset:')) {
                         const assetId = f.replace('asset:', '');
-                        imageAssetMap.set(img, { assetId, type: 'character', projectId });
+                        const characterName = ch.name || ch.id;
+                        const characterSubfolder = `characters/${characterName}`;
+                        imageAssetMap.set(img, { assetId, type: 'character', projectId, subfolder: characterSubfolder });
                       }
                     }
                   }
