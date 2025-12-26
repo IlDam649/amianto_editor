@@ -844,10 +844,21 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.scale(editorState.zoom, editorState.zoom);
 
       // Draw current frame at original size, centered in game viewport space
-      if (frame && frame.img) {
-        const dx = (gameViewport.width - frame.img.width) / 2;
-        const dy = (gameViewport.height - frame.img.height) / 2;
-        ctx.drawImage(frame.img, Math.round(dx), Math.round(dy));
+      // Gestisce diversi formati: { img: Image } oppure Image direttamente
+      let frameImg = null;
+      if (frame) {
+        if (frame.img) {
+          // Formato nuovo: oggetto con proprietà img
+          frameImg = frame.img;
+        } else if (frame.src) {
+          // Formato salvato: oggetto Image direttamente
+          frameImg = frame;
+        }
+      }
+      if (frameImg) {
+        const dx = (gameViewport.width - frameImg.width) / 2;
+        const dy = (gameViewport.height - frameImg.height) / 2;
+        ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
       }
 
       ctx.restore();
@@ -4182,14 +4193,19 @@ window.selectRoom = function(roomId) {
     }
 
     const dirData = charData.directions[currentDirection];
+    const totalFrames = dirData.frames.length;
     characterPreviewIndex = 0;
     const interval = Math.max(1, Math.round(1000 / (dirData.fps || 8)));
     if (characterPreviewTimer) clearInterval(characterPreviewTimer);
     characterPreviewTimer = setInterval(() => {
       characterPreviewIndex++;
+      // Loop dell'animazione: riporta l'indice a 0 quando raggiunge la fine
+      if (characterPreviewIndex >= totalFrames) {
+        characterPreviewIndex = 0;
+      }
       redraw();
     }, interval);
-    showNotification(`Preview started for ${who} (${currentDirection}) @ ${dirData.fps} FPS`, 'info');
+    showNotification(`Preview started for ${who} (${currentDirection}) @ ${dirData.fps} FPS (looping)`, 'info');
   };
 
   window.stopCharacterPreview = function() {
@@ -4346,7 +4362,23 @@ window.selectRoom = function(roomId) {
       frameItem.dataset.frameIndex = index;
       
       const img = document.createElement('img');
-      img.src = frameData.img.src;
+      // Gestisce diversi formati di frameData:
+      // 1. Oggetto con proprietà img: { img: Image, name: string, ... }
+      // 2. Oggetto Image direttamente: Image
+      // 3. Stringa URL: string
+      if (frameData && typeof frameData === 'object' && frameData.img) {
+        // Formato nuovo: oggetto con proprietà img
+        img.src = frameData.img.src || frameData.img;
+      } else if (frameData && typeof frameData === 'object' && frameData.src) {
+        // Formato salvato: oggetto Image direttamente
+        img.src = frameData.src;
+      } else if (typeof frameData === 'string') {
+        // Formato stringa URL
+        img.src = frameData;
+      } else {
+        console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
+        return; // Salta questo frame se non è valido
+      }
       img.alt = `Frame ${index + 1}`;
       
       const frameNumber = document.createElement('div');
@@ -4391,9 +4423,18 @@ window.selectRoom = function(roomId) {
       // Elimina l'asset da Supabase se presente
       if (frameToDelete) {
         try {
-          // Se il frame è un'immagine, elimina l'asset
-          if (frameToDelete.img) {
-            await deleteAssetFromImage(frameToDelete.img);
+          // Gestisce diversi formati: { img: Image } oppure Image direttamente
+          let frameImage = null;
+          if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.img) {
+            // Formato nuovo: oggetto con proprietà img
+            frameImage = frameToDelete.img;
+          } else if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.src) {
+            // Formato salvato: oggetto Image direttamente
+            frameImage = frameToDelete;
+          }
+          
+          if (frameImage) {
+            await deleteAssetFromImage(frameImage);
           } else if (frameToDelete && typeof frameToDelete === 'string' && frameToDelete.startsWith('asset:')) {
             // Se è un assetId, cerca l'immagine associata
             for (const [img, assetInfo] of imageAssetMap.entries()) {
@@ -4410,7 +4451,12 @@ window.selectRoom = function(roomId) {
       }
       
       charData.directions[currentDirection].frames.splice(frameIndex, 1);
+      
+      // Aggiorna i thumbnails e il canvas dopo l'eliminazione
       updateDirectionInfo();
+      refreshFramesPreview();
+      redraw();
+      
       showNotification(`Frame ${frameIndex + 1} deleted`, 'info');
     }
   }
