@@ -859,6 +859,33 @@ document.addEventListener("DOMContentLoaded", () => {
         const dx = (gameViewport.width - frameImg.width) / 2;
         const dy = (gameViewport.height - frameImg.height) / 2;
         ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
+        
+        // Mostra informazioni sull'animazione (opzionale, per debug)
+        if (characterPreviewTimer) {
+          ctx.save();
+          ctx.resetTransform(); // Reset per testo senza zoom/pan
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(10, 10, 300, 60);
+          ctx.fillStyle = '#39ff14';
+          ctx.font = '12px monospace';
+          const dirData = charData.directions[currentDirection];
+          const currentFrameNum = (characterPreviewIndex % dirData.frames.length) + 1;
+          ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 28);
+          ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 45);
+          ctx.fillText(`Direction: ${currentDirection}`, 15, 62);
+          ctx.restore();
+        }
+      } else if (charData && charData.directions[currentDirection] && charData.directions[currentDirection].frames.length === 0) {
+        // Mostra messaggio se non ci sono frame
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('No frames loaded for this direction', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
       }
 
       ctx.restore();
@@ -4192,20 +4219,49 @@ window.selectRoom = function(roomId) {
       return;
     }
 
+    // Ferma la preview precedente se attiva
+    if (characterPreviewTimer) {
+      clearInterval(characterPreviewTimer);
+      characterPreviewTimer = null;
+    }
+
     const dirData = charData.directions[currentDirection];
     const totalFrames = dirData.frames.length;
+    const fps = Number(dirData.fps) || 8;
+    
+    // Calcola l'intervallo in millisecondi con maggiore precisione
+    // FPS = frames per secondo, quindi intervallo = 1000ms / fps
+    const interval = Math.max(1, Math.round(1000 / fps));
+    
+    // Reset dell'indice all'inizio
     characterPreviewIndex = 0;
-    const interval = Math.max(1, Math.round(1000 / (dirData.fps || 8)));
-    if (characterPreviewTimer) clearInterval(characterPreviewTimer);
+    
+    // Ridisegna immediatamente il primo frame
+    redraw();
+    
+    // Avvia il timer per l'animazione
     characterPreviewTimer = setInterval(() => {
+      // Incrementa l'indice
       characterPreviewIndex++;
-      // Loop dell'animazione: riporta l'indice a 0 quando raggiunge la fine
+      
+      // Loop: quando raggiunge il numero totale di frame, riparte da 0
       if (characterPreviewIndex >= totalFrames) {
         characterPreviewIndex = 0;
       }
+      
+      // Verifica che ci siano ancora frame (potrebbero essere stati eliminati)
+      const currentCharData = characterFrames.get(who);
+      if (!currentCharData || !currentCharData.directions[currentDirection] || 
+          !currentCharData.directions[currentDirection].frames.length) {
+        stopCharacterPreview();
+        return;
+      }
+      
+      // Ridisegna il frame corrente
       redraw();
     }, interval);
-    showNotification(`Preview started for ${who} (${currentDirection}) @ ${dirData.fps} FPS (looping)`, 'info');
+    
+    showNotification(`Preview started: ${who} (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
   };
 
   window.stopCharacterPreview = function() {
@@ -4222,6 +4278,9 @@ window.selectRoom = function(roomId) {
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     if (confirm('Clear all animation frames for this character?')) {
+      // Ferma la preview se è attiva
+      stopCharacterPreview();
+      
       // Elimina tutti gli asset dei frame da Supabase
       const charData = characterFrames.get(who);
       if (charData && charData.directions) {
@@ -4229,9 +4288,18 @@ window.selectRoom = function(roomId) {
           for (const [dir, dirData] of Object.entries(charData.directions)) {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               for (const frame of dirData.frames) {
-                // Se il frame è un'immagine, elimina l'asset
-                if (frame && frame.img) {
-                  await deleteAssetFromImage(frame.img);
+                // Gestisce diversi formati: { img: Image } oppure Image direttamente
+                let frameImage = null;
+                if (frame && typeof frame === 'object' && frame.img) {
+                  // Formato nuovo: oggetto con proprietà img
+                  frameImage = frame.img;
+                } else if (frame && typeof frame === 'object' && frame.src) {
+                  // Formato salvato: oggetto Image direttamente
+                  frameImage = frame;
+                }
+                
+                if (frameImage) {
+                  await deleteAssetFromImage(frameImage);
                 } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
                   // Se è un assetId, cerca l'immagine associata
                   for (const [img, assetInfo] of imageAssetMap.entries()) {
@@ -4250,7 +4318,28 @@ window.selectRoom = function(roomId) {
         }
       }
       
-      characterFrames.delete(who);
+      // Pulisce tutti i frame per tutte le direzioni, ma mantiene il character
+      if (charData && charData.directions) {
+        for (const [dir, dirData] of Object.entries(charData.directions)) {
+          if (dirData.frames) {
+            dirData.frames = [];
+          }
+        }
+        // Mantiene il character con direzioni vuote
+        characterFrames.set(who, charData);
+      } else {
+        // Se non esiste charData, crea uno vuoto
+        characterFrames.set(who, { directions: {}, currentFrame: 0 });
+      }
+      
+      // Reset dell'indice della preview
+      characterPreviewIndex = 0;
+      
+      // Aggiorna thumbnails, canvas e informazioni
+      updateDirectionInfo();
+      refreshFramesPreview();
+      redraw();
+      
       showNotification('Frames cleared for ' + who, 'success');
     }
   };
@@ -9831,9 +9920,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       directionsList.forEach(dir => {
         const d = charData && charData.directions ? charData.directions[dir] : null;
         if (d) {
+          // Gestisce entrambi i formati:
+          // 1. Oggetto con proprietà img: { img: Image, name: string, ... }
+          // 2. Oggetto Image direttamente (quando caricato da progetto salvato)
+          const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
+            if (!fr) return null;
+            // Se è un oggetto con proprietà img
+            if (fr.img && typeof fr.img === 'object' && fr.img.src) {
+              return serializeImage(fr.img);
+            }
+            // Se è direttamente un Image (ha src)
+            if (typeof fr === 'object' && fr.src) {
+              return serializeImage(fr);
+            }
+            // Se è già una stringa (dataURL o assetId)
+            if (typeof fr === 'string') {
+              return fr;
+            }
+            return null;
+          }).filter(Boolean) : [];
+          
           out.directions[dir] = {
             fps: Number(d.fps) || 8,
-            frames: Array.isArray(d.frames) ? d.frames.map(fr => (fr && fr.img) ? serializeImage(fr.img) : null).filter(Boolean) : []
+            frames: frames
           };
         }
       });
@@ -12592,8 +12701,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Characters frames (Map)
       try {
         characterFrames.clear();
+        // Pulisce anche la lista DOM dei character
+        const charactersList = document.getElementById('characters-list');
+        if (charactersList) {
+          charactersList.innerHTML = '';
+        }
+        
         if (Array.isArray(projectObj.characters)) {
           for (const ch of projectObj.characters) {
+            const characterName = ch.name || ch.id || uid('char');
             const directions = {};
             if (ch && ch.directions) {
               for (const [dir, data] of Object.entries(ch.directions)) {
@@ -12606,7 +12722,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                       // Se è un assetId, registra nella mappa con subfolder
                       if (f && f.startsWith('asset:')) {
                         const assetId = f.replace('asset:', '');
-                        const characterName = ch.name || ch.id;
                         const characterSubfolder = `characters/${characterName}`;
                         imageAssetMap.set(img, { assetId, type: 'character', projectId, subfolder: characterSubfolder });
                       }
@@ -12616,12 +12731,40 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 directions[dir] = { fps: Number(data.fps) || 8, frames: frames };
               }
             }
-            characterFrames.set(ch.name || uid('char'), { directions, currentFrame: 0 });
+            characterFrames.set(characterName, { directions, currentFrame: 0 });
+            
+            // Crea l'elemento DOM nella lista character (come fa addCharacter)
+            if (charactersList) {
+              const characterElement = document.createElement('div');
+              characterElement.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+              
+              // Conta i frame totali per questo character
+              let totalFrames = 0;
+              if (directions && Object.keys(directions).length > 0) {
+                totalFrames = Object.values(directions).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
+              }
+              
+              characterElement.innerHTML = `
+                <div>
+                  <strong>${characterName}</strong>
+                  <br><small>${totalFrames} frame${totalFrames !== 1 ? 's' : ''} total</small>
+                  <span class="badge bg-success ms-2">Active</span>
+                </div>
+                <div>
+                  <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editCharacter(this)">✏️</button>
+                  <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs" onclick="editCharacterDialogs(this)">💬</button>
+                  <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
+                </div>
+              `;
+              charactersList.appendChild(characterElement);
+            }
           }
         }
         refreshCharacterSelector();
         refreshStartingPlayerUI();
-      } catch(_) {}
+      } catch(error) {
+        console.error('[Load] Errore caricamento character:', error);
+      }
 
       // Inventory UI (lista DOM)
       try {
