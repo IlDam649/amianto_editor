@@ -507,6 +507,15 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedHotspotVertexIndex = -1;
   let selectedHotspotVertexIndex = -1;
 
+  // Character scaling system
+  let scalingForegroundY = null; // Y coordinate for foreground (first plane) - max scale - must be BELOW background
+  let scalingBackgroundY = null; // Y coordinate for background (second plane) - min scale - must be ABOVE foreground
+  let isDraggingScalingLine = false;
+  let draggedScalingLineType = null; // 'foreground' or 'background'
+  let showScalingLines = true;
+  let scalingMinScale = 0.5;
+  let scalingMaxScale = 1.5;
+
   // Scene object drag & drop state
   let isDraggingObject = false;
   let draggedObject = null;
@@ -544,7 +553,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
@@ -552,14 +561,38 @@ document.addEventListener("DOMContentLoaded", () => {
     redraw();
   }
 
-  function bindRoomRefs() {
-    const r = rooms.get(currentRoomId);
-    if (!r) {
-      console.warn(`[bindRoomRefs] Room ${currentRoomId} non trovata`);
-      return;
+  // ===== Character scaling controls & UI =====
+  // Define these functions early so they're available when bindRoomRefs is called
+  function updateScalingUI() {
+    try {
+      const minInput = document.getElementById('scaling-min-scale');
+      const maxInput = document.getElementById('scaling-max-scale');
+      if (minInput) minInput.value = scalingMinScale;
+      if (maxInput) maxInput.value = scalingMaxScale;
+    } catch (error) {
+      // Silently fail if elements don't exist yet (e.g., during initial load)
+      console.debug('[Scaling] UI elements not available yet:', error);
     }
-    
-    background = r.background;
+  }
+
+  function bindRoomRefs() {
+    try {
+      // Safety check: ensure rooms Map is initialized
+      if (!rooms || typeof rooms.get !== 'function') {
+        console.debug('[bindRoomRefs] Rooms not initialized yet');
+        return;
+      }
+      if (!currentRoomId) {
+        console.debug('[bindRoomRefs] No current room selected');
+        return;
+      }
+      const r = rooms.get(currentRoomId);
+      if (!r) {
+        console.warn(`[bindRoomRefs] Room ${currentRoomId} non trovata`);
+        return;
+      }
+      
+      background = r.background;
     
     // IMPORTANTE: Non sovrascrivere foregrounds se sono già caricati e la room ha foregrounds
     // Questo previene la perdita di foreground durante il reload
@@ -585,6 +618,39 @@ document.addEventListener("DOMContentLoaded", () => {
     // auto select first hotspot if none or if previous selection non valido
     if (!activeHotspotId || !hotspots.some(h => h.id === activeHotspotId)) {
       activeHotspotId = hotspots.length > 0 ? hotspots[0].id : null;
+    }
+    // Load character scaling data
+    try {
+      scalingForegroundY = (typeof r.scalingForegroundY === 'number') ? r.scalingForegroundY : null;
+      scalingBackgroundY = (typeof r.scalingBackgroundY === 'number') ? r.scalingBackgroundY : null;
+      scalingMinScale = (typeof r.scalingMinScale === 'number') ? r.scalingMinScale : 0.5;
+      scalingMaxScale = (typeof r.scalingMaxScale === 'number') ? r.scalingMaxScale : 1.5;
+      // Ensure constraints: foreground must be below background
+      if (scalingBackgroundY !== null && scalingForegroundY !== null && scalingForegroundY <= scalingBackgroundY) {
+        // Fix invalid state: separate them
+        const mid = Math.round((scalingBackgroundY + scalingForegroundY) / 2);
+        scalingBackgroundY = mid - 1;
+        scalingForegroundY = mid + 1;
+        r.scalingBackgroundY = scalingBackgroundY;
+        r.scalingForegroundY = scalingForegroundY;
+      }
+      // Update UI (safely, may not exist during initial load or before login)
+      if (typeof updateScalingUI === 'function') {
+        try {
+          updateScalingUI();
+        } catch (uiError) {
+          // Silently fail if UI elements don't exist yet
+          console.debug('[Scaling] UI update skipped (elements not available)');
+        }
+      }
+    } catch (error) {
+      // Silently fail if there's any error loading scaling data
+      console.debug('[Scaling] Error loading scaling data (non-critical):', error);
+    }
+    } catch (bindError) {
+      // Catch any unexpected errors in bindRoomRefs to prevent blocking execution
+      console.error('[bindRoomRefs] Unexpected error (non-critical):', bindError);
+      // Don't throw - allow execution to continue
     }
   }
 
@@ -1048,6 +1114,52 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.restore();
     }
 
+    // Character scaling lines overlay
+    if (showScalingLines) {
+      ctx.save();
+      // Draw background line (second plane - min scale) - red/orange color - UPPER line
+      if (scalingBackgroundY !== null) {
+        ctx.strokeStyle = 'rgba(255, 100, 0, 1.0)';
+        ctx.lineWidth = 4 / editorState.zoom;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, scalingBackgroundY);
+        ctx.lineTo(gameViewport.width, scalingBackgroundY);
+        ctx.stroke();
+        // Draw label with background
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(5, scalingBackgroundY - 22, 280, 18);
+        ctx.fillStyle = 'rgba(255, 100, 0, 1.0)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Background (Min: ' + scalingMinScale + ') - Linea Superiore', 10, scalingBackgroundY - 13);
+        ctx.restore();
+      }
+      // Draw foreground line (first plane - max scale) - blue/cyan color - LOWER line
+      if (scalingForegroundY !== null) {
+        ctx.strokeStyle = 'rgba(0, 200, 255, 1.0)';
+        ctx.lineWidth = 4 / editorState.zoom;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, scalingForegroundY);
+        ctx.lineTo(gameViewport.width, scalingForegroundY);
+        ctx.stroke();
+        // Draw label with background
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(5, scalingForegroundY + 4, 280, 18);
+        ctx.fillStyle = 'rgba(0, 200, 255, 1.0)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Foreground (Max: ' + scalingMaxScale + ') - Linea Inferiore', 10, scalingForegroundY + 13);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
     // Draw green rectangle representing the current viewport resolution
     // This rectangle is drawn in the same transformed context as the background image
     // so it will always align perfectly with the background (both at position 0,0 with viewport dimensions)
@@ -1172,6 +1284,20 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
         }
+        // Check for scaling line drag (only in rooms tab, before scene objects)
+        // Reuse activeTab already declared above
+        if (activeTab === 'rooms' && showScalingLines && !isDrawingWalkable && !isDrawingHotspot) {
+          const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+          const lineType = findScalingLineNear(x, y);
+          if (lineType) {
+            e.preventDefault();
+            isDraggingScalingLine = true;
+            draggedScalingLineType = lineType;
+            canvas.style.cursor = 'ns-resize';
+            redraw();
+            return; // Exit early to prevent other handlers
+          }
+        }
         // Check if clicking on a scene object
         const worldPos = screenToWorld(e.clientX, e.clientY);
         const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
@@ -1201,8 +1327,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // Check for contextual cursor changes
       checkContextualCursor(e);
       
-      // Check for hotspot vertex editing cursor changes
-      updateHotspotCursor(e);
+      // Check for scaling line cursor changes (before hotspot to have priority)
+      const scalingCursorSet = updateScalingCursor(e);
+      
+      // Check for hotspot vertex editing cursor changes (only if scaling didn't set cursor)
+      if (!scalingCursorSet) {
+        updateHotspotCursor(e);
+      }
       
       if (editorState.isPanning) {
         e.preventDefault();
@@ -1215,6 +1346,36 @@ document.addEventListener("DOMContentLoaded", () => {
         editorState.lastPanX = e.clientX;
         editorState.lastPanY = e.clientY;
         
+        redraw();
+      } else if (isDraggingScalingLine && draggedScalingLineType) {
+        // Handle scaling line drag
+        e.preventDefault();
+        const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+        // Clamp Y to viewport bounds
+        const clampedY = Math.max(0, Math.min(gameViewport.height, y));
+        
+        if (draggedScalingLineType === 'background') {
+          // Background line (upper line) - must stay above foreground
+          scalingBackgroundY = clampedY;
+          // Ensure background is above foreground (background Y < foreground Y)
+          if (scalingForegroundY !== null && scalingBackgroundY >= scalingForegroundY) {
+            scalingBackgroundY = scalingForegroundY - 1;
+          }
+        } else if (draggedScalingLineType === 'foreground') {
+          // Foreground line (lower line) - must stay below background
+          scalingForegroundY = clampedY;
+          // Ensure foreground is below background (foreground Y > background Y)
+          if (scalingBackgroundY !== null && scalingForegroundY <= scalingBackgroundY) {
+            scalingForegroundY = scalingBackgroundY + 1;
+          }
+        }
+        // Save to room
+        const r = rooms.get(currentRoomId);
+        if (r) {
+          r.scalingForegroundY = scalingForegroundY;
+          r.scalingBackgroundY = scalingBackgroundY;
+        }
+        canvas.style.cursor = 'ns-resize';
         redraw();
       } else if (isDraggingObject && draggedObject) {
         // Lock scene objects if a hotspot is selected
@@ -1319,6 +1480,32 @@ document.addEventListener("DOMContentLoaded", () => {
       if (editorState.isPanning) {
         editorState.isPanning = false;
         canvas.style.cursor = 'default';
+      } else if (isDraggingScalingLine) {
+        // Round final coordinates when drag ends
+        if (draggedScalingLineType === 'foreground' && scalingForegroundY !== null) {
+          scalingForegroundY = Math.round(scalingForegroundY);
+        } else if (draggedScalingLineType === 'background' && scalingBackgroundY !== null) {
+          scalingBackgroundY = Math.round(scalingBackgroundY);
+        }
+        // Ensure constraints are still valid after rounding
+        if (scalingBackgroundY !== null && scalingForegroundY !== null) {
+          if (scalingBackgroundY >= scalingForegroundY) {
+            // If they're too close, separate them
+            const mid = Math.round((scalingBackgroundY + scalingForegroundY) / 2);
+            scalingBackgroundY = mid - 1;
+            scalingForegroundY = mid + 1;
+          }
+        }
+        // Save to room
+        const r = rooms.get(currentRoomId);
+        if (r) {
+          r.scalingForegroundY = scalingForegroundY;
+          r.scalingBackgroundY = scalingBackgroundY;
+        }
+        isDraggingScalingLine = false;
+        draggedScalingLineType = null;
+        canvas.style.cursor = 'default';
+        redraw();
       } else if (isDraggingObject) {
         isDraggingObject = false;
         draggedObject = null;
@@ -1446,6 +1633,17 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
+  // ===== Character scaling line interactions =====
+  function findScalingLineNear(x, y, tolerance = 10) {
+    if (scalingBackgroundY !== null && Math.abs(y - scalingBackgroundY) <= tolerance) {
+      return 'background';
+    }
+    if (scalingForegroundY !== null && Math.abs(y - scalingForegroundY) <= tolerance) {
+      return 'foreground';
+    }
+    return null;
+  }
+
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     if (editorState.isPanning) return;
@@ -1516,6 +1714,78 @@ document.addEventListener("DOMContentLoaded", () => {
   window.finishWalkableDrawing = function() { isDrawingWalkable = false; redraw(); };
   window.clearWalkableArea = function() { walkableArea = []; redraw(); };
   window.toggleWalkableVisibility = function() { showWalkable = !showWalkable; redraw(); };
+
+  // ===== Character scaling controls & UI =====
+  // updateScalingUI is defined earlier, before bindRoomRefs
+
+  window.updateScalingValues = function() {
+    const minInput = document.getElementById('scaling-min-scale');
+    const maxInput = document.getElementById('scaling-max-scale');
+    if (minInput) {
+      const val = parseFloat(minInput.value);
+      if (!isNaN(val) && val >= 0.1 && val <= 2.0) {
+        scalingMinScale = val;
+      }
+    }
+    if (maxInput) {
+      const val = parseFloat(maxInput.value);
+      if (!isNaN(val) && val >= 0.1 && val <= 2.0) {
+        scalingMaxScale = val;
+      }
+    }
+    // Save to room
+    const r = rooms.get(currentRoomId);
+    if (r) {
+      r.scalingMinScale = scalingMinScale;
+      r.scalingMaxScale = scalingMaxScale;
+    }
+    redraw();
+  };
+
+  window.toggleScalingVisibility = function() {
+    try {
+      showScalingLines = !showScalingLines;
+      if (typeof redraw === 'function') {
+        redraw();
+      }
+    } catch (error) {
+      console.error('[Scaling] Error toggling visibility:', error);
+    }
+  };
+
+  window.initializeScalingLines = function() {
+    try {
+      // Initialize lines with default positions
+      // Background (upper line) at 25% of viewport height
+      // Foreground (lower line) at 75% of viewport height
+      // Foreground must be BELOW background (foreground Y > background Y)
+      if (typeof gameViewport === 'undefined' || !gameViewport) {
+        console.error('[Scaling] gameViewport not available');
+        return;
+      }
+      scalingBackgroundY = Math.round(gameViewport.height * 0.25);
+      scalingForegroundY = Math.round(gameViewport.height * 0.75);
+      // Ensure foreground is below background
+      if (scalingForegroundY <= scalingBackgroundY) {
+        scalingBackgroundY = Math.round(gameViewport.height * 0.25);
+        scalingForegroundY = Math.round(gameViewport.height * 0.75);
+      }
+      // Save to room
+      const r = rooms.get(currentRoomId);
+      if (r) {
+        r.scalingForegroundY = scalingForegroundY;
+        r.scalingBackgroundY = scalingBackgroundY;
+      }
+      if (typeof redraw === 'function') {
+        redraw();
+      }
+      if (typeof showNotification === 'function') {
+        showNotification('Scaling lines initialized', 'success');
+      }
+    } catch (error) {
+      console.error('[Scaling] Error initializing lines:', error);
+    }
+  };
 
   // ===== Hotspots controls & UI =====
   const hotspotsListContainer = document.getElementById('hotspots-list');
@@ -1936,6 +2206,23 @@ document.addEventListener("DOMContentLoaded", () => {
     canvas.style.cursor = 'default';
   }
 
+  function updateScalingCursor(e) {
+    // Only update cursor if we're in the rooms tab and not currently dragging
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    if (activeTab !== 'rooms' || isDraggingScalingLine || editorState.isPanning || !showScalingLines) {
+      return false; // Return false to indicate cursor was not set
+    }
+    
+    const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+    const lineType = findScalingLineNear(x, y);
+    if (lineType) {
+      canvas.style.cursor = 'ns-resize';
+      return true; // Return true to indicate cursor was set
+    }
+    
+    return false; // Return false to indicate cursor was not set
+  }
+
   // Keyboard shortcuts for hotspot vertex editing
   document.addEventListener('keydown', (e) => {
     // Only handle if we're in the rooms tab and have an active hotspot
@@ -2297,7 +2584,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
     refreshForegroundListUI();
@@ -8359,14 +8646,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Show dashboard
   async function showDashboard() {
-    document.getElementById('loginPage').style.display = 'none';
-    document.getElementById('mainDashboard').style.display = 'block';
-    document.getElementById('loginHeader').style.display = 'none';
-    document.getElementById('dashboardHeader').style.display = 'block';
+    try {
+      console.log('[showDashboard] Starting...');
+      const loginPage = document.getElementById('loginPage');
+      const mainDashboard = document.getElementById('mainDashboard');
+      const loginHeader = document.getElementById('loginHeader');
+      const dashboardHeader = document.getElementById('dashboardHeader');
+      
+      if (!loginPage || !mainDashboard || !loginHeader || !dashboardHeader) {
+        console.error('[showDashboard] Required elements not found');
+        return;
+      }
+      
+      loginPage.style.display = 'none';
+      mainDashboard.style.display = 'block';
+      loginHeader.style.display = 'none';
+      dashboardHeader.style.display = 'block';
 
-    // Update user info in header
-    document.getElementById('currentUserName').textContent = currentUser.username;
-    document.getElementById('userDisplayName').textContent = currentUser.username;
+      // Update user info in header
+      const currentUserNameEl = document.getElementById('currentUserName');
+      const userDisplayNameEl = document.getElementById('userDisplayName');
+      if (currentUserNameEl && currentUser) {
+        currentUserNameEl.textContent = currentUser.username;
+      }
+      if (userDisplayNameEl && currentUser) {
+        userDisplayNameEl.textContent = currentUser.username;
+      }
+      console.log('[showDashboard] UI updated');
 
     // Load user's projects
     loadUserProjects();
@@ -8399,6 +8705,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       }
     }
+      console.log('[showDashboard] Completed successfully');
+    } catch (error) {
+      console.error('[showDashboard] Error:', error);
+      console.error('[showDashboard] Error stack:', error.stack);
+      throw error; // Re-throw per essere gestito dal chiamante
+    }
   }
 
   // Setup login form
@@ -8413,15 +8725,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           showLoginError('Please enter both email and password');
           return;
         }
-        fbLogin(email, password).then((cred) => {
+        fbLogin(email, password).then(async (cred) => {
           const user = cred && cred.user;
           if (user) {
+            console.log('[Login] User authenticated:', user.email);
             const mapped = {
               username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
               email: user.email || '',
               uid: user.uid
             };
-            loginUser(mapped, document.getElementById('rememberMe').checked);
+            console.log('[Login] Calling loginUser with:', mapped);
+            try {
+              await loginUser(mapped, document.getElementById('rememberMe').checked);
+              console.log('[Login] loginUser completed successfully');
+            } catch (loginError) {
+              console.error('[Login] Error in loginUser:', loginError);
+              showLoginError('Error during login process. Please try again.');
+            }
+          } else {
+            console.error('[Login] No user in credentials');
+            showLoginError('Invalid email or password');
           }
         }).catch((err) => {
           console.error('[Login] Firebase error:', err && err.code, err && err.message);
@@ -8821,7 +9144,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Login user
   async function loginUser(user, rememberMe = false) {
+    console.log('[loginUser] Starting with user:', user);
+    if (!user || !user.uid) {
+      console.error('[loginUser] Invalid user object:', user);
+      throw new Error('Invalid user object');
+    }
     currentUser = user;
+    console.log('[loginUser] currentUser set to:', currentUser);
     localStorage.setItem('amiantoCurrentUser', user.username);
 
     if (rememberMe) {
@@ -8889,15 +9218,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
-    hideLoadingOverlay();
-    showDashboard();
-    showNotification(`Welcome back, ${user.username}!`, 'success');
-
-    // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
-    // L'utente deve selezionare o creare un progetto per continuare
-    // skipSync = true perché abbiamo già sincronizzato i progetti sopra
-    // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
-    await showProjectSelectionModal(false, true);
+    try {
+      hideLoadingOverlay();
+      console.log('[Login] Showing dashboard...');
+      await showDashboard();
+      console.log('[Login] Dashboard shown');
+      
+      if (typeof showNotification === 'function') {
+        showNotification(`Welcome back, ${user.username}!`, 'success');
+      }
+      
+      // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
+      // L'utente deve selezionare o creare un progetto per continuare
+      // skipSync = true perché abbiamo già sincronizzato i progetti sopra
+      // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
+      await showProjectSelectionModal(false, true);
+      console.log('[Login] Project selection modal shown');
+    } catch (dashboardError) {
+      console.error('[Login] Error showing dashboard:', dashboardError);
+      hideLoadingOverlay();
+      if (typeof showLoginError === 'function') {
+        showLoginError('Error showing dashboard. Please refresh the page.');
+      }
+    }
   }
 
   // Show login error
@@ -9204,7 +9547,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
           
           return hotspotObj;
-        }) : []
+        }) : [],
+        // Character scaling data
+        scalingForegroundY: (typeof r.scalingForegroundY === 'number') ? Number(r.scalingForegroundY) : null,
+        scalingBackgroundY: (typeof r.scalingBackgroundY === 'number') ? Number(r.scalingBackgroundY) : null,
+        scalingMinScale: (typeof r.scalingMinScale === 'number') ? Number(r.scalingMinScale) : 0.5,
+        scalingMaxScale: (typeof r.scalingMaxScale === 'number') ? Number(r.scalingMaxScale) : 1.5
       });
       
       // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
@@ -11808,7 +12156,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
               
               return hotspotObj;
-            }) : []
+            }) : [],
+            // Character scaling data
+            scalingForegroundY: (typeof r.scalingForegroundY === 'number') ? Number(r.scalingForegroundY) : null,
+            scalingBackgroundY: (typeof r.scalingBackgroundY === 'number') ? Number(r.scalingBackgroundY) : null,
+            scalingMinScale: (typeof r.scalingMinScale === 'number') ? Number(r.scalingMinScale) : 0.5,
+            scalingMaxScale: (typeof r.scalingMaxScale === 'number') ? Number(r.scalingMaxScale) : 1.5
           };
           rooms.set(roomId, roomVal);
           // carica immagini async (background, foregrounds, scene objects)
@@ -11928,7 +12281,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } else {
         // assicura almeno una stanza
         const rid = uid('room');
-        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [] });
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
       // Seleziona prima stanza e sincronizza riferimenti
       const firstRoom = rooms.keys().next().value;

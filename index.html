@@ -449,6 +449,28 @@
         </div>
         <div id="hotspots-list" class="list-group"></div>
       </div>
+
+      <!-- Character Scaling Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Character Scaling</h5>
+        <div class="alert alert-info" role="alert">
+          <small>
+            <strong>💡 Tip:</strong> Disegna due linee orizzontali sul canvas per definire i piani di scaling. Trascina le linee per spostarle. La linea superiore (background) e quella inferiore (foreground) determinano la scala del personaggio in base alla posizione Y.
+          </small>
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-light">Min Scale (background - linea superiore):</label>
+          <input type="number" class="form-control form-control-sm" id="scaling-min-scale" value="0.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-light">Max Scale (foreground - linea inferiore):</label>
+          <input type="number" class="form-control form-control-sm" id="scaling-max-scale" value="1.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
+        </div>
+        <div class="btn-group w-100 mb-2" role="group">
+          <button class="btn btn-outline-success btn-sm" onclick="initializeScalingLines()">Initialize Lines</button>
+          <button class="btn btn-outline-warning btn-sm" onclick="toggleScalingVisibility()">Show/Hide Lines</button>
+        </div>
+      </div>
     </div>
 
         <div id="objects" class="section">
