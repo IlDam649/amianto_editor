@@ -2787,12 +2787,15 @@ window.selectRoom = function(roomId) {
           const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
           const roomSubfolder = `rooms/${roomName}`;
           
+          // Genera assetId determinista per il background
+          const bgAssetId = existingAssetId || `bg_${currentRoomId}`;
+          
           // Upload immagine su Firebase Storage
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'background',
-            { assetId: existingAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null, subfolder: roomSubfolder }
+            { assetId: bgAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null, subfolder: roomSubfolder }
           );
           
           // Carica immagine dall'URL
@@ -2928,15 +2931,18 @@ window.selectRoom = function(roomId) {
           const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
           const roomSubfolder = `rooms/${roomName}`;
 
+          // Genera assetId determinista per il foreground
+          const fgAssetId = existingAssetId || (selectedLayer ? `fg_${currentRoomId}_${selectedLayer.id}` : `fg_${currentRoomId}_${uid('fg')}`);
+
           // Upload immagine su Supabase Storage
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'foreground',
             {
-              ...(existingAssetId
-                ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
-                : {}),
+              assetId: fgAssetId,
+              overwriteExisting: !!existingAssetId,
+              fileName: existingFileName,
               subfolder: roomSubfolder
             }
           );
@@ -3032,11 +3038,73 @@ window.selectRoom = function(roomId) {
         const file = e.target.files ? e.target.files[0] : null;
         if (!file) return;
         
-        // TODO: not yet implemented - Upload GUI background to Firebase Storage
-        // Per ora carica localmente come fallback
-        const img = new Image();
-        img.onload = () => { guiBackground = img; saveCurrentGUI(); showNotification('GUI background loaded (not saved to Storage)', 'warning'); redraw(); };
-        img.src = URL.createObjectURL(file);
+        // Verifica autenticazione e progetto
+        if (!currentUser) {
+          showNotification('Please login to upload GUI background', 'warning');
+          input.value = '';
+          return;
+        }
+
+        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProjectName) {
+          showNotification('No project is currently open', 'warning');
+          input.value = '';
+          return;
+        }
+
+        const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        
+        try {
+          showNotification('Uploading GUI background...', 'info');
+          
+          // Genera assetId determinista per il GUI background
+          const guiAssetId = gui ? `gui_${gui.id}_background` : `gui_background_${Date.now()}`;
+          
+          // Verifica se esiste già un assetId per questo GUI background
+          let existingAssetId = null;
+          if (gui && gui.background) {
+            const existingInfo = imageAssetMap.get(gui.background);
+            if (existingInfo && existingInfo.assetId) {
+              existingAssetId = existingInfo.assetId;
+            }
+          }
+          
+          // Upload su storage
+          const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'gui', {
+            assetId: existingAssetId || guiAssetId,
+            overwriteExisting: !!existingAssetId,
+            subfolder: null
+          });
+          
+          // Carica immagine dall'URL
+          const img = await loadImageFromUrl(downloadURL);
+          if (!img) {
+            throw new Error('Failed to load image from URL');
+          }
+          
+          // Registra nella mappa asset
+          imageAssetMap.set(img, { 
+            assetId, 
+            type: 'gui', 
+            projectId, 
+            fileName: fileName || null, 
+            subfolder: null 
+          });
+          
+          // Aggiorna GUI background
+          guiBackground = img;
+          if (gui) gui.background = img;
+          
+          saveCurrentGUI();
+          showNotification('GUI background uploaded', 'success');
+          redraw();
+        } catch (error) {
+          console.error('[Asset] Errore upload GUI background:', error);
+          showNotification(`Failed to upload GUI background: ${error.message}`, 'error');
+        } finally {
+          input.value = '';
+        }
       };
       input.click();
     });
@@ -3303,21 +3371,80 @@ window.selectRoom = function(roomId) {
         const newName = prompt('GUI button name:', btn.name);
         if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
       });
-      btnImage.addEventListener('click', () => {
+      btnImage.addEventListener('click', async () => {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = 'image/*';
-        input.onchange = (e) => {
+        input.onchange = async (e) => {
           const file = e.target.files ? e.target.files[0] : null;
           if (!file) return;
-          const img = new Image();
-          img.onload = () => { 
-            btn.backgroundImage = img; 
+          
+          // Verifica autenticazione e progetto
+          if (!currentUser) {
+            showNotification('Please login to upload button image', 'warning');
+            input.value = '';
+            return;
+          }
+
+          const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+          if (!activeProjectName) {
+            showNotification('No project is currently open', 'warning');
+            input.value = '';
+            return;
+          }
+
+          const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+          
+          try {
+            showNotification('Uploading button image...', 'info');
+            
+            // Genera assetId determinista per il button
+            const buttonAssetId = gui ? `gui_${gui.id}_btn_${btn.id}` : `gui_btn_${btn.id}_${Date.now()}`;
+            
+            // Verifica se esiste già un assetId per questo button
+            let existingAssetId = null;
+            if (btn.backgroundImage) {
+              const existingInfo = imageAssetMap.get(btn.backgroundImage);
+              if (existingInfo && existingInfo.assetId) {
+                existingAssetId = existingInfo.assetId;
+              }
+            }
+            
+            // Upload su storage
+            const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'gui', {
+              assetId: existingAssetId || buttonAssetId,
+              overwriteExisting: !!existingAssetId,
+              subfolder: null
+            });
+            
+            // Carica immagine dall'URL
+            const img = await loadImageFromUrl(downloadURL);
+            if (!img) {
+              throw new Error('Failed to load image from URL');
+            }
+            
+            // Registra nella mappa asset
+            imageAssetMap.set(img, { 
+              assetId, 
+              type: 'gui', 
+              projectId, 
+              fileName: fileName || null, 
+              subfolder: null 
+            });
+            
+            // Aggiorna button background image
+            btn.backgroundImage = img;
+            
             saveCurrentGUI();
-            showNotification(`Background image set for ${btn.name}`, 'success'); 
-            redraw(); 
-          };
-          img.src = URL.createObjectURL(file);
+            showNotification(`Background image uploaded for ${btn.name}`, 'success');
+            redraw();
+          } catch (error) {
+            console.error('[Asset] Errore upload button image:', error);
+            showNotification(`Failed to upload button image: ${error.message}`, 'error');
+          } finally {
+            input.value = '';
+          }
         };
         input.click();
       });
@@ -3602,8 +3729,16 @@ window.selectRoom = function(roomId) {
       const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
       const roomSubfolder = `rooms/${roomName}`;
       
+      // Genera ID per il scene object prima dell'upload
+      const objectId = uid("scene");
+      // Genera assetId determinista per il scene object
+      const objAssetId = `obj_${currentRoomId}_${objectId}`;
+      
       // Upload immagine su Firebase Storage
-      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite', { subfolder: roomSubfolder });
+      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite', { 
+        assetId: objAssetId,
+        subfolder: roomSubfolder 
+      });
       
       // Carica immagine dall'URL
       const img = await loadImageFromUrl(downloadURL);
@@ -3621,7 +3756,7 @@ window.selectRoom = function(roomId) {
       
       // Create scene object data
       const sceneObject = {
-        id: uid("scene"),
+        id: objectId,
         name: objectName,
         img: img,
         x: 100 + Math.random() * 200, // Random position for demo
@@ -3817,14 +3952,17 @@ window.selectRoom = function(roomId) {
           const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
           const roomSubfolder = `rooms/${roomName}`;
 
+          // Genera assetId determinista per il scene object
+          const objAssetId = existingAssetId || `obj_${currentRoomId}_${sceneObject.id}`;
+
           const { assetId, downloadURL, fileName } = await uploadImage(
             file,
             projectId,
             'sprite',
             {
-              ...(existingAssetId
-                ? { assetId: existingAssetId, overwriteExisting: true, fileName: existingFileName }
-                : {}),
+              assetId: objAssetId,
+              overwriteExisting: !!existingAssetId,
+              fileName: existingFileName,
               subfolder: roomSubfolder
             }
           );
@@ -3941,42 +4079,152 @@ window.selectRoom = function(roomId) {
       if (charData && charData.directions) {
         try {
           let deletedCount = 0;
-          // Prima: elimina i frame individuali usando imageAssetMap
+          const characterSubfolder = `characters/${characterName}`;
+          
+          // Prima: elimina i frame individuali
           for (const [dir, dirData] of Object.entries(charData.directions)) {
             if (dirData.frames && Array.isArray(dirData.frames)) {
-              for (const frame of dirData.frames) {
-                // Gestisce diversi formati: { img: Image } oppure Image direttamente
-                let frameImage = null;
+              for (let i = 0; i < dirData.frames.length; i++) {
+                const frame = dirData.frames[i];
+                let deleted = false;
+                
+                // Gestisce diversi formati: { img: Image }, Image direttamente, o assetId stringa
                 if (frame && typeof frame === 'object' && frame.img) {
                   // Formato nuovo: oggetto con proprietà img
-                  frameImage = frame.img;
+                  deleted = await deleteAssetFromImage(frame.img);
                 } else if (frame && typeof frame === 'object' && frame.src) {
                   // Formato salvato: oggetto Image direttamente
-                  frameImage = frame;
+                  deleted = await deleteAssetFromImage(frame);
                 } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
-                  // Se è un assetId stringa, cerca l'immagine associata
+                  // IMPORTANTE: Se è un assetId stringa, elimina direttamente usando l'assetId
                   const assetId = frame.replace('asset:', '');
+                  
+                  // Prova prima a trovare l'immagine in imageAssetMap
+                  let frameImage = null;
                   for (const [img, assetInfo] of imageAssetMap.entries()) {
                     if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
                       frameImage = img;
                       break;
                     }
                   }
+                  
+                  if (frameImage) {
+                    // Se trovato in imageAssetMap, usa deleteAssetFromImage
+                    deleted = await deleteAssetFromImage(frameImage);
+                  } else {
+                    // Se non trovato, elimina direttamente usando l'assetId e il subfolder
+                    // Costruisci il fileName dall'assetId (formato: assetId.png)
+                    const fileName = `${assetId}.png`;
+                    console.log(`[Character] Eliminazione frame assetId diretto: ${assetId} (${characterName}/${dir}/${i})`);
+                    
+                    // PRIMA: controlla se è un asset legacy Firebase Storage
+                    let firebaseStoragePath = null;
+                    let isFirebaseLegacy = false;
+                    if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+                      try {
+                        const userId = window.firebaseAuth.currentUser.uid;
+                        const assetRef = window.firebaseDB
+                          .collection('users')
+                          .doc(userId)
+                          .collection('projects')
+                          .doc(projectId)
+                          .collection('assets')
+                          .doc(assetId);
+                        
+                        const doc = await assetRef.get();
+                        if (doc.exists) {
+                          const data = doc.data();
+                          // Controlla se è un asset legacy Firebase Storage
+                          if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
+                            firebaseStoragePath = data.storagePath;
+                            isFirebaseLegacy = true;
+                            console.log(`[Character] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+                          }
+                        }
+                      } catch (metaErr) {
+                        console.warn(`[Character] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
+                      }
+                    }
+                    
+                    // Elimina da Firebase Storage se è un asset legacy
+                    let firebaseDeleted = true; // Default true se non è un asset legacy
+                    if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
+                      try {
+                        console.log(`[Character] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
+                        const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
+                        await storageRef.delete();
+                        firebaseDeleted = true;
+                        console.log(`[Character] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
+                      } catch (firebaseError) {
+                        console.warn(`[Character] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
+                        // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
+                        firebaseDeleted = false;
+                      }
+                    }
+                    
+                    // POI: elimina da Supabase Storage
+                    if (window.supabaseStorage && window.supabaseStorage.deleteAsset && projectId) {
+                      let userIdOverride = null;
+                      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+                        userIdOverride = window.firebaseAuth.currentUser.uid;
+                      }
+                      
+                      deleted = await window.supabaseStorage.deleteAsset(
+                        projectId, 
+                        'character', 
+                        fileName, 
+                        userIdOverride, 
+                        characterSubfolder
+                      );
+                      
+                      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
+                      if (!deleted && firebaseDeleted && isFirebaseLegacy) {
+                        deleted = true; // Se è stato eliminato da Firebase Storage, considera riuscita
+                      }
+                      
+                      // Elimina anche metadata da Firestore se disponibile
+                      if ((deleted || firebaseDeleted) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+                        try {
+                          const userId = window.firebaseAuth.currentUser.uid;
+                          const assetRef = window.firebaseDB
+                            .collection('users')
+                            .doc(userId)
+                            .collection('projects')
+                            .doc(projectId)
+                            .collection('assets')
+                            .doc(assetId);
+                          await assetRef.delete();
+                          console.log(`[Character] ✅ Metadata eliminato da Firestore per frame: ${assetId}`);
+                        } catch (firestoreError) {
+                          console.warn(`[Character] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
+                        }
+                      }
+                    }
+                  }
                 }
                 
-                if (frameImage) {
-                  const deleted = await deleteAssetFromImage(frameImage);
-                  if (deleted) {
-                    deletedCount++;
-                  }
+                if (deleted) {
+                  deletedCount++;
                 }
               }
             }
           }
-          console.log(`[Character] Eliminati ${deletedCount} asset frame da Supabase per character "${characterName}"`);
+          console.log(`[Character] ✅ Eliminati ${deletedCount} asset frame da Supabase per character "${characterName}"`);
+          
+          // Elimina anche l'intera cartella del character da Supabase (pulizia completa)
+          if (window.supabaseStorage && window.supabaseStorage.deleteCharacterFolder && projectId) {
+            try {
+              const folderDeleted = await window.supabaseStorage.deleteCharacterFolder(projectId, characterName);
+              if (folderDeleted) {
+                console.log(`[Character] ✅ Cartella character eliminata da Supabase: ${characterName}`);
+              }
+            } catch (folderError) {
+              console.warn(`[Character] ⚠️ Errore eliminazione cartella character (non critico):`, folderError);
+            }
+          }
         } catch (error) {
-          console.error('[Asset] Errore eliminazione asset character:', error);
-          // Continua comunque con l'eliminazione della cartella
+          console.error('[Asset] ❌ Errore eliminazione asset character:', error);
+          // Continua comunque con l'eliminazione
         }
       }
       
@@ -4008,10 +4256,29 @@ window.selectRoom = function(roomId) {
         }
       }
       
-      // Nota: L'eliminazione individuale dei frame sopra dovrebbe già aver eliminato 
-      // tutti i file da Supabase Storage tramite deleteAssetFromImage.
-      // Se alcuni frame non erano in imageAssetMap, potrebbero non essere stati caricati su Supabase,
-      // quindi non c'è nulla da eliminare.
+      // Terzo: rimuovi il character da characterFrames per evitare che venga ricreato durante il salvataggio
+      if (characterFrames.has(characterName)) {
+        characterFrames.delete(characterName);
+        console.log(`[Character] Character rimosso da characterFrames: ${characterName}`);
+      }
+      
+      // Quarto: rimuovi anche eventuali frame non salvati associati a questo character
+      if (unsavedCharacterFrames.size > 0) {
+        const framesToRemove = [];
+        for (const frameImg of unsavedCharacterFrames) {
+          const assetInfo = imageAssetMap.get(frameImg);
+          if (assetInfo && assetInfo.type === 'character' && assetInfo.subfolder === `characters/${characterName}`) {
+            framesToRemove.push(frameImg);
+          }
+        }
+        framesToRemove.forEach(img => {
+          unsavedCharacterFrames.delete(img);
+          unsavedCharacterAssetIds.delete(imageAssetMap.get(img)?.assetId);
+        });
+        if (framesToRemove.length > 0) {
+          console.log(`[Character] Rimossi ${framesToRemove.length} frame non salvati associati a ${characterName}`);
+        }
+      }
       
       characterElement.remove();
       
@@ -4028,6 +4295,7 @@ window.selectRoom = function(roomId) {
       }
       
       showNotification('Character deleted!', 'info');
+      console.log(`[Character] ✅ Character "${characterName}" eliminato completamente (frame, cartella, mappe)`);
     }
   };
 
@@ -4236,9 +4504,7 @@ window.selectRoom = function(roomId) {
     try { refreshStartRoomSelector(); } catch(_) {}
   });
 
-  window.uploadCharacterFrames = function(input) {
-    // TODO: not yet implemented - Upload character frames to Firebase Storage
-    // Per ora carica localmente come fallback
+  window.uploadCharacterFrames = async function(input) {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); input.value = ''; return; }
@@ -4247,6 +4513,23 @@ window.selectRoom = function(roomId) {
 
     const dirSel = document.getElementById('direction-selector');
     const direction = dirSel ? dirSel.value : 'south';
+
+    // Verifica autenticazione e progetto
+    if (!currentUser) {
+      showNotification('Please login to upload frames', 'warning');
+      input.value = '';
+      return;
+    }
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open', 'warning');
+      input.value = '';
+      return;
+    }
+
+    const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    const characterSubfolder = `characters/${who}`;
 
     let charData = characterFrames.get(who);
     if (!charData) {
@@ -4343,52 +4626,89 @@ window.selectRoom = function(roomId) {
     });
     console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
     
-    let remaining = sortedFiles.length;
+    // Carica i frame su storage e registra nella mappa
+    showNotification(`Uploading ${sortedFiles.length} frames to storage...`, 'info');
     
-    // Crea un array per mantenere l'ordine corretto anche durante il caricamento asincrono
-    const framePromises = sortedFiles.map((file, index) => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          // Salva il nome originale del file
-          const originalFileName = file.name;
+    try {
+      const framePromises = sortedFiles.map(async (file, index) => {
+        try {
+          // Genera assetId determinista per il frame
+          const frameAssetId = `frame_${who}_${direction}_${index}`;
           
-          // Store frame with original file name e indice per mantenere l'ordine
+          // Carica il frame su storage
+          const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'character', {
+            assetId: frameAssetId,
+            overwriteExisting: false,
+            subfolder: characterSubfolder
+          });
+          
+          // Carica l'immagine dall'URL
+          const img = await loadImageFromUrl(downloadURL);
+          if (!img) {
+            throw new Error('Failed to load image from URL');
+          }
+          
+          // Registra nella mappa asset
+          imageAssetMap.set(img, { 
+            assetId, 
+            type: 'character', 
+            projectId, 
+            fileName: fileName || null, 
+            subfolder: characterSubfolder 
+          });
+          
+          // Crea frameData con riferimento all'immagine (serializzato come assetId)
           const frameData = {
             img: img,
-            name: originalFileName,
-            duration: 1000, // Default duration
-            orderIndex: index // Mantieni l'indice per l'ordinamento
+            name: file.name,
+            orderIndex: index
           };
           
-          resolve({ frameData, index });
-        };
-        img.onerror = () => {
-          console.error(`[Frame] ❌ Errore caricamento frame: ${file.name}`);
-          resolve({ frameData: null, index });
-        };
-        img.src = URL.createObjectURL(file);
-      });
-    });
-    
-    // Attendi che tutti i frame siano caricati e aggiungili nell'ordine corretto
-    Promise.all(framePromises).then(results => {
-      // Ordina i risultati per indice per mantenere l'ordine corretto
-      results.sort((a, b) => a.index - b.index);
-      
-      // Aggiungi i frame nell'ordine corretto
-      results.forEach(({ frameData }) => {
-        if (frameData) {
-          dirData.frames.push(frameData);
+          return { frameData, index, assetId };
+        } catch (error) {
+          console.error(`[Frame] ❌ Errore upload frame ${file.name}:`, error);
+          return { frameData: null, index, error: error.message };
         }
       });
       
-      console.log(`[Frame] ✅ Caricati ${dirData.frames.length} frame nell'ordine corretto per ${who} (${direction})`);
-      showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction}) - not saved to Storage`, 'warning');
-      updateDirectionInfo(); // Update the direction info display
-    });
+      const results = await Promise.all(framePromises);
+      
+      // Ordina per indice e aggiungi i frame nell'ordine corretto
+      results.sort((a, b) => a.index - b.index);
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      results.forEach(({ frameData, index, assetId, error }) => {
+        if (frameData) {
+          dirData.frames.push(frameData);
+          successCount++;
+          console.log(`[Frame] ✅ Frame ${index} caricato: ${assetId}`);
+        } else {
+          errorCount++;
+          console.error(`[Frame] ❌ Frame ${index} fallito: ${error || 'Unknown error'}`);
+        }
+      });
+      
+      // Aggiorna la mappa characterFrames
+      characterFrames.set(who, charData);
+      
+      if (successCount > 0) {
+        showNotification(`✅ ${successCount} frame(s) uploaded and saved to storage`, 'success');
+        updateDirectionInfo();
+        redraw();
+      }
+      
+      if (errorCount > 0) {
+        showNotification(`⚠️ ${errorCount} frame(s) failed to upload`, 'warning');
+      }
+      
+    } catch (error) {
+      console.error('[Frame] ❌ Errore durante upload frame:', error);
+      showNotification('Error uploading frames', 'error');
+    }
     
-    // Reset input to allow same file selection again
+    // Reset input
     input.value = '';
   };
 
@@ -9224,6 +9544,51 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
         for (const frameInfo of framesToDelete) {
           try {
+            // PRIMA: controlla se è un asset legacy Firebase Storage
+            let firebaseStoragePath = null;
+            let isFirebaseLegacy = false;
+            if (frameInfo.assetId && window.firebaseDB) {
+              try {
+                const assetRef = window.firebaseDB
+                  .collection('users')
+                  .doc(userId)
+                  .collection('projects')
+                  .doc(frameInfo.projectId)
+                  .collection('assets')
+                  .doc(frameInfo.assetId);
+                
+                const doc = await assetRef.get();
+                if (doc.exists) {
+                  const data = doc.data();
+                  // Controlla se è un asset legacy Firebase Storage
+                  if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
+                    firebaseStoragePath = data.storagePath;
+                    isFirebaseLegacy = true;
+                    console.log(`[Cleanup] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+                  }
+                }
+              } catch (metaErr) {
+                console.warn(`[Cleanup] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
+              }
+            }
+            
+            // Elimina da Firebase Storage se è un asset legacy
+            let firebaseDeleted = true; // Default true se non è un asset legacy
+            if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
+              try {
+                console.log(`[Cleanup] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
+                const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
+                await storageRef.delete();
+                firebaseDeleted = true;
+                console.log(`[Cleanup] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
+              } catch (firebaseError) {
+                console.warn(`[Cleanup] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
+                // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
+                firebaseDeleted = false;
+              }
+            }
+            
+            // POI: elimina da Supabase Storage
             const deleted = await window.supabaseStorage.deleteAsset(
               frameInfo.projectId,
               frameInfo.type,
@@ -9231,7 +9596,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               userId,
               frameInfo.subfolder
             );
-            if (deleted) {
+            
+            // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
+            if (deleted || (firebaseDeleted && isFirebaseLegacy)) {
               deletedCount++;
             }
           } catch (error) {
@@ -10277,6 +10644,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return `asset:${assetInfo.assetId}`;
     }
     
+    // IMPORTANTE: Se l'immagine è un oggetto Image ma non è nella mappa,
+    // serializzala come dataURL. Verrà poi processata da saveAllAssetsToStorage
+    // che la convertirà in assetId e la caricherà nello storage.
+    // Questo garantisce che TUTTI gli assets vengano serializzati e salvati.
+    if (img && typeof img === 'object' && (img.src || (img.width && img.height))) {
+      // È un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
+      const dataURL = imageToDataURL(img);
+      if (dataURL) {
+        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrà convertita in assetId al salvataggio)`);
+        return dataURL;
+      }
+    }
+    
+    // Se è già una stringa (dataURL o assetId), restituiscila così com'è
+    if (typeof img === 'string') {
+      return img;
+    }
+    
     // Fallback: usa dataURL (per compatibilità con progetti esistenti)
     return imageToDataURL(img);
   }
@@ -10455,23 +10840,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       directionsList.forEach(dir => {
         const d = charData && charData.directions ? charData.directions[dir] : null;
         if (d) {
-          // Gestisce entrambi i formati:
-          // 1. Oggetto con proprietà img: { img: Image, name: string, ... }
-          // 2. Oggetto Image direttamente (quando caricato da progetto salvato)
+          // Serializza i frame esattamente come i background/foreground:
+          // - Se è un oggetto con proprietà img, serializza fr.img (come f.img per foreground)
+          // - Se è direttamente un Image, serializza fr (come r.background)
+          // - Se è già una stringa (dataURL o assetId), restituiscila così com'è
           const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
             if (!fr) return null;
-            // Se è un oggetto con proprietà img
-            if (fr.img && typeof fr.img === 'object' && fr.img.src) {
+            
+            // Se è un oggetto con proprietà img (formato standard quando caricato)
+            if (fr.img && typeof fr.img === 'object') {
+              // Serializza l'immagine esattamente come per i foreground
               return serializeImage(fr.img);
             }
-            // Se è direttamente un Image (ha src)
-            if (typeof fr === 'object' && fr.src) {
+            // Se è direttamente un Image (quando caricato da progetto salvato)
+            else if (typeof fr === 'object' && (fr.src || (fr.width && fr.height))) {
+              // Serializza direttamente come per i background
               return serializeImage(fr);
             }
-            // Se è già una stringa (dataURL o assetId)
-            if (typeof fr === 'string') {
+            // Se è già una stringa (dataURL o assetId), restituiscila così com'è
+            else if (typeof fr === 'string') {
               return fr;
             }
+            
             return null;
           }).filter(Boolean) : [];
           
@@ -10890,13 +11280,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.log('[Firestore] Aggiornamento documento esistente');
       }
 
-      console.log('[Firestore] Tentativo scrittura su Firestore...');
+      console.log('[Firestore] 🔄 Tentativo scrittura su Firestore...');
       
       // Usa set con merge per creare o aggiornare
       await projectRef.set(firestoreData, { merge: true });
 
       console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
+      console.log(`[Firestore] 📊 Dettagli salvataggio:`, {
+        projectId,
+        projectName,
+        dataSize: `${dataSizeMB} MB`,
+        documentExists: documentExists ? 'aggiornato' : 'creato'
+      });
       addDebugMessage(`[Firestore] Progetto salvato: ${projectName}`, 'success');
+      
+      // Aggiorna i counter dopo salvataggio progetto
+      if (typeof updateProjectSizeIndicator === 'function') {
+        updateProjectSizeIndicator();
+      }
+      
       return true;
     } catch (error) {
       console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
@@ -12015,9 +12417,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return dataURL; // Mantieni dataURL originale se fallisce
           }
 
-          // Se esiste già un assetId per questo asset, usalo e sovrascrivi
+          // Se esiste già un assetId per questo asset, usalo
+          // IMPORTANTE: Sovrascrivi solo se è un dataURL nuovo/modificato, non se è già un assetId
           const finalAssetId = existingAssetId || null;
-          const shouldOverwrite = overwrite || !!existingAssetId;
+          // Sovrascrivi solo se:
+          // 1. È esplicitamente richiesto (overwrite=true)
+          // 2. O se esiste già un assetId E il valore corrente è un dataURL (modificato)
+          const shouldOverwrite = overwrite || (!!existingAssetId && dataURL && typeof assetValue === 'string' && assetValue.startsWith('data:image/'));
 
           const { assetId } = await uploadImage(file, projectId, assetType, { 
             assetId: finalAssetId, 
@@ -12098,10 +12504,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     // Processa character frames
+    // IMPORTANTE: Verifica che il character esista ancora in characterFrames prima di processarlo
+    // Questo evita di ricreare frame per character eliminati
     if (updatedProject.characters && Array.isArray(updatedProject.characters)) {
       for (const char of updatedProject.characters) {
         // Costruisci subfolder per questo character: characters/charactername
         const characterName = char.name || char.id;
+        
+        // Verifica che il character esista ancora in characterFrames
+        // Se non esiste, significa che è stato eliminato e non dovremmo processare i suoi frame
+        if (!characterFrames.has(characterName)) {
+          console.warn(`[Asset] ⚠️ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
+          // Rimuovi i frame dal progetto per evitare che vengano salvati
+          if (char.directions) {
+            for (const dirData of Object.values(char.directions)) {
+              if (dirData.frames) {
+                dirData.frames = [];
+              }
+            }
+          }
+          continue;
+        }
+        
         const characterSubfolder = `characters/${characterName}`;
         
         if (char.directions) {
@@ -12114,11 +12538,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   // Se il frame è un oggetto con proprietà img, estrai l'immagine prima di verificare
                   let frameToCheck = originalFrame;
                   let frameToProcess = originalFrame;
+                  
+                  // IMPORTANTE: Il progetto potrebbe essere già serializzato, quindi originalFrame potrebbe essere una stringa
                   if (originalFrame && typeof originalFrame === 'object' && originalFrame.img) {
                     // È un oggetto frame con proprietà img, usa l'immagine direttamente
                     frameToCheck = originalFrame.img;
                     frameToProcess = originalFrame.img;
                     console.log(`[Asset] Frame object con proprietà img trovato per ${characterName}/${dir}/${i}`);
+                  }
+                  // Se è già una stringa (dataURL o assetId), processala direttamente
+                  else if (typeof originalFrame === 'string') {
+                    frameToCheck = originalFrame;
+                    frameToProcess = originalFrame;
                   }
                   
                   // Verifica se esiste già un assetId per questo frame nel progetto originale
@@ -12201,9 +12632,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    console.log(`[Asset] Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    console.log(`[Asset] 📊 Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
     
-    // Controllo finale: verifica se ci sono ancora dataURL nel progetto e convertili
+    // Verifica finale: controlla che tutti gli asset siano stati salvati correttamente
+    if (errorCount > 0) {
+      console.warn(`[Asset] ⚠️ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
+    } else {
+      console.log(`[Asset] ✅ Tutti gli asset sono stati salvati con successo su Supabase`);
+    }
+    
+    // Controllo finale: verifica se ci sono ancora dataURL o oggetti Image nel progetto e convertili
     const finalConversion = async (obj, path = 'root') => {
       if (!obj || typeof obj !== 'object') return;
       
@@ -12220,7 +12658,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           for (let i = 0; i < value.length; i++) {
             const item = value[i];
             if (item && typeof item === 'object') {
-              await finalConversion(item, `${currentPath}[${i}]`);
+              // Se è un oggetto Image, processalo direttamente
+              if (item.src || (item.width && item.height)) {
+                console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
+                const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
+                if (converted && converted.startsWith('asset:')) {
+                  value[i] = converted;
+                  savedCount++;
+                }
+              } else {
+                // Altrimenti processa ricorsivamente
+                await finalConversion(item, `${currentPath}[${i}]`);
+              }
             } else if (typeof item === 'string' && item.startsWith('data:image/')) {
               // Trovato un dataURL in un array, convertilo
               console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}[${i}]`);
@@ -12232,9 +12681,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         } 
-        // Se è un oggetto, processa ricorsivamente
+        // Se è un oggetto, verifica se è un oggetto Image
         else if (typeof value === 'object') {
-          await finalConversion(value, currentPath);
+          // Se è un oggetto Image, processalo direttamente
+          if (value.src || (value.width && value.height)) {
+            console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}`);
+            const converted = await processAsset(value, 'unknown', currentPath);
+            if (converted && converted.startsWith('asset:')) {
+              obj[key] = converted;
+              savedCount++;
+            }
+          } else {
+            // Altrimenti processa ricorsivamente
+            await finalConversion(value, currentPath);
+          }
         } 
         // Se è una stringa dataURL, convertila
         else if (typeof value === 'string' && value.startsWith('data:image/')) {
@@ -12305,12 +12765,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
     
     try {
+      console.log('[Save] 🔄 Inizio salvataggio asset su Supabase...');
       projectObj = await saveAllAssetsToStorage(projectObj, projectId);
-      console.log('[Save] Tutti gli asset salvati su Supabase');
+      console.log('[Save] ✅ Tutti gli asset salvati su Supabase');
       
       // Verifica che non ci siano più dataURL nel progetto (dovrebbero essere tutti convertiti in assetId)
       const projectJsonString = JSON.stringify(projectObj);
       const remainingDataURLs = (projectJsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
+      const assetIdCount = (projectJsonString.match(/asset:[^"]+/g) || []).length;
+      
+      console.log('[Save] 📊 Statistiche conversione asset:', {
+        dataURLRimanenti: remainingDataURLs,
+        assetIdTotali: assetIdCount,
+        conversioneCompleta: remainingDataURLs === 0
+      });
+      
       if (remainingDataURLs > 0) {
         console.warn(`[Save] ⚠️ Attenzione: ci sono ancora ${remainingDataURLs} dataURL nel progetto dopo il salvataggio asset. Questo potrebbe causare problemi di dimensione.`);
         // Cerca di identificare dove sono i dataURL rimanenti
@@ -12319,7 +12788,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
         }
       } else {
-        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti');
+        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti in assetId');
       }
       
       // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
@@ -12347,20 +12816,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
     }
 
-    // Verifica dimensione progetto prima di salvare su Firestore
-    const projectJsonPreview = JSON.stringify(projectObj);
-    const projectSizeBytes = new Blob([projectJsonPreview]).size;
-    const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
-    console.log(`[Save] 📊 Dimensione progetto: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
-    
     // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
     let firestoreSuccess = false;
     if (userId) {
-      console.log('[Save] Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
+      console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
+      
+      // Verifica preliminare: controlla dimensione progetto prima di salvare
+      const projectJsonPreview = JSON.stringify(projectObj);
+      const projectSizeBytes = new Blob([projectJsonPreview]).size;
+      const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
+      console.log(`[Save] 📦 Dimensione progetto: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
+      
       firestoreSuccess = await saveProjectToFirestore(userId, projectId, projectObj);
-      console.log('[Save] Risultato salvataggio Firestore:', firestoreSuccess);
+      
+      if (firestoreSuccess) {
+        console.log('[Save] ✅ Salvataggio Firestore completato con successo');
+      } else {
+        console.warn('[Save] ⚠️ Salvataggio Firestore fallito, uso cache locale come fallback');
+      }
     } else {
-      console.warn('[Save] userId non disponibile, salto Firestore');
+      console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
     }
 
     // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
@@ -12404,6 +12879,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     } else {
       showNotification('Project saved to cache (Firestore unavailable)', 'warning');
     }
+    
+    // Aggiorna indicatore dimensione progetto dopo il salvataggio
+    updateProjectSizeIndicator();
   }
 
   // Create new project
@@ -12480,6 +12958,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Imposta come progetto attivo
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    
+    // Aggiorna indicatore dimensione progetto
+    updateProjectSizeIndicator();
 
     // Aggiungi alla lista progetti utente usando funzione centralizzata
     const userProjects = loadProjectsFromCache(currentUser.username);
@@ -12810,6 +13291,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Se non abbiamo fileName o subfolder, cerchiamo prima nei metadata Firestore
       let finalFileName = fileName;
       let subfolder = assetInfo.subfolder || null;
+      let firebaseStoragePath = null; // Path per Firebase Storage legacy
+      let isFirebaseLegacy = false; // Flag per asset legacy Firebase
       if ((!finalFileName || !subfolder) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
         try {
           const userId = window.firebaseAuth.currentUser.uid;
@@ -12831,6 +13314,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             if (data && data.subfolder && !subfolder) {
               subfolder = data.subfolder;
               console.log(`[Asset] subfolder recuperato da Firestore per eliminazione: ${subfolder}`);
+            }
+            // Controlla se è un asset legacy Firebase Storage
+            if (data && data.storagePath && !data.storageProvider) {
+              // Asset legacy: ha storagePath ma non storageProvider (o storageProvider !== 'supabase')
+              firebaseStoragePath = data.storagePath;
+              isFirebaseLegacy = true;
+              console.log(`[Asset] ⚠️ Asset legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+            } else if (data && data.storagePath && data.storageProvider && data.storageProvider !== 'supabase') {
+              // Asset con storageProvider diverso da 'supabase'
+              firebaseStoragePath = data.storagePath;
+              isFirebaseLegacy = true;
+              console.log(`[Asset] ⚠️ Asset con storageProvider "${data.storageProvider}" rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
             }
           }
         } catch (metaErr) {
@@ -12869,10 +13364,34 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         userIdOverride = window.firebaseAuth.currentUser.uid;
       }
 
+      // PRIMA: elimina da Firebase Storage se è un asset legacy
+      let firebaseDeleted = true; // Default true se non è un asset legacy
+      if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
+        try {
+          console.log(`[Asset] Eliminazione asset legacy da Firebase Storage: ${firebaseStoragePath}`);
+          const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
+          await storageRef.delete();
+          firebaseDeleted = true;
+          console.log(`[Asset] ✅ Asset eliminato da Firebase Storage: ${firebaseStoragePath}`);
+        } catch (firebaseError) {
+          console.warn(`[Asset] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
+          // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
+          firebaseDeleted = false;
+        }
+      }
+
+      // POI: elimina da Supabase Storage (passa userId e subfolder per path corretto)
       const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride, subfolder);
       
-      if (deleted) {
-        console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
+      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
+      // (potrebbe essere solo su Supabase o solo su Firebase legacy)
+      if (deleted || firebaseDeleted) {
+        if (deleted) {
+          console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
+        }
+        if (firebaseDeleted && isFirebaseLegacy) {
+          console.log(`[Asset] ✅ Asset legacy eliminato da Firebase Storage: ${assetId}`);
+        }
         
         // Rimuovi anche da imageAssetMap
         imageAssetMap.delete(img);
@@ -12895,6 +13414,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             console.warn(`[Asset] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
             // Non blocchiamo il successo se Firestore fallisce
           }
+        }
+        
+        // Aggiorna i counter dopo eliminazione asset
+        if (typeof updateProjectSizeIndicator === 'function') {
+          updateProjectSizeIndicator();
         }
         
         return true;
@@ -13079,6 +13603,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       if (!metadataSaved) {
         console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
+      }
+      
+      // Aggiorna i counter dopo upload asset
+      if (typeof updateProjectSizeIndicator === 'function') {
+        updateProjectSizeIndicator();
       }
       
       return { assetId: finalAssetId, downloadURL, fileName };
@@ -13955,9 +14484,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Questo assicura che il listener hide.bs.modal possa rilevarlo
     localStorage.setItem('amiantoActiveProjectName', projectName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    localStorage.setItem('amiantoActiveProjectId', projectId);
 
     // Abilita altre tab ora che c'è un progetto aperto
     enableOtherTabs(true);
+    
+    // Aggiorna indicatore dimensione progetto
+    updateProjectSizeIndicator();
     
     // Mostra notifica con fonte di caricamento
     if (loadedFrom === 'firestore') {
@@ -13968,6 +14501,123 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     // Il modale verrà chiuso dal chiamante dopo questa funzione completa
   }
+
+  // Funzione per aggiornare l'indicatore della dimensione del progetto
+  async function updateProjectSizeIndicator() {
+    try {
+      const indicator = document.getElementById('projectSizeIndicator');
+      const sizeText = document.getElementById('projectSizeText');
+      const supabaseIndicator = document.getElementById('supabaseSizeIndicator');
+      const supabaseSizeText = document.getElementById('supabaseSizeText');
+      
+      if (!indicator || !sizeText) {
+        return; // Elementi non ancora disponibili
+      }
+      
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
+      
+      if (!activeProjectName) {
+        indicator.style.display = 'none';
+        if (supabaseIndicator) supabaseIndicator.style.display = 'none';
+        return;
+      }
+      
+      // Calcola dimensione Firestore (progetto serializzato)
+      const projectObj = window.serializeProject();
+      const jsonString = JSON.stringify(projectObj);
+      const dataSizeBytes = new Blob([jsonString]).size;
+      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
+      const dataSizeKB = (dataSizeBytes / 1024).toFixed(1);
+      
+      // Calcola percentuale rispetto al limite Firestore (1MB)
+      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
+      const percentageUsed = ((dataSizeBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1);
+      
+      // Mostra dimensione Firestore in KB o MB
+      let sizeDisplay;
+      if (dataSizeBytes >= 1024 * 1024) {
+        sizeDisplay = `Firestore: ${dataSizeMB} MB (${percentageUsed}%)`;
+      } else {
+        sizeDisplay = `Firestore: ${dataSizeKB} KB (${percentageUsed}%)`;
+      }
+      
+      sizeText.textContent = sizeDisplay;
+      
+      // Colore Firestore in base alla percentuale
+      if (percentageUsed >= 90) {
+        sizeText.style.color = '#ff6b6b'; // Rosso per >90%
+      } else if (percentageUsed >= 75) {
+        sizeText.style.color = '#ffa500'; // Arancione per 75-90%
+      } else {
+        sizeText.style.color = '#aaa'; // Grigio per <75%
+      }
+      
+      indicator.style.display = 'block';
+      
+      // Calcola dimensione Supabase Storage (asset)
+      if (supabaseIndicator && supabaseSizeText) {
+        // Usa projectId se disponibile, altrimenti prova a ricavarlo dal projectName
+        let projectIdToUse = activeProjectId;
+        if (!projectIdToUse && activeProjectName) {
+          projectIdToUse = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        }
+        
+        console.log('[ProjectSize] Calcolo dimensione Supabase:', { activeProjectId, activeProjectName, projectIdToUse });
+        
+        if (projectIdToUse) {
+          try {
+            if (window.supabaseStorage && window.supabaseStorage.getProjectStorageSize && window.supabaseStorage.isAvailable()) {
+              const storageSize = await window.supabaseStorage.getProjectStorageSize(projectIdToUse);
+              
+              console.log('[ProjectSize] Dimensione Supabase calcolata:', storageSize);
+              
+              if (storageSize && storageSize.totalBytes > 0) {
+                let supabaseDisplay;
+                if (storageSize.totalBytes >= 1024 * 1024) {
+                  supabaseDisplay = `Supabase: ${storageSize.totalMB} MB (${storageSize.fileCount} file)`;
+                } else {
+                  supabaseDisplay = `Supabase: ${storageSize.totalKB} KB (${storageSize.fileCount} file)`;
+                }
+                
+                supabaseSizeText.textContent = supabaseDisplay;
+                supabaseSizeText.style.color = '#aaa'; // Grigio di default
+                supabaseIndicator.style.display = 'block';
+              } else {
+                supabaseSizeText.textContent = 'Supabase: 0 KB';
+                supabaseSizeText.style.color = '#666';
+                supabaseIndicator.style.display = 'block';
+              }
+            } else {
+              // Supabase non disponibile - mostra comunque il contatore con messaggio
+              console.log('[ProjectSize] Supabase non disponibile');
+              supabaseSizeText.textContent = 'Supabase: N/A';
+              supabaseSizeText.style.color = '#666';
+              supabaseIndicator.style.display = 'block';
+            }
+          } catch (error) {
+            console.warn('[ProjectSize] Errore calcolo dimensione Supabase:', error);
+            supabaseSizeText.textContent = 'Supabase: Errore';
+            supabaseSizeText.style.color = '#ff6b6b';
+            supabaseIndicator.style.display = 'block';
+          }
+        } else {
+          // Nessun projectId disponibile - mostra comunque il contatore
+          console.log('[ProjectSize] Nessun projectId disponibile');
+          supabaseSizeText.textContent = 'Supabase: -';
+          supabaseSizeText.style.color = '#666';
+          supabaseIndicator.style.display = 'block';
+        }
+      } else {
+        console.warn('[ProjectSize] Elementi HTML contatore Supabase non trovati:', { supabaseIndicator: !!supabaseIndicator, supabaseSizeText: !!supabaseSizeText });
+      }
+    } catch (error) {
+      console.warn('[ProjectSize] Errore aggiornamento indicatore:', error);
+    }
+  }
+  
+  // Esponi funzione globalmente
+  window.updateProjectSizeIndicator = updateProjectSizeIndicator;
 
   /**
    * Elimina completamente un progetto da Firestore, incluse tutte le subcollezioni
@@ -14119,6 +14769,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (deleted) {
           console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
           addDebugMessage(`[Supabase] Cartella progetto eliminata: ${projectName}`, 'success');
+          
+          // Aggiorna i counter dopo eliminazione cartella progetto
+          if (typeof updateProjectSizeIndicator === 'function') {
+            updateProjectSizeIndicator();
+          }
         } else {
           console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
           addDebugMessage(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`, 'warning');
@@ -14180,6 +14835,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (activeProjectName === projectName) {
       localStorage.removeItem('amiantoActiveProjectName');
       localStorage.removeItem('amiantoActiveProjectOwner');
+      // Nascondi indicatore dimensione progetto
+      const indicator = document.getElementById('projectSizeIndicator');
+      if (indicator) {
+        indicator.style.display = 'none';
+      }
     }
     
     // 9. Verifica se ci sono ancora progetti dopo la cancellazione
@@ -14870,11 +15530,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Cursor deleted', 'success');
   };
 
-  window.uploadCursorImage = function(input) {
-    // TODO: not yet implemented - Upload cursor images to Firebase Storage
-    // Per ora carica localmente come fallback
+  window.uploadCursorImage = async function(input) {
     if (!selectedCursorId) {
       showNotification('Please select a cursor first', 'warning');
+      input.value = '';
       return;
     }
     
@@ -14882,15 +15541,75 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!file) return;
     
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
-    if (!cursor) return;
+    if (!cursor) {
+      input.value = '';
+      return;
+    }
+
+    // Verifica autenticazione e progetto
+    if (!currentUser) {
+      showNotification('Please login to upload cursor images', 'warning');
+      input.value = '';
+      return;
+    }
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open', 'warning');
+      input.value = '';
+      return;
+    }
+
+    const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
     
-    const img = new Image();
-    img.onload = () => {
+    try {
+      showNotification('Uploading cursor image...', 'info');
+      
+      // Genera assetId determinista per il cursor
+      const cursorAssetId = `cursor_${cursor.id}`;
+      
+      // Verifica se esiste già un assetId per questo cursor
+      let existingAssetId = null;
+      if (cursor.cursorImage) {
+        const existingInfo = imageAssetMap.get(cursor.cursorImage);
+        if (existingInfo && existingInfo.assetId) {
+          existingAssetId = existingInfo.assetId;
+        }
+      }
+      
+      // Upload su storage
+      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'cursor', {
+        assetId: existingAssetId || cursorAssetId,
+        overwriteExisting: !!existingAssetId,
+        subfolder: null
+      });
+      
+      // Carica immagine dall'URL
+      const img = await loadImageFromUrl(downloadURL);
+      if (!img) {
+        throw new Error('Failed to load image from URL');
+      }
+      
+      // Registra nella mappa asset
+      imageAssetMap.set(img, { 
+        assetId, 
+        type: 'cursor', 
+        projectId, 
+        fileName: fileName || null, 
+        subfolder: null 
+      });
+      
+      // Aggiorna cursor
       cursor.cursorImage = img;
-      showNotification(`Cursor image loaded for ${cursor.targetType}: ${cursor.targetId} (not saved to Storage)`, 'warning');
+      
+      showNotification(`Cursor image uploaded: ${cursor.targetType}: ${cursor.targetId}`, 'success');
       refreshCursorsList();
-    };
-    img.src = URL.createObjectURL(file);
+    } catch (error) {
+      console.error('[Asset] Errore upload cursor image:', error);
+      showNotification(`Failed to upload cursor image: ${error.message}`, 'error');
+    } finally {
+      input.value = '';
+    }
   };
 
   updateCursorTargets = function() {

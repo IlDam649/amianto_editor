@@ -65,29 +65,39 @@
       </div>
 
       <!-- User menu -->
-      <div class="dropdown">
-        <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
-          <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
-        </button>
-        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
-          <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
-          <li><hr class="dropdown-divider"></li>
-          <li class="dropdown-submenu">
-            <a class="dropdown-item dropdown-toggle" href="#"><i class="fas fa-file"></i> File</a>
-            <ul class="dropdown-menu dropdown-menu-dark">
-              <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
-              <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
-              <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
-              <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
-              <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
-            </ul>
-          </li>
-          <li><hr class="dropdown-divider"></li>
-          <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
-        </ul>
+      <div class="d-flex flex-column align-items-end">
+        <div class="dropdown">
+          <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
+            <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+            <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
+            <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li class="dropdown-submenu">
+              <a class="dropdown-item dropdown-toggle" href="#"><i class="fas fa-file"></i> File</a>
+              <ul class="dropdown-menu dropdown-menu-dark">
+                <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
+                <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
+                <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
+                <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
+                <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
+              </ul>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+          </ul>
+        </div>
+        <!-- Project size indicator -->
+        <div id="projectSizeIndicator" style="display: none; margin-top: 8px; font-size: 0.85rem; color: #aaa;">
+          <i class="fas fa-database"></i> <span id="projectSizeText">-</span>
+        </div>
+        <!-- Supabase storage size indicator -->
+        <div id="supabaseSizeIndicator" style="display: none; margin-top: 4px; font-size: 0.85rem; color: #aaa;">
+          <i class="fas fa-cloud"></i> <span id="supabaseSizeText">-</span>
+        </div>
       </div>
     </div>
   </div>

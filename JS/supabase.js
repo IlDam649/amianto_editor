@@ -686,6 +686,107 @@ async function deleteAsset(projectId, category, fileName, userIdOverride = null,
 }
 
 /**
+ * Calcola la dimensione totale degli asset salvati su Supabase Storage per un progetto
+ * REQUISITO: L'utente deve essere autenticato su Firebase Auth
+ * @param {string} projectId - ID del progetto
+ * @returns {Promise<{totalBytes: number, totalMB: number, totalKB: number, fileCount: number}>} - Dimensione totale e numero di file
+ */
+async function getProjectStorageSize(projectId) {
+  try {
+    if (!isSupabaseAvailable()) {
+      console.warn('[Supabase] ⚠️ Supabase non disponibile, impossibile calcolare dimensione storage');
+      return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+    }
+
+    // Verifica autenticazione
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      console.warn('[Supabase] ❌ Autenticazione richiesta per calcolare dimensione storage');
+      return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+    }
+
+    const userId = window.firebaseAuth.currentUser.uid;
+    const projectFolderPath = `${userId}/${projectId}`;
+
+    console.log(`[Supabase] Calcolo dimensione storage per progetto: ${projectFolderPath}`);
+
+    let totalBytes = 0;
+    let fileCount = 0;
+
+    // Funzione ricorsiva per elencare tutti i file e sommare le dimensioni
+    async function collectAllFilesSize(folderPath, currentFiles) {
+      for (const item of currentFiles) {
+        const itemPath = folderPath ? `${folderPath}/${item.name}` : item.name;
+        
+        // Se è una cartella, elenca i suoi contenuti
+        if (item.id === null) {
+          // È una cartella, elenca i suoi contenuti
+          const { data: subFiles, error: subError } = await supabaseClient.storage
+            .from(SUPABASE_BUCKET_NAME)
+            .list(itemPath, {
+              limit: 1000,
+              offset: 0,
+              sortBy: { column: 'name', order: 'asc' }
+            });
+          
+          if (!subError && subFiles && subFiles.length > 0) {
+            await collectAllFilesSize(itemPath, subFiles);
+          }
+        } else {
+          // È un file, aggiungi la sua dimensione
+          // Nota: Supabase Storage metadata.size è in bytes
+          const fileSize = item.metadata?.size || 0;
+          totalBytes += fileSize;
+          fileCount++;
+        }
+      }
+    }
+
+    // Lista tutti i file nella cartella del progetto
+    const { data: files, error: listError } = await supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .list(projectFolderPath, {
+        limit: 1000,
+        offset: 0,
+        sortBy: { column: 'name', order: 'asc' }
+      });
+
+    if (listError) {
+      // Se la cartella non esiste, non è un errore critico
+      if (listError.statusCode === '404' || listError.message?.includes('not found')) {
+        console.log(`[Supabase] Cartella progetto non trovata: ${projectFolderPath}`);
+        return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+      }
+      console.error('[Supabase] ❌ Errore elenco file per calcolo dimensione:', listError);
+      return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+    }
+
+    // Se non ci sono file, la cartella è vuota
+    if (!files || files.length === 0) {
+      console.log(`[Supabase] ✅ Nessun file trovato nella cartella progetto: ${projectFolderPath}`);
+      return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+    }
+
+    // Raccogli tutti i file e somma le dimensioni (inclusi quelli nelle sottocartelle)
+    await collectAllFilesSize(projectFolderPath, files);
+
+    const totalMB = (totalBytes / (1024 * 1024)).toFixed(2);
+    const totalKB = (totalBytes / 1024).toFixed(1);
+
+    console.log(`[Supabase] ✅ Dimensione storage calcolata: ${totalMB} MB (${fileCount} file)`);
+
+    return {
+      totalBytes: totalBytes,
+      totalMB: parseFloat(totalMB),
+      totalKB: parseFloat(totalKB),
+      fileCount: fileCount
+    };
+  } catch (error) {
+    console.error('[Supabase] ❌ Errore calcolo dimensione storage:', error);
+    return { totalBytes: 0, totalMB: 0, totalKB: 0, fileCount: 0 };
+  }
+}
+
+/**
  * Elimina l'intera cartella del progetto da Supabase Storage
  * REQUISITO: L'utente deve essere autenticato su Firebase Auth
  * @param {string} projectId - ID del progetto
@@ -815,6 +916,104 @@ async function deleteProjectFolder(projectId) {
   }
 }
 
+/**
+ * Elimina la cartella di un character specifico da Supabase Storage
+ * REQUISITO: L'utente deve essere autenticato su Firebase Auth
+ * @param {string} projectId - ID del progetto
+ * @param {string} characterName - Nome del character
+ * @returns {Promise<boolean>} - true se eliminato con successo
+ */
+async function deleteCharacterFolder(projectId, characterName) {
+  try {
+    if (!isSupabaseAvailable()) {
+      console.warn('[Supabase] ⚠️ Supabase non disponibile, impossibile eliminare cartella character');
+      return false;
+    }
+
+    // Verifica autenticazione
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      console.warn('[Supabase] ❌ Autenticazione richiesta per eliminare cartella character');
+      return false;
+    }
+
+    const userId = window.firebaseAuth.currentUser.uid;
+    const characterFolderPath = `${userId}/${projectId}/characters/${characterName}`;
+
+    console.log(`[Supabase] Eliminazione cartella character: ${characterFolderPath}`);
+
+    // Lista tutti i file nella cartella del character
+    const { data: files, error: listError } = await supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .list(characterFolderPath, {
+        limit: 1000,
+        offset: 0,
+        sortBy: { column: 'name', order: 'asc' }
+      });
+
+    if (listError) {
+      // Se la cartella non esiste, non è un errore critico
+      if (listError.statusCode === '404' || listError.message?.includes('not found')) {
+        console.log(`[Supabase] Cartella character non trovata (già eliminata): ${characterFolderPath}`);
+        return true;
+      }
+      console.error('[Supabase] ❌ Errore elenco file cartella character:', listError);
+      return false;
+    }
+
+    // Se non ci sono file, la cartella è già vuota
+    if (!files || files.length === 0) {
+      console.log(`[Supabase] ✅ Cartella character vuota o già eliminata: ${characterFolderPath}`);
+      return true;
+    }
+
+    // Raccogli tutti i percorsi dei file da eliminare
+    const pathsToDelete = files
+      .filter(item => item.id !== null) // Solo file, non cartelle
+      .map(item => `${characterFolderPath}/${item.name}`);
+
+    if (pathsToDelete.length === 0) {
+      console.log(`[Supabase] ✅ Nessun file da eliminare nella cartella character: ${characterFolderPath}`);
+      return true;
+    }
+
+    console.log(`[Supabase] Trovati ${pathsToDelete.length} file da eliminare nella cartella character`);
+
+    // Elimina tutti i file in batch
+    const BATCH_SIZE = 100;
+    let deletedCount = 0;
+    
+    for (let i = 0; i < pathsToDelete.length; i += BATCH_SIZE) {
+      const batch = pathsToDelete.slice(i, i + BATCH_SIZE);
+      
+      const { error: deleteError } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .remove(batch);
+
+      if (deleteError) {
+        console.error(`[Supabase] ❌ Errore eliminazione batch:`, deleteError);
+        continue;
+      }
+      
+      deletedCount += batch.length;
+      console.log(`[Supabase] Eliminati ${deletedCount}/${pathsToDelete.length} file...`);
+    }
+
+    if (deletedCount === pathsToDelete.length) {
+      console.log(`[Supabase] ✅ Cartella character eliminata con successo: ${characterFolderPath} (${deletedCount} file eliminati)`);
+      return true;
+    } else if (deletedCount > 0) {
+      console.warn(`[Supabase] ⚠️ Cartella character parzialmente eliminata: ${characterFolderPath} (${deletedCount}/${pathsToDelete.length} file eliminati)`);
+      return true;
+    } else {
+      console.error(`[Supabase] ❌ Impossibile eliminare file nella cartella character: ${characterFolderPath}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('[Supabase] ❌ Errore eliminazione cartella character:', error);
+    return false;
+  }
+}
+
 // ============================================
 // ESPORTAZIONE FUNZIONI GLOBALI
 // ============================================
@@ -830,6 +1029,8 @@ if (typeof window !== 'undefined') {
     resolveAssetUrl: resolveAssetUrl,
     deleteAsset: deleteAsset,
     deleteProjectFolder: deleteProjectFolder,
+    deleteCharacterFolder: deleteCharacterFolder,
+    getProjectStorageSize: getProjectStorageSize,
     getSupabaseFolderForType: getSupabaseFolderForType,
     buildStoragePath: buildStoragePath
   };
