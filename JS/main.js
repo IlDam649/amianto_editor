@@ -778,6 +778,22 @@ document.addEventListener("DOMContentLoaded", () => {
     return { x, y };
   }
 
+  // Parse position string "x, y" to {x, y} object
+  function parsePositionString(str) {
+    if (!str || typeof str !== 'string') return { x: 0, y: 0 };
+    const parts = str.split(',').map(p => p.trim());
+    const x = parts.length > 0 ? (Number(parts[0]) || 0) : 0;
+    const y = parts.length > 1 ? (Number(parts[1]) || 0) : 0;
+    return { x, y };
+  }
+
+  // Format position object {x, y} to "x, y" string
+  function formatPositionString(x, y) {
+    const px = Math.round(Number(x) || 0);
+    const py = Math.round(Number(y) || 0);
+    return `${px}, ${py}`;
+  }
+
   // Check if a point is inside a scene object
   function getObjectAtPoint(worldX, worldY) {
     // Check objects in reverse order (top to bottom)
@@ -844,21 +860,27 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.scale(editorState.zoom, editorState.zoom);
 
       // Draw current frame at original size, centered in game viewport space
-      // Gestisce diversi formati: { img: Image } oppure Image direttamente
-      let frameImg = null;
-      if (frame) {
-        if (frame.img) {
-          // Formato nuovo: oggetto con proprietà img
-          frameImg = frame.img;
-        } else if (frame.src) {
-          // Formato salvato: oggetto Image direttamente
-          frameImg = frame;
-        }
-      }
-      if (frameImg) {
+      // Usa getFrameImage per gestire sia frame normali che frame specchiati
+      const dirData = charData.directions[currentDirection];
+      const frameIndex = characterPreviewIndex % dirData.frames.length;
+      const frameResult = getFrameImage(frame, charData, frameIndex, currentDirection);
+      
+      if (frameResult.img) {
+        const frameImg = frameResult.img;
         const dx = (gameViewport.width - frameImg.width) / 2;
         const dy = (gameViewport.height - frameImg.height) / 2;
-        ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
+        
+        // Se il frame deve essere specchiato, applica la trasformazione
+        if (frameResult.mirrored) {
+          ctx.save();
+          // Specchia orizzontalmente: trasla, scala negativo su X, e ri-trasla
+          ctx.translate(dx + frameImg.width, dy);
+          ctx.scale(-1, 1);
+          ctx.drawImage(frameImg, 0, 0);
+          ctx.restore();
+        } else {
+          ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
+        }
         
         // Mostra informazioni sull'animazione (opzionale, per debug)
         if (characterPreviewTimer) {
@@ -868,8 +890,7 @@ document.addEventListener("DOMContentLoaded", () => {
           ctx.fillRect(10, 10, 300, 60);
           ctx.fillStyle = '#39ff14';
           ctx.font = '12px monospace';
-          const dirData = charData.directions[currentDirection];
-          const currentFrameNum = (characterPreviewIndex % dirData.frames.length) + 1;
+          const currentFrameNum = frameIndex + 1;
           ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 28);
           ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 45);
           ctx.fillText(`Direction: ${currentDirection}`, 15, 62);
@@ -1596,9 +1617,32 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    // Prevent context menu on right click
+    // Handle right click: copy position to start position field when in rooms tab
     canvas.addEventListener('contextmenu', function(e) {
       e.preventDefault();
+      
+      // Check if we're in the rooms tab
+      const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+      if (activeTab === 'rooms') {
+        const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+        const roundedX = Math.round(x);
+        const roundedY = Math.round(y);
+        
+        // Update the position input field (located in characters tab)
+        const startPositionInput = document.getElementById('start-position');
+        if (startPositionInput) {
+          startPositionInput.value = formatPositionString(roundedX, roundedY);
+          // Trigger the input event to save the values
+          const parsed = parsePositionString(startPositionInput.value);
+          persistStartSettings({ startX: parsed.x, startY: parsed.y });
+          
+          // Visual feedback
+          startPositionInput.style.backgroundColor = '#2d5016';
+          setTimeout(() => {
+            startPositionInput.style.backgroundColor = '';
+          }, 300);
+        }
+      }
     });
   }
 
@@ -4424,7 +4468,7 @@ window.selectRoom = function(roomId) {
     };
   }
 
-  // Populate start room selector and bind x/y inputs
+  // Populate start room selector and bind position input
   function refreshStartRoomSelector() {
     const sel = document.getElementById('start-room-selector');
     if (!sel) return;
@@ -4444,15 +4488,19 @@ window.selectRoom = function(roomId) {
 
     sel.onchange = function() { persistStartSettings({ startRoomId: sel.value }); };
 
-    const startXInput = document.getElementById('start-x');
-    const startYInput = document.getElementById('start-y');
-    if (startXInput) {
-      if (saved && typeof saved.startX !== 'undefined') startXInput.value = String(Number(saved.startX) || 0);
-      startXInput.oninput = function() { persistStartSettings({ startX: startXInput.value }); };
-    }
-    if (startYInput) {
-      if (saved && typeof saved.startY !== 'undefined') startYInput.value = String(Number(saved.startY) || 0);
-      startYInput.oninput = function() { persistStartSettings({ startY: startYInput.value }); };
+    const startPositionInput = document.getElementById('start-position');
+    if (startPositionInput) {
+      if (saved && (typeof saved.startX !== 'undefined' || typeof saved.startY !== 'undefined')) {
+        const x = Number(saved.startX) || 0;
+        const y = Number(saved.startY) || 0;
+        startPositionInput.value = formatPositionString(x, y);
+      } else {
+        startPositionInput.value = '0, 0';
+      }
+      startPositionInput.oninput = function() {
+        const parsed = parsePositionString(startPositionInput.value);
+        persistStartSettings({ startX: parsed.x, startY: parsed.y });
+      };
     }
   }
 
@@ -4784,13 +4832,18 @@ window.selectRoom = function(roomId) {
       // Ferma la preview se è attiva
       stopCharacterPreview();
       
-      // Elimina tutti gli asset dei frame da Supabase
+      // Elimina tutti gli asset dei frame da Supabase (solo frame normali, non specchiati)
       const charData = characterFrames.get(who);
       if (charData && charData.directions) {
         try {
           for (const [dir, dirData] of Object.entries(charData.directions)) {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               for (const frame of dirData.frames) {
+                // Salta i frame specchiati - non hanno asset da eliminare
+                if (frame && typeof frame === 'object' && frame.mirror) {
+                  continue;
+                }
+                
                 // Gestisce diversi formati: { img: Image } oppure Image direttamente
                 let frameImage = null;
                 if (frame && typeof frame === 'object' && frame.img) {
@@ -4886,7 +4939,48 @@ window.selectRoom = function(roomId) {
     }
   };
 
+  // Helper function per ottenere l'immagine di un frame e se deve essere specchiata
+  // Gestisce sia frame normali che frame specchiati (con proprietà mirror)
+  function getFrameImage(frame, charData, frameIndex, direction) {
+    if (!frame || !charData) {
+      return { img: null, mirrored: false };
+    }
+
+    // Se il frame è un riferimento specchiato
+    if (frame.mirror && typeof frame.mirror === 'string') {
+      const sourceDirection = frame.mirror;
+      const sourceDirData = charData.directions[sourceDirection];
+      
+      if (sourceDirData && sourceDirData.frames && sourceDirData.frames[frameIndex]) {
+        // Recursivamente ottieni l'immagine dalla direzione sorgente
+        // (potrebbe essere un'altra direzione specchiata, ma alla fine arriveremo a un frame reale)
+        const sourceResult = getFrameImage(sourceDirData.frames[frameIndex], charData, frameIndex, sourceDirection);
+        
+        // Se abbiamo trovato un'immagine, restituiscila con flag mirrored = true
+        if (sourceResult.img) {
+          return { img: sourceResult.img, mirrored: true };
+        }
+      }
+      
+      // Se non troviamo la direzione sorgente, restituisci null
+      return { img: null, mirrored: false };
+    }
+    
+    // Frame normale: estrai l'immagine (gestisce entrambi i formati)
+    let frameImg = null;
+    if (frame.img && typeof frame.img === 'object') {
+      // Formato nuovo: oggetto con proprietà img
+      frameImg = frame.img;
+    } else if (frame.src || (frame.width && frame.height)) {
+      // Formato salvato: oggetto Image direttamente
+      frameImg = frame;
+    }
+    
+    return { img: frameImg, mirrored: false };
+  }
+
   // Function to mirror frames horizontally from another direction
+  // Ora salva solo un riferimento invece di creare frame specchiati separati
   window.applyMirrorDirection = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
@@ -4916,10 +5010,6 @@ window.selectRoom = function(roomId) {
     const sourceFrames = charData.directions[sourceDirection].frames;
     const sourceFPS = charData.directions[sourceDirection].fps || 8;
 
-    // Crea un canvas temporaneo per lo specchiamento
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-
     // Inizializza la direzione corrente se non esiste
     if (!charData.directions[currentDirection]) {
       charData.directions[currentDirection] = { frames: [], fps: sourceFPS };
@@ -4929,52 +5019,14 @@ window.selectRoom = function(roomId) {
     charData.directions[currentDirection].frames = [];
     charData.directions[currentDirection].fps = sourceFPS;
 
-    // Specchia ogni frame
+    // Crea riferimenti specchiati invece di copiare le immagini
+    // Ogni frame sarà un oggetto { mirror: sourceDirection }
+    // L'indice del frame corrisponde allo stesso indice nella direzione sorgente
     for (let i = 0; i < sourceFrames.length; i++) {
-      const sourceFrame = sourceFrames[i];
-      
-      // Estrae l'immagine dal frame (gestisce entrambi i formati)
-      let sourceImg = null;
-      if (sourceFrame && typeof sourceFrame === 'object' && sourceFrame.img) {
-        sourceImg = sourceFrame.img;
-      } else if (sourceFrame && typeof sourceFrame === 'object' && sourceFrame.src) {
-        sourceImg = sourceFrame;
-      }
-
-      if (!sourceImg || !sourceImg.complete) {
-        console.warn(`Frame ${i + 1} from ${sourceDirection} is not ready, skipping`);
-        continue;
-      }
-
-      // Imposta le dimensioni del canvas temporaneo
-      tempCanvas.width = sourceImg.width;
-      tempCanvas.height = sourceImg.height;
-
-      // Specchia orizzontalmente: scala negativo su X e trasla
-      tempCtx.save();
-      tempCtx.scale(-1, 1);
-      tempCtx.drawImage(sourceImg, -tempCanvas.width, 0);
-      tempCtx.restore();
-
-      // Crea una nuova immagine specchiata
-      const mirroredImg = new Image();
-      mirroredImg.src = tempCanvas.toDataURL('image/png');
-
-      // Attendi che l'immagine sia caricata
-      await new Promise((resolve, reject) => {
-        mirroredImg.onload = resolve;
-        mirroredImg.onerror = reject;
-        // Timeout di sicurezza
-        setTimeout(() => resolve(), 1000);
-      });
-
-      // Crea un oggetto frame con nome (per mantenere compatibilità con il formato)
+      // Crea un riferimento specchiato - il rendering lo gestirà al volo
       const mirroredFrame = {
-        img: mirroredImg,
-        name: sourceFrame && sourceFrame.name ? `mirrored_${sourceFrame.name}` : `mirrored_frame_${i + 1}_from_${sourceDirection}`
+        mirror: sourceDirection
       };
-
-      // Aggiungi il frame specchiato
       charData.directions[currentDirection].frames.push(mirroredFrame);
     }
 
@@ -4991,7 +5043,7 @@ window.selectRoom = function(roomId) {
     updateDirectionInfo();
     redraw();
 
-    showNotification(`Mirrored ${charData.directions[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection}`, 'success');
+    showNotification(`Mirrored ${charData.directions[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection} (referenced, not duplicated)`, 'success');
   };
 
   // Function to update direction info display
@@ -5098,46 +5150,66 @@ window.selectRoom = function(roomId) {
       
       const img = document.createElement('img');
       let frameName = `Frame ${index + 1}`; // Nome di default
+      let isMirrored = false;
       
-      // Gestisce diversi formati di frameData:
-      // 1. Oggetto con proprietà img: { img: Image, name: string, ... }
-      // 2. Oggetto Image direttamente: Image
-      // 3. Stringa URL: string
-      if (frameData && typeof frameData === 'object' && frameData.img) {
-        // Formato nuovo: oggetto con proprietà img
-        img.src = frameData.img.src || frameData.img;
-        // Estrae il nome del file se disponibile
-        if (frameData.name) {
-          frameName = frameData.name;
+      // Usa getFrameImage per gestire sia frame normali che specchiati
+      const frameResult = getFrameImage(frameData, charData, index, currentDirection);
+      
+      if (frameResult.img) {
+        // Frame valido trovato
+        img.src = frameResult.img.src || frameResult.img;
+        isMirrored = frameResult.mirrored;
+        
+        // Se è specchiato, aggiungi un indicatore nel nome
+        if (isMirrored) {
+          frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror})`;
         }
-      } else if (frameData && typeof frameData === 'object' && frameData.src) {
-        // Formato salvato: oggetto Image direttamente
-        img.src = frameData.src;
-        // Prova a estrarre il nome dall'URL o da altre proprietà
-        if (frameData.name) {
-          frameName = frameData.name;
-        } else if (frameData.src && typeof frameData.src === 'string') {
-          // Prova a estrarre il nome dal path dell'URL
-          const urlParts = frameData.src.split('/');
-          const fileName = urlParts[urlParts.length - 1];
-          if (fileName && fileName !== frameData.src) {
-            frameName = fileName.split('?')[0]; // Rimuove query params
-          }
-        }
-      } else if (typeof frameData === 'string') {
-        // Formato stringa URL
-        img.src = frameData;
-        // Prova a estrarre il nome dall'URL
-        const urlParts = frameData.split('/');
-        const fileName = urlParts[urlParts.length - 1];
-        if (fileName && fileName !== frameData) {
-          frameName = fileName.split('?')[0]; // Rimuove query params
-        }
+      } else if (frameData && typeof frameData === 'object' && frameData.mirror) {
+        // Frame specchiato ma non riuscito a risolvere l'immagine
+        frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror} - source not found)`;
+        // Usa un'immagine placeholder o salta questo frame
+        console.warn(`Frame ${index + 1} è specchiato ma la direzione sorgente non è stata trovata`);
+        return; // Salta questo frame se non possiamo risolverlo
       } else {
-        console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
-        return; // Salta questo frame se non è valido
+        // Gestisce frame normali (compatibilità con codice precedente)
+        if (frameData && typeof frameData === 'object' && frameData.img) {
+          // Formato nuovo: oggetto con proprietà img
+          img.src = frameData.img.src || frameData.img;
+          if (frameData.name) {
+            frameName = frameData.name;
+          }
+        } else if (frameData && typeof frameData === 'object' && frameData.src) {
+          // Formato salvato: oggetto Image direttamente
+          img.src = frameData.src;
+          if (frameData.name) {
+            frameName = frameData.name;
+          } else if (frameData.src && typeof frameData.src === 'string') {
+            const urlParts = frameData.src.split('/');
+            const fileName = urlParts[urlParts.length - 1];
+            if (fileName && fileName !== frameData.src) {
+              frameName = fileName.split('?')[0];
+            }
+          }
+        } else if (typeof frameData === 'string') {
+          // Formato stringa URL
+          img.src = frameData;
+          const urlParts = frameData.split('/');
+          const fileName = urlParts[urlParts.length - 1];
+          if (fileName && fileName !== frameData) {
+            frameName = fileName.split('?')[0];
+          }
+        } else {
+          console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
+          return; // Salta questo frame se non è valido
+        }
       }
+      
       img.alt = frameName;
+      
+      // Se è specchiato, applica CSS transform per mostrarlo specchiato nella preview
+      if (isMirrored) {
+        img.style.transform = 'scaleX(-1)';
+      }
       
       const frameNumber = document.createElement('div');
       frameNumber.className = 'frame-number';
@@ -5186,7 +5258,19 @@ window.selectRoom = function(roomId) {
     if (confirm(`Delete frame ${frameIndex + 1}?`)) {
       const frameToDelete = charData.directions[currentDirection].frames[frameIndex];
       
-      // Elimina l'asset da Supabase se presente
+      // Se è un frame specchiato, non eliminare asset (non ne ha uno)
+      if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.mirror) {
+        // Frame specchiato, rimuovi solo dall'array
+        charData.directions[currentDirection].frames.splice(frameIndex, 1);
+        characterFrames.set(who, charData);
+        updateDirectionInfo();
+        refreshFramesPreview();
+        redraw();
+        showNotification(`Frame specchiato rimosso`, 'success');
+        return;
+      }
+      
+      // Elimina l'asset da Supabase se presente (solo per frame normali)
       if (frameToDelete) {
         try {
           // Gestisce diversi formati: { img: Image } oppure Image direttamente
@@ -10840,13 +10924,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       directionsList.forEach(dir => {
         const d = charData && charData.directions ? charData.directions[dir] : null;
         if (d) {
-          // Serializza i frame esattamente come i background/foreground:
-          // - Se è un oggetto con proprietà img, serializza fr.img (come f.img per foreground)
-          // - Se è direttamente un Image, serializza fr (come r.background)
-          // - Se è già una stringa (dataURL o assetId), restituiscila così com'è
+          // Serializza i frame:
+          // - Se è un frame specchiato (ha proprietà mirror), serializza solo { mirror: sourceDirection }
+          // - Altrimenti serializza l'immagine normalmente
           const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
             if (!fr) return null;
             
+            // Se è un frame specchiato, serializza solo il riferimento
+            if (fr.mirror && typeof fr.mirror === 'string') {
+              return { mirror: fr.mirror };
+            }
+            
+            // Frame normale: serializza l'immagine
             // Se è un oggetto con proprietà img (formato standard quando caricato)
             if (fr.img && typeof fr.img === 'object') {
               // Serializza l'immagine esattamente come per i foreground
@@ -12535,6 +12624,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 if (dirData.frames[i]) {
                   const originalFrame = dirData.frames[i];
                   
+                  // SALTA i frame specchiati - non devono essere salvati come assets separati
+                  if (originalFrame && typeof originalFrame === 'object' && originalFrame.mirror) {
+                    console.log(`[Asset] Frame specchiato saltato per ${characterName}/${dir}/${i} (riferimento a ${originalFrame.mirror})`);
+                    continue;
+                  }
+                  
                   // Se il frame è un oggetto con proprietà img, estrai l'immagine prima di verificare
                   let frameToCheck = originalFrame;
                   let frameToProcess = originalFrame;
@@ -14024,14 +14119,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 const frames = [];
                 if (Array.isArray(data.frames)) {
                   for (const f of data.frames) {
-                    const img = await createImageFromDataUrl(f, projectId);
-                    if (img) {
-                      frames.push(img);
-                      // Se è un assetId, registra nella mappa con subfolder
-                      if (f && f.startsWith('asset:')) {
-                        const assetId = f.replace('asset:', '');
-                        const characterSubfolder = `characters/${characterName}`;
-                        imageAssetMap.set(img, { assetId, type: 'character', projectId, subfolder: characterSubfolder });
+                    // Se è un frame specchiato (ha proprietà mirror), salva solo il riferimento
+                    if (f && typeof f === 'object' && f.mirror && typeof f.mirror === 'string') {
+                      frames.push({ mirror: f.mirror });
+                    } else {
+                      // Frame normale: carica l'immagine
+                      const img = await createImageFromDataUrl(f, projectId);
+                      if (img) {
+                        frames.push(img);
+                        // Se è un assetId, registra nella mappa con subfolder
+                        if (f && typeof f === 'string' && f.startsWith('asset:')) {
+                          const assetId = f.replace('asset:', '');
+                          const characterSubfolder = `characters/${characterName}`;
+                          imageAssetMap.set(img, { assetId, type: 'character', projectId, subfolder: characterSubfolder });
+                        }
                       }
                     }
                   }

@@ -816,6 +816,7 @@
     }
 
     // Character frames (hanno characterName invece di roomName)
+    // NOTA: I frame specchiati (con proprietà mirror) non devono essere caricati come asset separati
     if (projectData.characters && Array.isArray(projectData.characters)) {
       projectData.characters.forEach(char => {
         const characterName = char.name || char.id;
@@ -823,6 +824,11 @@
           Object.values(char.directions).forEach(dirData => {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               dirData.frames.forEach(frame => {
+                // Salta i frame specchiati - non sono asset separati
+                if (frame && typeof frame === 'object' && frame.mirror) {
+                  // Frame specchiato, non caricare come asset
+                  return;
+                }
                 if (frame && typeof frame === 'string') {
                   assetsWithCategory.set(frame, { category: 'character', roomName: null, characterName });
                 }
