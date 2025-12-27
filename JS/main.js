@@ -7832,7 +7832,7 @@ window.selectRoom = function(roomId) {
   // Variabile globale per tracciare lo stato di sincronizzazione
   let isSyncingProjects = false;
 
-  // Function to show loading overlay with amnt.png
+  // Function to show loading overlay with coover.png
   /**
    * Mostra loader globale
    * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
@@ -7866,7 +7866,7 @@ window.selectRoom = function(roomId) {
 
     overlay.innerHTML = `
       <div style="text-align: center; color: #fff;">
-        <img src="img/Amnt.png" alt="Loading" style="width: 120px; height: 120px; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
+        <img src="img/coover.png" alt="Loading" style="width: 120px; height: 120px; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
         <div style="font-size: 18px; margin-bottom: 20px; color: #39ff14;">${message}</div>
         <div class="spinner-border text-success" role="status" style="width: 3rem; height: 3rem;">
           <span class="visually-hidden">Loading...</span>
