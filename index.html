@@ -521,9 +521,39 @@
                 <option value="northwest">Northwest (↖)</option>
               </select>
             </div>
+            
+            <!-- Toggle per scegliere tra caricare frame o specchiare -->
             <div class="mb-3">
+              <label class="form-label text-light">Frame source:</label>
+              <div class="btn-group w-100" role="group">
+                <input type="radio" class="btn-check" name="frame-source" id="frame-source-upload" value="upload" checked onchange="toggleFrameSource()">
+                <label class="btn btn-outline-light btn-sm" for="frame-source-upload">Upload Frames</label>
+                
+                <input type="radio" class="btn-check" name="frame-source" id="frame-source-mirror" value="mirror" onchange="toggleFrameSource()">
+                <label class="btn btn-outline-light btn-sm" for="frame-source-mirror">Mirror Direction</label>
+              </div>
+            </div>
+            
+            <!-- Container per upload frames -->
+            <div class="mb-3" id="frame-upload-container">
               <label class="form-label text-light">Animation frames for selected direction:</label>
               <input type="file" id="character-frames-upload" class="form-control form-control-sm" accept="image/*" multiple onchange="uploadCharacterFrames(this)">
+            </div>
+            
+            <!-- Container per specchiare direzione -->
+            <div class="mb-3" id="frame-mirror-container" style="display: none;">
+              <label class="form-label text-light">Mirror frames from direction:</label>
+              <select class="form-select form-select-sm" id="mirror-direction-selector" onchange="applyMirrorDirection()">
+                <option value="">Select direction to mirror...</option>
+                <option value="north">North (↑)</option>
+                <option value="northeast">Northeast (↗)</option>
+                <option value="east">East (→)</option>
+                <option value="southeast">Southeast (↘)</option>
+                <option value="south">South (↓)</option>
+                <option value="southwest">Southwest (↙)</option>
+                <option value="west">West (←)</option>
+                <option value="northwest">Northwest (↖)</option>
+              </select>
             </div>
             <div class="mb-3">
               <label class="form-label text-light">FPS for selected direction:</label>

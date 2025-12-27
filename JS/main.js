@@ -3917,34 +3917,101 @@ window.selectRoom = function(roomId) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
       
+      // Ferma la preview se è attiva per questo character
+      const sel = document.getElementById('character-selector');
+      const currentCharacter = sel ? sel.value : '';
+      if (currentCharacter === characterName) {
+        stopCharacterPreview();
+      }
+      
       // Elimina tutti gli asset del character da Supabase
       const charData = characterFrames.get(characterName);
+      
+      // Ottieni projectId corrente
+      let projectId = null;
+      try {
+        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+        if (activeProjectName) {
+          projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        }
+      } catch (e) {
+        console.warn('[Character] Impossibile ottenere projectId per eliminazione character:', e);
+      }
+      
       if (charData && charData.directions) {
         try {
+          let deletedCount = 0;
+          // Prima: elimina i frame individuali usando imageAssetMap
           for (const [dir, dirData] of Object.entries(charData.directions)) {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               for (const frame of dirData.frames) {
-                // Se il frame è un'immagine, elimina l'asset
-                if (frame && frame.img) {
-                  await deleteAssetFromImage(frame.img);
+                // Gestisce diversi formati: { img: Image } oppure Image direttamente
+                let frameImage = null;
+                if (frame && typeof frame === 'object' && frame.img) {
+                  // Formato nuovo: oggetto con proprietà img
+                  frameImage = frame.img;
+                } else if (frame && typeof frame === 'object' && frame.src) {
+                  // Formato salvato: oggetto Image direttamente
+                  frameImage = frame;
                 } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
-                  // Se è un assetId, dobbiamo recuperare l'immagine da imageAssetMap
-                  // Cerca l'immagine associata a questo assetId
+                  // Se è un assetId stringa, cerca l'immagine associata
+                  const assetId = frame.replace('asset:', '');
                   for (const [img, assetInfo] of imageAssetMap.entries()) {
-                    if (assetInfo.assetId === frame.replace('asset:', '') && assetInfo.type === 'character') {
-                      await deleteAssetFromImage(img);
+                    if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+                      frameImage = img;
                       break;
                     }
+                  }
+                }
+                
+                if (frameImage) {
+                  const deleted = await deleteAssetFromImage(frameImage);
+                  if (deleted) {
+                    deletedCount++;
                   }
                 }
               }
             }
           }
+          console.log(`[Character] Eliminati ${deletedCount} asset frame da Supabase per character "${characterName}"`);
         } catch (error) {
           console.error('[Asset] Errore eliminazione asset character:', error);
-          // Continua comunque con l'eliminazione del character
+          // Continua comunque con l'eliminazione della cartella
         }
       }
+      
+      // Secondo: elimina anche dalla imageAssetMap tutti i riferimenti al character eliminato
+      // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
+      if (charData && charData.directions) {
+        try {
+          for (const [dir, dirData] of Object.entries(charData.directions)) {
+            if (dirData.frames && Array.isArray(dirData.frames)) {
+              for (const frame of dirData.frames) {
+                let frameImage = null;
+                if (frame && typeof frame === 'object' && frame.img) {
+                  frameImage = frame.img;
+                } else if (frame && typeof frame === 'object' && frame.src) {
+                  frameImage = frame;
+                }
+                // Rimuovi dalla imageAssetMap se presente
+                if (frameImage && imageAssetMap.has(frameImage)) {
+                  const assetInfo = imageAssetMap.get(frameImage);
+                  if (assetInfo && assetInfo.type === 'character') {
+                    imageAssetMap.delete(frameImage);
+                  }
+                }
+              }
+            }
+          }
+        } catch (mapError) {
+          console.warn('[Character] Errore pulizia imageAssetMap (non critico):', mapError);
+        }
+      }
+      
+      // Nota: L'eliminazione individuale dei frame sopra dovrebbe già aver eliminato 
+      // tutti i file da Supabase Storage tramite deleteAssetFromImage.
+      // Se alcuni frame non erano in imageAssetMap, potrebbero non essere stati caricati su Supabase,
+      // quindi non c'è nulla da eliminare.
       
       characterElement.remove();
       
@@ -4011,6 +4078,11 @@ window.selectRoom = function(roomId) {
   let characterPreviewTimer = null;
   let characterPreviewIndex = 0;
   let currentDirection = 'south'; // Default direction
+  
+  // Traccia i frame caricati durante la sessione corrente che non sono stati ancora salvati nel progetto
+  // Questo permette di eliminarli da Supabase se si chiude il browser o si fa logout senza salvare
+  const unsavedCharacterFrames = new Set(); // Set di Image objects che sono stati caricati su Supabase ma non salvati
+  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character caricati su Supabase ma non salvati nel progetto
 
   function refreshCharacterSelector() {
     const sel = document.getElementById('character-selector');
@@ -4127,7 +4199,13 @@ window.selectRoom = function(roomId) {
   window.loadCharacterDirections = function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
-    if (!who) return;
+    if (!who) {
+      // Reset toggle a "upload" quando non c'è character selezionato
+      const uploadRadio = document.getElementById('frame-source-upload');
+      if (uploadRadio) uploadRadio.checked = true;
+      toggleFrameSource();
+      return;
+    }
 
     const dirSel = document.getElementById('direction-selector');
     if (!dirSel) return;
@@ -4141,6 +4219,8 @@ window.selectRoom = function(roomId) {
       }
     }
     updateDirectionInfo(); // Update direction info display
+    // Assicura che il toggle sia inizializzato
+    toggleFrameSource();
   };
 
   // Add event listener for character selection change
@@ -4179,30 +4259,133 @@ window.selectRoom = function(roomId) {
     }
 
     const dirData = charData.directions[direction];
-    let remaining = files.length;
-    files.forEach(file => {
-      const img = new Image();
-      img.onload = () => {
-        // Generate unique name even for same image
-        const baseName = file.name.replace(/\.[^/.]+$/, "");
-        const timestamp = Date.now();
-        const frameName = `${baseName}_${timestamp}`;
-        
-        // Store frame with unique name
-        const frameData = {
-          img: img,
-          name: frameName,
-          duration: 1000 // Default duration
+    
+    // Funzione helper per estrarre il numero dal nome del file
+    // Supporta qualsiasi pattern: frame_01.png, file.001.png, walk-1.png, etc.
+    const extractNumberFromFileName = (fileName) => {
+      // Rimuovi l'estensione per analizzare solo il nome
+      const nameWithoutExt = fileName.replace(/\.[^.]*$/, '');
+      
+      // Estrai tutti i numeri dal nome del file (mantenendo le posizioni)
+      const numberMatches = [];
+      let match;
+      const numberRegex = /\d+/g;
+      
+      while ((match = numberRegex.exec(nameWithoutExt)) !== null) {
+        numberMatches.push({
+          value: parseInt(match[0], 10),
+          original: match[0], // Mantieni il valore originale con padding
+          position: match.index,
+          length: match[0].length
+        });
+      }
+      
+      if (numberMatches.length === 0) {
+        // Se non trova numeri, usa un numero molto grande per metterli alla fine
+        return Infinity;
+      }
+      
+      // Se c'è un solo numero, usalo
+      if (numberMatches.length === 1) {
+        return numberMatches[0].value;
+      }
+      
+      // Se ci sono più numeri, preferisci quello con padding (001, 002, 01, etc.)
+      // perché di solito è il frame number
+      const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
+      
+      if (paddedNumbers.length > 0) {
+        // Se ci sono numeri con padding, usa quello con più cifre (001 > 01)
+        // o se hanno la stessa lunghezza, usa l'ultimo
+        paddedNumbers.sort((a, b) => {
+          if (b.length !== a.length) return b.length - a.length; // Preferisci più cifre
+          return b.position - a.position; // Se stessa lunghezza, usa l'ultimo
+        });
+        return paddedNumbers[0].value;
+      }
+      
+      // Se non ci sono numeri con padding, usa l'ultimo numero trovato
+      // (spesso è il frame number quando ci sono altri numeri nel nome)
+      return numberMatches[numberMatches.length - 1].value;
+    };
+    
+    // Ordina i file in base al numero presente nel nome (ordine crescente)
+    const sortedFiles = [...files].sort((a, b) => {
+      const numA = extractNumberFromFileName(a.name);
+      const numB = extractNumberFromFileName(b.name);
+      
+      // Se entrambi hanno numeri, ordina per numero (crescente)
+      if (numA !== Infinity && numB !== Infinity) {
+        return numA - numB;
+      }
+      
+      // Se solo uno ha un numero, quello con numero viene prima
+      if (numA !== Infinity) return -1;
+      if (numB !== Infinity) return 1;
+      
+      // Se nessuno ha numeri, ordina alfabeticamente
+      return a.name.localeCompare(b.name);
+    });
+    
+    // Log per debug: mostra l'ordine originale e quello ordinato
+    console.log(`[Frame] 📁 File originali (${files.length}):`, files.map(f => f.name));
+    console.log(`[Frame] ✅ File ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
+      const num = extractNumberFromFileName(f.name);
+      return `${f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
+    }));
+    
+    // Verifica che l'ordinamento sia corretto
+    const orderCheck = sortedFiles.map((f, idx) => {
+      const num = extractNumberFromFileName(f.name);
+      const prevNum = idx > 0 ? extractNumberFromFileName(sortedFiles[idx - 1].name) : -1;
+      const isOrdered = num === Infinity || prevNum === Infinity || num >= prevNum;
+      return { file: f.name, num, isOrdered };
+    });
+    console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
+    
+    let remaining = sortedFiles.length;
+    
+    // Crea un array per mantenere l'ordine corretto anche durante il caricamento asincrono
+    const framePromises = sortedFiles.map((file, index) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          // Salva il nome originale del file
+          const originalFileName = file.name;
+          
+          // Store frame with original file name e indice per mantenere l'ordine
+          const frameData = {
+            img: img,
+            name: originalFileName,
+            duration: 1000, // Default duration
+            orderIndex: index // Mantieni l'indice per l'ordinamento
+          };
+          
+          resolve({ frameData, index });
         };
-        
-        dirData.frames.push(frameData);
-        remaining--;
-        if (remaining === 0) {
-          showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction}) - not saved to Storage`, 'warning');
-          updateDirectionInfo(); // Update the direction info display
+        img.onerror = () => {
+          console.error(`[Frame] ❌ Errore caricamento frame: ${file.name}`);
+          resolve({ frameData: null, index });
+        };
+        img.src = URL.createObjectURL(file);
+      });
+    });
+    
+    // Attendi che tutti i frame siano caricati e aggiungili nell'ordine corretto
+    Promise.all(framePromises).then(results => {
+      // Ordina i risultati per indice per mantenere l'ordine corretto
+      results.sort((a, b) => a.index - b.index);
+      
+      // Aggiungi i frame nell'ordine corretto
+      results.forEach(({ frameData }) => {
+        if (frameData) {
+          dirData.frames.push(frameData);
         }
-      };
-      img.src = URL.createObjectURL(file);
+      });
+      
+      console.log(`[Frame] ✅ Caricati ${dirData.frames.length} frame nell'ordine corretto per ${who} (${direction})`);
+      showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction}) - not saved to Storage`, 'warning');
+      updateDirectionInfo(); // Update the direction info display
     });
     
     // Reset input to allow same file selection again
@@ -4352,7 +4535,143 @@ window.selectRoom = function(roomId) {
       characterPreviewIndex = 0; // Reset animation index
       updateDirectionInfo(); // Update frame count info
       redraw(); // Update canvas preview
+      
+      // Reset il selector della direzione mirror quando si cambia direzione
+      const mirrorSel = document.getElementById('mirror-direction-selector');
+      if (mirrorSel) {
+        mirrorSel.value = '';
+      }
     }
+  };
+
+  // Function to toggle between upload and mirror frame source
+  window.toggleFrameSource = function() {
+    const uploadRadio = document.getElementById('frame-source-upload');
+    const mirrorRadio = document.getElementById('frame-source-mirror');
+    const uploadContainer = document.getElementById('frame-upload-container');
+    const mirrorContainer = document.getElementById('frame-mirror-container');
+    const framesPreview = document.getElementById('frames-preview');
+    const framesPreviewContainer = framesPreview ? framesPreview.closest('.mb-3') : null;
+    
+    if (uploadRadio && uploadRadio.checked) {
+      // Mostra upload, nascondi mirror
+      if (uploadContainer) uploadContainer.style.display = 'block';
+      if (mirrorContainer) mirrorContainer.style.display = 'none';
+      if (framesPreviewContainer) framesPreviewContainer.style.display = 'block';
+    } else if (mirrorRadio && mirrorRadio.checked) {
+      // Mostra mirror, nascondi upload
+      if (uploadContainer) uploadContainer.style.display = 'none';
+      if (mirrorContainer) mirrorContainer.style.display = 'block';
+      if (framesPreviewContainer) framesPreviewContainer.style.display = 'none';
+    }
+  };
+
+  // Function to mirror frames horizontally from another direction
+  window.applyMirrorDirection = async function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) { 
+      showNotification('Select a character first', 'warning'); 
+      return; 
+    }
+
+    const mirrorSel = document.getElementById('mirror-direction-selector');
+    const sourceDirection = mirrorSel ? mirrorSel.value : '';
+    if (!sourceDirection) {
+      return; // Nessuna direzione selezionata, non fare nulla
+    }
+
+    const charData = characterFrames.get(who);
+    if (!charData) {
+      showNotification('Character not found', 'warning');
+      return;
+    }
+
+    // Verifica che la direzione sorgente abbia frame
+    if (!charData.directions[sourceDirection] || !charData.directions[sourceDirection].frames.length) {
+      showNotification(`No frames found in ${sourceDirection} direction`, 'warning');
+      return;
+    }
+
+    const sourceFrames = charData.directions[sourceDirection].frames;
+    const sourceFPS = charData.directions[sourceDirection].fps || 8;
+
+    // Crea un canvas temporaneo per lo specchiamento
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+
+    // Inizializza la direzione corrente se non esiste
+    if (!charData.directions[currentDirection]) {
+      charData.directions[currentDirection] = { frames: [], fps: sourceFPS };
+    }
+
+    // Pulisce i frame esistenti per la direzione corrente
+    charData.directions[currentDirection].frames = [];
+    charData.directions[currentDirection].fps = sourceFPS;
+
+    // Specchia ogni frame
+    for (let i = 0; i < sourceFrames.length; i++) {
+      const sourceFrame = sourceFrames[i];
+      
+      // Estrae l'immagine dal frame (gestisce entrambi i formati)
+      let sourceImg = null;
+      if (sourceFrame && typeof sourceFrame === 'object' && sourceFrame.img) {
+        sourceImg = sourceFrame.img;
+      } else if (sourceFrame && typeof sourceFrame === 'object' && sourceFrame.src) {
+        sourceImg = sourceFrame;
+      }
+
+      if (!sourceImg || !sourceImg.complete) {
+        console.warn(`Frame ${i + 1} from ${sourceDirection} is not ready, skipping`);
+        continue;
+      }
+
+      // Imposta le dimensioni del canvas temporaneo
+      tempCanvas.width = sourceImg.width;
+      tempCanvas.height = sourceImg.height;
+
+      // Specchia orizzontalmente: scala negativo su X e trasla
+      tempCtx.save();
+      tempCtx.scale(-1, 1);
+      tempCtx.drawImage(sourceImg, -tempCanvas.width, 0);
+      tempCtx.restore();
+
+      // Crea una nuova immagine specchiata
+      const mirroredImg = new Image();
+      mirroredImg.src = tempCanvas.toDataURL('image/png');
+
+      // Attendi che l'immagine sia caricata
+      await new Promise((resolve, reject) => {
+        mirroredImg.onload = resolve;
+        mirroredImg.onerror = reject;
+        // Timeout di sicurezza
+        setTimeout(() => resolve(), 1000);
+      });
+
+      // Crea un oggetto frame con nome (per mantenere compatibilità con il formato)
+      const mirroredFrame = {
+        img: mirroredImg,
+        name: sourceFrame && sourceFrame.name ? `mirrored_${sourceFrame.name}` : `mirrored_frame_${i + 1}_from_${sourceDirection}`
+      };
+
+      // Aggiungi il frame specchiato
+      charData.directions[currentDirection].frames.push(mirroredFrame);
+    }
+
+    // Aggiorna la Map
+    characterFrames.set(who, charData);
+
+    // Aggiorna l'FPS input
+    const fpsInput = document.getElementById('character-fps');
+    if (fpsInput) {
+      fpsInput.value = sourceFPS;
+    }
+
+    // Aggiorna le informazioni
+    updateDirectionInfo();
+    redraw();
+
+    showNotification(`Mirrored ${charData.directions[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection}`, 'success');
   };
 
   // Function to update direction info display
@@ -4424,6 +4743,13 @@ window.selectRoom = function(roomId) {
     const container = document.getElementById('frames-preview');
     if (!container) return;
     
+    // Verifica se il toggle è su "mirror" - in quel caso non mostrare i thumbnails
+    const mirrorRadio = document.getElementById('frame-source-mirror');
+    if (mirrorRadio && mirrorRadio.checked) {
+      container.innerHTML = '<div class="text-muted">Thumbnails hidden when using mirror mode</div>';
+      return;
+    }
+    
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
@@ -4451,6 +4777,8 @@ window.selectRoom = function(roomId) {
       frameItem.dataset.frameIndex = index;
       
       const img = document.createElement('img');
+      let frameName = `Frame ${index + 1}`; // Nome di default
+      
       // Gestisce diversi formati di frameData:
       // 1. Oggetto con proprietà img: { img: Image, name: string, ... }
       // 2. Oggetto Image direttamente: Image
@@ -4458,21 +4786,49 @@ window.selectRoom = function(roomId) {
       if (frameData && typeof frameData === 'object' && frameData.img) {
         // Formato nuovo: oggetto con proprietà img
         img.src = frameData.img.src || frameData.img;
+        // Estrae il nome del file se disponibile
+        if (frameData.name) {
+          frameName = frameData.name;
+        }
       } else if (frameData && typeof frameData === 'object' && frameData.src) {
         // Formato salvato: oggetto Image direttamente
         img.src = frameData.src;
+        // Prova a estrarre il nome dall'URL o da altre proprietà
+        if (frameData.name) {
+          frameName = frameData.name;
+        } else if (frameData.src && typeof frameData.src === 'string') {
+          // Prova a estrarre il nome dal path dell'URL
+          const urlParts = frameData.src.split('/');
+          const fileName = urlParts[urlParts.length - 1];
+          if (fileName && fileName !== frameData.src) {
+            frameName = fileName.split('?')[0]; // Rimuove query params
+          }
+        }
       } else if (typeof frameData === 'string') {
         // Formato stringa URL
         img.src = frameData;
+        // Prova a estrarre il nome dall'URL
+        const urlParts = frameData.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        if (fileName && fileName !== frameData) {
+          frameName = fileName.split('?')[0]; // Rimuove query params
+        }
       } else {
         console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
         return; // Salta questo frame se non è valido
       }
-      img.alt = `Frame ${index + 1}`;
+      img.alt = frameName;
       
       const frameNumber = document.createElement('div');
       frameNumber.className = 'frame-number';
       frameNumber.textContent = index + 1;
+      
+      // Aggiunge il nome del file sotto il numero del frame
+      const frameFileName = document.createElement('div');
+      frameFileName.className = 'frame-filename';
+      frameFileName.style.cssText = 'font-size: 9px; color: #888; margin-top: 3px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; line-height: 1.2;';
+      frameFileName.textContent = frameName;
+      frameFileName.title = frameName; // Tooltip con nome completo
       
       const frameControls = document.createElement('div');
       frameControls.className = 'frame-controls';
@@ -4489,6 +4845,7 @@ window.selectRoom = function(roomId) {
       frameControls.appendChild(deleteBtn);
       frameItem.appendChild(img);
       frameItem.appendChild(frameNumber);
+      frameItem.appendChild(frameFileName);
       frameItem.appendChild(frameControls);
       container.appendChild(frameItem);
     });
@@ -8790,12 +9147,107 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Rimuovi progetto attivo alla chiusura della pagina
   // Questo garantisce che ad ogni apertura/login si visualizzi il modale di selezione
-  window.addEventListener('beforeunload', function() {
+  window.addEventListener('beforeunload', function(event) {
+    // Pulisci i frame non salvati prima di chiudere la pagina
+    // NOTA: beforeunload non supporta async/await, quindi usiamo navigator.sendBeacon
+    // o salviamo l'informazione per essere eliminata al prossimo caricamento
+    if (unsavedCharacterFrames.size > 0) {
+      console.log(`[Cleanup] ${unsavedCharacterFrames.size} frame non salvati da eliminare alla chiusura...`);
+      
+      // Salva l'informazione sui frame da eliminare in sessionStorage per cleanup al prossimo caricamento
+      try {
+        const framesToClean = [];
+        
+        // Aggiungi frame tracciati come Image objects
+        for (const frameImg of unsavedCharacterFrames) {
+          const assetInfo = imageAssetMap.get(frameImg);
+          if (assetInfo) {
+            framesToClean.push({
+              assetId: assetInfo.assetId,
+              type: assetInfo.type,
+              projectId: assetInfo.projectId,
+              subfolder: assetInfo.subfolder,
+              fileName: assetInfo.fileName
+            });
+          }
+        }
+        
+        // Aggiungi frame tracciati come assetId (cerca nell'imageAssetMap)
+        for (const assetId of unsavedCharacterAssetIds) {
+          // Verifica se questo assetId è già nella lista (da unsavedCharacterFrames)
+          const alreadyInList = framesToClean.some(f => f.assetId === assetId);
+          if (!alreadyInList) {
+            // Cerca l'assetInfo nell'imageAssetMap
+            for (const [img, assetInfo] of imageAssetMap.entries()) {
+              if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+                framesToClean.push({
+                  assetId: assetInfo.assetId,
+                  type: assetInfo.type,
+                  projectId: assetInfo.projectId,
+                  subfolder: assetInfo.subfolder,
+                  fileName: assetInfo.fileName
+                });
+                break;
+              }
+            }
+          }
+        }
+        
+        if (framesToClean.length > 0) {
+          sessionStorage.setItem('amiantoUnsavedFramesToDelete', JSON.stringify(framesToClean));
+          console.log(`[Cleanup] Salvati ${framesToClean.length} frame da eliminare in sessionStorage`);
+        }
+      } catch (e) {
+        console.warn('[Cleanup] Impossibile salvare frame da eliminare:', e);
+      }
+    }
+
     // Rimuovi progetto attivo quando l'utente chiude la pagina
     localStorage.removeItem('amiantoActiveProjectName');
     localStorage.removeItem('amiantoActiveProjectOwner');
     console.log('[Cleanup] Progetto attivo rimosso alla chiusura della pagina');
   });
+
+  // Cleanup frame non salvati salvati in sessionStorage al caricamento della pagina
+  async function cleanupStoredUnsavedFrames() {
+    try {
+      const stored = sessionStorage.getItem('amiantoUnsavedFramesToDelete');
+      if (!stored) return;
+
+      const framesToDelete = JSON.parse(stored);
+      console.log(`[Cleanup] Trovati ${framesToDelete.length} frame da eliminare dalla sessione precedente...`);
+
+      if (window.supabaseStorage && window.supabaseStorage.deleteAsset && 
+          window.firebaseAuth && window.firebaseAuth.currentUser) {
+        const userId = window.firebaseAuth.currentUser.uid;
+        let deletedCount = 0;
+
+        for (const frameInfo of framesToDelete) {
+          try {
+            const deleted = await window.supabaseStorage.deleteAsset(
+              frameInfo.projectId,
+              frameInfo.type,
+              frameInfo.fileName,
+              userId,
+              frameInfo.subfolder
+            );
+            if (deleted) {
+              deletedCount++;
+            }
+          } catch (error) {
+            console.warn('[Cleanup] Errore eliminazione frame dalla sessione precedente:', error);
+          }
+        }
+
+        console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame dalla sessione precedente`);
+      }
+
+      // Rimuovi dallo storage dopo il cleanup
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+    } catch (error) {
+      console.error('[Cleanup] Errore cleanup frame dalla sessione precedente:', error);
+    }
+  }
 
   // Initialize authentication system
   async function initAuthSystem() {
@@ -8818,6 +9270,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Esegui bootstrap iniziale
     await bootstrapApp();
+    
+    // Pulisci i frame non salvati dalla sessione precedente (se la pagina è stata chiusa senza salvare)
+    cleanupStoredUnsavedFrames().catch(err => {
+      console.warn('[Bootstrap] Errore cleanup frame sessione precedente:', err);
+    });
     
     // Nascondi loading dopo bootstrap
     hideLoadingOverlay();
@@ -9625,8 +10082,78 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     alert.classList.remove('d-none');
   }
 
+  // Funzione per pulire i frame non salvati da Supabase
+  async function cleanupUnsavedCharacterFrames() {
+    if (unsavedCharacterFrames.size === 0 && unsavedCharacterAssetIds.size === 0) {
+      return; // Nessun frame da eliminare
+    }
+
+    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati da Supabase...`);
+
+    let deletedCount = 0;
+    
+    // Prima: elimina usando gli Image objects tracciati
+    const framesToDelete = Array.from(unsavedCharacterFrames);
+    for (const frameImg of framesToDelete) {
+      try {
+        const deleted = await deleteAssetFromImage(frameImg);
+        if (deleted) {
+          deletedCount++;
+          unsavedCharacterFrames.delete(frameImg);
+        }
+      } catch (error) {
+        console.warn('[Cleanup] Errore eliminazione frame non salvato:', error);
+      }
+    }
+    
+    // Secondo: elimina usando gli assetId tracciati (cerca le immagini corrispondenti)
+    if (unsavedCharacterAssetIds.size > 0 && window.supabaseStorage && window.supabaseStorage.deleteAsset) {
+      try {
+        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+        const projectId = activeProjectName ? activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_') : null;
+        
+        if (projectId && window.firebaseAuth && window.firebaseAuth.currentUser) {
+          const userId = window.firebaseAuth.currentUser.uid;
+          
+          // Cerca le immagini corrispondenti agli assetId nell'imageAssetMap
+          for (const assetId of Array.from(unsavedCharacterAssetIds)) {
+            try {
+              // Cerca l'immagine nell'imageAssetMap
+              let foundImage = null;
+              for (const [img, assetInfo] of imageAssetMap.entries()) {
+                if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+                  foundImage = img;
+                  break;
+                }
+              }
+              
+              if (foundImage) {
+                const deleted = await deleteAssetFromImage(foundImage);
+                if (deleted) {
+                  deletedCount++;
+                }
+              } else {
+                // Se non trovato nell'imageAssetMap, prova a eliminare direttamente usando i metadati
+                // (richiede che abbiamo salvato i metadati in Firestore)
+                console.warn(`[Cleanup] Immagine non trovata nell'imageAssetMap per assetId ${assetId}, eliminazione diretta non supportata`);
+              }
+            } catch (error) {
+              console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[Cleanup] Errore eliminazione frame per assetId:', error);
+      }
+    }
+
+    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati da Supabase`);
+    unsavedCharacterFrames.clear();
+    unsavedCharacterAssetIds.clear();
+  }
+
   // Logout user
-  window.logout = function() {
+  window.logout = async function() {
     // If in demo mode, just exit demo without calling Firebase
     if (isDemoMode) {
       isDemoMode = false;
@@ -9640,6 +10167,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     if (confirm('Are you sure you want to logout?')) {
+      // Pulisci i frame non salvati prima del logout
+      try {
+        await cleanupUnsavedCharacterFrames();
+      } catch (error) {
+        console.error('[Logout] Errore cleanup frame:', error);
+        // Continua comunque con il logout
+      }
+
       fbSignOut().catch(()=>{}).finally(() => {
         currentUser = null;
         localStorage.removeItem('amiantoCurrentUser');
@@ -10305,7 +10840,27 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
       const jsonString = JSON.stringify(projectData);
-      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length });
+      const dataSizeBytes = new Blob([jsonString]).size;
+      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
+      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB` });
+      
+      // Firestore ha un limite di 1MB per campo
+      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
+      if (dataSizeBytes > FIRESTORE_MAX_SIZE) {
+        // Verifica se ci sono ancora dataURL nel progetto (dovrebbero essere stati convertiti in assetId)
+        const dataURLCount = (jsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
+        if (dataURLCount > 0) {
+          const errorMsg = `Il progetto è troppo grande (${dataSizeMB} MB) e contiene ancora ${dataURLCount} immagini non convertite. Assicurati che tutti i frame siano stati salvati come asset prima di salvare il progetto.`;
+          console.error('[Firestore] ❌', errorMsg);
+          addDebugMessage(errorMsg, 'error');
+          throw new Error(errorMsg);
+        } else {
+          const errorMsg = `Il progetto è troppo grande (${dataSizeMB} MB) per essere salvato su Firestore (limite: 1MB). Considera di ridurre il numero di frame o dividere il progetto.`;
+          console.error('[Firestore] ❌', errorMsg);
+          addDebugMessage(errorMsg, 'error');
+          throw new Error(errorMsg);
+        }
+      }
 
       // Struttura dati Firestore: users/{userId}/projects/{projectId}
       const projectRef = window.firebaseDB
@@ -11392,32 +11947,102 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     let savedCount = 0;
     let errorCount = 0;
 
+    // Funzione helper per generare un assetId determinista per i frame dei character
+    // Basato su character/direction/index per garantire che lo stesso frame abbia sempre lo stesso ID
+    const generateFrameAssetId = (characterName, direction, index) => {
+      const safeCharName = (characterName || 'char').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      const safeDir = (direction || 'unknown').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      return `frame_${safeCharName}_${safeDir}_${index}`;
+    };
+
     // Funzione helper per processare un asset
-    const processAsset = async (assetValue, assetType, assetName, subfolder = null) => {
+    const processAsset = async (assetValue, assetType, assetName, subfolder = null, existingAssetId = null, overwrite = false) => {
       // Se è già un assetId (prefisso "asset:"), salta
       if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
         return assetValue;
       }
       
-      // Se è un dataURL, convertilo e caricalo
-      if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
+      // Se è un oggetto Image, convertilo prima in dataURL
+      let dataURL = null;
+      if (assetValue && typeof assetValue === 'object' && (assetValue.src || (assetValue.width && assetValue.height))) {
+        // È un oggetto Image, convertilo in dataURL
+        try {
+          dataURL = imageToDataURL(assetValue);
+          if (!dataURL) {
+            console.warn(`[Asset] Impossibile convertire Image in dataURL per ${assetName}`);
+            errorCount++;
+            return null; // Non possiamo processare questo asset
+          }
+          console.log(`[Asset] Image convertita in dataURL per ${assetName}`);
+        } catch (error) {
+          console.error(`[Asset] Errore conversione Image per ${assetName}:`, error);
+          errorCount++;
+          return null;
+        }
+      } else if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
+        dataURL = assetValue;
+      } else if (assetValue === null || assetValue === undefined) {
+        // Valore null/undefined, mantieni così
+        return assetValue;
+      } else {
+        // Non è né un assetId, né un dataURL, né un Image - potrebbe essere un valore non-immagine
+        // Verifica se è un oggetto con proprietà img (come i frame dei character)
+        if (assetValue && typeof assetValue === 'object' && assetValue.img) {
+          // È un oggetto frame con proprietà img, processa l'immagine
+          const imgDataURL = imageToDataURL(assetValue.img);
+          if (imgDataURL) {
+            dataURL = imgDataURL;
+            console.log(`[Asset] Frame object convertito in dataURL per ${assetName}`);
+          } else {
+            console.warn(`[Asset] Impossibile convertire frame.img in dataURL per ${assetName}`);
+            errorCount++;
+            return assetValue; // Mantieni originale se fallisce
+          }
+        } else {
+          // Non è un asset immagine, mantieni come è
+          return assetValue;
+        }
+      }
+      
+      // Se abbiamo un dataURL (da stringa, da Image, o da frame object), convertilo e caricalo
+      if (dataURL) {
         try {
           const fileName = assetName || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.png`;
-          const file = await dataURLtoFile(assetValue, fileName);
+          const file = await dataURLtoFile(dataURL, fileName);
           if (!file) {
             console.warn(`[Asset] Impossibile convertire dataURL in File per ${assetName}`);
             errorCount++;
-            return assetValue; // Mantieni dataURL originale se fallisce
+            return dataURL; // Mantieni dataURL originale se fallisce
           }
 
-          const { assetId } = await uploadImage(file, projectId, assetType, { subfolder });
-          console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+          // Se esiste già un assetId per questo asset, usalo e sovrascrivi
+          const finalAssetId = existingAssetId || null;
+          const shouldOverwrite = overwrite || !!existingAssetId;
+
+          const { assetId } = await uploadImage(file, projectId, assetType, { 
+            assetId: finalAssetId, 
+            overwriteExisting: shouldOverwrite,
+            subfolder 
+          });
+          
+          if (shouldOverwrite && existingAssetId) {
+            console.log(`[Asset] ✅ Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+          } else {
+            console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+          }
           savedCount++;
+          
+          // Se è un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
+          if (assetType === 'character' && assetId) {
+            unsavedCharacterAssetIds.add(assetId);
+            console.log(`[Asset] Frame character tracciato per cleanup (assetId: ${assetId})`);
+          }
+          
           return `asset:${assetId}`;
         } catch (error) {
           console.error(`[Asset] ❌ Errore salvataggio asset ${assetName}:`, error);
           errorCount++;
-          return assetValue; // Mantieni dataURL originale se fallisce
+          return dataURL; // Mantieni dataURL originale se fallisce
         }
       }
       
@@ -11484,7 +12109,81 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             if (dirData.frames && Array.isArray(dirData.frames)) {
               for (let i = 0; i < dirData.frames.length; i++) {
                 if (dirData.frames[i]) {
-                  dirData.frames[i] = await processAsset(dirData.frames[i], 'character', `char_${char.name}_${dir}_${i}`, characterSubfolder);
+                  const originalFrame = dirData.frames[i];
+                  
+                  // Se il frame è un oggetto con proprietà img, estrai l'immagine prima di verificare
+                  let frameToCheck = originalFrame;
+                  let frameToProcess = originalFrame;
+                  if (originalFrame && typeof originalFrame === 'object' && originalFrame.img) {
+                    // È un oggetto frame con proprietà img, usa l'immagine direttamente
+                    frameToCheck = originalFrame.img;
+                    frameToProcess = originalFrame.img;
+                    console.log(`[Asset] Frame object con proprietà img trovato per ${characterName}/${dir}/${i}`);
+                  }
+                  
+                  // Verifica se esiste già un assetId per questo frame nel progetto originale
+                  let existingAssetId = null;
+                  const isAlreadyAssetId = typeof frameToCheck === 'string' && frameToCheck.startsWith('asset:');
+                  const isDataURL = typeof frameToCheck === 'string' && frameToCheck.startsWith('data:image/');
+                  const isImageObject = frameToCheck && typeof frameToCheck === 'object' && (frameToCheck.src || (frameToCheck.width && frameToCheck.height));
+                  
+                  if (isAlreadyAssetId) {
+                    // Se il frame è già un assetId, estrailo e mantienilo (non ricaricare)
+                    existingAssetId = frameToCheck.replace('asset:', '');
+                    console.log(`[Asset] Frame già salvato come asset:${existingAssetId}, mantengo (${characterName}/${dir}/${i})`);
+                  } else if (isDataURL || isImageObject) {
+                    // Se è un dataURL o un oggetto Image (nuovo o modificato), verifica se esiste già un assetId nel progetto originale
+                    const originalChar = projectObj.characters?.find(c => (c.name || c.id) === characterName);
+                    if (originalChar?.directions?.[dir]?.frames?.[i]) {
+                      let originalFrameValue = originalChar.directions[dir].frames[i];
+                      // Se anche l'originale è un oggetto con img, estrai l'immagine
+                      if (originalFrameValue && typeof originalFrameValue === 'object' && originalFrameValue.img) {
+                        originalFrameValue = originalFrameValue.img;
+                      }
+                      if (typeof originalFrameValue === 'string' && originalFrameValue.startsWith('asset:')) {
+                        existingAssetId = originalFrameValue.replace('asset:', '');
+                        console.log(`[Asset] Frame modificato, riutilizzo assetId esistente: asset:${existingAssetId} (${characterName}/${dir}/${i})`);
+                      }
+                    }
+                    
+                    // Se non esiste un assetId nel progetto originale, genera uno determinista
+                    if (!existingAssetId) {
+                      existingAssetId = generateFrameAssetId(characterName, dir, i);
+                      console.log(`[Asset] Nuovo frame, genero assetId determinista: ${existingAssetId} (${characterName}/${dir}/${i})`);
+                    }
+                  }
+                  
+                  // Processa il frame, usando l'assetId esistente o quello determinista e sovrascrivendo se è un dataURL o Image
+                  dirData.frames[i] = await processAsset(
+                    frameToProcess, 
+                    'character', 
+                    `char_${char.name}_${dir}_${i}`, 
+                    characterSubfolder,
+                    existingAssetId,
+                    isDataURL || isImageObject // Sovrascrivi se è un dataURL o un oggetto Image
+                  );
+                  
+                  // Se il frame è stato convertito da dataURL o Image a assetId (caricato su Supabase),
+                  // trova l'immagine corrispondente e rimuovila dal set dei frame non salvati
+                  if ((isDataURL || isImageObject) && 
+                      typeof dirData.frames[i] === 'string' && dirData.frames[i].startsWith('asset:')) {
+                    // Cerca l'immagine corrispondente nella characterFrames map
+                    const charData = characterFrames.get(characterName);
+                    if (charData && charData.directions && charData.directions[dir] && 
+                        charData.directions[dir].frames && charData.directions[dir].frames[i]) {
+                      const frameObj = charData.directions[dir].frames[i];
+                      let frameImg = null;
+                      if (frameObj && typeof frameObj === 'object' && frameObj.img) {
+                        frameImg = frameObj.img;
+                      } else if (frameObj && typeof frameObj === 'object' && frameObj.src) {
+                        frameImg = frameObj;
+                      }
+                      if (frameImg && unsavedCharacterFrames.has(frameImg)) {
+                        unsavedCharacterFrames.delete(frameImg);
+                        console.log(`[Save] Frame rimosso dal set non salvati: ${characterName}/${dir}/${i}`);
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -11503,6 +12202,57 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     console.log(`[Asset] Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    
+    // Controllo finale: verifica se ci sono ancora dataURL nel progetto e convertili
+    const finalConversion = async (obj, path = 'root') => {
+      if (!obj || typeof obj !== 'object') return;
+      
+      for (const key in obj) {
+        const value = obj[key];
+        const currentPath = path ? `${path}.${key}` : key;
+        
+        if (value === null || value === undefined) {
+          continue;
+        }
+        
+        // Se è un array, processa ogni elemento
+        if (Array.isArray(value)) {
+          for (let i = 0; i < value.length; i++) {
+            const item = value[i];
+            if (item && typeof item === 'object') {
+              await finalConversion(item, `${currentPath}[${i}]`);
+            } else if (typeof item === 'string' && item.startsWith('data:image/')) {
+              // Trovato un dataURL in un array, convertilo
+              console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}[${i}]`);
+              const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
+              if (converted && converted.startsWith('asset:')) {
+                value[i] = converted;
+                savedCount++;
+              }
+            }
+          }
+        } 
+        // Se è un oggetto, processa ricorsivamente
+        else if (typeof value === 'object') {
+          await finalConversion(value, currentPath);
+        } 
+        // Se è una stringa dataURL, convertila
+        else if (typeof value === 'string' && value.startsWith('data:image/')) {
+          console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}`);
+          const converted = await processAsset(value, 'unknown', currentPath);
+          if (converted && converted.startsWith('asset:')) {
+            obj[key] = converted;
+            savedCount++;
+          }
+        }
+      }
+    };
+    
+    // Esegui la conversione finale su tutto il progetto
+    console.log('[Asset] 🔍 Controllo finale per dataURL rimanenti...');
+    await finalConversion(updatedProject, 'project');
+    console.log(`[Asset] ✅ Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
+    
     return updatedProject;
   }
 
@@ -11557,9 +12307,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     try {
       projectObj = await saveAllAssetsToStorage(projectObj, projectId);
       console.log('[Save] Tutti gli asset salvati su Supabase');
+      
+      // Verifica che non ci siano più dataURL nel progetto (dovrebbero essere tutti convertiti in assetId)
+      const projectJsonString = JSON.stringify(projectObj);
+      const remainingDataURLs = (projectJsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
+      if (remainingDataURLs > 0) {
+        console.warn(`[Save] ⚠️ Attenzione: ci sono ancora ${remainingDataURLs} dataURL nel progetto dopo il salvataggio asset. Questo potrebbe causare problemi di dimensione.`);
+        // Cerca di identificare dove sono i dataURL rimanenti
+        const dataURLMatches = projectJsonString.match(/data:image\/[^;]+;base64,[^"]+/g);
+        if (dataURLMatches && dataURLMatches.length > 0) {
+          console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
+        }
+      } else {
+        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti');
+      }
+      
+      // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
+      // Tutti i frame che erano nel progetto sono stati salvati con successo
+      unsavedCharacterFrames.clear();
+      unsavedCharacterAssetIds.clear();
+      // Rimuovi anche eventuali frame salvati in sessionStorage (da sessioni precedenti)
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+      console.log('[Save] Set frame non salvati pulito (progetto salvato con successo)');
     } catch (error) {
       console.error('[Save] Errore salvataggio asset:', error);
       showNotification('Warning: Some assets could not be saved', 'warning');
+      // Se il salvataggio fallisce, i frame rimangono in unsavedCharacterFrames per cleanup successivo
     }
 
     // DEBUG: Verifica foreground dopo il salvataggio asset e prima di Firestore
@@ -11574,6 +12347,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
     }
 
+    // Verifica dimensione progetto prima di salvare su Firestore
+    const projectJsonPreview = JSON.stringify(projectObj);
+    const projectSizeBytes = new Blob([projectJsonPreview]).size;
+    const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
+    console.log(`[Save] 📊 Dimensione progetto: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
+    
     // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
     let firestoreSuccess = false;
     if (userId) {
