@@ -1769,7 +1769,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    // Handle right click: copy position to start position field when in rooms tab
+    // Handle right click: copy coordinates to clipboard when in rooms tab
     canvas.addEventListener('contextmenu', function(e) {
       e.preventDefault();
       
@@ -1780,19 +1780,33 @@ document.addEventListener("DOMContentLoaded", () => {
         const roundedX = Math.round(x);
         const roundedY = Math.round(y);
         
-        // Update the position input field (located in characters tab)
-        const startPositionInput = document.getElementById('start-position');
-        if (startPositionInput) {
-          startPositionInput.value = formatPositionString(roundedX, roundedY);
-          // Trigger the input event to save the values
-          const parsed = parsePositionString(startPositionInput.value);
-          persistStartSettings({ startX: parsed.x, startY: parsed.y });
-          
-          // Visual feedback
-          startPositionInput.style.backgroundColor = '#2d5016';
-          setTimeout(() => {
-            startPositionInput.style.backgroundColor = '';
-          }, 300);
+        // Format coordinates as "x, y"
+        const coordString = `${roundedX}, ${roundedY}`;
+        
+        // Copy to clipboard
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(coordString).then(() => {
+            showNotification(`Coordinate copiate: ${coordString}`, 'success');
+          }).catch(err => {
+            console.error('Errore copia negli appunti:', err);
+            showNotification('Errore durante la copia', 'error');
+          });
+        } else {
+          // Fallback per browser che non supportano Clipboard API
+          const textArea = document.createElement('textarea');
+          textArea.value = coordString;
+          textArea.style.position = 'fixed';
+          textArea.style.opacity = '0';
+          document.body.appendChild(textArea);
+          textArea.select();
+          try {
+            document.execCommand('copy');
+            showNotification(`Coordinate copiate: ${coordString}`, 'success');
+          } catch (err) {
+            console.error('Errore copia negli appunti (fallback):', err);
+            showNotification('Errore durante la copia', 'error');
+          }
+          document.body.removeChild(textArea);
         }
       }
     });
@@ -4742,7 +4756,154 @@ window.selectRoom = function(roomId) {
     // Assicura che il toggle sia inizializzato
     toggleFrameSource();
     redraw(); // Redraw to show pivot if it exists
+    
+    // Carica spawn settings per questo character
+    loadCharacterSpawnSettings(who);
   };
+
+  // Carica le impostazioni di spawn per un character
+  function loadCharacterSpawnSettings(characterName) {
+    const spawnSettings = document.getElementById('character-spawn-settings');
+    if (!spawnSettings) {
+      console.warn('[Character] spawn-settings element non trovato');
+      return;
+    }
+    
+    const charData = characterFrames.get(characterName);
+    const spawnData = charData && charData.spawnSettings ? charData.spawnSettings : {};
+    
+    // Debug: log per verificare il caricamento
+    console.log(`[Character] Caricamento spawnSettings per "${characterName}":`, spawnData);
+    
+    // Mostra la sezione
+    spawnSettings.style.display = 'block';
+    
+    // Carica checkbox isPlayer
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    if (isPlayerCheck) {
+      const isPlayerValue = spawnData.isPlayer === true;
+      isPlayerCheck.checked = isPlayerValue;
+      console.log(`[Character] isPlayer checkbox impostata a: ${isPlayerValue}`);
+    } else {
+      console.warn('[Character] isPlayer checkbox non trovata');
+    }
+    
+    // Carica checkbox autoSpawn
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    if (autoSpawnCheck) {
+      const autoSpawnValue = spawnData.autoSpawn === true;
+      autoSpawnCheck.checked = autoSpawnValue;
+      console.log(`[Character] autoSpawn checkbox impostata a: ${autoSpawnValue}`);
+    } else {
+      console.warn('[Character] autoSpawn checkbox non trovata');
+    }
+    
+    // Aggiorna visibilità dei campi (dopo aver caricato entrambe le checkbox)
+    updateSpawnSettingsVisibility();
+    
+    // Carica room selector
+    const roomSelect = document.getElementById('character-spawn-room');
+    if (roomSelect) {
+      roomSelect.innerHTML = '';
+      rooms.forEach((room) => {
+        const opt = document.createElement('option');
+        opt.value = room.id;
+        opt.textContent = room.name || room.id;
+        if (spawnData.roomId && room.id === spawnData.roomId) opt.selected = true;
+        roomSelect.appendChild(opt);
+      });
+      if (spawnData.roomId) {
+        roomSelect.value = spawnData.roomId;
+      }
+    }
+    
+    // Carica position
+    const positionInput = document.getElementById('character-spawn-position');
+    if (positionInput) {
+      if (spawnData.x !== undefined && spawnData.y !== undefined) {
+        positionInput.value = formatPositionString(spawnData.x, spawnData.y);
+      } else {
+        positionInput.value = '0, 0';
+      }
+    }
+    
+    // Carica direction
+    const directionSelect = document.getElementById('character-spawn-direction');
+    if (directionSelect && spawnData.direction) {
+      directionSelect.value = spawnData.direction;
+    }
+  }
+
+  // Salva le impostazioni di spawn per il character corrente
+  function saveCharacterSpawnSettings() {
+    const sel = document.getElementById('character-selector');
+    const characterName = sel ? sel.value : '';
+    if (!characterName) return;
+    
+    const charData = characterFrames.get(characterName);
+    if (!charData) return;
+    
+    // Inizializza spawnSettings se non esiste
+    if (!charData.spawnSettings) {
+      charData.spawnSettings = {};
+    }
+    
+    // Leggi i valori dall'UI
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const roomSelect = document.getElementById('character-spawn-room');
+    const positionInput = document.getElementById('character-spawn-position');
+    const directionSelect = document.getElementById('character-spawn-direction');
+    
+    if (isPlayerCheck) {
+      charData.spawnSettings.isPlayer = isPlayerCheck.checked;
+      console.log(`[Character] Salvataggio isPlayer per "${characterName}": ${isPlayerCheck.checked}`);
+    }
+    
+    if (autoSpawnCheck) {
+      charData.spawnSettings.autoSpawn = autoSpawnCheck.checked;
+      console.log(`[Character] Salvataggio autoSpawn per "${characterName}": ${autoSpawnCheck.checked}`);
+    }
+    
+    // Salva roomId se autoSpawn è true O se isPlayer è true (il player può avere una room iniziale)
+    if (roomSelect && ((autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked))) {
+      charData.spawnSettings.roomId = roomSelect.value || null;
+    }
+    
+    if (positionInput) {
+      const parsed = parsePositionString(positionInput.value);
+      charData.spawnSettings.x = parsed.x;
+      charData.spawnSettings.y = parsed.y;
+    }
+    
+    if (directionSelect) {
+      charData.spawnSettings.direction = directionSelect.value || 'south';
+    }
+    
+    // Salva nel characterFrames
+    characterFrames.set(characterName, charData);
+  }
+
+  // Aggiorna la visibilità dei campi spawn in base alle checkbox
+  function updateSpawnSettingsVisibility() {
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const roomContainer = document.getElementById('character-spawn-room-container');
+    const positionContainer = document.getElementById('character-spawn-position-container');
+    const directionContainer = document.getElementById('character-spawn-direction-container');
+    
+    const showFields = (autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked);
+    
+    if (roomContainer) {
+      roomContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (positionContainer) {
+      positionContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (directionContainer) {
+      directionContainer.style.display = showFields ? 'block' : 'none';
+    }
+  }
 
   // Add event listener for character selection change
   document.addEventListener('DOMContentLoaded', function() {
@@ -4752,9 +4913,79 @@ window.selectRoom = function(roomId) {
         loadCharacterDirections();
       });
     }
-    // Initialize Game Start UI
-    try { refreshStartingPlayerUI(); } catch(_) {}
-    try { refreshStartRoomSelector(); } catch(_) {}
+    
+    // Setup spawn settings event listeners
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const roomSelect = document.getElementById('character-spawn-room');
+    const positionInput = document.getElementById('character-spawn-position');
+    const directionSelect = document.getElementById('character-spawn-direction');
+    
+    if (isPlayerCheck) {
+      isPlayerCheck.addEventListener('change', function() {
+        saveCharacterSpawnSettings();
+        updateSpawnSettingsVisibility();
+      });
+    }
+    
+    if (autoSpawnCheck) {
+      autoSpawnCheck.addEventListener('change', function() {
+        saveCharacterSpawnSettings();
+        updateSpawnSettingsVisibility();
+      });
+    }
+    
+    if (roomSelect) {
+      roomSelect.addEventListener('change', saveCharacterSpawnSettings);
+    }
+    
+    if (positionInput) {
+      positionInput.addEventListener('input', function() {
+        const parsed = parsePositionString(positionInput.value);
+        if (parsed.valid) {
+          saveCharacterSpawnSettings();
+        }
+      });
+    }
+    
+    if (directionSelect) {
+      directionSelect.addEventListener('change', saveCharacterSpawnSettings);
+    }
+    
+    // Gestione right-click per aggiornare posizione character spawn
+    if (canvas) {
+      canvas.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        
+        // Calcola sempre le coordinate (indipendentemente dalla tab)
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const roundedX = Math.round(worldPos.x);
+        const roundedY = Math.round(worldPos.y);
+        
+        // Nota: la copia delle coordinate negli appunti in modalità rooms è gestita
+        // dal gestore contextmenu principale (riga 1773)
+        
+        const sel = document.getElementById('character-selector');
+        if (sel && sel.value) {
+          // Se siamo nella tab characters e c'è un character selezionato
+          const currentTab = document.querySelector('.nav-link.active');
+          if (currentTab && currentTab.getAttribute('data-tab') === 'characters') {
+            const positionInput = document.getElementById('character-spawn-position');
+            if (positionInput) {
+              positionInput.value = formatPositionString(roundedX, roundedY);
+              const parsed = parsePositionString(positionInput.value);
+              if (parsed.valid) {
+                positionInput.style.backgroundColor = '#2d5016';
+                setTimeout(() => {
+                  positionInput.style.backgroundColor = '';
+                }, 500);
+                saveCharacterSpawnSettings();
+              }
+            }
+          }
+        }
+      });
+    }
   });
 
   window.uploadCharacterFrames = async function(input) {
@@ -11348,6 +11579,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function serializeCharacters() {
+    // Salva le impostazioni spawn del character corrente prima di serializzare
+    // Questo garantisce che le modifiche non salvate vengano incluse
+    try {
+      saveCharacterSpawnSettings();
+    } catch (e) {
+      // Ignora errori (potrebbe non esserci un character selezionato)
+    }
+    
     const directionsList = ['north','northeast','east','southeast','south','southwest','west','northwest'];
     const result = [];
     const names = collectCharacterNames();
@@ -11358,6 +11597,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (charData && charData.pivotX !== undefined && charData.pivotY !== undefined) {
         out.pivotX = Number(charData.pivotX) || 0;
         out.pivotY = Number(charData.pivotY) || 0;
+      }
+      // Include spawnSettings if it exists
+      if (charData && charData.spawnSettings) {
+        const spawn = charData.spawnSettings;
+        out.spawnSettings = {
+          isPlayer: spawn.isPlayer === true,
+          autoSpawn: spawn.autoSpawn === true,
+          roomId: spawn.roomId || null,
+          x: typeof spawn.x === 'number' ? spawn.x : 0,
+          y: typeof spawn.y === 'number' ? spawn.y : 0,
+          direction: spawn.direction || 'south'
+        };
+        console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
       }
       directionsList.forEach(dir => {
         const d = charData && charData.directions ? charData.directions[dir] : null;
@@ -14583,6 +14835,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
               charData.pivotX = Number(ch.pivotX) || 0;
               charData.pivotY = Number(ch.pivotY) || 0;
+            }
+            // Load spawnSettings if it exists
+            if (ch.spawnSettings) {
+              charData.spawnSettings = {
+                isPlayer: ch.spawnSettings.isPlayer === true,
+                autoSpawn: ch.spawnSettings.autoSpawn === true,
+                roomId: ch.spawnSettings.roomId || null,
+                x: typeof ch.spawnSettings.x === 'number' ? ch.spawnSettings.x : 0,
+                y: typeof ch.spawnSettings.y === 'number' ? ch.spawnSettings.y : 0,
+                direction: ch.spawnSettings.direction || 'south'
+              };
             }
             characterFrames.set(characterName, charData);
             

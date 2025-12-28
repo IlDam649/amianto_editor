@@ -679,6 +679,9 @@
         log('[Runtime] ATTENZIONE: Preload non completato, potrebbe causare problemi di rendering', 'warning');
       }
 
+      updateLoadingMessage('Caricamento character...');
+      await loadCharacterDefinitions(projectData.characters || []);
+
       updateLoadingMessage('Caricamento room iniziale...');
       const startRoomId = settings.startRoom || settings.startRoomId || (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
       if (startRoomId) {
@@ -687,8 +690,53 @@
         log('[Runtime] Nessuna room iniziale specificata', 'warning');
       }
 
-      updateLoadingMessage('Caricamento character...');
-      await loadCharacterDefinitions(projectData.characters || []);
+      // Spawn automatico player all'avvio se configurato
+      // IMPORTANTE: Spawna DOPO il cambio room, così il player è nella room corretta
+      // PRIORITÀ 1: spawnSettings.isPlayer (più specifico e moderno)
+      const playerCharacter = (projectData.characters || []).find(char => 
+        char.spawnSettings && char.spawnSettings.isPlayer === true
+      );
+      
+      if (playerCharacter && playerCharacter.spawnSettings) {
+        const spawn = playerCharacter.spawnSettings;
+        // Verifica che il character esista nelle definizioni
+        const charDef = gameState.characterDefinitions.get(playerCharacter.name);
+        if (!charDef) {
+          log(`[Runtime] Player "${playerCharacter.name}" non trovato nelle definizioni character`, 'error');
+        } else {
+          const playerId = GameAPI.spawn_character(
+            playerCharacter.name,
+            spawn.x || 0,
+            spawn.y || 0,
+            spawn.direction || 'south'
+          );
+          if (playerId) {
+            GameAPI.setVariable('playerId', playerId);
+            log(`[Runtime] Player "${playerCharacter.name}" spawnato automaticamente da spawnSettings a (${spawn.x || 0}, ${spawn.y || 0}) in room ${gameState.currentRoomId}`, 'info');
+          } else {
+            log(`[Runtime] Errore spawn player "${playerCharacter.name}"`, 'error');
+          }
+        }
+      } else if (settings.startingPlayer && settings.startX !== undefined && settings.startY !== undefined) {
+        // PRIORITÀ 2: settings legacy (per retrocompatibilità)
+        const charDef = gameState.characterDefinitions.get(settings.startingPlayer);
+        if (!charDef) {
+          log(`[Runtime] Player "${settings.startingPlayer}" non trovato nelle definizioni character`, 'error');
+        } else {
+          const playerId = GameAPI.spawn_character(
+            settings.startingPlayer,
+            Number(settings.startX) || 0,
+            Number(settings.startY) || 0,
+            'south' // direzione di default
+          );
+          if (playerId) {
+            GameAPI.setVariable('playerId', playerId);
+            log(`[Runtime] Player "${settings.startingPlayer}" spawnato automaticamente da settings legacy a (${settings.startX}, ${settings.startY}) in room ${gameState.currentRoomId}`, 'info');
+          } else {
+            log(`[Runtime] Errore spawn player "${settings.startingPlayer}"`, 'error');
+          }
+        }
+      }
 
       updateLoadingMessage('Caricamento GUI...');
       await loadGUIs(projectData.guis || []);
@@ -1062,11 +1110,79 @@
       objects,
       hotspots,
       walkableArea: room.walkableArea || null,
-      scalingMinScale: room.scalingMinScale || 0.5,
-      scalingMaxScale: room.scalingMaxScale || 1.5,
-      scalingBackgroundY: room.scalingBackgroundY || null,
-      scalingForegroundY: room.scalingForegroundY || null
+      // Usa valori di default solo se non sono definiti, ma preserva 0 e null
+      scalingMinScale: (typeof room.scalingMinScale === 'number' && !isNaN(room.scalingMinScale)) 
+        ? room.scalingMinScale 
+        : 0.5,
+      scalingMaxScale: (typeof room.scalingMaxScale === 'number' && !isNaN(room.scalingMaxScale)) 
+        ? room.scalingMaxScale 
+        : 1.5,
+      // Preserva null, undefined e valori numerici (incluso 0)
+      scalingBackgroundY: (typeof room.scalingBackgroundY === 'number' && !isNaN(room.scalingBackgroundY)) 
+        ? room.scalingBackgroundY 
+        : (room.scalingBackgroundY === null ? null : undefined),
+      scalingForegroundY: (typeof room.scalingForegroundY === 'number' && !isNaN(room.scalingForegroundY)) 
+        ? room.scalingForegroundY 
+        : (room.scalingForegroundY === null ? null : undefined)
     };
+
+    // Rimuovi character della room precedente (solo NPC, non il player)
+    // Aggiorna anche il roomId del player se presente
+    const charactersToRemove = [];
+    gameState.characters.forEach((character, characterId) => {
+      // Verifica se è un player
+      const charDef = gameState.characterDefinitions.get(character.name);
+      const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
+      
+      if (isPlayer) {
+        // Aggiorna roomId del player
+        character.roomId = roomId;
+      } else {
+        // Rimuovi solo se il character è nella room precedente e non è un player
+        if (character.roomId === oldRoomId) {
+          charactersToRemove.push(characterId);
+        }
+      }
+    });
+    charactersToRemove.forEach(id => {
+      gameState.characters.delete(id);
+      log(`[Runtime] Character ${id} rimosso (cambio room)`, 'info');
+    });
+
+    // Spawn automatico NPC per questa room
+    if (gameState.projectData && gameState.projectData.characters) {
+      const roomNPCs = gameState.projectData.characters.filter(char => {
+        if (!char.spawnSettings) return false;
+        const spawn = char.spawnSettings;
+        // Spawna se: autoSpawn è true, non è player, e roomId corrisponde
+        return spawn.autoSpawn === true && 
+               spawn.isPlayer !== true && 
+               spawn.roomId === roomId;
+      });
+
+      for (const npcData of roomNPCs) {
+        const spawn = npcData.spawnSettings;
+        // Verifica che il character non sia già spawnato
+        let alreadySpawned = false;
+        gameState.characters.forEach((character) => {
+          if (character.name === npcData.name && character.roomId === roomId) {
+            alreadySpawned = true;
+          }
+        });
+
+        if (!alreadySpawned) {
+          const npcId = GameAPI.spawn_character(
+            npcData.name,
+            spawn.x || 0,
+            spawn.y || 0,
+            spawn.direction || 'south'
+          );
+          if (npcId) {
+            log(`[Runtime] NPC "${npcData.name}" spawnato automaticamente in room ${roomId} a (${spawn.x || 0}, ${spawn.y || 0})`, 'info');
+          }
+        }
+      }
+    }
 
     // Esegui script on_room_change se presente
     await executeRoomChangeScripts(oldRoomId, roomId);
@@ -1135,6 +1251,10 @@
           charDef.pivotX = Number(charData.pivotX) || 0;
           charDef.pivotY = Number(charData.pivotY) || 0;
         }
+        // Load spawnSettings if it exists (per spawn automatico)
+        if (charData.spawnSettings) {
+          charDef.spawnSettings = charData.spawnSettings;
+        }
         gameState.characterDefinitions.set(characterName, charDef);
         log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} direzioni)`, 'info');
       } else {
@@ -1149,54 +1269,186 @@
   const mirroredFrameCache = new Map(); // key: `${characterName}_${direction}_${frameIndex}`, value: HTMLCanvasElement
 
   /**
+   * Renderizza un placeholder per un character quando non ci sono frame disponibili
+   */
+  function renderCharacterPlaceholder(ctx, character, charDef, scale) {
+    try {
+      // Dimensioni placeholder di default
+      const defaultWidth = 32;
+      const defaultHeight = 48;
+      
+      // Usa dimensioni dal pivot se disponibili, altrimenti usa dimensioni di default
+      let placeholderWidth = defaultWidth;
+      let placeholderHeight = defaultHeight;
+      
+      if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+        // Stima dimensioni basate sul pivot (assumendo che il pivot sia al centro in X e in basso in Y)
+        placeholderWidth = charDef.pivotX * 2;
+        placeholderHeight = charDef.pivotY;
+      }
+      
+      const scaledWidth = placeholderWidth * scale;
+      const scaledHeight = placeholderHeight * scale;
+      
+      let drawX = character.x;
+      let drawY = character.y;
+      
+      // If character has a pivot, adjust drawing position
+      if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+        drawX = character.x - (charDef.pivotX * scale);
+        drawY = character.y - (charDef.pivotY * scale);
+      }
+      
+      // Disegna un rettangolo semplice come placeholder
+      ctx.save();
+      ctx.fillStyle = '#ff00ff'; // Magenta per indicare che è un placeholder
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(drawX, drawY, scaledWidth, scaledHeight);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 1.0;
+      ctx.strokeRect(drawX, drawY, scaledWidth, scaledHeight);
+      ctx.restore();
+    } catch (error) {
+      // Se anche il placeholder fallisce, almeno logga l'errore
+      log(`[Runtime] Errore rendering placeholder per character ${character.id}: ${error.message}`, 'warning');
+    }
+  }
+
+  // Mappa delle direzioni vicine per il fallback
+  const directionFallbackMap = {
+    'north': ['northeast', 'northwest', 'east', 'west', 'south', 'southeast', 'southwest'],
+    'northeast': ['north', 'east', 'northwest', 'southeast', 'west', 'south', 'southwest'],
+    'east': ['northeast', 'southeast', 'north', 'south', 'northwest', 'southwest', 'west'],
+    'southeast': ['east', 'south', 'northeast', 'southwest', 'north', 'west', 'northwest'],
+    'south': ['southeast', 'southwest', 'east', 'west', 'north', 'northeast', 'northwest'],
+    'southwest': ['south', 'west', 'southeast', 'northwest', 'east', 'north', 'northeast'],
+    'west': ['southwest', 'northwest', 'south', 'north', 'southeast', 'northeast', 'east'],
+    'northwest': ['north', 'west', 'northeast', 'southwest', 'south', 'east', 'southeast']
+  };
+
+  /**
+   * Cerca un frame valido tra le direzioni alternative (fallback)
+   */
+  function findFallbackFrame(charDef, preferredDirection, frameIndex, fallbackDirections) {
+    for (const fallbackDir of fallbackDirections) {
+      const dirData = charDef.directions[fallbackDir];
+      if (!dirData || !dirData.frames || dirData.frames.length === 0) {
+        continue;
+      }
+
+      const actualFrameIndex = frameIndex % dirData.frames.length;
+      const frame = dirData.frames[actualFrameIndex];
+
+      // Se è un frame specchiato, prova a ottenerlo
+      if (frame && typeof frame === 'object' && frame.mirror) {
+        const sourceDir = frame.mirror;
+        const sourceDirData = charDef.directions[sourceDir];
+        if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
+          const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
+          if (sourceFrame && sourceFrame.complete && sourceFrame.naturalWidth > 0) {
+            // Crea un canvas per specchiare l'immagine
+            const canvas = document.createElement('canvas');
+            canvas.width = sourceFrame.width || sourceFrame.naturalWidth;
+            canvas.height = sourceFrame.height || sourceFrame.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(sourceFrame, 0, 0);
+            return canvas;
+          }
+        }
+        continue;
+      }
+
+      // Frame normale
+      if (frame && frame.complete && frame.naturalWidth > 0) {
+        return frame;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Ottiene il frame corrente di un character, gestendo anche frame specchiati
+   * Se il frame richiesto non è disponibile, cerca frame di direzioni vicine (fallback)
    */
   function getCharacterFrame(characterName, direction, frameIndex) {
     const charDef = gameState.characterDefinitions.get(characterName);
-    if (!charDef || !charDef.directions[direction]) {
+    if (!charDef) {
       return null;
     }
 
-    const dirData = charDef.directions[direction];
-    if (!dirData.frames || dirData.frames.length === 0) {
-      return null;
-    }
+    // Prova prima con la direzione richiesta
+    if (charDef.directions[direction]) {
+      const dirData = charDef.directions[direction];
+      if (dirData.frames && dirData.frames.length > 0) {
+        const actualFrameIndex = frameIndex % dirData.frames.length;
+        const frame = dirData.frames[actualFrameIndex];
 
-    const actualFrameIndex = frameIndex % dirData.frames.length;
-    const frame = dirData.frames[actualFrameIndex];
+        // Se è un frame specchiato, ottieni il frame originale e specchialo
+        if (frame && typeof frame === 'object' && frame.mirror) {
+          const sourceDir = frame.mirror;
+          const cacheKey = `${characterName}_${direction}_${actualFrameIndex}`;
+          
+          // Controlla se è già in cache
+          if (mirroredFrameCache.has(cacheKey)) {
+            return mirroredFrameCache.get(cacheKey);
+          }
 
-    // Se è un frame specchiato, ottieni il frame originale e specchialo
-    if (frame && typeof frame === 'object' && frame.mirror) {
-      const sourceDir = frame.mirror;
-      const cacheKey = `${characterName}_${direction}_${actualFrameIndex}`;
-      
-      // Controlla se è già in cache
-      if (mirroredFrameCache.has(cacheKey)) {
-        return mirroredFrameCache.get(cacheKey);
-      }
-
-      const sourceDirData = charDef.directions[sourceDir];
-      if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
-        const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
-        if (sourceFrame && sourceFrame.complete) {
-          // Crea un canvas per specchiare l'immagine e mettilo in cache
-          const canvas = document.createElement('canvas');
-          canvas.width = sourceFrame.width || sourceFrame.naturalWidth;
-          canvas.height = sourceFrame.height || sourceFrame.naturalHeight;
-          const ctx = canvas.getContext('2d');
-          ctx.translate(canvas.width, 0);
-          ctx.scale(-1, 1);
-          ctx.drawImage(sourceFrame, 0, 0);
-          mirroredFrameCache.set(cacheKey, canvas);
-          return canvas;
+          const sourceDirData = charDef.directions[sourceDir];
+          if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
+            const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
+            if (sourceFrame && sourceFrame.complete && sourceFrame.naturalWidth > 0) {
+              // Crea un canvas per specchiare l'immagine e mettilo in cache
+              const canvas = document.createElement('canvas');
+              canvas.width = sourceFrame.width || sourceFrame.naturalWidth;
+              canvas.height = sourceFrame.height || sourceFrame.naturalHeight;
+              const ctx = canvas.getContext('2d');
+              ctx.translate(canvas.width, 0);
+              ctx.scale(-1, 1);
+              ctx.drawImage(sourceFrame, 0, 0);
+              mirroredFrameCache.set(cacheKey, canvas);
+              return canvas;
+            }
+          }
+        } else {
+          // Frame normale
+          if (frame && frame.complete && frame.naturalWidth > 0) {
+            return frame;
+          }
         }
       }
-      return null;
     }
 
-    // Frame normale
-    if (frame && frame.complete && frame.naturalWidth > 0) {
-      return frame;
+    // Se non abbiamo trovato un frame valido, cerca tra le direzioni alternative
+    const fallbackDirections = directionFallbackMap[direction] || ['south', 'north', 'east', 'west'];
+    const fallbackFrame = findFallbackFrame(charDef, direction, frameIndex, fallbackDirections);
+    
+    if (fallbackFrame) {
+      // Log solo una volta per evitare spam (opzionale, può essere rimosso)
+      // log(`[Runtime] Frame fallback usato per ${characterName}: ${direction} -> direzione alternativa`, 'info');
+      return fallbackFrame;
+    }
+
+    // Se ancora non abbiamo trovato nulla, prova tutte le direzioni disponibili
+    const allDirections = Object.keys(charDef.directions);
+    if (allDirections.length > 0) {
+      // Ordina per priorità: prima quelle cardinali, poi quelle diagonali
+      const priorityOrder = ['south', 'north', 'east', 'west', 'southeast', 'southwest', 'northeast', 'northwest'];
+      const sortedDirections = allDirections.sort((a, b) => {
+        const aIndex = priorityOrder.indexOf(a);
+        const bIndex = priorityOrder.indexOf(b);
+        if (aIndex === -1 && bIndex === -1) return 0;
+        if (aIndex === -1) return 1;
+        if (bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+
+      const anyFrame = findFallbackFrame(charDef, direction, frameIndex, sortedDirections);
+      if (anyFrame) {
+        return anyFrame;
+      }
     }
 
     return null;
@@ -1903,14 +2155,26 @@
 
   // Calcola lo scaling del character basato sulla posizione Y e le impostazioni della room
   function calculateCharacterScale(characterY, room) {
-    if (!room || room.scalingBackgroundY === null || room.scalingForegroundY === null) {
-      return 1.0; // Nessuno scaling se non configurato
+    if (!room) {
+      return 1.0; // Nessuno scaling se room non esiste
     }
     
-    const minScale = room.scalingMinScale || 0.5;
-    const maxScale = room.scalingMaxScale || 1.5;
+    // Controlla se lo scaling è configurato (gestisce null, undefined e valori numerici validi)
     const backgroundY = room.scalingBackgroundY;
     const foregroundY = room.scalingForegroundY;
+    
+    // Se i valori non sono numeri validi, non applicare scaling
+    if (typeof backgroundY !== 'number' || typeof foregroundY !== 'number' || 
+        isNaN(backgroundY) || isNaN(foregroundY)) {
+      return 1.0;
+    }
+    
+    const minScale = (typeof room.scalingMinScale === 'number' && !isNaN(room.scalingMinScale)) 
+      ? room.scalingMinScale 
+      : 0.5;
+    const maxScale = (typeof room.scalingMaxScale === 'number' && !isNaN(room.scalingMaxScale)) 
+      ? room.scalingMaxScale 
+      : 1.5;
     
     // Assicura che backgroundY < foregroundY
     if (backgroundY >= foregroundY) {
@@ -2792,15 +3056,16 @@
           return;
         }
 
+        // Get character definition to check for pivot
+        const charDef = gameState.characterDefinitions.get(character.name);
+        
+        // Calcola lo scaling basato sulla posizione Y e le impostazioni della room
+        const scale = calculateCharacterScale(character.y, room);
+        
         const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
+        
         if (frame) {
           try {
-            // Get character definition to check for pivot
-            const charDef = gameState.characterDefinitions.get(character.name);
-            
-            // Calcola lo scaling basato sulla posizione Y e le impostazioni della room
-            const scale = calculateCharacterScale(character.y, room);
-            
             // Calcola dimensioni frame originali
             const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
             const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
@@ -2833,7 +3098,12 @@
             }
           } catch (error) {
             log(`[Runtime] Errore rendering character ${character.id}: ${error.message}`, 'warning');
+            // Se c'è un errore, renderizza comunque un placeholder
+            renderCharacterPlaceholder(ctx, character, charDef, scale);
           }
+        } else {
+          // Nessun frame disponibile, renderizza un placeholder per non far scomparire il character
+          renderCharacterPlaceholder(ctx, character, charDef, scale);
         }
       });
     }
@@ -2908,13 +3178,36 @@
         return;
       }
 
+      // Inizializza isMoving se non presente (retrocompatibilità)
+      if (character.isMoving === undefined) {
+        character.isMoving = false;
+      }
+
+      // Se il personaggio è fermo (idle), mostra solo il frame 0 (primo frame = posa idle)
+      if (!character.isMoving) {
+        character.currentFrame = 0;
+        character.frameTime = 0;
+        return;
+      }
+
+      // Il personaggio sta camminando: anima solo i frame 1..length-1 (escludendo frame 0)
+      // Se currentFrame è 0 (idle), passa al primo frame di movimento (1)
+      if (character.currentFrame === 0) {
+        character.currentFrame = 1;
+      }
+
       // Aggiorna frame time
       character.frameTime += deltaTime;
       const frameDuration = 1000 / dirData.fps; // Durata di ogni frame in ms
 
       // Avanza al frame successivo se necessario
+      // Loop solo tra frame 1 e length-1 (escludendo frame 0)
       if (character.frameTime >= frameDuration) {
-        character.currentFrame = (character.currentFrame + 1) % dirData.frames.length;
+        character.currentFrame++;
+        // Se abbiamo raggiunto l'ultimo frame, torna al primo frame di movimento (1)
+        if (character.currentFrame >= dirData.frames.length) {
+          character.currentFrame = 1;
+        }
         character.frameTime = 0;
       }
     });

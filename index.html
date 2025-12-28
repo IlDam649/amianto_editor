@@ -599,25 +599,51 @@
             </div>
 
             <!-- Game Start Configuration -->
-            <div class="mb-3">
+            <div class="mb-3" id="character-spawn-settings" style="display: none;">
               <h6 class="text-light">Game Start</h6>
-              <small class="text-muted d-block mb-2">Select the initial player character and the starting room/position.</small>
+              <small class="text-muted d-block mb-2">Configure the initial player character and automatic character spawning.</small>
 
-              <label class="form-label text-light">Initial player character:</label>
-              <div id="starting-player-list" class="list-group mb-2">
-                <!-- Radio list dynamically populated -->
+              <div class="mb-2">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-is-player">
+                  <label class="form-check-label text-light" for="character-spawn-is-player">
+                    Spawn as player on game start
+                  </label>
+                </div>
               </div>
 
-              <div class="row g-2 align-items-end">
-                <div class="col-12">
-                  <label class="form-label text-light">Starting room:</label>
-                  <select class="form-select form-select-sm" id="start-room-selector"></select>
+              <div class="mb-2">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-auto">
+                  <label class="form-check-label text-light" for="character-spawn-auto">
+                    Auto-spawn in room
+                  </label>
                 </div>
-                <div class="col-12">
-                  <label for="start-position" class="form-label text-light">Initial position (x, y):</label>
-                  <input type="text" class="form-control form-control-sm" id="start-position" placeholder="0, 0" value="0, 0">
+              </div>
+
+              <div id="character-spawn-room-container" style="display: none;">
+                <label class="form-label text-light">Room:</label>
+                <select class="form-select form-select-sm mb-2" id="character-spawn-room"></select>
+              </div>
+
+              <div id="character-spawn-position-container" style="display: none;">
+                <label class="form-label text-light">Position (x, y):</label>
+                <input type="text" class="form-control form-control-sm mb-2" id="character-spawn-position" placeholder="0, 0">
                   <small class="text-muted">Right-click on canvas to copy position</small>
                 </div>
+
+              <div id="character-spawn-direction-container" style="display: none;">
+                <label class="form-label text-light">Initial direction:</label>
+                <select class="form-select form-select-sm" id="character-spawn-direction">
+                  <option value="south">South</option>
+                  <option value="north">North</option>
+                  <option value="east">East</option>
+                  <option value="west">West</option>
+                  <option value="northeast">Northeast</option>
+                  <option value="northwest">Northwest</option>
+                  <option value="southeast">Southeast</option>
+                  <option value="southwest">Southwest</option>
+                </select>
               </div>
             </div>
             
