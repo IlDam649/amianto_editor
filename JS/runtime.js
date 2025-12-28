@@ -1060,7 +1060,12 @@
       backgroundImg,
       foregrounds,
       objects,
-      hotspots
+      hotspots,
+      walkableArea: room.walkableArea || null,
+      scalingMinScale: room.scalingMinScale || 0.5,
+      scalingMaxScale: room.scalingMaxScale || 1.5,
+      scalingBackgroundY: room.scalingBackgroundY || null,
+      scalingForegroundY: room.scalingForegroundY || null
     };
 
     // Esegui script on_room_change se presente
@@ -1838,6 +1843,443 @@
     return inside;
   }
 
+  // ============================================
+  // PATHFINDING E MOVIMENTO CHARACTER
+  // ============================================
+
+  // Calcola la direzione più simile basandosi su un vettore (dx, dy)
+  // dx: differenza X (positivo = destra/east, negativo = sinistra/west)
+  // dy: differenza Y (positivo = basso/south, negativo = alto/north)
+  function getDirectionFromVector(dx, dy) {
+    // Gestione casi speciali quando il vettore è troppo piccolo
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+      return 'south'; // Default se il vettore è troppo piccolo
+    }
+    
+    // Gestione casi speciali per direzioni pure (evita calcoli angolari imprecisi)
+    // North (verso l'alto): dy negativo, dx ≈ 0
+    if (Math.abs(dx) < Math.abs(dy) * 0.5 && dy < 0) {
+      return 'north';
+    }
+    // South (verso il basso): dy positivo, dx ≈ 0
+    if (Math.abs(dx) < Math.abs(dy) * 0.5 && dy > 0) {
+      return 'south';
+    }
+    // East (verso destra): dx positivo, dy ≈ 0
+    if (Math.abs(dy) < Math.abs(dx) * 0.5 && dx > 0) {
+      return 'east';
+    }
+    // West (verso sinistra): dx negativo, dy ≈ 0
+    if (Math.abs(dy) < Math.abs(dx) * 0.5 && dx < 0) {
+      return 'west';
+    }
+    
+    // Calcola l'angolo usando atan2(dy, dx)
+    const angle = Math.atan2(dy, dx);
+    const degrees = (angle * 180) / Math.PI;
+    
+    // Normalizza a 0-360
+    let normalized = (degrees + 360) % 360;
+    
+    // Mappatura corretta delle 8 direzioni
+    if (normalized >= 337.5 || normalized < 22.5) {
+      return 'east';
+    } else if (normalized >= 22.5 && normalized < 67.5) {
+      return 'southeast';
+    } else if (normalized >= 67.5 && normalized < 112.5) {
+      return 'south';
+    } else if (normalized >= 112.5 && normalized < 157.5) {
+      return 'southwest';
+    } else if (normalized >= 157.5 && normalized < 202.5) {
+      return 'west';
+    } else if (normalized >= 202.5 && normalized < 247.5) {
+      return 'northwest';
+    } else if (normalized >= 247.5 && normalized < 292.5) {
+      return 'north';
+    } else {
+      return 'northeast';
+    }
+  }
+
+  // Calcola lo scaling del character basato sulla posizione Y e le impostazioni della room
+  function calculateCharacterScale(characterY, room) {
+    if (!room || room.scalingBackgroundY === null || room.scalingForegroundY === null) {
+      return 1.0; // Nessuno scaling se non configurato
+    }
+    
+    const minScale = room.scalingMinScale || 0.5;
+    const maxScale = room.scalingMaxScale || 1.5;
+    const backgroundY = room.scalingBackgroundY;
+    const foregroundY = room.scalingForegroundY;
+    
+    // Assicura che backgroundY < foregroundY
+    if (backgroundY >= foregroundY) {
+      return 1.0;
+    }
+    
+    // Calcola lo scaling in base alla posizione Y
+    // Y più alto (background) = scale minore
+    // Y più basso (foreground) = scale maggiore
+    if (characterY <= backgroundY) {
+      return minScale;
+    } else if (characterY >= foregroundY) {
+      return maxScale;
+    } else {
+      // Interpolazione lineare tra backgroundY e foregroundY
+      const t = (characterY - backgroundY) / (foregroundY - backgroundY);
+      return minScale + (maxScale - minScale) * t;
+    }
+  }
+
+  // Trova il punto più vicino sul bordo del poligono walkable
+  function findClosestPointOnWalkableEdge(targetX, targetY, walkableArea) {
+    let closestPoint = null;
+    let minDistance = Infinity;
+    
+    // Cerca il punto più vicino lungo i bordi del poligono
+    for (let i = 0; i < walkableArea.length; i++) {
+      const p1 = walkableArea[i];
+      const p2 = walkableArea[(i + 1) % walkableArea.length];
+      
+      // Trova il punto più vicino sul segmento p1-p2
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      
+      if (length > 0) {
+        const t = Math.max(0, Math.min(1, ((targetX - p1.x) * dx + (targetY - p1.y) * dy) / (length * length)));
+        const closestX = p1.x + t * dx;
+        const closestY = p1.y + t * dy;
+        const distance = Math.sqrt((targetX - closestX) ** 2 + (targetY - closestY) ** 2);
+        
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestPoint = { x: closestX, y: closestY };
+        }
+      }
+    }
+    
+    return closestPoint;
+  }
+
+  // Verifica se un percorso (segmento) rimane dentro la walkable area
+  function isPathInsideWalkableArea(startX, startY, endX, endY, walkableArea, steps = 10) {
+    // Verifica punti intermedi lungo il segmento
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = startX + (endX - startX) * t;
+      const y = startY + (endY - startY) * t;
+      
+      if (!isPointInPolygon(walkableArea, x, y)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Verifica se una posizione ha spazio per muoversi (evita dead ends)
+  function hasMovementSpace(x, y, walkableArea, checkRadius = 30) {
+    if (!walkableArea || walkableArea.length < 3) return true;
+    
+    // Controlla se ci sono almeno alcune direzioni in cui il personaggio può muoversi
+    const directions = [
+      { dx: 0, dy: -checkRadius }, // north
+      { dx: checkRadius, dy: 0 }, // east
+      { dx: 0, dy: checkRadius }, // south
+      { dx: -checkRadius, dy: 0 }, // west
+      { dx: checkRadius * 0.707, dy: -checkRadius * 0.707 }, // northeast
+      { dx: checkRadius * 0.707, dy: checkRadius * 0.707 }, // southeast
+      { dx: -checkRadius * 0.707, dy: checkRadius * 0.707 }, // southwest
+      { dx: -checkRadius * 0.707, dy: -checkRadius * 0.707 } // northwest
+    ];
+    
+    let validDirections = 0;
+    for (const dir of directions) {
+      const testX = x + dir.dx;
+      const testY = y + dir.dy;
+      if (isPointInPolygon(walkableArea, testX, testY)) {
+        validDirections++;
+      }
+    }
+    
+    // Considera che c'è spazio se ci sono almeno 2 direzioni valide (più della direzione di arrivo)
+    return validDirections >= 2;
+  }
+
+  // Trova una posizione sicura vicino a un punto target (evita dead ends)
+  function findSafePositionNearTarget(targetX, targetY, startX, startY, walkableArea, maxDistance = 50) {
+    if (!walkableArea || walkableArea.length < 3) {
+      return { x: targetX, y: targetY };
+    }
+    
+    // Se il target è già sicuro, usalo
+    if (isPointInPolygon(walkableArea, targetX, targetY) && hasMovementSpace(targetX, targetY, walkableArea)) {
+      return { x: targetX, y: targetY };
+    }
+    
+    // Cerca punti vicini che siano sicuri
+    const searchSteps = 8; // Cerca in 8 direzioni
+    const stepDistance = maxDistance / searchSteps;
+    
+    for (let distance = stepDistance; distance <= maxDistance; distance += stepDistance) {
+      for (let angle = 0; angle < Math.PI * 2; angle += (Math.PI * 2) / 8) {
+        const testX = targetX + Math.cos(angle) * distance;
+        const testY = targetY + Math.sin(angle) * distance;
+        
+        if (isPointInPolygon(walkableArea, testX, testY) && hasMovementSpace(testX, testY, walkableArea)) {
+          // Verifica che sia raggiungibile dal punto di partenza
+          if (isPathInsideWalkableArea(startX, startY, testX, testY, walkableArea, 10)) {
+            return { x: testX, y: testY };
+          }
+        }
+      }
+    }
+    
+    // Se non troviamo una posizione sicura, restituisci almeno una valida sulla walkable area
+    if (isPointInPolygon(walkableArea, targetX, targetY)) {
+      return { x: targetX, y: targetY };
+    }
+    
+    // Ultimo resort: punto più vicino sul bordo
+    const closestPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+    if (closestPoint) {
+      return closestPoint;
+    }
+    
+    return { x: targetX, y: targetY };
+  }
+
+  // Pathfinding che garantisce che il pivot rimanga sempre nella walkable area e non si incastri
+  function findPathOnWalkableArea(startX, startY, targetX, targetY, walkableArea) {
+    if (!walkableArea || walkableArea.length < 3) {
+      return null;
+    }
+    
+    // Verifica che il punto di partenza sia sulla walkable area
+    if (!isPointInPolygon(walkableArea, startX, startY)) {
+      return null;
+    }
+    
+    // Verifica che il punto target sia sulla walkable area, altrimenti trova il più vicino
+    let finalTargetX = targetX;
+    let finalTargetY = targetY;
+    
+    if (!isPointInPolygon(walkableArea, targetX, targetY)) {
+      const closestPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+      if (closestPoint) {
+        finalTargetX = closestPoint.x;
+        finalTargetY = closestPoint.y;
+      } else {
+        return null;
+      }
+    }
+    
+    // Trova una posizione sicura vicino al target (evita dead ends)
+    const safeTarget = findSafePositionNearTarget(finalTargetX, finalTargetY, startX, startY, walkableArea, 50);
+    finalTargetX = safeTarget.x;
+    finalTargetY = safeTarget.y;
+    
+    // Verifica se il percorso diretto rimane dentro la walkable area
+    if (isPathInsideWalkableArea(startX, startY, finalTargetX, finalTargetY, walkableArea, 20)) {
+      // Percorso diretto valido - verifica che il target sia una posizione sicura
+      if (hasMovementSpace(finalTargetX, finalTargetY, walkableArea)) {
+        return [{ x: finalTargetX, y: finalTargetY }];
+      } else {
+        // Il target è un dead end, trova una posizione sicura vicina
+        const safePoint = findSafePositionNearTarget(finalTargetX, finalTargetY, startX, startY, walkableArea, 50);
+        if (isPathInsideWalkableArea(startX, startY, safePoint.x, safePoint.y, walkableArea, 20)) {
+          return [{ x: safePoint.x, y: safePoint.y }];
+        }
+      }
+    }
+    
+    // Il percorso diretto esce dalla walkable area, trova un percorso alternativo
+    // Strategia: dividi il percorso in segmenti più piccoli che rimangono dentro
+    const maxSegmentLength = 50; // Lunghezza massima di ogni segmento
+    const path = [];
+    let currentX = startX;
+    let currentY = startY;
+    let attempts = 0;
+    const maxAttempts = 100;
+    
+    while (attempts < maxAttempts) {
+      const dx = finalTargetX - currentX;
+      const dy = finalTargetY - currentY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // Se siamo abbastanza vicini al target, aggiungilo e termina
+      if (distance < maxSegmentLength) {
+        // Verifica che il percorso finale sia valido
+        if (isPathInsideWalkableArea(currentX, currentY, finalTargetX, finalTargetY, walkableArea, 10)) {
+          // Verifica che il target finale sia sicuro (non dead end)
+          if (hasMovementSpace(finalTargetX, finalTargetY, walkableArea)) {
+            path.push({ x: finalTargetX, y: finalTargetY });
+            return path;
+          } else {
+            // Il target è un dead end, trova una posizione sicura vicina
+            const safePoint = findSafePositionNearTarget(finalTargetX, finalTargetY, currentX, currentY, walkableArea, 30);
+            if (isPathInsideWalkableArea(currentX, currentY, safePoint.x, safePoint.y, walkableArea, 10)) {
+              path.push({ x: safePoint.x, y: safePoint.y });
+              return path;
+            }
+          }
+        } else {
+          // Il segmento finale non è valido, trova un punto intermedio più vicino e sicuro
+          const midX = currentX + (dx / 2);
+          const midY = currentY + (dy / 2);
+          if (isPointInPolygon(walkableArea, midX, midY) && hasMovementSpace(midX, midY, walkableArea)) {
+            path.push({ x: midX, y: midY });
+            currentX = midX;
+            currentY = midY;
+            attempts++;
+            continue;
+          }
+        }
+        break;
+      }
+      
+      // Calcola il prossimo punto intermedio
+      const segmentLength = Math.min(maxSegmentLength, distance);
+      let nextX = currentX + (dx / distance) * segmentLength;
+      let nextY = currentY + (dy / distance) * segmentLength;
+      
+      // Verifica che il percorso verso il prossimo punto rimanga dentro la walkable area
+      if (isPathInsideWalkableArea(currentX, currentY, nextX, nextY, walkableArea, 10)) {
+        // Verifica che il prossimo punto non sia un dead end (a meno che non sia l'ultimo)
+        const isLastSegment = distance < maxSegmentLength * 1.5;
+        if (isLastSegment || hasMovementSpace(nextX, nextY, walkableArea)) {
+          path.push({ x: nextX, y: nextY });
+          currentX = nextX;
+          currentY = nextY;
+        } else {
+          // Il punto è un dead end, prova un punto più vicino
+          const shorterLength = segmentLength * 0.5;
+          const shorterX = currentX + (dx / distance) * shorterLength;
+          const shorterY = currentY + (dy / distance) * shorterLength;
+          
+          if (isPathInsideWalkableArea(currentX, currentY, shorterX, shorterY, walkableArea, 10) &&
+              hasMovementSpace(shorterX, shorterY, walkableArea)) {
+            path.push({ x: shorterX, y: shorterY });
+            currentX = shorterX;
+            currentY = shorterY;
+          } else {
+            break; // Non possiamo continuare
+          }
+        }
+      } else {
+        // Il percorso diretto non è valido, prova un punto più vicino
+        const shorterLength = segmentLength * 0.5;
+        const shorterX = currentX + (dx / distance) * shorterLength;
+        const shorterY = currentY + (dy / distance) * shorterLength;
+        
+        if (isPathInsideWalkableArea(currentX, currentY, shorterX, shorterY, walkableArea, 10) &&
+            hasMovementSpace(shorterX, shorterY, walkableArea)) {
+          path.push({ x: shorterX, y: shorterY });
+          currentX = shorterX;
+          currentY = shorterY;
+        } else {
+          // Anche il percorso più corto non è valido, cerca un punto alternativo
+          // Prova punti in direzioni diverse per trovare un percorso valido
+          let found = false;
+          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+            const testX = currentX + Math.cos(angle) * (segmentLength * 0.5);
+            const testY = currentY + Math.sin(angle) * (segmentLength * 0.5);
+            
+            if (isPointInPolygon(walkableArea, testX, testY) && 
+                isPathInsideWalkableArea(currentX, currentY, testX, testY, walkableArea, 10) &&
+                hasMovementSpace(testX, testY, walkableArea)) {
+              // Verifica che questo punto ci avvicini al target
+              const newDx = finalTargetX - testX;
+              const newDy = finalTargetY - testY;
+              const newDistance = Math.sqrt(newDx * newDx + newDy * newDy);
+              if (newDistance < distance) {
+                path.push({ x: testX, y: testY });
+                currentX = testX;
+                currentY = testY;
+                found = true;
+                break;
+              }
+            }
+          }
+          
+          if (!found) {
+            // Non è possibile continuare, termina il percorso
+            break;
+          }
+        }
+      }
+      
+      attempts++;
+    }
+    
+    // Se abbiamo trovato almeno un punto, prova ad aggiungere il target finale se raggiungibile
+    if (path.length > 0) {
+      const lastPoint = path[path.length - 1];
+      if (isPathInsideWalkableArea(lastPoint.x, lastPoint.y, finalTargetX, finalTargetY, walkableArea, 10)) {
+        // Verifica che il target finale sia una posizione sicura (non dead end)
+        if (hasMovementSpace(finalTargetX, finalTargetY, walkableArea)) {
+          path.push({ x: finalTargetX, y: finalTargetY });
+        } else {
+          // Il target finale è un dead end, trova una posizione sicura vicina
+          const safePoint = findSafePositionNearTarget(finalTargetX, finalTargetY, lastPoint.x, lastPoint.y, walkableArea, 30);
+          if (isPathInsideWalkableArea(lastPoint.x, lastPoint.y, safePoint.x, safePoint.y, walkableArea, 10)) {
+            path.push({ x: safePoint.x, y: safePoint.y });
+          }
+        }
+      } else {
+        // Non possiamo raggiungere il target direttamente, ma assicuriamoci che l'ultimo punto sia valido e sicuro
+        if (!isPointInPolygon(walkableArea, lastPoint.x, lastPoint.y)) {
+          // Questo non dovrebbe mai succedere, ma per sicurezza troviamo il punto più vicino
+          const closestPoint = findClosestPointOnWalkableEdge(lastPoint.x, lastPoint.y, walkableArea);
+          if (closestPoint && hasMovementSpace(closestPoint.x, closestPoint.y, walkableArea)) {
+            path[path.length - 1] = closestPoint;
+          }
+        } else if (!hasMovementSpace(lastPoint.x, lastPoint.y, walkableArea)) {
+          // L'ultimo punto è un dead end, trova una posizione sicura
+          const safePoint = findSafePositionNearTarget(lastPoint.x, lastPoint.y, startX, startY, walkableArea, 30);
+          if (isPointInPolygon(walkableArea, safePoint.x, safePoint.y)) {
+            path[path.length - 1] = safePoint;
+          }
+        }
+      }
+      return path;
+    }
+    
+    // Se non abbiamo trovato nessun percorso intermedio, prova almeno a trovare un punto raggiungibile e sicuro
+    // Trova un punto sulla walkable area nella direzione del target finale ma più vicino
+    const dx = finalTargetX - startX;
+    const dy = finalTargetY - startY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    if (distance > 0) {
+      // Prova punti sempre più vicini al punto di partenza finché non troviamo uno valido e sicuro
+      for (let factor = 0.9; factor > 0.1; factor -= 0.1) {
+        const testX = startX + dx * factor;
+        const testY = startY + dy * factor;
+        
+        if (isPointInPolygon(walkableArea, testX, testY) && 
+            isPathInsideWalkableArea(startX, startY, testX, testY, walkableArea, 10) &&
+            hasMovementSpace(testX, testY, walkableArea)) {
+          return [{ x: testX, y: testY }];
+        }
+      }
+    }
+    
+    // Ultimo resort: verifica che il punto di partenza sia sicuro, altrimenti trova uno vicino
+    if (hasMovementSpace(startX, startY, walkableArea)) {
+      return [{ x: startX, y: startY }];
+    } else {
+      // Il punto di partenza è un dead end, trova una posizione sicura vicina
+      const safePoint = findSafePositionNearTarget(startX, startY, startX, startY, walkableArea, 50);
+      if (isPointInPolygon(walkableArea, safePoint.x, safePoint.y)) {
+        return [{ x: safePoint.x, y: safePoint.y }];
+      }
+    }
+    
+    // Se tutto fallisce, restituisci almeno il punto di partenza (meglio che scomparire)
+    return [{ x: startX, y: startY }];
+  }
+
   /**
    * ⚠️ NUOVA FUNZIONE: Esegue SOLO lo script dell'hotspot cliccato
    * Questa funzione riceve l'hotspot completo e esegue SOLO il suo script onClick
@@ -2111,7 +2553,10 @@
         currentFrame: 0,
         frameTime: 0,
         visible: true,
-        roomId: gameState.currentRoomId
+        roomId: gameState.currentRoomId,
+        isMoving: false,
+        path: null,
+        moveSpeed: 100 // pixel per secondo
       };
 
       gameState.characters.set(id, character);
@@ -2352,27 +2797,39 @@
           try {
             // Get character definition to check for pivot
             const charDef = gameState.characterDefinitions.get(character.name);
+            
+            // Calcola lo scaling basato sulla posizione Y e le impostazioni della room
+            const scale = calculateCharacterScale(character.y, room);
+            
+            // Calcola dimensioni frame originali
+            const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
+            const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
+            
             let drawX = character.x;
             let drawY = character.y;
             
             // If character has a pivot, adjust drawing position
             if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
               // The character.x and character.y represent the pivot position
-              // Calculate offset from pivot to frame top-left corner
-              const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
-              const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
-              
-              // Pivot is relative to the frame, so we need to offset by the pivot position
-              drawX = character.x - charDef.pivotX;
-              drawY = character.y - charDef.pivotY;
+              // Il pivot è relativo al frame originale, quindi calcoliamo l'offset considerando lo scaling
+              drawX = character.x - (charDef.pivotX * scale);
+              drawY = character.y - (charDef.pivotY * scale);
+            } else {
+              // Senza pivot, il character.x e character.y sono la posizione top-left
+              drawX = character.x;
+              drawY = character.y;
             }
+            
+            // Disegna il frame scalato
+            const scaledWidth = frameWidth * scale;
+            const scaledHeight = frameHeight * scale;
             
             // Se è un canvas (frame specchiato), disegna il canvas
             if (frame instanceof HTMLCanvasElement) {
-              ctx.drawImage(frame, drawX, drawY);
+              ctx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
             } else {
               // Frame normale (Image)
-              ctx.drawImage(frame, drawX, drawY);
+              ctx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
             }
           } catch (error) {
             log(`[Runtime] Errore rendering character ${character.id}: ${error.message}`, 'warning');
@@ -2813,6 +3270,71 @@
               }
             }
             return;
+          }
+        }
+      }
+    }
+
+    // Pathfinding: se non c'è stato click su hotspot/oggetto/character/GUI, prova a muovere il player
+    const playerId = gameState.variables.get('playerId');
+    if (playerId) {
+      const player = gameState.characters.get(playerId);
+      if (player && player.visible && player.roomId === gameState.currentRoomId) {
+        // Inizializza proprietà movimento se mancanti (retrocompatibilità)
+        if (player.isMoving === undefined) player.isMoving = false;
+        if (player.path === undefined) player.path = null;
+        if (player.moveSpeed === undefined) player.moveSpeed = 100;
+        
+        // Verifica che il player abbia un pivot (necessario per il pathfinding)
+        const charDef = gameState.characterDefinitions.get(player.name);
+        if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+          // Calcola la posizione del pivot del player
+          const playerPivotX = player.x;
+          const playerPivotY = player.y;
+          
+          // Verifica se il pivot del player è sulla walkable area
+          const walkableArea = gameState.currentRoom.walkableArea;
+          if (walkableArea && Array.isArray(walkableArea) && walkableArea.length >= 3) {
+            if (isPointInPolygon(walkableArea, playerPivotX, playerPivotY)) {
+              // Il player è sulla walkable area, calcola il path verso il punto cliccato
+              const path = findPathOnWalkableArea(playerPivotX, playerPivotY, x, y, walkableArea);
+              
+              if (path && path.length > 0) {
+                // Avvia il movimento del player
+                player.isMoving = true;
+                player.path = path;
+                player.moveSpeed = player.moveSpeed || 100; // pixel per secondo
+                
+                // Imposta la direzione iniziale verso il primo punto del path
+                const firstTarget = path[0];
+                const dx = firstTarget.x - playerPivotX;
+                const dy = firstTarget.y - playerPivotY;
+                player.direction = getDirectionFromVector(dx, dy);
+                
+                // Imposta il frame iniziale: se ci sono più di 1 frame, inizia dal frame 1 (non 0)
+                const charDef = gameState.characterDefinitions.get(player.name);
+                if (charDef && charDef.directions[player.direction]) {
+                  const dirData = charDef.directions[player.direction];
+                  if (dirData.frames && dirData.frames.length > 1) {
+                    player.currentFrame = 1; // Inizia dal primo frame di movimento (escludendo idle)
+                  } else {
+                    player.currentFrame = 0;
+                  }
+                } else {
+                  player.currentFrame = 0;
+                }
+                player.frameTime = 0;
+                
+                log(`[Runtime] Pathfinding: Player si muove verso (${Math.round(x)}, ${Math.round(y)})`, 'info');
+                return;
+              } else {
+                log(`[Runtime] Pathfinding: Impossibile trovare un percorso valido verso (${Math.round(x)}, ${Math.round(y)})`, 'info');
+              }
+            } else {
+              log(`[Runtime] Pathfinding: Player non è sulla walkable area (pivot: ${Math.round(playerPivotX)}, ${Math.round(playerPivotY)})`, 'info');
+            }
+          } else {
+            log(`[Runtime] Pathfinding: Nessuna walkable area definita per questa room`, 'info');
           }
         }
       }
