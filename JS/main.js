@@ -520,6 +520,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let isDraggingObject = false;
   let draggedObject = null;
   let dragOffset = { x: 0, y: 0 };
+  
+  // Character pivot management
 
   // Container for foreground layers list (in rooms tab)
   const fgListContainer = document.getElementById("foreground-list-container");
@@ -769,6 +771,37 @@ document.addEventListener("DOMContentLoaded", () => {
     return { x: worldX, y: worldY };
   }
 
+  // Convert world coordinates to screen coordinates
+  function worldToScreen(worldX, worldY) {
+    const rect = canvas.getBoundingClientRect();
+    
+    // Apply transformations (same order as in redraw)
+    let centerOffsetX = 0;
+    let centerOffsetY = 0;
+    if (rect.width > 0 && rect.height > 0) {
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      centerOffsetX = cssOffsetX * scaleX;
+      centerOffsetY = cssOffsetY * scaleY;
+    }
+    
+    // Apply transformations: zoom, then pan, then center offset
+    const internalX = worldX * editorState.zoom + editorState.panX + centerOffsetX;
+    const internalY = worldY * editorState.zoom + editorState.panY + centerOffsetY;
+    
+    // Convert internal canvas coordinates to CSS coordinates
+    const scaleX = rect.width / canvas.width;
+    const scaleY = rect.height / canvas.height;
+    const cssX = internalX * scaleX;
+    const cssY = internalY * scaleY;
+    
+    return { x: cssX, y: cssY };
+  }
+
   // Convert mouse event to room-space coordinates (compensates zoom/pan and editor offsets)
   function eventToRoomCoordinates(clientX, clientY) {
     const worldPos = screenToWorld(clientX, clientY);
@@ -836,14 +869,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
       const charData = who ? characterFrames.get(who) : null;
-      // Prepare current frame
-      let frame = null;
-      if (charData && charData.directions[currentDirection] && charData.directions[currentDirection].frames.length > 0) {
-        const dirData = charData.directions[currentDirection];
-        const idx = characterPreviewIndex % dirData.frames.length;
-        frame = dirData.frames[idx];
-      }
-
+      
       // Ensure canvas is set to game viewport (no stretching by CSS)
       if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
         canvas.width = gameViewport.width;
@@ -854,50 +880,25 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Apply zoom/pan transforms like rooms
-      ctx.save();
-      ctx.translate(editorState.panX, editorState.panY);
-      ctx.scale(editorState.zoom, editorState.zoom);
+      // Verifica che ci siano dati validi prima di procedere
+      if (!charData || !charData.directions || !charData.directions[currentDirection]) {
+        // Nessun character selezionato o direzione non valida
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(who ? 'No frames loaded for this direction' : 'Select a character to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return; // skip rooms rendering
+      }
 
-      // Draw current frame at original size, centered in game viewport space
-      // Usa getFrameImage per gestire sia frame normali che frame specchiati
       const dirData = charData.directions[currentDirection];
-      const frameIndex = characterPreviewIndex % dirData.frames.length;
-      const frameResult = getFrameImage(frame, charData, frameIndex, currentDirection);
       
-      if (frameResult.img) {
-        const frameImg = frameResult.img;
-        const dx = (gameViewport.width - frameImg.width) / 2;
-        const dy = (gameViewport.height - frameImg.height) / 2;
-        
-        // Se il frame deve essere specchiato, applica la trasformazione
-        if (frameResult.mirrored) {
-          ctx.save();
-          // Specchia orizzontalmente: trasla, scala negativo su X, e ri-trasla
-          ctx.translate(dx + frameImg.width, dy);
-          ctx.scale(-1, 1);
-          ctx.drawImage(frameImg, 0, 0);
-          ctx.restore();
-        } else {
-          ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
-        }
-        
-        // Mostra informazioni sull'animazione (opzionale, per debug)
-        if (characterPreviewTimer) {
-          ctx.save();
-          ctx.resetTransform(); // Reset per testo senza zoom/pan
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          ctx.fillRect(10, 10, 300, 60);
-          ctx.fillStyle = '#39ff14';
-          ctx.font = '12px monospace';
-          const currentFrameNum = frameIndex + 1;
-          ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 28);
-          ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 45);
-          ctx.fillText(`Direction: ${currentDirection}`, 15, 62);
-          ctx.restore();
-        }
-      } else if (charData && charData.directions[currentDirection] && charData.directions[currentDirection].frames.length === 0) {
-        // Mostra messaggio se non ci sono frame
+      // Verifica che ci siano frame
+      if (!dirData.frames || dirData.frames.length === 0) {
         ctx.save();
         ctx.resetTransform();
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -906,6 +907,108 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.font = '16px Arial';
         ctx.textAlign = 'center';
         ctx.fillText('No frames loaded for this direction', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return; // skip rooms rendering
+      }
+
+      // Prepare current frame
+      const frameIndex = characterPreviewIndex % dirData.frames.length;
+      const frame = dirData.frames[frameIndex];
+
+      // Apply zoom/pan transforms like rooms
+      ctx.save();
+      ctx.translate(editorState.panX, editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      // Draw current frame at original size, centered in game viewport space
+      // Usa getFrameImage per gestire sia frame normali che frame specchiati
+      const frameResult = getFrameImage(frame, charData, frameIndex, currentDirection);
+      
+      if (frameResult && frameResult.img) {
+        const frameImg = frameResult.img;
+        
+        // Verifica che l'immagine sia caricata
+        if (frameImg.complete && frameImg.naturalWidth > 0 && frameImg.naturalHeight > 0) {
+          const dx = (gameViewport.width - frameImg.width) / 2;
+          const dy = (gameViewport.height - frameImg.height) / 2;
+          
+          // Se il frame deve essere specchiato, applica la trasformazione
+          if (frameResult.mirrored) {
+            ctx.save();
+            // Specchia orizzontalmente: trasla, scala negativo su X, e ri-trasla
+            ctx.translate(dx + frameImg.width, dy);
+            ctx.scale(-1, 1);
+            ctx.drawImage(frameImg, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
+          }
+          
+          // Draw pivot point if it exists (one pivot per character, relative to current frame)
+          if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
+            // Pivot is relative to frame, so draw it at frame position + pivot offset
+            let pivotX = dx + charData.pivotX;
+            let pivotY = dy + charData.pivotY;
+            
+            // If frame is mirrored, adjust pivot X coordinate
+            if (frameResult.mirrored) {
+              pivotX = dx + frameImg.width - charData.pivotX;
+            }
+            
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+            ctx.beginPath();
+            ctx.arc(Math.round(pivotX), Math.round(pivotY), 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            // Draw crosshair
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(pivotX - 12), Math.round(pivotY));
+            ctx.lineTo(Math.round(pivotX + 12), Math.round(pivotY));
+            ctx.moveTo(Math.round(pivotX), Math.round(pivotY - 12));
+            ctx.lineTo(Math.round(pivotX), Math.round(pivotY + 12));
+            ctx.stroke();
+          }
+          
+          // Mostra informazioni sull'animazione (opzionale, per debug)
+          if (characterPreviewTimer) {
+            ctx.save();
+            ctx.resetTransform(); // Reset per testo senza zoom/pan
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(10, 10, 300, 60);
+            ctx.fillStyle = '#39ff14';
+            ctx.font = '12px monospace';
+            const currentFrameNum = frameIndex + 1;
+            ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 28);
+            ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 45);
+            ctx.fillText(`Direction: ${currentDirection}`, 15, 62);
+            ctx.restore();
+          }
+        } else {
+          // Immagine non ancora caricata
+          ctx.save();
+          ctx.resetTransform();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+          ctx.fillStyle = '#ffff00';
+          ctx.font = '16px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('Loading frame...', gameViewport.width / 2, gameViewport.height / 2);
+          ctx.restore();
+        }
+      } else {
+        // Frame non valido
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Invalid frame', gameViewport.width / 2, gameViewport.height / 2);
         ctx.restore();
       }
 
@@ -1298,8 +1401,57 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         canvas.style.cursor = 'crosshair';
       } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton) { // Left click without Ctrl
-        // Check for GUI button interaction
+        // Check for character pivot interaction (only in characters tab)
         const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+        if (activeTab === 'characters') {
+          const sel = document.getElementById('character-selector');
+          const who = sel ? sel.value : '';
+          if (who) {
+            // Use screenToWorld like hotspots do - converts to world coordinates (accounts for zoom/pan)
+            const worldPos = screenToWorld(e.clientX, e.clientY);
+            const charData = characterFrames.get(who);
+            if (charData) {
+              const dirData = charData.directions[currentDirection];
+              if (dirData && dirData.frames && dirData.frames.length > 0) {
+                const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
+                if (frameResult && frameResult.img) {
+                  const frameImg = frameResult.img;
+                  // Frame position in viewport coordinates (same as used in rendering)
+                  const frameDx = (gameViewport.width - frameImg.width) / 2;
+                  const frameDy = (gameViewport.height - frameImg.height) / 2;
+                  
+                  // Initialize pivot if it doesn't exist
+                  if (charData.pivotX === undefined || charData.pivotY === undefined) {
+                    charData.pivotX = Math.round(frameImg.width / 2);
+                    charData.pivotY = Math.round(frameImg.height);
+                    characterFrames.set(who, charData);
+                  }
+                  
+                  // Check if click is within frame bounds - if so, move pivot to click position
+                  // worldPos is in viewport coordinates (after zoom/pan inverse transform)
+                  // frameDx/Dy are also in viewport coordinates
+                  if (worldPos.x >= frameDx && worldPos.x <= frameDx + frameImg.width &&
+                      worldPos.y >= frameDy && worldPos.y <= frameDy + frameImg.height) {
+                    // Move pivot to click position (relative to frame top-left)
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // If frame is mirrored, adjust pivot X coordinate to match visual position
+                    if (frameResult.mirrored) {
+                      charData.pivotX = frameImg.width - (worldPos.x - frameDx);
+                    } else {
+                      charData.pivotX = worldPos.x - frameDx;
+                    }
+                    charData.pivotY = worldPos.y - frameDy;
+                    characterFrames.set(who, charData);
+                    redraw();
+                    return;
+                  }
+                }
+              }
+            }
+          }
+        }
+        // Check for GUI button interaction
         if (activeTab === 'gui') {
           const worldPos = screenToWorld(e.clientX, e.clientY);
           const clickedGuiButton = guiButtons.find(btn => 
@@ -1648,6 +1800,55 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Canvas clicks: add vertices while drawing walkable or hotspot
   canvas.addEventListener('click', (e) => {
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    
+    // Handle character pivot movement first (in characters tab)
+    if (activeTab === 'characters' && !e.ctrlKey) {
+      const sel = document.getElementById('character-selector');
+      const who = sel ? sel.value : '';
+      if (who) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const charData = characterFrames.get(who);
+        if (charData) {
+          const dirData = charData.directions[currentDirection];
+          if (dirData && dirData.frames && dirData.frames.length > 0) {
+            const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
+            if (frameResult && frameResult.img) {
+              const frameImg = frameResult.img;
+              const frameDx = (gameViewport.width - frameImg.width) / 2;
+              const frameDy = (gameViewport.height - frameImg.height) / 2;
+              
+              // Initialize pivot if it doesn't exist
+              if (charData.pivotX === undefined || charData.pivotY === undefined) {
+                charData.pivotX = Math.round(frameImg.width / 2);
+                charData.pivotY = Math.round(frameImg.height);
+                characterFrames.set(who, charData);
+              }
+              
+              // Check if click is within frame bounds
+              if (worldPos.x >= frameDx && worldPos.x <= frameDx + frameImg.width &&
+                  worldPos.y >= frameDy && worldPos.y <= frameDy + frameImg.height) {
+                // Move pivot to click position
+                e.preventDefault();
+                e.stopPropagation();
+                // If frame is mirrored, adjust pivot X coordinate to match visual position
+                if (frameResult.mirrored) {
+                  charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
+                } else {
+                  charData.pivotX = Math.round(worldPos.x - frameDx);
+                }
+                charData.pivotY = Math.round(worldPos.y - frameDy);
+                characterFrames.set(who, charData);
+                redraw();
+                showNotification(`Pivot moved to (${charData.pivotX}, ${charData.pivotY})`, 'info');
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+    
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     if (isDrawingWalkable) {
       // Round coordinates only when saving to avoid precision issues
@@ -1671,7 +1872,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // GUI selection when in GUI tab
-    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
     if (activeTab === 'gui') {
       const hit = guiButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
       if (hit) {
@@ -4535,8 +4735,13 @@ window.selectRoom = function(roomId) {
       }
     }
     updateDirectionInfo(); // Update direction info display
+    // Initialize pivot if needed
+    if (charData) {
+      initializePivotForCharacter(charData, currentDirection);
+    }
     // Assicura che il toggle sia inizializzato
     toggleFrameSource();
+    redraw(); // Redraw to show pivot if it exists
   };
 
   // Add event listener for character selection change
@@ -4590,6 +4795,9 @@ window.selectRoom = function(roomId) {
     }
 
     const dirData = charData.directions[direction];
+    
+    // Calcola l'indice di partenza per i nuovi frame (aggiungi alla fine invece di sovrascrivere)
+    const existingFrameCount = dirData.frames ? dirData.frames.length : 0;
     
     // Funzione helper per estrarre il numero dal nome del file
     // Supporta qualsiasi pattern: frame_01.png, file.001.png, walk-1.png, etc.
@@ -4680,13 +4888,15 @@ window.selectRoom = function(roomId) {
     try {
       const framePromises = sortedFiles.map(async (file, index) => {
         try {
+          // Calcola l'indice effettivo del frame (esistenti + nuovi)
+          const actualFrameIndex = existingFrameCount + index;
           // Genera assetId determinista per il frame
-          const frameAssetId = `frame_${who}_${direction}_${index}`;
+          const frameAssetId = `frame_${who}_${direction}_${actualFrameIndex}`;
           
-          // Carica il frame su storage
+          // Carica il frame su storage (consenti overwrite per frame con stesso indice)
           const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'character', {
             assetId: frameAssetId,
-            overwriteExisting: false,
+            overwriteExisting: true, // Permetti sovrascrittura per frame con stesso indice
             subfolder: characterSubfolder
           });
           
@@ -4709,13 +4919,13 @@ window.selectRoom = function(roomId) {
           const frameData = {
             img: img,
             name: file.name,
-            orderIndex: index
+            orderIndex: actualFrameIndex // Usa l'indice effettivo invece dell'indice locale
           };
           
-          return { frameData, index, assetId };
+          return { frameData, index: actualFrameIndex, assetId };
         } catch (error) {
           console.error(`[Frame] ❌ Errore upload frame ${file.name}:`, error);
-          return { frameData: null, index, error: error.message };
+          return { frameData: null, index: existingFrameCount + index, error: error.message };
         }
       });
       
@@ -4744,6 +4954,8 @@ window.selectRoom = function(roomId) {
       if (successCount > 0) {
         showNotification(`✅ ${successCount} frame(s) uploaded and saved to storage`, 'success');
         updateDirectionInfo();
+        // Initialize pivot if it doesn't exist
+        initializePivotForCharacter(charData, direction);
         redraw();
       }
       
@@ -4894,11 +5106,45 @@ window.selectRoom = function(roomId) {
       // Aggiorna thumbnails, canvas e informazioni
       updateDirectionInfo();
       refreshFramesPreview();
+      // Initialize pivot if frames exist
+      if (charData && charData.directions && charData.directions[currentDirection]) {
+        initializePivotForCharacter(charData, currentDirection);
+      }
       redraw();
       
       showNotification('Frames cleared for ' + who, 'success');
     }
   };
+
+  // Character Pivot Management - Automatic initialization
+  function initializePivotForCharacter(charData, direction) {
+    if (!charData || !charData.directions || !charData.directions[direction]) {
+      return;
+    }
+    
+    // If pivot already exists, don't override it
+    if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
+      return;
+    }
+    
+    const dirData = charData.directions[direction];
+    if (dirData && dirData.frames && dirData.frames.length > 0) {
+      const frameResult = getFrameImage(dirData.frames[0], charData, 0, direction);
+      if (frameResult && frameResult.img) {
+        const frameImg = frameResult.img;
+        // Set pivot at center bottom of frame
+        charData.pivotX = Math.round(frameImg.width / 2);
+        charData.pivotY = Math.round(frameImg.height);
+        
+        // Get character name from selector to save properly
+        const sel = document.getElementById('character-selector');
+        const who = sel ? sel.value : '';
+        if (who) {
+          characterFrames.set(who, charData);
+        }
+      }
+    }
+  }
 
   // Function to handle direction change
   window.changeCharacterDirection = function() {
@@ -4906,6 +5152,17 @@ window.selectRoom = function(roomId) {
     if (dirSel) {
       currentDirection = dirSel.value;
       characterPreviewIndex = 0; // Reset animation index
+      
+      // Initialize pivot if needed
+      const sel = document.getElementById('character-selector');
+      const who = sel ? sel.value : '';
+      if (who) {
+        const charData = characterFrames.get(who);
+        if (charData) {
+          initializePivotForCharacter(charData, currentDirection);
+        }
+      }
+      
       updateDirectionInfo(); // Update frame count info
       redraw(); // Update canvas preview
       
@@ -8051,6 +8308,14 @@ window.selectRoom = function(roomId) {
   document.addEventListener('tabChanged', function(e) {
     console.log('Tab changed:', e.detail);
     
+    // Assicurati che il loop di rendering del canvas embedded continui anche quando si cambia tab
+    if (embeddedRuntime.isInitialized && embeddedRuntime.canvas && embeddedRuntime.ctx) {
+      // Se il loop non è attivo, riavvialo
+      if (!embeddedRuntime.renderLoopId) {
+        startEmbeddedRenderLoop();
+      }
+    }
+    
     // Add specific logic for each tab
     switch(e.detail.currentTab) {
       case 'objects':
@@ -8090,7 +8355,9 @@ window.selectRoom = function(roomId) {
       currentRoomId: null,
       variables: new Map()
     },
-    isInitialized: false
+    isInitialized: false,
+    renderLoopId: null,
+    lastRenderTime: 0
   };
 
   // Funzione helper per serializzare valori
@@ -8516,18 +8783,63 @@ window.selectRoom = function(roomId) {
     if (!embeddedRuntime.gameData || !Array.isArray(embeddedRuntime.gameData.rooms) || 
         index < 0 || index >= embeddedRuntime.gameData.rooms.length) return;
     
+    // Verifica che il canvas sia inizializzato
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      // Prova a inizializzare il canvas se non è già inizializzato
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        const settings = embeddedRuntime.gameData.settings || {};
+        const canvasWidth = settings.canvasWidth || 800;
+        const canvasHeight = settings.canvasHeight || 600;
+        embeddedRuntime.canvas.width = canvasWidth;
+        embeddedRuntime.canvas.height = canvasHeight;
+      } else {
+        return; // Canvas non disponibile
+      }
+    }
+    
     const room = embeddedRuntime.gameData.rooms[index];
     const assets = await loadRuntimeRoomAssets(room);
 
-    if (!embeddedRuntime.ctx) return;
+    if (!embeddedRuntime.ctx || !embeddedRuntime.canvas) return;
     
-    embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
-    if (assets.background) embeddedRuntime.ctx.drawImage(assets.background, 0, 0);
-    for (const o of assets.objects) {
-      if (o.img) embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+    // Pulisci il canvas con un colore di sfondo (non nero, ma un grigio scuro per debug)
+    embeddedRuntime.ctx.fillStyle = '#1a1a1a';
+    embeddedRuntime.ctx.fillRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+    
+    // Disegna il background se disponibile
+    if (assets.background && assets.background.complete && assets.background.naturalWidth > 0) {
+      try {
+        embeddedRuntime.ctx.drawImage(assets.background, 0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+      } catch (error) {
+        console.warn('[Runtime] Errore rendering background:', error);
+      }
     }
+    
+    // Disegna gli oggetti di scena
+    for (const o of assets.objects) {
+      if (o.img && o.img.complete && o.img.naturalWidth > 0) {
+        try {
+          embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+        } catch (error) {
+          console.warn('[Runtime] Errore rendering oggetto:', error);
+        }
+      }
+    }
+    
+    // Disegna i foregrounds
     for (const f of assets.foregrounds) {
-      if (f.img) embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+      if (f.img && f.img.complete && f.img.naturalWidth > 0) {
+        try {
+          embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+        } catch (error) {
+          console.warn('[Runtime] Errore rendering foreground:', error);
+        }
+      }
     }
 
     // Disegna marker posizione iniziale se questa è la stanza di start
@@ -8564,6 +8876,26 @@ window.selectRoom = function(roomId) {
 
     sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
 
+    // Inizializza il canvas embedded se non è già inizializzato
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        const settings = embeddedRuntime.gameData.settings || {};
+        const canvasWidth = settings.canvasWidth || 800;
+        const canvasHeight = settings.canvasHeight || 600;
+        embeddedRuntime.canvas.width = canvasWidth;
+        embeddedRuntime.canvas.height = canvasHeight;
+        
+        sendRuntimeLogToEditor(`Canvas embedded inizializzato: ${canvasWidth}x${canvasHeight}`, 'info');
+      } else {
+        sendRuntimeLogToEditor('Canvas embedded non trovato nel DOM', 'warning');
+      }
+    }
+
     // Seleziona stanza iniziale
     try {
       const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
@@ -8586,6 +8918,18 @@ window.selectRoom = function(roomId) {
       embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
     }
     
+    // Renderizza la stanza iniziale
+    if (embeddedRuntime.canvas && embeddedRuntime.ctx) {
+      renderRuntimeRoom(embeddedRuntime.currentRoomIndex).then(() => {
+        sendRuntimeLogToEditor('Stanza iniziale renderizzata', 'info');
+      }).catch(err => {
+        sendRuntimeLogToEditor('Errore rendering stanza iniziale: ' + err.message, 'error');
+      });
+      
+      // Avvia il loop di rendering continuo
+      startEmbeddedRenderLoop();
+    }
+    
     // Crea e inizializza l'iframe sandboxed
     sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
     createSandboxIframe();
@@ -8597,9 +8941,98 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.isInitialized = true;
     sendRuntimeLogToEditor('Embedded runtime initialization started (waiting for iframe ready...)', 'info');
   }
+  
+  // Loop di rendering continuo per il canvas embedded
+  function startEmbeddedRenderLoop() {
+    // Ferma il loop esistente se presente
+    if (embeddedRuntime.renderLoopId) {
+      cancelAnimationFrame(embeddedRuntime.renderLoopId);
+      embeddedRuntime.renderLoopId = null;
+    }
+    
+    // Verifica che il canvas sia disponibile prima di avviare il loop
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      // Prova a inizializzare il canvas se non è già inizializzato
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        if (embeddedRuntime.gameData && embeddedRuntime.gameData.settings) {
+          const settings = embeddedRuntime.gameData.settings;
+          const canvasWidth = settings.canvasWidth || 800;
+          const canvasHeight = settings.canvasHeight || 600;
+          embeddedRuntime.canvas.width = canvasWidth;
+          embeddedRuntime.canvas.height = canvasHeight;
+        }
+      } else {
+        console.warn('[Runtime] Canvas embedded non trovato, loop di rendering non avviato');
+        return;
+      }
+    }
+    
+    embeddedRuntime.lastRenderTime = performance.now();
+    
+    function renderLoop(currentTime) {
+      // Verifica la tab attiva - non renderizzare se si è nella tab "characters"
+      const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+      if (activeTab === 'characters') {
+        // Nella tab characters, non renderizzare il canvas embedded
+        embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+        return;
+      }
+      
+      // Verifica che il canvas embedded sia visibile (runtime-container deve essere visibile)
+      const runtimeContainer = document.getElementById('runtime-container');
+      if (runtimeContainer && runtimeContainer.style.display === 'none') {
+        // Canvas embedded non visibile, continua il loop ma non renderizzare
+        embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+        return;
+      }
+      
+      // Renderizza solo se il canvas è disponibile e il runtime è inizializzato
+      if (embeddedRuntime.canvas && embeddedRuntime.ctx && embeddedRuntime.isInitialized && 
+          embeddedRuntime.gameData && embeddedRuntime.currentRoomIndex >= 0) {
+        // Verifica che il canvas non sia stato resettato (controlla le dimensioni)
+        if (embeddedRuntime.canvas.width === 0 || embeddedRuntime.canvas.height === 0) {
+          // Canvas resettato, ripristina le dimensioni
+          if (embeddedRuntime.gameData && embeddedRuntime.gameData.settings) {
+            const settings = embeddedRuntime.gameData.settings;
+            embeddedRuntime.canvas.width = settings.canvasWidth || 800;
+            embeddedRuntime.canvas.height = settings.canvasHeight || 600;
+          }
+        }
+        
+        // Renderizza ogni ~100ms (10 FPS) per non sovraccaricare il sistema
+        const deltaTime = currentTime - embeddedRuntime.lastRenderTime;
+        if (deltaTime >= 100) {
+          renderRuntimeRoom(embeddedRuntime.currentRoomIndex).catch(err => {
+            console.warn('[Runtime] Errore rendering:', err);
+          });
+          embeddedRuntime.lastRenderTime = currentTime;
+        }
+      }
+      
+      embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+    }
+    
+    embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+  }
+  
+  // Ferma il loop di rendering
+  function stopEmbeddedRenderLoop() {
+    if (embeddedRuntime.renderLoopId) {
+      cancelAnimationFrame(embeddedRuntime.renderLoopId);
+      embeddedRuntime.renderLoopId = null;
+    }
+  }
 
   // Ferma e pulisce il runtime incorporato
   function stopEmbeddedRuntime() {
+    // Ferma il loop di rendering
+    stopEmbeddedRenderLoop();
+    
     // Rimuovi iframe sandboxed
     if (embeddedRuntime.sandboxIframe) {
       // Rimuovi listener messaggi se presente
@@ -10921,6 +11354,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     names.forEach(name => {
       const charData = (characterFrames && characterFrames.get) ? characterFrames.get(name) : null;
       const out = { name, directions: {} };
+      // Include pivot if it exists
+      if (charData && charData.pivotX !== undefined && charData.pivotY !== undefined) {
+        out.pivotX = Number(charData.pivotX) || 0;
+        out.pivotY = Number(charData.pivotY) || 0;
+      }
       directionsList.forEach(dir => {
         const d = charData && charData.directions ? charData.directions[dir] : null;
         if (d) {
@@ -14140,7 +14578,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 directions[dir] = { fps: Number(data.fps) || 8, frames: frames };
               }
             }
-            characterFrames.set(characterName, { directions, currentFrame: 0 });
+            const charData = { directions, currentFrame: 0 };
+            // Load pivot if it exists
+            if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
+              charData.pivotX = Number(ch.pivotX) || 0;
+              charData.pivotY = Number(ch.pivotY) || 0;
+            }
+            characterFrames.set(characterName, charData);
             
             // Crea l'elemento DOM nella lista character (come fa addCharacter)
             if (charactersList) {
@@ -14465,6 +14909,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
       rebuildScriptsTree();
+      
+      // Inizializza il canvas embedded e il runtime sandboxed
+      try {
+        // Serializza il progetto per il runtime
+        const projectJson = JSON.stringify(projectObj);
+        initializeSandboxRuntime(projectJson);
+      } catch (runtimeError) {
+        console.warn('[applyProjectObject] Errore inizializzazione runtime embedded:', runtimeError);
+      }
       
       showNotification('Project loaded', 'success');
     } catch (err) {

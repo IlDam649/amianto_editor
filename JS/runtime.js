@@ -25,6 +25,8 @@
     variables: new Map(),
     objects: new Map(), // oggetti caricati con immagini
     guis: new Map(), // GUI caricate
+    characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, roomId}>
+    characterDefinitions: new Map(), // Definizioni dei character dal progetto: Map<characterName, {directions: {...}}>
     scripts: {}, // script del progetto
     attachments: {}, // script collegati a eventi
     isRunning: false,
@@ -574,6 +576,8 @@
       gameState.variables.clear();
       gameState.objects.clear();
       gameState.guis.clear();
+      gameState.characters.clear();
+      gameState.characterDefinitions.clear();
       gameState.scripts = projectData.scripts || {};
       gameState.attachments = projectData.attachments || {};
       
@@ -682,6 +686,9 @@
       } else {
         log('[Runtime] Nessuna room iniziale specificata', 'warning');
       }
+
+      updateLoadingMessage('Caricamento character...');
+      await loadCharacterDefinitions(projectData.characters || []);
 
       updateLoadingMessage('Caricamento GUI...');
       await loadGUIs(projectData.guis || []);
@@ -1060,6 +1067,134 @@
     await executeRoomChangeScripts(oldRoomId, roomId);
 
     log(`[Runtime] Room cambiata: ${roomId} (bg: ${backgroundImg ? 'ok' : 'mancante'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length})`, 'info');
+  }
+
+  // ============================================
+  // GESTIONE CHARACTER
+  // ============================================
+  /**
+   * Carica le definizioni dei character dal progetto
+   * I frame sono già stati caricati in AssetRegistry durante il preload
+   */
+  async function loadCharacterDefinitions(charactersData) {
+    if (!charactersData || !Array.isArray(charactersData)) {
+      log('[Runtime] Nessun character da caricare', 'info');
+      return;
+    }
+
+    log(`[Runtime] Caricamento ${charactersData.length} definizioni character...`, 'info');
+    gameState.characterDefinitions.clear();
+
+    for (const charData of charactersData) {
+      const characterName = charData.name || charData.id;
+      if (!characterName) {
+        log('[Runtime] Character ignorato: nome mancante', 'warning');
+        continue;
+      }
+
+      const directions = {};
+      if (charData.directions) {
+        for (const [dir, dirData] of Object.entries(charData.directions)) {
+          if (dirData && dirData.frames && Array.isArray(dirData.frames)) {
+            const frames = [];
+            for (const frame of dirData.frames) {
+              // Gestisci frame specchiati
+              if (frame && typeof frame === 'object' && frame.mirror) {
+                // Frame specchiato: salva riferimento
+                frames.push({ mirror: frame.mirror });
+              } else if (frame && typeof frame === 'string') {
+                // Frame normale: recupera immagine da AssetRegistry
+                const img = AssetRegistry.images.get(frame);
+                if (img && img.complete && img.naturalWidth > 0) {
+                  frames.push(img);
+                } else {
+                  log(`[Runtime] Frame character non trovato in registry: ${characterName}/${dir} (${frame.substring(0, 50)})`, 'warning');
+                }
+              }
+            }
+            
+            if (frames.length > 0) {
+              directions[dir] = {
+                fps: Number(dirData.fps) || 8,
+                frames: frames
+              };
+            }
+          }
+        }
+      }
+
+      if (Object.keys(directions).length > 0) {
+        const charDef = { directions };
+        // Load pivot if it exists
+        if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
+          charDef.pivotX = Number(charData.pivotX) || 0;
+          charDef.pivotY = Number(charData.pivotY) || 0;
+        }
+        gameState.characterDefinitions.set(characterName, charDef);
+        log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} direzioni)`, 'info');
+      } else {
+        log(`[Runtime] Character ignorato: ${characterName} (nessuna direzione valida)`, 'warning');
+      }
+    }
+
+    log(`[Runtime] Caricamento definizioni character completato: ${gameState.characterDefinitions.size} character caricati`, 'success');
+  }
+
+  // Cache per frame specchiati (per evitare di ricrearli ogni frame)
+  const mirroredFrameCache = new Map(); // key: `${characterName}_${direction}_${frameIndex}`, value: HTMLCanvasElement
+
+  /**
+   * Ottiene il frame corrente di un character, gestendo anche frame specchiati
+   */
+  function getCharacterFrame(characterName, direction, frameIndex) {
+    const charDef = gameState.characterDefinitions.get(characterName);
+    if (!charDef || !charDef.directions[direction]) {
+      return null;
+    }
+
+    const dirData = charDef.directions[direction];
+    if (!dirData.frames || dirData.frames.length === 0) {
+      return null;
+    }
+
+    const actualFrameIndex = frameIndex % dirData.frames.length;
+    const frame = dirData.frames[actualFrameIndex];
+
+    // Se è un frame specchiato, ottieni il frame originale e specchialo
+    if (frame && typeof frame === 'object' && frame.mirror) {
+      const sourceDir = frame.mirror;
+      const cacheKey = `${characterName}_${direction}_${actualFrameIndex}`;
+      
+      // Controlla se è già in cache
+      if (mirroredFrameCache.has(cacheKey)) {
+        return mirroredFrameCache.get(cacheKey);
+      }
+
+      const sourceDirData = charDef.directions[sourceDir];
+      if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
+        const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
+        if (sourceFrame && sourceFrame.complete) {
+          // Crea un canvas per specchiare l'immagine e mettilo in cache
+          const canvas = document.createElement('canvas');
+          canvas.width = sourceFrame.width || sourceFrame.naturalWidth;
+          canvas.height = sourceFrame.height || sourceFrame.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(sourceFrame, 0, 0);
+          mirroredFrameCache.set(cacheKey, canvas);
+          return canvas;
+        }
+      }
+      return null;
+    }
+
+    // Frame normale
+    if (frame && frame.complete && frame.naturalWidth > 0) {
+      return frame;
+    }
+
+    return null;
   }
 
   // ============================================
@@ -1945,6 +2080,88 @@
       });
     },
 
+    // Character API
+    spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
+      if (!characterName) {
+        GameAPI.error('spawn_character: characterName è richiesto');
+        return null;
+      }
+
+      const charDef = gameState.characterDefinitions.get(characterName);
+      if (!charDef) {
+        GameAPI.error(`spawn_character: Character "${characterName}" non trovato nelle definizioni`);
+        return null;
+      }
+
+      const id = characterId || `char_${characterName}_${Date.now()}`;
+      const dir = direction || 'south';
+      
+      // Verifica che la direzione esista
+      if (!charDef.directions[dir]) {
+        log(`[Runtime] spawn_character: Direzione "${dir}" non disponibile per "${characterName}", uso "south"`, 'warning');
+        direction = 'south';
+      }
+
+      const character = {
+        id: id,
+        name: characterName,
+        x: Number(x) || 0,
+        y: Number(y) || 0,
+        direction: direction,
+        currentFrame: 0,
+        frameTime: 0,
+        visible: true,
+        roomId: gameState.currentRoomId
+      };
+
+      gameState.characters.set(id, character);
+      log(`[Runtime] Character "${characterName}" spawnato a (${x}, ${y}) con direzione "${direction}"`, 'info');
+      return id;
+    },
+
+    move_character: function(characterId, x, y) {
+      const character = gameState.characters.get(characterId);
+      if (!character) {
+        GameAPI.error(`move_character: Character ${characterId} non trovato`);
+        return;
+      }
+
+      character.x = Number(x) || 0;
+      character.y = Number(y) || 0;
+      log(`[Runtime] Character ${characterId} spostato a (${character.x}, ${character.y})`, 'info');
+    },
+
+    set_character_direction: function(characterId, direction) {
+      const character = gameState.characters.get(characterId);
+      if (!character) {
+        GameAPI.error(`set_character_direction: Character ${characterId} non trovato`);
+        return;
+      }
+
+      const charDef = gameState.characterDefinitions.get(character.name);
+      if (!charDef || !charDef.directions[direction]) {
+        GameAPI.error(`set_character_direction: Direzione "${direction}" non disponibile per character "${character.name}"`);
+        return;
+      }
+
+      character.direction = direction;
+      character.currentFrame = 0; // Reset frame quando cambia direzione
+      character.frameTime = 0;
+      log(`[Runtime] Character ${characterId} direzione cambiata a "${direction}"`, 'info');
+    },
+
+    animate_character: function(characterId, enabled = true) {
+      const character = gameState.characters.get(characterId);
+      if (!character) {
+        GameAPI.error(`animate_character: Character ${characterId} non trovato`);
+        return;
+      }
+
+      // L'animazione è sempre abilitata se il character ha frame
+      // Questa funzione può essere usata per controlli futuri
+      log(`[Runtime] Character ${characterId} animazione ${enabled ? 'abilitata' : 'disabilitata'}`, 'info');
+    },
+
     // UI
     showText: function(text) {
       // Mostra testo come messaggio visibile (con coda sequenziale)
@@ -2029,6 +2246,20 @@
     return GameAPI.move_object(objectId, x, y);
   };
 
+  // Esponi API character globalmente
+  window.spawn_character = function(characterName, x, y, direction, characterId) {
+    return GameAPI.spawn_character(characterName, x, y, direction, characterId);
+  };
+  window.move_character = function(characterId, x, y) {
+    return GameAPI.move_character(characterId, x, y);
+  };
+  window.set_character_direction = function(characterId, direction) {
+    return GameAPI.set_character_direction(characterId, direction);
+  };
+  window.animate_character = function(characterId, enabled) {
+    return GameAPI.animate_character(characterId, enabled);
+  };
+
   // Esponi funzioni helper eventi globalmente
   window.on_game_start = function(handler) {
     GameAPI.on_game_start(handler);
@@ -2109,6 +2340,45 @@
           }
         });
       }
+
+      // Character - renderizza solo i character nella room corrente
+      gameState.characters.forEach(character => {
+        if (!character.visible || character.roomId !== gameState.currentRoomId) {
+          return;
+        }
+
+        const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
+        if (frame) {
+          try {
+            // Get character definition to check for pivot
+            const charDef = gameState.characterDefinitions.get(character.name);
+            let drawX = character.x;
+            let drawY = character.y;
+            
+            // If character has a pivot, adjust drawing position
+            if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+              // The character.x and character.y represent the pivot position
+              // Calculate offset from pivot to frame top-left corner
+              const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
+              const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
+              
+              // Pivot is relative to the frame, so we need to offset by the pivot position
+              drawX = character.x - charDef.pivotX;
+              drawY = character.y - charDef.pivotY;
+            }
+            
+            // Se è un canvas (frame specchiato), disegna il canvas
+            if (frame instanceof HTMLCanvasElement) {
+              ctx.drawImage(frame, drawX, drawY);
+            } else {
+              // Frame normale (Image)
+              ctx.drawImage(frame, drawX, drawY);
+            }
+          } catch (error) {
+            log(`[Runtime] Errore rendering character ${character.id}: ${error.message}`, 'warning');
+          }
+        }
+      });
     }
 
     // Renderizza GUI - verifica che le immagini siano caricate e pronte
@@ -2159,7 +2429,38 @@
   // GAME LOOP
   // ============================================
   function update(deltaTime) {
-    // Update logic qui (per ora vuoto, può essere esteso)
+    // Aggiorna animazioni dei character
+    gameState.characters.forEach(character => {
+      if (!character.visible || character.roomId !== gameState.currentRoomId) {
+        return;
+      }
+
+      const charDef = gameState.characterDefinitions.get(character.name);
+      if (!charDef || !charDef.directions[character.direction]) {
+        return;
+      }
+
+      const dirData = charDef.directions[character.direction];
+      if (!dirData.frames || dirData.frames.length === 0) {
+        return;
+      }
+
+      // Se c'è solo un frame, non animare
+      if (dirData.frames.length === 1) {
+        character.currentFrame = 0;
+        return;
+      }
+
+      // Aggiorna frame time
+      character.frameTime += deltaTime;
+      const frameDuration = 1000 / dirData.fps; // Durata di ogni frame in ms
+
+      // Avanza al frame successivo se necessario
+      if (character.frameTime >= frameDuration) {
+        character.currentFrame = (character.currentFrame + 1) % dirData.frames.length;
+        character.frameTime = 0;
+      }
+    });
   }
 
   function gameLoop(currentTime) {
@@ -2433,6 +2734,55 @@
       log(`[Runtime] handleClick: Nessun oggetto colpito`, 'info');
     } else {
       log(`[Runtime] handleClick: Nessun oggetto nella room corrente`, 'info');
+    }
+
+    // Controlla click su character
+    let clickedCharacter = null;
+    for (const character of gameState.characters.values()) {
+      if (!character.visible || character.roomId !== gameState.currentRoomId) {
+        continue;
+      }
+
+      const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
+      if (!frame) {
+        continue;
+      }
+
+      // Calcola dimensioni frame (può essere Image o Canvas)
+      const frameWidth = frame.width || frame.naturalWidth || 0;
+      const frameHeight = frame.height || frame.naturalHeight || 0;
+
+      const isInside = x >= character.x && x <= character.x + frameWidth &&
+                       y >= character.y && y <= character.y + frameHeight;
+      log(`[Runtime] handleClick: Character ${character.id} (${character.name}): hit-test = ${isInside}`, 'info');
+
+      if (isInside) {
+        clickedCharacter = character;
+        break; // Prendi il primo character colpito
+      }
+    }
+
+    if (clickedCharacter) {
+      log(`[Runtime] handleClick: ✓ Click su character: ${clickedCharacter.name} (${clickedCharacter.id})`, 'success');
+      
+      // Esegui script del character se presente
+      const characterScripts = gameState.attachments.characterScripts || {};
+      if (typeof characterScripts === 'object' && characterScripts[clickedCharacter.id]) {
+        const scriptName = characterScripts[clickedCharacter.id];
+        if (gameState.scripts[scriptName]) {
+          await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', [clickedCharacter.id, x, y], scriptName);
+        }
+      }
+
+      // Esegui handler registrati tramite on_character_click(function() {...})
+      for (const handler of eventHandlers.character_click) {
+        try {
+          handler(clickedCharacter.id, x, y);
+        } catch (error) {
+          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        }
+      }
+      return;
     }
 
     // Controlla click su pulsanti GUI
