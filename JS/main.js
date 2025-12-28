@@ -4832,6 +4832,16 @@ window.selectRoom = function(roomId) {
     if (directionSelect && spawnData.direction) {
       directionSelect.value = spawnData.direction;
     }
+    
+    // Carica moveSpeed
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      if (spawnData.moveSpeed !== undefined && spawnData.moveSpeed !== null) {
+        speedInput.value = spawnData.moveSpeed;
+      } else {
+        speedInput.value = 100; // valore di default
+      }
+    }
   }
 
   // Salva le impostazioni di spawn per il character corrente
@@ -4880,6 +4890,18 @@ window.selectRoom = function(roomId) {
       charData.spawnSettings.direction = directionSelect.value || 'south';
     }
     
+    // Salva moveSpeed
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      const speedValue = Number(speedInput.value);
+      if (!isNaN(speedValue) && speedValue > 0) {
+        charData.spawnSettings.moveSpeed = speedValue;
+        console.log(`[Character] Salvataggio moveSpeed per "${characterName}": ${speedValue}`);
+      } else {
+        charData.spawnSettings.moveSpeed = 100; // valore di default se non valido
+      }
+    }
+    
     // Salva nel characterFrames
     characterFrames.set(characterName, charData);
   }
@@ -4891,6 +4913,7 @@ window.selectRoom = function(roomId) {
     const roomContainer = document.getElementById('character-spawn-room-container');
     const positionContainer = document.getElementById('character-spawn-position-container');
     const directionContainer = document.getElementById('character-spawn-direction-container');
+    const speedContainer = document.getElementById('character-spawn-speed-container');
     
     const showFields = (autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked);
     
@@ -4902,6 +4925,9 @@ window.selectRoom = function(roomId) {
     }
     if (directionContainer) {
       directionContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (speedContainer) {
+      speedContainer.style.display = showFields ? 'block' : 'none';
     }
   }
 
@@ -4950,6 +4976,18 @@ window.selectRoom = function(roomId) {
     
     if (directionSelect) {
       directionSelect.addEventListener('change', saveCharacterSpawnSettings);
+    }
+    
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      speedInput.addEventListener('change', saveCharacterSpawnSettings);
+      speedInput.addEventListener('input', function() {
+        // Salva anche durante la digitazione per feedback immediato
+        const value = Number(speedInput.value);
+        if (!isNaN(value) && value > 0 && value <= 1000) {
+          saveCharacterSpawnSettings();
+        }
+      });
     }
     
     // Gestione right-click per aggiornare posizione character spawn
@@ -11607,7 +11645,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           roomId: spawn.roomId || null,
           x: typeof spawn.x === 'number' ? spawn.x : 0,
           y: typeof spawn.y === 'number' ? spawn.y : 0,
-          direction: spawn.direction || 'south'
+          direction: spawn.direction || 'south',
+          moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
         };
         console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
       }

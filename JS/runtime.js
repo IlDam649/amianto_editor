@@ -2808,6 +2808,20 @@
         direction = 'south';
       }
 
+      // Leggi moveSpeed dalle spawnSettings se disponibile, altrimenti usa default
+      let moveSpeed = 100; // pixel per secondo (default)
+      if (charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
+        const speedValue = Number(charDef.spawnSettings.moveSpeed);
+        if (!isNaN(speedValue) && speedValue > 0) {
+          moveSpeed = speedValue;
+          log(`[Runtime] Character "${characterName}" usa moveSpeed dalle spawnSettings: ${moveSpeed} pixel/sec`, 'info');
+        } else {
+          log(`[Runtime] Character "${characterName}": moveSpeed non valido (${charDef.spawnSettings.moveSpeed}), uso default: 100`, 'warning');
+        }
+      } else {
+        log(`[Runtime] Character "${characterName}": moveSpeed non trovato nelle spawnSettings, uso default: 100`, 'info');
+      }
+
       const character = {
         id: id,
         name: characterName,
@@ -2820,7 +2834,7 @@
         roomId: gameState.currentRoomId,
         isMoving: false,
         path: null,
-        moveSpeed: 100 // pixel per secondo
+        moveSpeed: moveSpeed // pixel per secondo
       };
 
       gameState.characters.set(id, character);
@@ -3183,7 +3197,14 @@
         character.pathIndex = 0;
       }
       if (character.moveSpeed === undefined) {
-        character.moveSpeed = 100; // pixel per secondo
+        // Prova a leggere dalle spawnSettings del character definition
+        const charDef = gameState.characterDefinitions.get(character.name);
+        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+          character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
+        } else {
+          character.moveSpeed = 100; // pixel per secondo (default)
+        }
       }
 
       // ============================================
@@ -3668,7 +3689,16 @@
         // Inizializza proprietà movimento se mancanti (retrocompatibilità)
         if (player.isMoving === undefined) player.isMoving = false;
         if (player.path === undefined) player.path = null;
-        if (player.moveSpeed === undefined) player.moveSpeed = 100;
+        if (player.moveSpeed === undefined) {
+          // Prova a leggere dalle spawnSettings del character definition
+          const charDef = gameState.characterDefinitions.get(player.name);
+          if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
+            const speedValue = Number(charDef.spawnSettings.moveSpeed);
+            player.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
+          } else {
+            player.moveSpeed = 100; // pixel per secondo (default)
+          }
+        }
         
         // Verifica che il player abbia un pivot (necessario per il pathfinding)
         const charDef = gameState.characterDefinitions.get(player.name);
