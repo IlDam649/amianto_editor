@@ -3156,7 +3156,7 @@
   // GAME LOOP
   // ============================================
   function update(deltaTime) {
-    // Aggiorna animazioni dei character
+    // Aggiorna movimento e animazioni dei character
     gameState.characters.forEach(character => {
       if (!character.visible || character.roomId !== gameState.currentRoomId) {
         return;
@@ -3172,15 +3172,107 @@
         return;
       }
 
+      // Inizializza proprietà movimento se non presenti (retrocompatibilità)
+      if (character.isMoving === undefined) {
+        character.isMoving = false;
+      }
+      if (character.path === undefined) {
+        character.path = null;
+      }
+      if (character.pathIndex === undefined) {
+        character.pathIndex = 0;
+      }
+      if (character.moveSpeed === undefined) {
+        character.moveSpeed = 100; // pixel per secondo
+      }
+
+      // ============================================
+      // GESTIONE MOVIMENTO LUNGO IL PATH
+      // ============================================
+      if (character.isMoving && character.path && Array.isArray(character.path) && character.path.length > 0) {
+        // Assicurati che pathIndex sia valido
+        if (character.pathIndex >= character.path.length) {
+          // Path completato, ferma il movimento
+          character.isMoving = false;
+          character.path = null;
+          character.pathIndex = 0;
+          character.currentFrame = 0; // Torna a idle
+          character.frameTime = 0;
+          log(`[Runtime] Movimento completato per character ${character.name || character.id}`, 'info');
+          return;
+        }
+
+        // Ottieni il punto target corrente
+        const targetPoint = character.path[character.pathIndex];
+        const currentX = character.x;
+        const currentY = character.y;
+        const targetX = targetPoint.x;
+        const targetY = targetPoint.y;
+
+        // Calcola distanza e direzione verso il target
+        const dx = targetX - currentX;
+        const dy = targetY - currentY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // Soglia per considerare raggiunto il punto (5 pixel)
+        const arrivalThreshold = 5;
+
+        if (distance <= arrivalThreshold) {
+          // Raggiunto il punto target, passa al prossimo
+          character.x = targetX;
+          character.y = targetY;
+          character.pathIndex++;
+
+          // Se abbiamo raggiunto l'ultimo punto, ferma il movimento
+          if (character.pathIndex >= character.path.length) {
+            character.isMoving = false;
+            character.path = null;
+            character.pathIndex = 0;
+            character.currentFrame = 0; // Torna a idle
+            character.frameTime = 0;
+            log(`[Runtime] Movimento completato per character ${character.name || character.id}`, 'info');
+            return;
+          }
+
+          // Aggiorna direzione verso il prossimo punto
+          const nextTarget = character.path[character.pathIndex];
+          const nextDx = nextTarget.x - character.x;
+          const nextDy = nextTarget.y - character.y;
+          character.direction = getDirectionFromVector(nextDx, nextDy);
+        } else {
+          // Muovi verso il target
+          // Calcola velocità in pixel per frame (moveSpeed è in pixel per secondo)
+          const speedPerFrame = (character.moveSpeed * deltaTime) / 1000;
+          
+          // Limita la velocità per non superare il target
+          const moveDistance = Math.min(speedPerFrame, distance);
+          
+          // Calcola il vettore normalizzato
+          const normalizedDx = dx / distance;
+          const normalizedDy = dy / distance;
+          
+          // Aggiorna posizione
+          character.x += normalizedDx * moveDistance;
+          character.y += normalizedDy * moveDistance;
+
+          // Aggiorna direzione mentre si muove (per animazioni corrette)
+          character.direction = getDirectionFromVector(dx, dy);
+        }
+      } else if (character.isMoving && (!character.path || character.path.length === 0)) {
+        // Path non valido, ferma il movimento
+        character.isMoving = false;
+        character.path = null;
+        character.pathIndex = 0;
+        log(`[Runtime] Movimento fermato: path non valido per character ${character.name || character.id}`, 'warning');
+      }
+
+      // ============================================
+      // GESTIONE ANIMAZIONI
+      // ============================================
       // Se c'è solo un frame, non animare
       if (dirData.frames.length === 1) {
         character.currentFrame = 0;
         return;
-      }
-
-      // Inizializza isMoving se non presente (retrocompatibilità)
-      if (character.isMoving === undefined) {
-        character.isMoving = false;
       }
 
       // Se il personaggio è fermo (idle), mostra solo il frame 0 (primo frame = posa idle)
@@ -3596,6 +3688,7 @@
                 // Avvia il movimento del player
                 player.isMoving = true;
                 player.path = path;
+                player.pathIndex = 0; // Inizia dal primo punto del path
                 player.moveSpeed = player.moveSpeed || 100; // pixel per secondo
                 
                 // Imposta la direzione iniziale verso il primo punto del path
