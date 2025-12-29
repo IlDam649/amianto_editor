@@ -1290,13 +1290,14 @@
       const scaledWidth = placeholderWidth * scale;
       const scaledHeight = placeholderHeight * scale;
       
-      let drawX = character.x;
-      let drawY = character.y;
+      // Usa le posizioni di rendering per movimento fluido
+      let drawX = character.renderX !== undefined ? character.renderX : character.x;
+      let drawY = character.renderY !== undefined ? character.renderY : character.y;
       
       // If character has a pivot, adjust drawing position
       if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
-        drawX = character.x - (charDef.pivotX * scale);
-        drawY = character.y - (charDef.pivotY * scale);
+        drawX = drawX - (charDef.pivotX * scale);
+        drawY = drawY - (charDef.pivotY * scale);
       }
       
       // Disegna un rettangolo semplice come placeholder
@@ -1326,6 +1327,56 @@
     'west': ['southwest', 'northwest', 'south', 'north', 'southeast', 'northeast', 'east'],
     'northwest': ['north', 'west', 'northeast', 'southwest', 'south', 'east', 'southeast']
   };
+
+  /**
+   * Trova una direzione alternativa disponibile quando la direzione richiesta non ha frame
+   * Restituisce la direzione originale se disponibile, altrimenti una direzione alternativa
+   */
+  function findAvailableDirection(charDef, preferredDirection) {
+    // Se la direzione preferita è disponibile, usala
+    if (charDef.directions[preferredDirection]) {
+      const dirData = charDef.directions[preferredDirection];
+      if (dirData.frames && dirData.frames.length > 0) {
+        return preferredDirection;
+      }
+    }
+    
+    // Cerca tra le direzioni alternative (fallback)
+    const fallbackDirections = directionFallbackMap[preferredDirection] || ['south', 'north', 'east', 'west'];
+    for (const fallbackDir of fallbackDirections) {
+      if (charDef.directions[fallbackDir]) {
+        const dirData = charDef.directions[fallbackDir];
+        if (dirData.frames && dirData.frames.length > 0) {
+          return fallbackDir;
+        }
+      }
+    }
+    
+    // Se non troviamo nulla tra le direzioni simili, prova tutte le direzioni disponibili
+    const allDirections = Object.keys(charDef.directions);
+    if (allDirections.length > 0) {
+      // Ordina per priorità: prima quelle cardinali, poi quelle diagonali
+      const priorityOrder = ['south', 'north', 'east', 'west', 'southeast', 'southwest', 'northeast', 'northwest'];
+      const sortedDirections = allDirections.sort((a, b) => {
+        const aIndex = priorityOrder.indexOf(a);
+        const bIndex = priorityOrder.indexOf(b);
+        if (aIndex === -1 && bIndex === -1) return 0;
+        if (aIndex === -1) return 1;
+        if (bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+      
+      for (const dir of sortedDirections) {
+        const dirData = charDef.directions[dir];
+        if (dirData.frames && dirData.frames.length > 0) {
+          return dir;
+        }
+      }
+    }
+    
+    // Se non c'è nessuna direzione disponibile, restituisci quella preferita (sarà gestita altrove)
+    return preferredDirection;
+  }
 
   /**
    * Cerca un frame valido tra le direzioni alternative (fallback)
@@ -2827,6 +2878,9 @@
         name: characterName,
         x: Number(x) || 0,
         y: Number(y) || 0,
+        // Posizioni frazionarie per movimento fluido (sub-pixel rendering)
+        renderX: Number(x) || 0,
+        renderY: Number(y) || 0,
         direction: direction,
         currentFrame: 0,
         frameTime: 0,
@@ -2834,7 +2888,10 @@
         roomId: gameState.currentRoomId,
         isMoving: false,
         path: null,
-        moveSpeed: moveSpeed // pixel per secondo
+        moveSpeed: moveSpeed, // pixel per secondo
+        // Smoothing per movimento verticale più fluido
+        velocityY: 0,
+        targetY: Number(y) || 0
       };
 
       gameState.characters.set(id, character);
@@ -2851,6 +2908,11 @@
 
       character.x = Number(x) || 0;
       character.y = Number(y) || 0;
+      // Aggiorna anche le posizioni di rendering per movimento fluido
+      character.renderX = character.x;
+      character.renderY = character.y;
+      character.targetY = character.y;
+      character.velocityY = 0;
       log(`[Runtime] Character ${characterId} spostato a (${character.x}, ${character.y})`, 'info');
     },
 
@@ -3073,8 +3135,9 @@
         // Get character definition to check for pivot
         const charDef = gameState.characterDefinitions.get(character.name);
         
-        // Calcola lo scaling basato sulla posizione Y e le impostazioni della room
-        const scale = calculateCharacterScale(character.y, room);
+        // Calcola lo scaling basato sulla posizione Y di rendering (per movimento fluido)
+        // Usa renderY invece di y per uno scaling più fluido durante il movimento
+        const scale = calculateCharacterScale(character.renderY, room);
         
         const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
         
@@ -3084,24 +3147,29 @@
             const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
             const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
             
-            let drawX = character.x;
-            let drawY = character.y;
+            // Usa le posizioni di rendering (renderX, renderY) per movimento fluido con sub-pixel
+            let drawX = character.renderX;
+            let drawY = character.renderY;
             
             // If character has a pivot, adjust drawing position
             if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
-              // The character.x and character.y represent the pivot position
+              // The character.renderX e character.renderY rappresentano la posizione del pivot
               // Il pivot è relativo al frame originale, quindi calcoliamo l'offset considerando lo scaling
-              drawX = character.x - (charDef.pivotX * scale);
-              drawY = character.y - (charDef.pivotY * scale);
+              drawX = character.renderX - (charDef.pivotX * scale);
+              drawY = character.renderY - (charDef.pivotY * scale);
             } else {
-              // Senza pivot, il character.x e character.y sono la posizione top-left
-              drawX = character.x;
-              drawY = character.y;
+              // Senza pivot, il character.renderX e renderY sono la posizione top-left
+              drawX = character.renderX;
+              drawY = character.renderY;
             }
             
             // Disegna il frame scalato
             const scaledWidth = frameWidth * scale;
             const scaledHeight = frameHeight * scale;
+            
+            // Abilita sub-pixel rendering per movimento più fluido
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             
             // Se è un canvas (frame specchiato), disegna il canvas
             if (frame instanceof HTMLCanvasElement) {
@@ -3172,18 +3240,41 @@
   function update(deltaTime) {
     // Aggiorna movimento e animazioni dei character
     gameState.characters.forEach(character => {
+      // Inizializza renderX/renderY se non esistono (retrocompatibilità)
+      if (character.renderX === undefined) {
+        character.renderX = character.x;
+      }
+      if (character.renderY === undefined) {
+        character.renderY = character.y;
+      }
+      if (character.targetY === undefined) {
+        character.targetY = character.y;
+      }
+      if (character.velocityY === undefined) {
+        character.velocityY = 0;
+      }
+      
       if (!character.visible || character.roomId !== gameState.currentRoomId) {
         return;
       }
 
       const charDef = gameState.characterDefinitions.get(character.name);
-      if (!charDef || !charDef.directions[character.direction]) {
+      if (!charDef) {
         return;
       }
-
-      const dirData = charDef.directions[character.direction];
-      if (!dirData.frames || dirData.frames.length === 0) {
-        return;
+      
+      // Trova una direzione disponibile per i frame (la direzione logica potrebbe non avere frame)
+      // Usa questa solo per l'animazione (fps, numero di frame), ma getCharacterFrame gestirà il fallback automaticamente
+      let animationDirData = charDef.directions[character.direction];
+      if (!animationDirData || !animationDirData.frames || animationDirData.frames.length === 0) {
+        // La direzione logica non ha frame, trova una direzione alternativa per l'animazione
+        const availableDirection = findAvailableDirection(charDef, character.direction);
+        if (availableDirection && charDef.directions[availableDirection]) {
+          animationDirData = charDef.directions[availableDirection];
+        } else {
+          // Nessuna direzione disponibile, non possiamo animare ma permettiamo il movimento
+          return;
+        }
       }
 
       // Inizializza proprietà movimento se non presenti (retrocompatibilità)
@@ -3242,6 +3333,10 @@
           // Raggiunto il punto target, passa al prossimo
           character.x = targetX;
           character.y = targetY;
+          character.renderX = targetX;
+          character.renderY = targetY;
+          character.targetY = targetY;
+          character.velocityY = 0;
           character.pathIndex++;
 
           // Se abbiamo raggiunto l'ultimo punto, ferma il movimento
@@ -3272,9 +3367,15 @@
           const normalizedDx = dx / distance;
           const normalizedDy = dy / distance;
           
-          // Aggiorna posizione
+          // Aggiorna posizione logica (per collisioni e pathfinding)
           character.x += normalizedDx * moveDistance;
           character.y += normalizedDy * moveDistance;
+          
+          // Sincronizza direttamente le posizioni di rendering con le posizioni logiche durante il movimento
+          // Questo evita ritardi e mantiene X e Y sincronizzati
+          character.renderX = character.x;
+          character.renderY = character.y;
+          character.targetY = character.y;
 
           // Aggiorna direzione mentre si muove (per animazioni corrette)
           character.direction = getDirectionFromVector(dx, dy);
@@ -3291,7 +3392,7 @@
       // GESTIONE ANIMAZIONI
       // ============================================
       // Se c'è solo un frame, non animare
-      if (dirData.frames.length === 1) {
+      if (animationDirData.frames.length === 1) {
         character.currentFrame = 0;
         return;
       }
@@ -3300,6 +3401,11 @@
       if (!character.isMoving) {
         character.currentFrame = 0;
         character.frameTime = 0;
+        // Sincronizza posizioni di rendering quando fermo per evitare drift
+        character.renderX = character.x;
+        character.renderY = character.y;
+        character.targetY = character.y;
+        character.velocityY = 0;
         return;
       }
 
@@ -3311,14 +3417,14 @@
 
       // Aggiorna frame time
       character.frameTime += deltaTime;
-      const frameDuration = 1000 / dirData.fps; // Durata di ogni frame in ms
+      const frameDuration = 1000 / animationDirData.fps; // Durata di ogni frame in ms
 
       // Avanza al frame successivo se necessario
       // Loop solo tra frame 1 e length-1 (escludendo frame 0)
       if (character.frameTime >= frameDuration) {
         character.currentFrame++;
         // Se abbiamo raggiunto l'ultimo frame, torna al primo frame di movimento (1)
-        if (character.currentFrame >= dirData.frames.length) {
+        if (character.currentFrame >= animationDirData.frames.length) {
           character.currentFrame = 1;
         }
         character.frameTime = 0;
@@ -3626,26 +3732,33 @@
     }
 
     if (clickedCharacter) {
-      log(`[Runtime] handleClick: ✓ Click su character: ${clickedCharacter.name} (${clickedCharacter.id})`, 'success');
-      
-      // Esegui script del character se presente
-      const characterScripts = gameState.attachments.characterScripts || {};
-      if (typeof characterScripts === 'object' && characterScripts[clickedCharacter.id]) {
-        const scriptName = characterScripts[clickedCharacter.id];
-        if (gameState.scripts[scriptName]) {
-          await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', [clickedCharacter.id, x, y], scriptName);
+      // Ignora il click se il character è il player principale
+      const playerId = gameState.variables.get('playerId');
+      if (playerId && clickedCharacter.id === playerId) {
+        log(`[Runtime] handleClick: Click su player ignorato (${clickedCharacter.name})`, 'info');
+        // Non ritornare, continua con il pathfinding
+      } else {
+        log(`[Runtime] handleClick: ✓ Click su character: ${clickedCharacter.name} (${clickedCharacter.id})`, 'success');
+        
+        // Esegui script del character se presente
+        const characterScripts = gameState.attachments.characterScripts || {};
+        if (typeof characterScripts === 'object' && characterScripts[clickedCharacter.id]) {
+          const scriptName = characterScripts[clickedCharacter.id];
+          if (gameState.scripts[scriptName]) {
+            await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', [clickedCharacter.id, x, y], scriptName);
+          }
         }
-      }
 
-      // Esegui handler registrati tramite on_character_click(function() {...})
-      for (const handler of eventHandlers.character_click) {
-        try {
-          handler(clickedCharacter.id, x, y);
-        } catch (error) {
-          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        // Esegui handler registrati tramite on_character_click(function() {...})
+        for (const handler of eventHandlers.character_click) {
+          try {
+            handler(clickedCharacter.id, x, y);
+          } catch (error) {
+            log(`Errore handler on_character_click: ${error.message}`, 'error');
+          }
         }
+        return;
       }
-      return;
     }
 
     // Controlla click su pulsanti GUI
@@ -3704,6 +3817,7 @@
         const charDef = gameState.characterDefinitions.get(player.name);
         if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
           // Calcola la posizione del pivot del player
+          // Se il player si sta muovendo, usa la posizione corrente (sarà aggiornata durante il movimento)
           const playerPivotX = player.x;
           const playerPivotY = player.y;
           
@@ -3712,10 +3826,59 @@
           if (walkableArea && Array.isArray(walkableArea) && walkableArea.length >= 3) {
             if (isPointInPolygon(walkableArea, playerPivotX, playerPivotY)) {
               // Il player è sulla walkable area, calcola il path verso il punto cliccato
-              const path = findPathOnWalkableArea(playerPivotX, playerPivotY, x, y, walkableArea);
+              // Permetti di cliccare anche durante il movimento: interrompe il movimento corrente
+              // e avvia un nuovo movimento verso il punto cliccato
+              
+              // Se il click è molto vicino al pivot, sposta il target di una distanza minima per garantire il movimento
+              let targetX = x;
+              let targetY = y;
+              const distanceToClick = Math.sqrt((x - playerPivotX) ** 2 + (y - playerPivotY) ** 2);
+              const minMovementDistance = 20; // Distanza minima per garantire movimento visibile
+              
+              if (distanceToClick < minMovementDistance && distanceToClick > 0.1) {
+                // Normalizza il vettore direzione
+                const dx = x - playerPivotX;
+                const dy = y - playerPivotY;
+                const normalizedDx = dx / distanceToClick;
+                const normalizedDy = dy / distanceToClick;
+                
+                // Sposta il target di almeno minMovementDistance pixel nella direzione del click
+                targetX = playerPivotX + normalizedDx * minMovementDistance;
+                targetY = playerPivotY + normalizedDy * minMovementDistance;
+              }
+              
+              let path = findPathOnWalkableArea(playerPivotX, playerPivotY, targetX, targetY, walkableArea);
+              
+              // Se il pathfinding fallisce, trova comunque il punto più vicino sulla walkable area
+              if (!path || path.length === 0) {
+                // Trova il punto più vicino sul bordo della walkable area se il click è fuori
+                // (usa già targetX e targetY calcolati sopra, che includono la distanza minima se necessaria)
+                if (!isPointInPolygon(walkableArea, targetX, targetY)) {
+                  const closestPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+                  if (closestPoint) {
+                    targetX = closestPoint.x;
+                    targetY = closestPoint.y;
+                  }
+                }
+                
+                // Trova una posizione sicura vicino al target
+                const safeTarget = findSafePositionNearTarget(targetX, targetY, playerPivotX, playerPivotY, walkableArea, 50);
+                
+                // Crea un percorso diretto verso il punto sicuro più vicino
+                if (isPointInPolygon(walkableArea, safeTarget.x, safeTarget.y)) {
+                  path = [{ x: safeTarget.x, y: safeTarget.y }];
+                } else {
+                  // Se anche questo fallisce, prova almeno il punto più vicino sul bordo
+                  const fallbackPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+                  if (fallbackPoint && isPointInPolygon(walkableArea, fallbackPoint.x, fallbackPoint.y)) {
+                    path = [{ x: fallbackPoint.x, y: fallbackPoint.y }];
+                  }
+                }
+              }
               
               if (path && path.length > 0) {
-                // Avvia il movimento del player
+                // Avvia il movimento del player (interrompe qualsiasi movimento in corso)
+                const wasMoving = player.isMoving;
                 player.isMoving = true;
                 player.path = path;
                 player.pathIndex = 0; // Inizia dal primo punto del path
@@ -3729,10 +3892,16 @@
                 
                 // Imposta il frame iniziale: se ci sono più di 1 frame, inizia dal frame 1 (non 0)
                 const charDef = gameState.characterDefinitions.get(player.name);
-                if (charDef && charDef.directions[player.direction]) {
-                  const dirData = charDef.directions[player.direction];
-                  if (dirData.frames && dirData.frames.length > 1) {
-                    player.currentFrame = 1; // Inizia dal primo frame di movimento (escludendo idle)
+                if (charDef) {
+                  // Trova una direzione disponibile per i frame (la direzione logica potrebbe non avere frame)
+                  const availableDirection = findAvailableDirection(charDef, player.direction);
+                  if (availableDirection && charDef.directions[availableDirection]) {
+                    const dirData = charDef.directions[availableDirection];
+                    if (dirData.frames && dirData.frames.length > 1) {
+                      player.currentFrame = 1; // Inizia dal primo frame di movimento (escludendo idle)
+                    } else {
+                      player.currentFrame = 0;
+                    }
                   } else {
                     player.currentFrame = 0;
                   }
@@ -3741,10 +3910,14 @@
                 }
                 player.frameTime = 0;
                 
-                log(`[Runtime] Pathfinding: Player si muove verso (${Math.round(x)}, ${Math.round(y)})`, 'info');
+                if (wasMoving) {
+                  log(`[Runtime] Pathfinding: Player interrompe movimento in corso e si muove verso (${Math.round(targetX)}, ${Math.round(targetY)})`, 'info');
+                } else {
+                  log(`[Runtime] Pathfinding: Player si muove verso (${Math.round(targetX)}, ${Math.round(targetY)})`, 'info');
+                }
                 return;
               } else {
-                log(`[Runtime] Pathfinding: Impossibile trovare un percorso valido verso (${Math.round(x)}, ${Math.round(y)})`, 'info');
+                log(`[Runtime] Pathfinding: Impossibile trovare un percorso valido verso (${Math.round(targetX)}, ${Math.round(targetY)})`, 'info');
               }
             } else {
               log(`[Runtime] Pathfinding: Player non è sulla walkable area (pivot: ${Math.round(playerPivotX)}, ${Math.round(playerPivotY)})`, 'info');

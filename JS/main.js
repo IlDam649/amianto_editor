@@ -14883,7 +14883,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 roomId: ch.spawnSettings.roomId || null,
                 x: typeof ch.spawnSettings.x === 'number' ? ch.spawnSettings.x : 0,
                 y: typeof ch.spawnSettings.y === 'number' ? ch.spawnSettings.y : 0,
-                direction: ch.spawnSettings.direction || 'south'
+                direction: ch.spawnSettings.direction || 'south',
+                moveSpeed: typeof ch.spawnSettings.moveSpeed === 'number' && ch.spawnSettings.moveSpeed > 0 ? ch.spawnSettings.moveSpeed : 100
               };
             }
             characterFrames.set(characterName, charData);
