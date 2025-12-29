@@ -771,6 +771,28 @@ document.addEventListener("DOMContentLoaded", () => {
     return { x: worldX, y: worldY };
   }
 
+  // Convert screen coordinates to world coordinates for characters tab (no centering)
+  function screenToWorldCharacters(screenX, screenY) {
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = screenX - rect.left;
+    const canvasY = screenY - rect.top;
+    
+    // Calculate scaling factor between CSS dimensions and internal canvas dimensions
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Convert CSS coordinates to internal canvas coordinates
+    const internalX = canvasX * scaleX;
+    const internalY = canvasY * scaleY;
+    
+    // Apply inverse transformations (no centering offset for characters tab)
+    // L'ordine inverso delle trasformazioni: prima rimuoviamo lo zoom, poi il pan
+    const worldX = (internalX - editorState.panX) / editorState.zoom;
+    const worldY = (internalY - editorState.panY) / editorState.zoom;
+    
+    return { x: worldX, y: worldY };
+  }
+
   // Convert world coordinates to screen coordinates
   function worldToScreen(worldX, worldY) {
     const rect = canvas.getBoundingClientRect();
@@ -920,7 +942,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.translate(editorState.panX, editorState.panY);
       ctx.scale(editorState.zoom, editorState.zoom);
 
-      // Draw current frame at original size, centered in game viewport space
+      // Draw current frame at original size, positioned at top-left corner (0,0)
       // Usa getFrameImage per gestire sia frame normali che frame specchiati
       const frameResult = getFrameImage(frame, charData, frameIndex, currentDirection);
       
@@ -929,8 +951,9 @@ document.addEventListener("DOMContentLoaded", () => {
         
         // Verifica che l'immagine sia caricata
         if (frameImg.complete && frameImg.naturalWidth > 0 && frameImg.naturalHeight > 0) {
-          const dx = (gameViewport.width - frameImg.width) / 2;
-          const dy = (gameViewport.height - frameImg.height) / 2;
+          // Posiziona l'immagine con l'angolo in alto a sinistra a (0,0)
+          const dx = 0;
+          const dy = 0;
           
           // Se il frame deve essere specchiato, applica la trasformazione
           if (frameResult.mirrored) {
@@ -955,21 +978,27 @@ document.addEventListener("DOMContentLoaded", () => {
               pivotX = dx + frameImg.width - charData.pivotX;
             }
             
+            // Scale pivot size with zoom for better visibility
+            const pivotRadius = 8 / editorState.zoom;
+            const crosshairSize = 12 / editorState.zoom;
+            const pivotLineWidth = Math.max(1, 2 / editorState.zoom);
+            const crosshairLineWidth = Math.max(0.5, 1.5 / editorState.zoom);
+            
             ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
             ctx.beginPath();
-            ctx.arc(Math.round(pivotX), Math.round(pivotY), 8, 0, Math.PI * 2);
+            ctx.arc(Math.round(pivotX), Math.round(pivotY), pivotRadius, 0, Math.PI * 2);
             ctx.fill();
             ctx.strokeStyle = 'white';
-            ctx.lineWidth = 2;
+            ctx.lineWidth = pivotLineWidth;
             ctx.stroke();
             // Draw crosshair
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = crosshairLineWidth;
             ctx.beginPath();
-            ctx.moveTo(Math.round(pivotX - 12), Math.round(pivotY));
-            ctx.lineTo(Math.round(pivotX + 12), Math.round(pivotY));
-            ctx.moveTo(Math.round(pivotX), Math.round(pivotY - 12));
-            ctx.lineTo(Math.round(pivotX), Math.round(pivotY + 12));
+            ctx.moveTo(Math.round(pivotX - crosshairSize), Math.round(pivotY));
+            ctx.lineTo(Math.round(pivotX + crosshairSize), Math.round(pivotY));
+            ctx.moveTo(Math.round(pivotX), Math.round(pivotY - crosshairSize));
+            ctx.lineTo(Math.round(pivotX), Math.round(pivotY + crosshairSize));
             ctx.stroke();
           }
           
@@ -1407,8 +1436,8 @@ document.addEventListener("DOMContentLoaded", () => {
           const sel = document.getElementById('character-selector');
           const who = sel ? sel.value : '';
           if (who) {
-            // Use screenToWorld like hotspots do - converts to world coordinates (accounts for zoom/pan)
-            const worldPos = screenToWorld(e.clientX, e.clientY);
+            // Use screenToWorldCharacters for characters tab (no centering offset)
+            const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
             const charData = characterFrames.get(who);
             if (charData) {
               const dirData = charData.directions[currentDirection];
@@ -1416,9 +1445,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
                 if (frameResult && frameResult.img) {
                   const frameImg = frameResult.img;
-                  // Frame position in viewport coordinates (same as used in rendering)
-                  const frameDx = (gameViewport.width - frameImg.width) / 2;
-                  const frameDy = (gameViewport.height - frameImg.height) / 2;
+                  // Frame position in viewport coordinates (now at 0,0)
+                  const frameDx = 0;
+                  const frameDy = 0;
                   
                   // Initialize pivot if it doesn't exist
                   if (charData.pivotX === undefined || charData.pivotY === undefined) {
@@ -1427,25 +1456,20 @@ document.addEventListener("DOMContentLoaded", () => {
                     characterFrames.set(who, charData);
                   }
                   
-                  // Check if click is within frame bounds - if so, move pivot to click position
-                  // worldPos is in viewport coordinates (after zoom/pan inverse transform)
-                  // frameDx/Dy are also in viewport coordinates
-                  if (worldPos.x >= frameDx && worldPos.x <= frameDx + frameImg.width &&
-                      worldPos.y >= frameDy && worldPos.y <= frameDy + frameImg.height) {
-                    // Move pivot to click position (relative to frame top-left)
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // If frame is mirrored, adjust pivot X coordinate to match visual position
-                    if (frameResult.mirrored) {
-                      charData.pivotX = frameImg.width - (worldPos.x - frameDx);
-                    } else {
-                      charData.pivotX = worldPos.x - frameDx;
-                    }
-                    charData.pivotY = worldPos.y - frameDy;
-                    characterFrames.set(who, charData);
-                    redraw();
-                    return;
+                  // Move pivot to click position (relative to frame top-left)
+                  // Works like polygon points - always moves pivot on click
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // If frame is mirrored, adjust pivot X coordinate to match visual position
+                  if (frameResult.mirrored) {
+                    charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
+                  } else {
+                    charData.pivotX = Math.round(worldPos.x - frameDx);
                   }
+                  charData.pivotY = Math.round(worldPos.y - frameDy);
+                  characterFrames.set(who, charData);
+                  redraw();
+                  return;
                 }
               }
             }
@@ -1817,11 +1841,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
     
     // Handle character pivot movement first (in characters tab)
+    // Works like polygon points - always moves pivot on click
     if (activeTab === 'characters' && !e.ctrlKey) {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
       if (who) {
-        const worldPos = screenToWorld(e.clientX, e.clientY);
+        // Use screenToWorldCharacters for characters tab (no centering offset)
+        const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
         const charData = characterFrames.get(who);
         if (charData) {
           const dirData = charData.directions[currentDirection];
@@ -1829,8 +1855,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
             if (frameResult && frameResult.img) {
               const frameImg = frameResult.img;
-              const frameDx = (gameViewport.width - frameImg.width) / 2;
-              const frameDy = (gameViewport.height - frameImg.height) / 2;
+              // Frame position in viewport coordinates (now at 0,0)
+              const frameDx = 0;
+              const frameDy = 0;
               
               // Initialize pivot if it doesn't exist
               if (charData.pivotX === undefined || charData.pivotY === undefined) {
@@ -1839,24 +1866,21 @@ document.addEventListener("DOMContentLoaded", () => {
                 characterFrames.set(who, charData);
               }
               
-              // Check if click is within frame bounds
-              if (worldPos.x >= frameDx && worldPos.x <= frameDx + frameImg.width &&
-                  worldPos.y >= frameDy && worldPos.y <= frameDy + frameImg.height) {
-                // Move pivot to click position
-                e.preventDefault();
-                e.stopPropagation();
-                // If frame is mirrored, adjust pivot X coordinate to match visual position
-                if (frameResult.mirrored) {
-                  charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
-                } else {
-                  charData.pivotX = Math.round(worldPos.x - frameDx);
-                }
-                charData.pivotY = Math.round(worldPos.y - frameDy);
-                characterFrames.set(who, charData);
-                redraw();
-                showNotification(`Pivot moved to (${charData.pivotX}, ${charData.pivotY})`, 'info');
-                return;
+              // Move pivot to click position (relative to frame top-left)
+              // Works like polygon points - always moves pivot on click
+              e.preventDefault();
+              e.stopPropagation();
+              // If frame is mirrored, adjust pivot X coordinate to match visual position
+              if (frameResult.mirrored) {
+                charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
+              } else {
+                charData.pivotX = Math.round(worldPos.x - frameDx);
               }
+              charData.pivotY = Math.round(worldPos.y - frameDy);
+              characterFrames.set(who, charData);
+              redraw();
+              showNotification(`Pivot moved to (${charData.pivotX}, ${charData.pivotY})`, 'info');
+              return;
             }
           }
         }
