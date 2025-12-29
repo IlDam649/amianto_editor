@@ -1641,6 +1641,68 @@
         };
       });
       
+      // ⚠️ PRE-PROCESSING: Wrappiamo automaticamente gli handler come async per permettere await
+      // Trasforma le definizioni di handler da function a async function
+      let processedScriptContent = scriptContent;
+      
+      // Escape dei caratteri speciali per regex
+      const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      supportedHandlers.forEach(handlerName => {
+        const escapedName = escapeRegex(handlerName);
+        
+        // Pattern 1: handlerName = function(...) { ... }
+        // Gestisce anche spazi variabili e caratteri speciali
+        processedScriptContent = processedScriptContent.replace(
+          new RegExp(`(${escapedName}\\s*=\\s*)function\\s*\\(`, 'g'),
+          '$1async function('
+        );
+        
+        // Pattern 2: handlerName = async function(...) { ... } (già async, lascia invariato)
+        // Non serve fare nulla
+        
+        // Pattern 3: handlerName = (...) => { ... }
+        processedScriptContent = processedScriptContent.replace(
+          new RegExp(`(${escapedName}\\s*=\\s*)([^=]*?)\\s*=>\\s*{`, 'g'),
+          '$1async $2 => {'
+        );
+        
+        // Pattern 4: function handlerName(...) { ... } (dichiarazione funzione)
+        // Questo è il pattern più importante per casi come "function on_hotspot_click(...)"
+        // Usa il flag 'gm' per sostituire tutte le occorrenze e multiline
+        processedScriptContent = processedScriptContent.replace(
+          new RegExp(`function\\s+${escapedName}\\s*\\(`, 'gm'),
+          'async function ' + handlerName + '('
+        );
+        
+        // Pattern 5: const handlerName = function(...) { ... }
+        processedScriptContent = processedScriptContent.replace(
+          new RegExp(`(const|let|var)\\s+${escapedName}\\s*=\\s*function\\s*\\(`, 'g'),
+          '$1 ' + handlerName + ' = async function('
+        );
+        
+        // Pattern 6: const handlerName = (...) => { ... }
+        processedScriptContent = processedScriptContent.replace(
+          new RegExp(`(const|let|var)\\s+${escapedName}\\s*=\\s*([^=]*?)\\s*=>\\s*{`, 'g'),
+          '$1 ' + handlerName + ' = async $2 => {'
+        );
+      });
+      
+      // Log del preprocessing per debug
+      if (processedScriptContent !== scriptContent) {
+        log(`[Runtime] compileScript: Preprocessing applicato per permettere await negli handler`, 'info');
+        // Log dettagliato per debug (solo se necessario)
+        const diff = processedScriptContent.split('\n').filter((line, i) => 
+          scriptContent.split('\n')[i] !== line
+        );
+        if (diff.length > 0) {
+          log(`[Runtime] compileScript: Righe modificate: ${diff.length}`, 'info');
+        }
+      } else {
+        // Se non ci sono modifiche, potrebbe essere che gli handler siano già async o usino una sintassi diversa
+        log(`[Runtime] compileScript: Nessuna modifica al preprocessing (handler potrebbero essere già async o usare sintassi non supportata)`, 'warning');
+      }
+      
       // Crea funzione wrapper che espone GameAPI e cattura gli handler
       const scriptFunction = new Function(
         'Game',
@@ -1664,19 +1726,25 @@
         'handlerContainer', // Container per catturare gli handler
         `
         try {
-          // Esegui lo script per definire le funzioni handler
-          // ⚠️ IMPORTANTE: Se lo script contiene codice libero, viene eseguito UNA SOLA VOLTA qui
-          // ⚠️ PROTEZIONE: Se lo script chiama direttamente gli handler (es: on_hotspot_click(...)),
-          // quelli vengono ignorati durante la compilazione per prevenire doppia esecuzione
-          ${scriptContent}
-          
+          // ⚠️ WRAPPER ASYNC: Esegui lo script in un contesto async per permettere await
+          // Questo permette l'uso di await anche se gli handler non sono dichiarati esplicitamente come async
+          (async () => {
+            // Esegui lo script per definire le funzioni handler
+            // ⚠️ IMPORTANTE: Se lo script contiene codice libero, viene eseguito UNA SOLA VOLTA qui
+            // ⚠️ PROTEZIONE: Se lo script chiama direttamente gli handler (es: on_hotspot_click(...)),
+            // quelli vengono ignorati durante la compilazione per prevenire doppia esecuzione
+            ${processedScriptContent}
+            
           // ⚠️ ESTRAZIONE HANDLER: Dopo l'esecuzione, estraiamo solo le funzioni handler
           // definite nello script e le salviamo nel container
+          // ⚠️ IMPORTANTE: Wrappiamo ogni handler come async per permettere await
           ${supportedHandlers.map(h => `
           if (typeof ${h} === 'function') {
+            // Salva direttamente l'handler (sarà wrappato come async dopo)
             handlerContainer['${h}'] = ${h};
           }
           `).join('')}
+          })();
         } catch (e) {
           GameAPI.error('Errore compilazione script: ' + (e && e.message ? e.message : String(e)));
         }
@@ -1716,10 +1784,11 @@
       const varNames = Array.from(gameState.variables.keys());
       
       // Crea handler wrappati che espongono le variabili
+      // ⚠️ IMPORTANTE: Wrappiamo gli handler come async per permettere l'uso di await anche se non dichiarati async
       const wrappedHandlers = {};
       for (const [handlerName, handlerFunc] of Object.entries(extractedHandlers)) {
         if (typeof handlerFunc === 'function') {
-          wrappedHandlers[handlerName] = function(...args) {
+          wrappedHandlers[handlerName] = async function(...args) {
             // Crea un contesto di esecuzione isolato per questo handler
             const executionContext = {};
             
@@ -1743,19 +1812,28 @@
             try {
               const handlerCode = handlerFunc.toString();
               
-              // Crea una funzione wrapper che usa with per esporre le variabili
+              // Crea una funzione wrapper async che usa with per esporre le variabili
+              // ⚠️ IMPORTANTE: Wrappiamo come async per permettere await anche se l'handler originale non lo è
               const wrappedCode = `
-                with (executionContext) {
-                  return (${handlerCode}).apply(this, arguments);
-                }
+                return (async function() {
+                  with (executionContext) {
+                    return await (${handlerCode}).apply(this, arguments);
+                  }
+                })();
               `;
               
               const wrappedFunc = new Function('executionContext', 'handlerFunc', 'args', wrappedCode);
-              return wrappedFunc.call(executionContext, executionContext, handlerFunc, args);
+              return await wrappedFunc.call(executionContext, executionContext, handlerFunc, args);
             } catch (e) {
-              // Fallback: esegui normalmente senza iniezione variabili
+              // Fallback: esegui normalmente senza iniezione variabili, ma sempre come async
+              // ⚠️ IMPORTANTE: Usa handlerFunc (non originalHandler) che è disponibile nello scope
               log(`[Runtime] compileScript: Errore iniezione variabili per ${handlerName}: ${e.message}. Usando fallback.`, 'warning');
-              return handlerFunc.apply(executionContext, args);
+              const result = handlerFunc.apply(executionContext, args);
+              // Se restituisce una Promise, attendila
+              if (result && typeof result.then === 'function') {
+                return await result;
+              }
+              return result;
             }
           };
         }
@@ -1828,13 +1906,33 @@
         
         try {
           const result = handler.apply(this, args);
-          return result;
-        } finally {
-          // Reset flag al prossimo tick per permettere chiamate successive
+          
+          // ⚠️ GESTIONE PROMISE: Se l'handler restituisce una Promise (anche se non è async),
+          // gestiscila correttamente per supportare await negli handler
+          if (result && typeof result.then === 'function') {
+            // È una Promise, gestiscila e resetta il flag quando completa
+            return result.finally(() => {
+              // Reset flag quando la Promise completa
+              setTimeout(() => {
+                tracker.set(executionKey, false);
+                log(`[Runtime] getCompiledHandler: Handler '${handlerName}' (async) completato, flag reset (key: ${executionKey})`, 'info');
+              }, 0);
+            });
+          } else {
+            // Non è una Promise, reset flag immediatamente
+            setTimeout(() => {
+              tracker.set(executionKey, false);
+              log(`[Runtime] getCompiledHandler: Handler '${handlerName}' completato, flag reset (key: ${executionKey})`, 'info');
+            }, 0);
+            return result;
+          }
+        } catch (error) {
+          // Reset flag anche in caso di errore
           setTimeout(() => {
             tracker.set(executionKey, false);
-            log(`[Runtime] getCompiledHandler: Handler '${handlerName}' completato, flag reset (key: ${executionKey})`, 'info');
+            log(`[Runtime] getCompiledHandler: Handler '${handlerName}' errore, flag reset (key: ${executionKey})`, 'error');
           }, 0);
+          throw error;
         }
       };
       
@@ -2244,6 +2342,39 @@
       const t = (characterY - backgroundY) / (foregroundY - backgroundY);
       return minScale + (maxScale - minScale) * t;
     }
+  }
+
+  /**
+   * Attende il completamento del movimento di un character
+   * @param {string} characterId - ID del character
+   * @returns {Promise} Promise che si risolve quando il movimento è completato
+   */
+  function waitForCharacterMovement(characterId) {
+    return new Promise((resolve) => {
+      const character = gameState.characters.get(characterId);
+      if (!character || !character.isMoving) {
+        // Il character non esiste o non si sta muovendo, risolvi immediatamente
+        resolve();
+        return;
+      }
+
+      // Polling per verificare quando il movimento è completato
+      const checkInterval = setInterval(() => {
+        const currentCharacter = gameState.characters.get(characterId);
+        if (!currentCharacter || !currentCharacter.isMoving) {
+          // Movimento completato
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 50); // Controlla ogni 50ms
+
+      // Timeout di sicurezza (max 30 secondi)
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        log(`[Runtime] waitForCharacterMovement: Timeout per character ${characterId}`, 'warning');
+        resolve();
+      }, 30000);
+    });
   }
 
   // Trova il punto più vicino sul bordo del poligono walkable
@@ -2916,6 +3047,178 @@
       log(`[Runtime] Character ${characterId} spostato a (${character.x}, ${character.y})`, 'info');
     },
 
+    /**
+     * Fa camminare un character verso una posizione usando pathfinding
+     * @param {string} characterIdOrName - ID del character (da spawn_character) o nome del character
+     * @param {number} x - Coordinata X target
+     * @param {number} y - Coordinata Y target
+     * @param {boolean} waitForCompletion - Se true, attende il completamento del movimento (default: true)
+     * @returns {Promise} Promise che si risolve quando il movimento è completato (se waitForCompletion è true)
+     */
+    walk_character: function(characterIdOrName, x, y, waitForCompletion = true) {
+      // Prova prima a cercare per ID
+      let character = gameState.characters.get(characterIdOrName);
+      let characterId = characterIdOrName;
+      
+      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+      if (!character) {
+        for (const [id, char] of gameState.characters.entries()) {
+          if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+            character = char;
+            characterId = id;
+            break;
+          }
+        }
+      }
+      
+      if (!character) {
+        GameAPI.error(`walk_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" non trovato`));
+      }
+
+      // Verifica che il character sia nella room corrente
+      if (character.roomId !== gameState.currentRoomId) {
+        GameAPI.error(`walk_character: Character "${characterIdOrName}" non è nella room corrente`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" non è nella room corrente`));
+      }
+
+      // Verifica che ci sia una walkable area
+      const walkableArea = gameState.currentRoom?.walkableArea;
+      if (!walkableArea || !Array.isArray(walkableArea) || walkableArea.length < 3) {
+        GameAPI.error(`walk_character: Nessuna walkable area definita per questa room`);
+        return Promise.reject(new Error(`Nessuna walkable area definita per questa room`));
+      }
+
+      // Inizializza proprietà movimento se mancanti
+      if (character.isMoving === undefined) character.isMoving = false;
+      if (character.path === undefined) character.path = null;
+      if (character.pathIndex === undefined) character.pathIndex = 0;
+      if (character.moveSpeed === undefined) {
+        // Prova a leggere dalle spawnSettings del character definition
+        const charDef = gameState.characterDefinitions.get(character.name);
+        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+          character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
+        } else {
+          character.moveSpeed = 100; // pixel per secondo (default)
+        }
+      }
+
+      // Verifica che il character abbia un pivot (necessario per il pathfinding)
+      const charDef = gameState.characterDefinitions.get(character.name);
+      if (!charDef || charDef.pivotX === undefined || charDef.pivotY === undefined) {
+        GameAPI.error(`walk_character: Character "${characterIdOrName}" non ha un pivot definito`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" non ha un pivot definito`));
+      }
+
+      // Calcola la posizione del pivot del character
+      const characterPivotX = character.x;
+      const characterPivotY = character.y;
+
+      // Verifica se il pivot del character è sulla walkable area
+      if (!isPointInPolygon(walkableArea, characterPivotX, characterPivotY)) {
+        GameAPI.error(`walk_character: Character "${characterIdOrName}" non è sulla walkable area`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" non è sulla walkable area`));
+      }
+
+      // Se il click è molto vicino al pivot, sposta il target di una distanza minima
+      let targetX = Number(x) || 0;
+      let targetY = Number(y) || 0;
+      const distanceToTarget = Math.sqrt((targetX - characterPivotX) ** 2 + (targetY - characterPivotY) ** 2);
+      const minMovementDistance = 20; // Distanza minima per garantire movimento visibile
+
+      if (distanceToTarget < minMovementDistance && distanceToTarget > 0.1) {
+        // Normalizza il vettore direzione
+        const dx = targetX - characterPivotX;
+        const dy = targetY - characterPivotY;
+        const normalizedDx = dx / distanceToTarget;
+        const normalizedDy = dy / distanceToTarget;
+
+        // Sposta il target di almeno minMovementDistance pixel nella direzione del target
+        targetX = characterPivotX + normalizedDx * minMovementDistance;
+        targetY = characterPivotY + normalizedDy * minMovementDistance;
+      }
+
+      // Calcola il path
+      let path = findPathOnWalkableArea(characterPivotX, characterPivotY, targetX, targetY, walkableArea);
+
+      // Se il pathfinding fallisce, trova comunque il punto più vicino sulla walkable area
+      if (!path || path.length === 0) {
+        // Trova il punto più vicino sul bordo della walkable area se il target è fuori
+        if (!isPointInPolygon(walkableArea, targetX, targetY)) {
+          const closestPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+          if (closestPoint) {
+            targetX = closestPoint.x;
+            targetY = closestPoint.y;
+          }
+        }
+
+        // Trova una posizione sicura vicino al target
+        const safeTarget = findSafePositionNearTarget(targetX, targetY, characterPivotX, characterPivotY, walkableArea, 50);
+
+        // Crea un percorso diretto verso il punto sicuro più vicino
+        if (isPointInPolygon(walkableArea, safeTarget.x, safeTarget.y)) {
+          path = [{ x: safeTarget.x, y: safeTarget.y }];
+        } else {
+          // Se anche questo fallisce, prova almeno il punto più vicino sul bordo
+          const fallbackPoint = findClosestPointOnWalkableEdge(targetX, targetY, walkableArea);
+          if (fallbackPoint && isPointInPolygon(walkableArea, fallbackPoint.x, fallbackPoint.y)) {
+            path = [{ x: fallbackPoint.x, y: fallbackPoint.y }];
+          }
+        }
+      }
+
+      if (!path || path.length === 0) {
+        GameAPI.error(`walk_character: Impossibile trovare un percorso valido verso (${Math.round(targetX)}, ${Math.round(targetY)})`);
+        return Promise.reject(new Error(`Impossibile trovare un percorso valido`));
+      }
+
+      // Avvia il movimento del character (interrompe qualsiasi movimento in corso)
+      const wasMoving = character.isMoving;
+      character.isMoving = true;
+      character.path = path;
+      character.pathIndex = 0; // Inizia dal primo punto del path
+
+      // Imposta la direzione iniziale verso il primo punto del path
+      const firstTarget = path[0];
+      const dx = firstTarget.x - characterPivotX;
+      const dy = firstTarget.y - characterPivotY;
+      character.direction = getDirectionFromVector(dx, dy);
+
+      // Imposta il frame iniziale: se ci sono più di 1 frame, inizia dal frame 1 (non 0)
+      if (charDef) {
+        // Trova una direzione disponibile per i frame (la direzione logica potrebbe non avere frame)
+        const availableDirection = findAvailableDirection(charDef, character.direction);
+        if (availableDirection && charDef.directions[availableDirection]) {
+          const dirData = charDef.directions[availableDirection];
+          if (dirData.frames && dirData.frames.length > 1) {
+            character.currentFrame = 1; // Inizia dal primo frame di movimento (escludendo idle)
+          } else {
+            character.currentFrame = 0;
+          }
+        } else {
+          character.currentFrame = 0;
+        }
+      } else {
+        character.currentFrame = 0;
+      }
+      character.frameTime = 0;
+
+      if (wasMoving) {
+        log(`[Runtime] walk_character: Character "${character.name}" (${characterId}) interrompe movimento in corso e si muove verso (${Math.round(targetX)}, ${Math.round(targetY)})`, 'info');
+      } else {
+        log(`[Runtime] walk_character: Character "${character.name}" (${characterId}) si muove verso (${Math.round(targetX)}, ${Math.round(targetY)})`, 'info');
+      }
+
+      // Se waitForCompletion è true, attende il completamento del movimento
+      // Usa characterId (l'ID reale) per waitForCharacterMovement
+      if (waitForCompletion) {
+        return waitForCharacterMovement(characterId);
+      } else {
+        return Promise.resolve();
+      }
+    },
+
     set_character_direction: function(characterId, direction) {
       const character = gameState.characters.get(characterId);
       if (!character) {
@@ -3037,6 +3340,17 @@
   };
   window.move_character = function(characterId, x, y) {
     return GameAPI.move_character(characterId, x, y);
+  };
+  window.walk_character = function(characterId, x, y, waitForCompletion = true) {
+    // Se waitForCompletion è true, usa la coda comandi per garantire esecuzione sequenziale
+    if (waitForCompletion) {
+      return queueCommand(async () => {
+        await GameAPI.walk_character(characterId, x, y, true);
+      });
+    } else {
+      // Se non dobbiamo aspettare, esegui immediatamente senza coda
+      return GameAPI.walk_character(characterId, x, y, false);
+    }
   };
   window.set_character_direction = function(characterId, direction) {
     return GameAPI.set_character_direction(characterId, direction);

@@ -4294,6 +4294,34 @@ window.selectRoom = function(roomId) {
   };
 
   // Functions for Characters tab
+  // Helper function per aggiornare la visualizzazione del nome del character per gli script
+  function updateCharacterScriptDisplay(characterName) {
+    const charactersList = document.getElementById('characters-list');
+    if (!charactersList) return;
+    
+    const characterElements = charactersList.querySelectorAll('.list-group-item');
+    characterElements.forEach(element => {
+      const nameElement = element.querySelector('strong');
+      if (nameElement && nameElement.textContent.trim() === characterName) {
+        let scriptNameDisplay = element.querySelector('.character-script-name');
+        
+        if (!scriptNameDisplay) {
+          // Crea l'elemento se non esiste
+          scriptNameDisplay = document.createElement('small');
+          scriptNameDisplay.className = 'character-script-name d-block text-info';
+          const framesInfo = element.querySelector('small:not(.character-script-name)');
+          if (framesInfo) {
+            framesInfo.insertAdjacentElement('afterend', scriptNameDisplay);
+          } else {
+            nameElement.insertAdjacentElement('afterend', scriptNameDisplay);
+          }
+        }
+        scriptNameDisplay.textContent = `Script name: "${characterName}"`;
+        scriptNameDisplay.style.display = 'block';
+      }
+    });
+  }
+
   window.addCharacter = function() {
     const name = prompt('Character name:');
     if (!name) return;
@@ -4302,10 +4330,12 @@ window.selectRoom = function(roomId) {
     
     const newCharacter = document.createElement('div');
     newCharacter.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+    
     newCharacter.innerHTML = `
       <div>
         <strong>${name}</strong>
         <br><small>New character</small>
+        <br><small class="character-script-name text-info">Script name: "${name}"</small>
         <span class="badge bg-success ms-2">Active</span>
       </div>
       <div>
@@ -6003,7 +6033,8 @@ window.selectRoom = function(roomId) {
     'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
-    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible'
+    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
+    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character'
   ];
 
   function cmGameApiHint(cm) {
@@ -14928,6 +14959,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 <div>
                   <strong>${characterName}</strong>
                   <br><small>${totalFrames} frame${totalFrames !== 1 ? 's' : ''} total</small>
+                  <br><small class="character-script-name text-info">Script name: "${characterName}"</small>
                   <span class="badge bg-success ms-2">Active</span>
                 </div>
                 <div>
@@ -14939,6 +14971,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               charactersList.appendChild(characterElement);
             }
           }
+        }
+        // Aggiorna la visualizzazione dei nomi script per tutti i characters dopo il caricamento
+        const charactersListAfter = document.getElementById('characters-list');
+        if (charactersListAfter) {
+          charactersListAfter.querySelectorAll('.list-group-item strong').forEach(nameElement => {
+            const characterName = nameElement.textContent.trim();
+            updateCharacterScriptDisplay(characterName);
+          });
         }
         refreshCharacterSelector();
         refreshStartingPlayerUI();
@@ -15090,7 +15130,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const A = projectObj.attachments;
           if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
           if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
-          if (A.characterScripts && typeof A.characterScripts === 'object') Object.entries(A.characterScripts).forEach(([k,v]) => { if (k && v) characterScripts.set(String(k), String(v)); });
+          if (A.characterScripts && typeof A.characterScripts === 'object') {
+            Object.entries(A.characterScripts).forEach(([k,v]) => { 
+              if (k && v) characterScripts.set(String(k), String(v)); 
+            });
+          }
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
           // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
