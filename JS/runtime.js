@@ -2918,12 +2918,59 @@
       return gameState.currentRoomId;
     },
 
-    load_room: function(roomIdOrName) {
+    load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
       if (typeof roomIdOrName !== 'string' && typeof roomIdOrName !== 'number') {
         GameAPI.error('load_room: roomIdOrName must be a string or number');
         return false;
       }
+      
+      // Cambia stanza
       changeRoom(String(roomIdOrName));
+      
+      // Se sono specificati parametri per il player, posizionalo
+      if (playerX !== undefined && playerY !== undefined) {
+        // Trova il player
+        let player = null;
+        let playerId = null;
+        
+        // Cerca il player tra i character
+        for (const [id, char] of gameState.characters.entries()) {
+          const charDef = gameState.characterDefinitions.get(char.name);
+          const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
+          if (isPlayer) {
+            player = char;
+            playerId = id;
+            break;
+          }
+        }
+        
+        if (player) {
+          // Posiziona il player
+          player.x = Number(playerX) || 0;
+          player.y = Number(playerY) || 0;
+          player.renderX = player.x;
+          player.renderY = player.y;
+          player.targetY = player.y;
+          player.velocityY = 0;
+          
+          // Imposta direzione se specificata
+          if (playerDirection !== undefined && playerDirection !== null) {
+            const charDef = gameState.characterDefinitions.get(player.name);
+            if (charDef && charDef.directions[playerDirection]) {
+              player.direction = playerDirection;
+              player.currentFrame = 0;
+              player.frameTime = 0;
+            } else {
+              log(`[Runtime] load_room: Direzione "${playerDirection}" non disponibile per player "${player.name}"`, 'warning');
+            }
+          }
+          
+          log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${roomIdOrName}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
+        } else {
+          log(`[Runtime] load_room: Player non trovato, impossibile posizionare`, 'warning');
+        }
+      }
+      
       return true;
     },
 
@@ -3030,10 +3077,24 @@
       return id;
     },
 
-    move_character: function(characterId, x, y) {
-      const character = gameState.characters.get(characterId);
+    move_character: function(characterIdOrName, x, y) {
+      // Prova prima a cercare per ID
+      let character = gameState.characters.get(characterIdOrName);
+      let characterId = characterIdOrName;
+      
+      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
-        GameAPI.error(`move_character: Character ${characterId} non trovato`);
+        for (const [id, char] of gameState.characters.entries()) {
+          if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+            character = char;
+            characterId = id;
+            break;
+          }
+        }
+      }
+      
+      if (!character) {
+        GameAPI.error(`move_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
         return;
       }
 
@@ -3219,10 +3280,24 @@
       }
     },
 
-    set_character_direction: function(characterId, direction) {
-      const character = gameState.characters.get(characterId);
+    set_character_direction: function(characterIdOrName, direction) {
+      // Prova prima a cercare per ID
+      let character = gameState.characters.get(characterIdOrName);
+      let characterId = characterIdOrName;
+      
+      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
-        GameAPI.error(`set_character_direction: Character ${characterId} non trovato`);
+        for (const [id, char] of gameState.characters.entries()) {
+          if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+            character = char;
+            characterId = id;
+            break;
+          }
+        }
+      }
+      
+      if (!character) {
+        GameAPI.error(`set_character_direction: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
         return;
       }
 
@@ -3238,10 +3313,24 @@
       log(`[Runtime] Character ${characterId} direzione cambiata a "${direction}"`, 'info');
     },
 
-    animate_character: function(characterId, enabled = true) {
-      const character = gameState.characters.get(characterId);
+    animate_character: function(characterIdOrName, enabled = true) {
+      // Prova prima a cercare per ID
+      let character = gameState.characters.get(characterIdOrName);
+      let characterId = characterIdOrName;
+      
+      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
-        GameAPI.error(`animate_character: Character ${characterId} non trovato`);
+        for (const [id, char] of gameState.characters.entries()) {
+          if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+            character = char;
+            characterId = id;
+            break;
+          }
+        }
+      }
+      
+      if (!character) {
+        GameAPI.error(`animate_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
         return;
       }
 
@@ -3320,8 +3409,8 @@
   };
 
   // Esponi load_room globalmente per compatibilità con l'editor
-  window.load_room = function(roomIdOrName) {
-    return GameAPI.load_room(roomIdOrName);
+  window.load_room = function(roomIdOrName, playerX, playerY, playerDirection) {
+    return GameAPI.load_room(roomIdOrName, playerX, playerY, playerDirection);
   };
 
   // Esponi show_message globalmente per compatibilità con l'editor

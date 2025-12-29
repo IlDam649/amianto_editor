@@ -2621,34 +2621,43 @@ document.addEventListener("DOMContentLoaded", () => {
   window.resetEditorZoom = function() {
     editorState.zoom = 1.0;
     
-    // Position top-left corner of viewport at top-left corner of canvas
-    const canvasRect = canvas.getBoundingClientRect();
-    let panX = 0;
-    let panY = 0;
+    // Check if we're in the characters tab
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
     
-    if (canvasRect.width > 0 && canvasRect.height > 0) {
-      // Calculate scaling between internal canvas and displayed canvas (CSS)
-      const scaleX = canvas.width / canvasRect.width;
-      const scaleY = canvas.height / canvasRect.height;
+    if (activeTab === 'characters') {
+      // In characters tab, always position image at 0,0 (top-left corner)
+      editorState.panX = 0;
+      editorState.panY = 0;
+    } else {
+      // Position top-left corner of viewport at top-left corner of canvas
+      const canvasRect = canvas.getBoundingClientRect();
+      let panX = 0;
+      let panY = 0;
       
-      // Calculate the offset that would be applied to center the content
-      const scaledContentWidth = gameViewport.width * editorState.zoom;
-      const scaledContentHeight = gameViewport.height * editorState.zoom;
-      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
-      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+      if (canvasRect.width > 0 && canvasRect.height > 0) {
+        // Calculate scaling between internal canvas and displayed canvas (CSS)
+        const scaleX = canvas.width / canvasRect.width;
+        const scaleY = canvas.height / canvasRect.height;
+        
+        // Calculate the offset that would be applied to center the content
+        const scaledContentWidth = gameViewport.width * editorState.zoom;
+        const scaledContentHeight = gameViewport.height * editorState.zoom;
+        const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
+        const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+        
+        // Convert offset from CSS coordinates to internal canvas coordinates
+        const centerOffsetX = cssOffsetX * scaleX;
+        const centerOffsetY = cssOffsetY * scaleY;
+        
+        // Set pan to compensate for centering offset, so top-left corner (0,0) of viewport
+        // will be positioned at top-left corner (0,0) of the displayed canvas
+        panX = -centerOffsetX;
+        panY = -centerOffsetY;
+      }
       
-      // Convert offset from CSS coordinates to internal canvas coordinates
-      const centerOffsetX = cssOffsetX * scaleX;
-      const centerOffsetY = cssOffsetY * scaleY;
-      
-      // Set pan to compensate for centering offset, so top-left corner (0,0) of viewport
-      // will be positioned at top-left corner (0,0) of the displayed canvas
-      panX = -centerOffsetX;
-      panY = -centerOffsetY;
+      editorState.panX = panX;
+      editorState.panY = panY;
     }
-    
-    editorState.panX = panX;
-    editorState.panY = panY;
     
     updateEditorDisplay();
     redraw();
@@ -7265,7 +7274,7 @@ window.selectRoom = function(roomId) {
     },
 
     // Room System APIs
-    load_room: function(roomIdOrName) {
+    load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
       const key = String(roomIdOrName || '').trim();
       if (!key) { addDebugMessage('load_room: missing room id/name', 'warning'); return false; }
       let targetId = null;
@@ -7277,6 +7286,8 @@ window.selectRoom = function(roomId) {
       if (!targetId) { addDebugMessage(`load_room: room "${key}" not found`, 'warning'); return false; }
       try {
         window.selectRoom(targetId);
+        // Nota: i parametri playerX, playerY, playerDirection sono accettati per compatibilità API
+        // ma non vengono utilizzati nell'editor (solo nel runtime)
         return true;
       } catch (e) {
         addDebugMessage(`load_room error: ${e && e.message ? e.message : e}`, 'error');
