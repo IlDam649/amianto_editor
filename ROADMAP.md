@@ -157,23 +157,48 @@
   - Sistema di inizializzazione con RUNTIME_READY
   - Gestione script pending durante inizializzazione
 
+#### ✅ **Completato**
+- **Cambio stanza**: ✅ Sistema completo `changeRoom()` e `load_room()` implementato
+  - ✅ Cambio stanza con cleanup risorse
+  - ✅ Esecuzione script `on_room_change` automatica
+  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot)
+  - ✅ Gestione transizione tra stanze
+- **Interazioni click**: ✅ Sistema completo di hit detection e dispatch eventi
+  - ✅ Hit detection per hotspot (polygon), oggetti (bounding box), character (bounding box), GUI buttons
+  - ✅ Sistema di click centralizzato con protezioni anti-doppio click (debounce, frame guard)
+  - ✅ Dispatch eventi click agli script (`on_hotspot_click`, `on_object_click`, `on_character_click`, `on_gui_click`)
+  - ✅ Priorità click: hotspot > oggetti > character > GUI > pathfinding
+- **Movimento personaggio**: ✅ Sistema completo di pathfinding e click-to-move
+  - ✅ Pathfinding su walkable area polygon con verifica percorso valido
+  - ✅ Click-to-move del player con pathfinding automatico
+  - ✅ Animazione movimento con direzione corretta (8 direzioni)
+  - ✅ Smooth movement con sub-pixel rendering
+  - ✅ Gestione pivot per posizionamento corretto
+  - ✅ Sistema di scaling basato su posizione Y (character scaling)
+- **Rendering personaggi**: ✅ Sistema completo implementato
+  - ✅ Rendering personaggi con animazioni 8-direzioni
+  - ✅ Supporto pivot per posizionamento corretto
+  - ✅ Character scaling dinamico basato su posizione Y
+  - ✅ Sub-pixel rendering per movimento fluido
+  - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
+  - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
+- **Rendering GUI**: ✅ Sistema completo implementato
+  - ✅ Rendering overlay GUI con background immagini
+  - ✅ Rendering pulsanti GUI con immagini e testo
+  - ✅ Sistema di click su pulsanti GUI funzionante
+  - ✅ Esecuzione script associati a pulsanti
+
 #### 🟡 **Parzialmente Implementato**
-- **Cambio stanza**: `load_room()` esiste ma non implementato completamente
-  - **Prossimo passo**: Implementare cambio stanza con transizione, cleanup, script execution
-- **Sistema inventario runtime**: API placeholder, nessun rendering
-  - **Prossimo passo**: Implementare inventario runtime con rendering GUI Inventory
+- **Sistema inventario runtime**: API funzionanti ma rendering mancante
+  - ✅ API scripting complete (`add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`)
+  - ❌ Rendering inventario GUI non implementato
+  - **Prossimo passo**: Implementare rendering inventario GUI con drag&drop, tooltip
 
 #### ❌ **Mancante**
-- **Interazioni click**: Nessun sistema di click su oggetti/personaggi/hotspot nel runtime
-  - **Prossimo passo**: Sistema di hit detection e dispatch eventi click
-- **Movimento personaggio**: Nessun sistema di pathfinding e click-to-move
-  - **Prossimo passo**: Pathfinding A* su walkable area, animazione movimento, direzione personaggio
-- **Rendering personaggi**: Personaggi non vengono renderizzati nel runtime
-  - **Prossimo passo**: Rendering personaggi con animazioni 8-direzioni, z-ordering
-- **Rendering GUI**: GUI non viene renderizzata nel runtime
-  - **Prossimo passo**: Rendering overlay GUI con pulsanti clickabili
-- **Sistema cursori**: Cursori contestuali non funzionano nel runtime
-  - **Prossimo passo**: Cambio cursore in base a hover su hotspot/character/object
+- **Sistema cursori contestuali**: Cursori definiti ma cambio dinamico non implementato
+  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
+  - ✅ Cursor fisso 'pointer' implementato
+  - **Prossimo passo**: Sistema hover detection e cambio cursore dinamico con action text
 - **Sistema inventario visuale**: Inventario non visibile nel runtime
   - **Prossimo passo**: Rendering inventario GUI con drag&drop, tooltip
 - **Sistema dialogo visuale**: Nessun rendering dialoghi
@@ -293,32 +318,40 @@
   - ✅ `GameAPI.getCurrentRoom()` / `GameAPI.getCurrentObject()` - Info contesto
 - **ScriptLogService**: Sistema di logging integrato nell'editor con timestamp e livelli (info, warning, error)
 
-#### 1.2 Implementare Interazioni Click Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Click su canvas non gestiti, nessun hit detection
-- **Soluzione**:
-  - Sistema hit detection per oggetti/personaggi/hotspot
-  - Dispatch eventi click agli script
-  - Visual feedback (highlight, cursor change)
-- **Tempo stimato**: 3-4 giorni
+#### 1.2 ✅ Implementare Interazioni Click Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di hit detection e click handling
+  - ✅ Hit detection per hotspot (polygon con `isPointInPolygon`), oggetti (bounding box), character (bounding box), GUI buttons
+  - ✅ Sistema di click centralizzato (`handleCanvasClick`, `handleClick`) con protezioni multiple
+  - ✅ Protezioni anti-doppio click: debounce (50ms), frame guard, stopImmediatePropagation
+  - ✅ Dispatch eventi click agli script con priorità: hotspot > oggetti > character > GUI > pathfinding
+  - ✅ Esecuzione script associati a hotspot/oggetti/character/GUI buttons
+  - ✅ Gestione coordinate canvas con scaling CSS e devicePixelRatio
+- **Tempo impiegato**: Completato
 
-#### 1.3 Implementare Cambio Stanza Runtime
-- **Stato**: 🟡 Parzialmente implementato (API esiste, logica manca)
-- **Problema**: `load_room()` non funziona realmente
-- **Soluzione**:
-  - Implementare cambio stanza con cleanup risorse
-  - Eseguire script `on_room_change`
-  - Transizione base (fade semplice)
-- **Tempo stimato**: 2-3 giorni
+#### 1.3 ✅ Implementare Cambio Stanza Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo `changeRoom()` e `load_room()`
+  - ✅ Cambio stanza con cleanup risorse (immagini, oggetti, hotspot)
+  - ✅ Esecuzione script `on_room_change` automatica (`executeRoomChangeScripts`)
+  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot, walkable area)
+  - ✅ Gestione transizione tra stanze con preload asset
+  - ✅ Supporto cambio stanza per ID o nome
+  - ✅ Posizionamento player opzionale con direzione iniziale
+- **Tempo impiegato**: Completato
 
-#### 1.4 Rendering Personaggi Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Personaggi non vengono renderizzati
-- **Soluzione**:
-  - Rendering personaggi con animazioni 8-direzioni
-  - Z-ordering (personaggi dietro/avanti oggetti)
-  - Sistema di posizionamento personaggi per stanza
-- **Tempo stimato**: 4-5 giorni
+#### 1.4 ✅ Rendering Personaggi Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di rendering personaggi
+  - ✅ Rendering personaggi con animazioni 8-direzioni
+  - ✅ Supporto pivot per posizionamento corretto (pivotX, pivotY)
+  - ✅ Character scaling dinamico basato su posizione Y (`calculateCharacterScale`)
+  - ✅ Sub-pixel rendering per movimento fluido (renderX, renderY)
+  - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
+  - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
+  - ✅ Gestione frame specchiati (Canvas) e frame normali (Image)
+  - ✅ Placeholder rendering quando frame non disponibili
+- **Tempo impiegato**: Completato
 
 #### 1.5 Sistema Inventario Runtime Completo
 - **Stato**: 🟡 Parzialmente implementato (API placeholder)
@@ -337,31 +370,41 @@
 
 **Obiettivo**: Implementare meccaniche base di gameplay punta e clicca.
 
-#### 2.1 Pathfinding e Movimento Personaggio
-- **Stato**: ❌ Mancante
-- **Problema**: Nessun sistema di movimento, walkable area non usata
-- **Soluzione**:
-  - Implementare pathfinding A* su walkable area polygon
-  - Click-to-move del personaggio
-  - Animazione movimento con direzione corretta
-  - Smooth movement con easing
-- **Tempo stimato**: 7-10 giorni
+#### 2.1 ✅ Pathfinding e Movimento Personaggio - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di pathfinding e movimento
+  - ✅ Pathfinding su walkable area polygon con verifica percorso valido (`findPath`)
+  - ✅ Click-to-move del player con pathfinding automatico
+  - ✅ Animazione movimento con direzione corretta (8 direzioni, `getDirectionFromVector`)
+  - ✅ Smooth movement con sub-pixel rendering (renderX, renderY)
+  - ✅ Gestione pivot per posizionamento corretto durante movimento
+  - ✅ Sistema di scaling basato su posizione Y (character scaling)
+  - ✅ Gestione dead ends e posizioni sicure (`findSafePositionNearTarget`)
+  - ✅ Verifica spazio movimento (`hasMovementSpace`) per evitare incastri
+  - ✅ Gestione velocità movimento configurabile (moveSpeed in pixel/secondo)
+  - ✅ Animazioni: idle (frame 0) quando fermo, movimento (frame 1+) quando cammina
+- **Tempo impiegato**: Completato
 
-#### 2.2 Rendering GUI Runtime
-- **Stato**: 🟡 Parzialmente implementato (salvato, non renderizzato)
-- **Problema**: GUI non visibile nel runtime
-- **Soluzione**:
-  - Rendering overlay GUI con background e pulsanti
-  - Sistema di click su pulsanti GUI
-  - Esecuzione script associati a pulsanti
-- **Tempo stimato**: 4-5 giorni
+#### 2.2 ✅ Rendering GUI Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di rendering GUI
+  - ✅ Rendering overlay GUI con background immagini
+  - ✅ Rendering pulsanti GUI con immagini e testo
+  - ✅ Sistema di click su pulsanti GUI funzionante (hit detection bounding box)
+  - ✅ Esecuzione script associati a pulsanti (`on_gui_click`)
+  - ✅ Fallback rendering (rettangolo verde) quando immagine non disponibile
+  - ✅ Gestione pulsanti abilitati/disabilitati
+- **Tempo impiegato**: Completato
 
 #### 2.3 Sistema Cursori Contestuali Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Cursori definiti ma non funzionano nel runtime
+- **Stato**: 🟡 Parzialmente implementato
+- **Problema**: Cursori definiti ma cambio dinamico non implementato
+- **Implementazione attuale**:
+  - ✅ Cursor fisso 'pointer' implementato
+  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
 - **Soluzione**:
-  - Hit detection per hotspot/character/object
-  - Cambio cursore in base a hover
+  - Hit detection hover per hotspot/character/object
+  - Cambio cursore dinamico in base a hover
   - Visual feedback con action text
 - **Tempo stimato**: 3-4 giorni
 
@@ -555,19 +598,26 @@
 - ✅ Sistema Runtime Sandboxed completo con MessageQueue robusto
 - ✅ GameAPI completo con tutte le funzioni di base
 - ✅ ScriptLogService integrato
-- **Totale: 24 API implementate e funzionanti + Runtime Sandboxed completo**
+- ✅ Sistema interazioni click completo (hit detection, dispatch eventi)
+- ✅ Sistema cambio stanza completo (`changeRoom`, `load_room`)
+- ✅ Rendering personaggi completo (animazioni 8-direzioni, scaling, pivot)
+- ✅ Pathfinding e movimento personaggio completo (click-to-move)
+- ✅ Rendering GUI completo (background, pulsanti, click handling)
+- **Totale: 24 API implementate e funzionanti + Runtime Sandboxed completo + Rendering e Interazioni Runtime complete**
 
 ### **Immediato (Settimane 1-4)**
-1. Fix sistema print/log runtime (Fase 1.1)
-2. Implementare interazioni click runtime (Fase 1.2)
-3. Implementare cambio stanza runtime (Fase 1.3)
-4. Rendering personaggi runtime (Fase 1.4)
+1. ✅ Fix sistema print/log runtime (Fase 1.1) - COMPLETATO
+2. ✅ Implementare interazioni click runtime (Fase 1.2) - COMPLETATO
+3. ✅ Implementare cambio stanza runtime (Fase 1.3) - COMPLETATO
+4. ✅ Rendering personaggi runtime (Fase 1.4) - COMPLETATO
+5. ✅ Pathfinding e movimento personaggio (Fase 2.1) - COMPLETATO
+6. ✅ Rendering GUI runtime (Fase 2.2) - COMPLETATO
 
 ### **Breve Termine (Settimane 5-8)**
-5. Sistema inventario runtime completo (Fase 1.5)
-6. Pathfinding e movimento personaggio (Fase 2.1)
-7. Rendering GUI runtime (Fase 2.2)
-8. Sistema cursori contestuali (Fase 2.3)
+5. Sistema inventario runtime completo (Fase 1.5) - API complete, manca rendering GUI
+6. ✅ Pathfinding e movimento personaggio (Fase 2.1) - COMPLETATO
+7. ✅ Rendering GUI runtime (Fase 2.2) - COMPLETATO
+8. Sistema cursori contestuali (Fase 2.3) - Parzialmente implementato (cursor fisso)
 
 ### **Medio Termine (Settimane 9-16)**
 9. Sistema dialoghi base (Fase 2.4)
@@ -586,7 +636,7 @@
 **Amianto Editor** dovrebbe permettere di:
 1. ✅ Creare stanze, oggetti, personaggi, GUI (completato)
 2. ✅ Scrivere script JavaScript funzionanti (24 API implementate)
-3. 🟡 Testare gioco completo nel runtime (API complete, manca rendering/interazioni runtime)
+3. ✅ Testare gioco completo nel runtime (API complete, rendering completo, interazioni click complete, pathfinding completo)
 4. ❌ Esportare gioco standalone (manca export ottimizzato)
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
@@ -594,6 +644,6 @@
 ---
 
 *Roadmap aggiornata il: Gennaio 2025*
-*Versione progetto analizzata: 0.3*
-*Ultimo aggiornamento: Sistema Runtime Sandboxed completato con MessageQueue robusto, GameAPI completo e ScriptLogService*
+*Versione progetto analizzata: 0.4*
+*Ultimo aggiornamento: Sistema Runtime completo con rendering personaggi/GUI, interazioni click, pathfinding e movimento personaggio, cambio stanza completo*
 

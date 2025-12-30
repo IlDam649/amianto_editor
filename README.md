@@ -85,8 +85,23 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - **Sandboxed Runtime**: Script execution in isolated iframe during Play Test
   - **GameAPI Integration**: Full API access in runtime with context management (roomId, objectId, variables)
   - **Script Console**: Real-time logging from scripts with level filtering and timestamps
+  - **Complete Runtime Rendering**: Rooms, objects, characters (8-direction animations), GUI (backgrounds, buttons)
+  - **Click Interactions**: Full hit detection for hotspots, objects, characters, GUI buttons with script execution
+  - **Pathfinding & Movement**: Click-to-move player with pathfinding on walkable areas, smooth animations
+  - **Room Changes**: Complete room switching system with asset loading and script execution
 - Theming
   - Acid dark + neon UI across forms, buttons, lists, dropdowns
+
+## Runtime Features
+
+The runtime system provides a complete game execution environment:
+
+- **✅ Complete Rendering**: Rooms (background, foregrounds, objects), characters with 8-direction animations and scaling, GUI overlays with buttons
+- **✅ Click Interactions**: Full hit detection system for hotspots (polygon), objects (bounding box), characters, and GUI buttons with script execution
+- **✅ Pathfinding & Movement**: Click-to-move player with intelligent pathfinding on walkable areas, smooth character movement with direction-based animations
+- **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
+- **✅ Character System**: Character rendering with pivot support, dynamic scaling based on Y position, sub-pixel smooth movement
+- **✅ GUI System**: GUI rendering with background images and clickable buttons, script execution on button clicks
 
 ## Current API Status
 
@@ -351,8 +366,23 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato durante Play Test
   - **Integrazione GameAPI**: Accesso completo alle API nel runtime con gestione contesto (roomId, objectId, variables)
   - **Script Console**: Logging in tempo reale dagli script con filtri per livello e timestamp
+  - **Rendering Completo Runtime**: Stanze, oggetti, personaggi (animazioni 8 direzioni), GUI (sfondi, pulsanti)
+  - **Interazioni Click**: Sistema completo di hit detection per hotspot, oggetti, personaggi, pulsanti GUI con esecuzione script
+  - **Pathfinding & Movimento**: Click-to-move player con pathfinding su aree camminabili, animazioni fluide
+  - **Cambio Stanza**: Sistema completo di cambio stanza con caricamento asset ed esecuzione script
 - Tema
   - Interfaccia acid dark + neon uniforme (form, pulsanti, liste, menu)
+
+## Funzionalità Runtime
+
+Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
+
+- **✅ Rendering Completo**: Stanze (background, foregrounds, oggetti), personaggi con animazioni 8 direzioni e scaling, overlay GUI con pulsanti
+- **✅ Interazioni Click**: Sistema completo di hit detection per hotspot (polygon), oggetti (bounding box), personaggi e pulsanti GUI con esecuzione script
+- **✅ Pathfinding & Movimento**: Click-to-move player con pathfinding intelligente su aree camminabili, movimento fluido personaggi con animazioni basate su direzione
+- **✅ Gestione Stanze**: Sistema completo di cambio stanza (`load_room()`) con caricamento asset, cleanup ed esecuzione script
+- **✅ Sistema Personaggi**: Rendering personaggi con supporto pivot, scaling dinamico basato su posizione Y, movimento fluido sub-pixel
+- **✅ Sistema GUI**: Rendering GUI con immagini di sfondo e pulsanti cliccabili, esecuzione script su click pulsanti
 
 ## Stato Corrente delle API
 
