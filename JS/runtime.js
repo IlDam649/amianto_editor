@@ -1575,6 +1575,16 @@
   // ============================================
   // COMPILAZIONE E CACHE SCRIPT
   // ============================================
+  /** Handler estratti dagli script utente (compileScript / executeScriptHandler) */
+  const SUPPORTED_SCRIPT_HANDLERS = [
+    'on_game_start',
+    'on_room_change',
+    'on_object_click',
+    'on_character_click',
+    'on_hotspot_click',
+    'on_gui_click'
+  ];
+
   // ⚠️ SISTEMA DI CACHE SCRIPT:
   // Ogni script viene compilato UNA SOLA VOLTA e gli handler vengono estratti e cache-ati.
   // Questo previene riesecuzione di codice JS a ogni evento, garantendo:
@@ -1608,16 +1618,6 @@
       // Questo contesto cattura solo le definizioni di funzioni handler
       const handlers = {};
       
-      // Lista degli handler supportati
-      const supportedHandlers = [
-        'on_game_start',
-        'on_room_change',
-        'on_object_click',
-        'on_character_click',
-        'on_hotspot_click',
-        'on_gui_click'
-      ];
-      
       // ⚠️ STRATEGIA DI ESTRAZIONE HANDLER:
       // Creiamo un contesto isolato dove eseguire lo script.
       // Le funzioni handler definite nello script vengono catturate dopo l'esecuzione.
@@ -1627,20 +1627,7 @@
       
       // Crea un oggetto per catturare gli handler definiti nello script
       const handlerContainer = {};
-      
-      // ⚠️ WRAPPER NO-OP: Crea funzioni wrapper che NON eseguono nulla durante la compilazione
-      // Questo previene esecuzione accidentale se lo script chiama direttamente gli handler
-      const noOpHandlers = {};
-      supportedHandlers.forEach(h => {
-        noOpHandlers[h] = function() {
-          // Durante la compilazione, gli handler non vengono eseguiti
-          // Vengono solo estratti e salvati nella cache
-          // ⚠️ IMPORTANTE: Se lo script chiama direttamente l'handler durante la compilazione,
-          // questa chiamata viene ignorata per prevenire doppia esecuzione
-          log(`[Runtime] compileScript: Chiamata a ${h} ignorata durante compilazione (previene doppia esecuzione)`, 'warning');
-        };
-      });
-      
+
       // ⚠️ PRE-PROCESSING: Wrappiamo automaticamente gli handler come async per permettere await
       // Trasforma le definizioni di handler da function a async function
       let processedScriptContent = scriptContent;
@@ -1648,7 +1635,7 @@
       // Escape dei caratteri speciali per regex
       const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       
-      supportedHandlers.forEach(handlerName => {
+      SUPPORTED_SCRIPT_HANDLERS.forEach(handlerName => {
         const escapedName = escapeRegex(handlerName);
         
         // Pattern 1: handlerName = function(...) { ... }
@@ -1703,78 +1690,29 @@
         log(`[Runtime] compileScript: Nessuna modifica al preprocessing (handler potrebbero essere già async o usare sintassi non supportata)`, 'warning');
       }
       
-      // Crea funzione wrapper che espone GameAPI e cattura gli handler
-      const scriptFunction = new Function(
-        'Game',
-        'GameAPI',
-        'print',
-        'getVariable',
-        'setVariable',
-        'getCurrentRoom',
-        'load_room',
-        'enableObject',
-        'disableObject',
-        'showText',
-        'show_message',
-        'log',
-        'on_game_start',
-        'on_room_change',
-        'on_object_click',
-        'on_character_click',
-        'on_hotspot_click',
-        'on_gui_click',
-        'handlerContainer', // Container per catturare gli handler
-        `
-        try {
-          // ⚠️ WRAPPER ASYNC: Esegui lo script in un contesto async per permettere await
-          // Questo permette l'uso di await anche se gli handler non sono dichiarati esplicitamente come async
-          (async () => {
-            // Esegui lo script per definire le funzioni handler
-            // ⚠️ IMPORTANTE: Se lo script contiene codice libero, viene eseguito UNA SOLA VOLTA qui
-            // ⚠️ PROTEZIONE: Se lo script chiama direttamente gli handler (es: on_hotspot_click(...)),
-            // quelli vengono ignorati durante la compilazione per prevenire doppia esecuzione
-            ${processedScriptContent}
-            
-          // ⚠️ ESTRAZIONE HANDLER: Dopo l'esecuzione, estraiamo solo le funzioni handler
-          // definite nello script e le salviamo nel container
-          // ⚠️ IMPORTANTE: Wrappiamo ogni handler come async per permettere await
-          ${supportedHandlers.map(h => `
+      const handlerExtractionBlock = SUPPORTED_SCRIPT_HANDLERS.map(h => `
           if (typeof ${h} === 'function') {
-            // Salva direttamente l'handler (sarà wrappato come async dopo)
             handlerContainer['${h}'] = ${h};
           }
-          `).join('')}
+          `).join('');
+
+      const compileBody = `
+        try {
+          (async () => {
+            ${processedScriptContent}
+            ${handlerExtractionBlock}
           })();
         } catch (e) {
           GameAPI.error('Errore compilazione script: ' + (e && e.message ? e.message : String(e)));
         }
-        `
-      );
-      
-      // Esegui lo script per ottenere gli handler estratti
-      // ⚠️ IMPORTANTE: Passa i wrapper no-op invece delle funzioni reali di GameAPI
-      // Questo previene esecuzione accidentale durante la compilazione
-      scriptFunction(
-        GameAPI,
-        GameAPI,
-        GameAPI.print,
-        GameAPI.getVariable,
-        GameAPI.setVariable,
-        GameAPI.getCurrentRoom,
-        GameAPI.load_room,
-        GameAPI.enableObject,
-        GameAPI.disableObject,
-        GameAPI.showText,
-        GameAPI.show_message,
-        GameAPI.log,
-        noOpHandlers.on_game_start,      // ⚠️ NO-OP durante compilazione
-        noOpHandlers.on_room_change,     // ⚠️ NO-OP durante compilazione
-        noOpHandlers.on_object_click,    // ⚠️ NO-OP durante compilazione
-        noOpHandlers.on_character_click, // ⚠️ NO-OP durante compilazione
-        noOpHandlers.on_hotspot_click,   // ⚠️ NO-OP durante compilazione
-        noOpHandlers.on_gui_click,       // ⚠️ NO-OP durante compilazione
-        handlerContainer // Container per catturare gli handler
-      );
+        `;
+
+      const { fn: scriptFunction, args: scriptArgs } = buildScriptExecutor(compileBody, {
+        handlerMode: 'noop',
+        tailParamNames: ['handlerContainer']
+      });
+      scriptArgs.push(handlerContainer);
+      scriptFunction(...scriptArgs);
       
       // Gli handler estratti sono ora in handlerContainer
       const extractedHandlers = handlerContainer;
@@ -1967,26 +1905,7 @@
         variables: Object.fromEntries(gameState.variables)
       };
 
-      // Crea funzione wrapper
-      const scriptFunction = new Function(
-        'Game',
-        'GameAPI',
-        'print',
-        'getVariable',
-        'setVariable',
-        'getCurrentRoom',
-        'load_room',
-        'enableObject',
-        'disableObject',
-        'showText',
-        'show_message',
-        'log',
-        'on_game_start',
-        'on_room_change',
-        'on_object_click',
-        'on_character_click',
-        'on_hotspot_click',
-        'on_gui_click',
+      const { fn: scriptFunction, args: scriptArgs } = buildScriptExecutor(
         `
         try {
           ${code}
@@ -1994,30 +1913,10 @@
           GameAPI.error('Errore script: ' + (e && e.message ? e.message : String(e)));
           throw e;
         }
-        `
+        `,
+        { handlerMode: 'real' }
       );
-
-      // Esegui con GameAPI e funzioni helper eventi
-      scriptFunction(
-        GameAPI,
-        GameAPI,
-        GameAPI.print,
-        GameAPI.getVariable,
-        GameAPI.setVariable,
-        GameAPI.getCurrentRoom,
-        GameAPI.load_room,
-        GameAPI.enableObject,
-        GameAPI.disableObject,
-        GameAPI.showText,
-        GameAPI.show_message,
-        GameAPI.log,
-        GameAPI.on_game_start,
-        GameAPI.on_room_change,
-        GameAPI.on_object_click,
-        GameAPI.on_character_click,
-        GameAPI.on_hotspot_click,
-        GameAPI.on_gui_click
-      );
+      scriptFunction(...scriptArgs);
     } catch (error) {
       log(`Errore esecuzione script ${scriptName}: ${error.message}`, 'error');
       console.error(error);
@@ -3399,74 +3298,116 @@
     }
   };
 
-  // Esponi GameAPI globalmente
-  window.GameAPI = GameAPI;
-  window.Game = GameAPI; // Alias per compatibilità
+  // ============================================
+  // SCRIPT API — binding unificato (compileScript / window)
+  // ============================================
+  function bindGameApiMethod(api, methodName) {
+    const fn = api[methodName];
+    return typeof fn === 'function' ? fn.bind(api) : fn;
+  }
 
-  // Override print() globale
-  window.print = function() {
-    GameAPI.print.apply(GameAPI, arguments);
-  };
+  /**
+   * Elenco unico delle API esposte agli script (parametri di new Function + window).
+   * Estendere solo qui quando si aggiungono nuove funzioni a GameAPI.
+   */
+  function getScriptApiBindings() {
+    const api = GameAPI;
+    return [
+      { name: 'Game', value: api },
+      { name: 'GameAPI', value: api },
+      { name: 'print', value: bindGameApiMethod(api, 'print') },
+      { name: 'log', value: bindGameApiMethod(api, 'log') },
+      { name: 'getVariable', value: bindGameApiMethod(api, 'getVariable') },
+      { name: 'setVariable', value: bindGameApiMethod(api, 'setVariable') },
+      { name: 'getCurrentRoom', value: bindGameApiMethod(api, 'getCurrentRoom') },
+      { name: 'load_room', value: bindGameApiMethod(api, 'load_room') },
+      { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
+      { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
+      { name: 'move_object', value: bindGameApiMethod(api, 'move_object') },
+      { name: 'showText', value: bindGameApiMethod(api, 'showText') },
+      { name: 'show_message', value: bindGameApiMethod(api, 'show_message') },
+      { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
+      { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
+      { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
+      { name: 'set_character_direction', value: bindGameApiMethod(api, 'set_character_direction') },
+      { name: 'animate_character', value: bindGameApiMethod(api, 'animate_character') }
+    ];
+  }
 
-  // Esponi load_room globalmente per compatibilità con l'editor
-  window.load_room = function(roomIdOrName, playerX, playerY, playerDirection) {
-    return GameAPI.load_room(roomIdOrName, playerX, playerY, playerDirection);
-  };
+  function createNoOpHandler(handlerName) {
+    return function() {
+      log(`[Runtime] compileScript: Chiamata a ${handlerName} ignorata durante compilazione (previene doppia esecuzione)`, 'warning');
+    };
+  }
 
-  // Esponi show_message globalmente per compatibilità con l'editor
-  window.show_message = function(text) {
-    return GameAPI.show_message(text);
-  };
+  /**
+   * Costruisce new Function(...) con parametri API allineati a getScriptApiBindings().
+   * @param {string} scriptBody - Corpo della funzione generata
+   * @param {{ handlerMode?: 'none'|'noop'|'real', tailParamNames?: string[] }} options
+   */
+  function buildScriptExecutor(scriptBody, options) {
+    const handlerMode = options.handlerMode || 'none';
+    const tailParamNames = options.tailParamNames || [];
 
-  // Esponi move_object globalmente per compatibilità con l'editor
-  window.move_object = function(objectId, x, y) {
-    return GameAPI.move_object(objectId, x, y);
-  };
+    const apiBindings = getScriptApiBindings();
+    const apiNames = apiBindings.map(b => b.name);
+    const apiArgs = apiBindings.map(b => b.value);
 
-  // Esponi API character globalmente
-  window.spawn_character = function(characterName, x, y, direction, characterId) {
-    return GameAPI.spawn_character(characterName, x, y, direction, characterId);
-  };
-  window.move_character = function(characterId, x, y) {
-    return GameAPI.move_character(characterId, x, y);
-  };
-  window.walk_character = function(characterId, x, y, waitForCompletion = true) {
-    // Se waitForCompletion è true, usa la coda comandi per garantire esecuzione sequenziale
-    if (waitForCompletion) {
-      return queueCommand(async () => {
-        await GameAPI.walk_character(characterId, x, y, true);
-      });
-    } else {
-      // Se non dobbiamo aspettare, esegui immediatamente senza coda
-      return GameAPI.walk_character(characterId, x, y, false);
+    let handlerNames = [];
+    let handlerArgs = [];
+
+    if (handlerMode === 'noop' || handlerMode === 'real') {
+      handlerNames = SUPPORTED_SCRIPT_HANDLERS.slice();
+      if (handlerMode === 'noop') {
+        handlerArgs = handlerNames.map(createNoOpHandler);
+      } else {
+        const api = GameAPI;
+        handlerArgs = handlerNames.map(h => bindGameApiMethod(api, h));
+      }
     }
-  };
-  window.set_character_direction = function(characterId, direction) {
-    return GameAPI.set_character_direction(characterId, direction);
-  };
-  window.animate_character = function(characterId, enabled) {
-    return GameAPI.animate_character(characterId, enabled);
-  };
 
-  // Esponi funzioni helper eventi globalmente
-  window.on_game_start = function(handler) {
-    GameAPI.on_game_start(handler);
-  };
-  window.on_room_change = function(handler) {
-    GameAPI.on_room_change(handler);
-  };
-  window.on_object_click = function(handler) {
-    GameAPI.on_object_click(handler);
-  };
-  window.on_character_click = function(handler) {
-    GameAPI.on_character_click(handler);
-  };
-  window.on_hotspot_click = function(handler) {
-    GameAPI.on_hotspot_click(handler);
-  };
-  window.on_gui_click = function(handler) {
-    GameAPI.on_gui_click(handler);
-  };
+    const paramNames = [...apiNames, ...handlerNames, ...tailParamNames];
+    const args = [...apiArgs, ...handlerArgs];
+
+    const fn = new Function(...paramNames, scriptBody);
+    return { fn, args, paramNames };
+  }
+
+  /** Espone su window le stesse API usate da compileScript (compatibilità script legacy). */
+  function exposeScriptGlobals() {
+    const api = GameAPI;
+    window.GameAPI = api;
+    window.Game = api;
+
+    getScriptApiBindings().forEach(binding => {
+      if (binding.name === 'Game' || binding.name === 'GameAPI') {
+        return;
+      }
+      window[binding.name] = binding.value;
+    });
+
+    window.print = function() {
+      api.print.apply(api, arguments);
+    };
+
+    window.walk_character = function(characterId, x, y, waitForCompletion) {
+      const wait = waitForCompletion !== false;
+      if (wait) {
+        return queueCommand(async () => {
+          await api.walk_character(characterId, x, y, true);
+        });
+      }
+      return api.walk_character(characterId, x, y, false);
+    };
+
+    SUPPORTED_SCRIPT_HANDLERS.forEach(handlerName => {
+      window[handlerName] = function(handler) {
+        api[handlerName](handler);
+      };
+    });
+  }
+
+  exposeScriptGlobals();
 
   // ============================================
   // RENDERING

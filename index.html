@@ -228,7 +228,7 @@
 
         <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
         <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)" disabled>Rooms</button>
-        <button class="section-btn" data-section="objects" aria-label="Manage game objects" title="Manage game objects (Ctrl+2)">Objects</button>
+        <button class="section-btn" data-section="inventory" aria-label="Manage inventory" title="Manage inventory and items (Ctrl+2)">Inventory</button>
         <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+3)">Characters</button>
         <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+4)">GUI</button>
         <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+5)">Scripts</button>
@@ -483,23 +483,55 @@
       </div>
     </div>
 
-        <div id="objects" class="section">
-          <h3>Inventory Objects</h3>
+        <div id="inventory" class="section">
+          <h3>Inventory</h3>
           <div class="section-content">
-            <div class="mb-3">
-              <button class="btn btn-success btn-sm w-100 mb-2" onclick="addInventoryObject()">
-                <i class="fas fa-plus"></i> Add Inventory Item
-              </button>
-              <input type="file" id="inventory-upload" accept="image/*" style="display: none;" onchange="uploadInventoryObject(this)">
+            <div class="mt-1 p-2 mb-3" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <h6 class="m-0 mb-2" style="color:#eee">Inventory layout</h6>
+              <div class="btn-group w-100 mb-2" role="group">
+                <button class="btn btn-success btn-sm" id="btn-inventory-bg" type="button">Inventory background</button>
+                <button class="btn btn-primary btn-sm" id="btn-inventory-slot" type="button">Add slot</button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-inventory-slot-delete" type="button">Delete slot</button>
+              </div>
+              <small class="text-muted d-block mb-2">
+                The canvas shows the inventory panel. Drag rectangles to position item slots.
+              </small>
+              <h6 class="text-light mb-1">Inventory slots</h6>
+              <div id="inventory-slots-list" class="list-group mb-0"></div>
             </div>
-            
-            <div class="mb-3">
-              <label class="form-label text-light">Filter inventory items:</label>
-              <input type="text" class="form-control form-control-sm" id="inventory-filter" placeholder="Search inventory..." onkeyup="filterInventoryObjects(this.value)">
-            </div>
-            
-            <div id="inventory-list" class="list-group">
-              <!-- Inventory objects will be dynamically added here -->
+
+            <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <h6 class="m-0 mb-2" style="color:#eee">Inventory items</h6>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Name</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-item-name" placeholder="Red key">
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Script name</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="red_key">
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Item image</label>
+                <div class="input-group input-group-sm">
+                  <input type="file" class="form-control" id="inventory-item-image-input" accept="image/*">
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-clear-image">Remove</button>
+                </div>
+                <small class="text-muted" id="inventory-item-image-label">No image</small>
+              
+              </div>
+              <div class="btn-group w-100 mb-2" role="group">
+                <button class="btn btn-success btn-sm" id="btn-inventory-item-create" type="button">
+                  <i class="fas fa-plus"></i> Create item
+                </button>
+                <button class="btn btn-outline-light btn-sm" id="btn-inventory-item-update" type="button" disabled>
+                  Save changes
+                </button>
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Filter items</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-filter" placeholder="Search items..." onkeyup="filterInventoryObjects(this.value)">
+              </div>
+              <div id="inventory-list" class="list-group"></div>
             </div>
           </div>
         </div>

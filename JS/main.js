@@ -475,6 +475,43 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedGuiButton = null;
   let guiButtonDragOffset = { x: 0, y: 0 };
   let isResizingGuiButton = false;
+
+  // Inventory editor (layout + items)
+  let inventoryDefinition = { background: null, slots: [] };
+  let inventoryItems = []; // { id, name, scriptName, image: Image|null }
+  let selectedInventorySlotId = null;
+  let selectedInventoryItemId = null;
+  let isDrawingInventorySlot = false;
+  let inventorySlotDrawStart = null;
+  let isDraggingInventorySlot = false;
+  let isResizingInventorySlot = false;
+  let draggedInventorySlot = null;
+  let inventorySlotDragOffset = { x: 0, y: 0 };
+  let resizeInventoryHandle = null;
+  let pendingInventoryItemImage = null;
+
+  function getEditorActiveTab() {
+    return window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+  }
+
+  function isRoomCanvasActive() {
+    return getEditorActiveTab() === 'rooms';
+  }
+
+  function disableRoomCanvasEditing() {
+    isDrawingWalkable = false;
+    isDrawingHotspot = false;
+    isDraggingWalkableVertex = false;
+    isDraggingHotspotVertex = false;
+    draggedWalkableVertexIndex = -1;
+    draggedHotspotVertexIndex = -1;
+    selectedWalkableVertexIndex = -1;
+    selectedHotspotVertexIndex = -1;
+    isDraggingObject = false;
+    draggedObject = null;
+    isDraggingScalingLine = false;
+    draggedScalingLineType = null;
+  }
   
   // Multiple GUI management
   let guis = []; // Array of GUI objects: { id, name, background, buttons }
@@ -1045,6 +1082,80 @@ document.addEventListener("DOMContentLoaded", () => {
       return; // skip rooms rendering
     }
 
+    if (activeTab === 'inventory') {
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      const canvasRect = canvas.getBoundingClientRect();
+      let centerOffsetX = 0;
+      let centerOffsetY = 0;
+      if (canvasRect.width > 0 && canvasRect.height > 0) {
+        const scaleX = canvas.width / canvasRect.width;
+        const scaleY = canvas.height / canvasRect.height;
+        const scaledContentWidth = gameViewport.width * editorState.zoom;
+        const scaledContentHeight = gameViewport.height * editorState.zoom;
+        const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
+        const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
+        centerOffsetX = cssOffsetX * scaleX;
+        centerOffsetY = cssOffsetY * scaleY;
+      }
+
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      if (inventoryDefinition.background) {
+        ctx.drawImage(inventoryDefinition.background, 0, 0, gameViewport.width, gameViewport.height);
+      } else {
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
+        ctx.fillStyle = '#888';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Load the inventory background from the panel on the right', gameViewport.width / 2, gameViewport.height / 2);
+      }
+
+      for (const slot of inventoryDefinition.slots) {
+        if (!slot || slot.id === '__drawing__') continue;
+        const isSelected = slot.id === selectedInventorySlotId;
+        ctx.strokeStyle = isSelected ? 'rgba(180, 80, 255, 1)' : 'rgba(180, 80, 255, 0.85)';
+        ctx.fillStyle = isSelected ? 'rgba(180, 80, 255, 0.2)' : 'rgba(180, 80, 255, 0.1)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.rect(slot.x, slot.y, slot.w, slot.h);
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ddd';
+        ctx.font = '11px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(slot.name || 'Slot', slot.x + slot.w / 2, slot.y + slot.h / 2);
+
+        if (isSelected) {
+          const handleSize = 8;
+          ctx.fillStyle = 'rgba(180, 80, 255, 0.9)';
+          const handles = [
+            { x: slot.x - handleSize / 2, y: slot.y - handleSize / 2 },
+            { x: slot.x + slot.w - handleSize / 2, y: slot.y - handleSize / 2 },
+            { x: slot.x - handleSize / 2, y: slot.y + slot.h - handleSize / 2 },
+            { x: slot.x + slot.w - handleSize / 2, y: slot.y + slot.h - handleSize / 2 }
+          ];
+          handles.forEach(h => ctx.fillRect(h.x, h.y, handleSize, handleSize));
+        }
+      }
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
+    }
+
     // Calcola l'offset per centrare il contenuto nel canvas visualizzato
     // Il contenuto ha dimensioni gameViewport.width x gameViewport.height
     // Il canvas viene ridimensionato via CSS, quindi dobbiamo calcolare l'offset
@@ -1429,7 +1540,15 @@ document.addEventListener("DOMContentLoaded", () => {
           guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: Math.round(worldPos.x), y: Math.round(worldPos.y), w: 0, h: 0, backgroundImage: null });
         }
         canvas.style.cursor = 'crosshair';
-      } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton) { // Left click without Ctrl
+      } else if (e.button === 0 && isDrawingInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        inventorySlotDrawStart = { x: worldPos.x, y: worldPos.y };
+        if (!(inventoryDefinition.slots.length && inventoryDefinition.slots[inventoryDefinition.slots.length - 1].id === '__drawing__')) {
+          inventoryDefinition.slots.push({ id: '__drawing__', name: 'Drawing...', x: Math.round(worldPos.x), y: Math.round(worldPos.y), w: 0, h: 0 });
+        }
+        canvas.style.cursor = 'crosshair';
+      } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton && !isDrawingInventorySlot) { // Left click without Ctrl
         // Check for character pivot interaction (only in characters tab)
         const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
         if (activeTab === 'characters') {
@@ -1519,6 +1638,47 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
         }
+        if (activeTab === 'inventory') {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const slots = inventoryDefinition.slots.filter(s => s.id !== '__drawing__');
+          const clickedSlot = [...slots].reverse().find(slot =>
+            worldPos.x >= slot.x && worldPos.x <= slot.x + slot.w &&
+            worldPos.y >= slot.y && worldPos.y <= slot.y + slot.h
+          );
+          if (clickedSlot) {
+            e.preventDefault();
+            selectedInventorySlotId = clickedSlot.id;
+            const handleSize = 8;
+            const handles = [
+              { x: clickedSlot.x - handleSize / 2, y: clickedSlot.y - handleSize / 2, type: 'nw' },
+              { x: clickedSlot.x + clickedSlot.w - handleSize / 2, y: clickedSlot.y - handleSize / 2, type: 'ne' },
+              { x: clickedSlot.x - handleSize / 2, y: clickedSlot.y + clickedSlot.h - handleSize / 2, type: 'sw' },
+              { x: clickedSlot.x + clickedSlot.w - handleSize / 2, y: clickedSlot.y + clickedSlot.h - handleSize / 2, type: 'se' }
+            ];
+            const clickedHandle = handles.find(h =>
+              worldPos.x >= h.x && worldPos.x <= h.x + handleSize &&
+              worldPos.y >= h.y && worldPos.y <= h.y + handleSize
+            );
+            if (clickedHandle) {
+              isResizingInventorySlot = true;
+              resizeInventoryHandle = clickedHandle.type;
+              draggedInventorySlot = clickedSlot;
+              canvas.style.cursor = getResizeCursor(clickedHandle.type);
+            } else {
+              isDraggingInventorySlot = true;
+              draggedInventorySlot = clickedSlot;
+              inventorySlotDragOffset.x = worldPos.x - clickedSlot.x;
+              inventorySlotDragOffset.y = worldPos.y - clickedSlot.y;
+              canvas.style.cursor = 'grabbing';
+            }
+            refreshInventorySlotsListUI();
+            redraw();
+            return;
+          }
+          if (!isDrawingInventorySlot) {
+            return;
+          }
+        }
         // Check for scaling line drag (only in rooms tab, before scene objects)
         // Reuse activeTab already declared above
         if (activeTab === 'rooms' && showScalingLines && !isDrawingWalkable && !isDrawingHotspot) {
@@ -1533,27 +1693,29 @@ document.addEventListener("DOMContentLoaded", () => {
             return; // Exit early to prevent other handlers
           }
         }
-        // Check if clicking on a scene object
-        const worldPos = screenToWorld(e.clientX, e.clientY);
-        const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
-        
-        if (clickedObject) {
-          // Lock scene objects if a hotspot is selected
-          if (activeHotspotId) {
-            return;
+        // Check if clicking on a scene object (rooms tab only)
+        if (activeTab === 'rooms') {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
+          
+          if (clickedObject) {
+            // Lock scene objects if a hotspot is selected
+            if (activeHotspotId) {
+              return;
+            }
+            e.preventDefault();
+            isDraggingObject = true;
+            draggedObject = clickedObject;
+            
+            // Calculate offset from object center
+            const objX = (clickedObject.x || 0);
+            const objY = (clickedObject.y || 0);
+            dragOffset.x = worldPos.x - objX;
+            dragOffset.y = worldPos.y - objY;
+            
+            canvas.style.cursor = 'grabbing';
+            redraw();
           }
-          e.preventDefault();
-          isDraggingObject = true;
-          draggedObject = clickedObject;
-          
-          // Calculate offset from object center
-          const objX = (clickedObject.x || 0);
-          const objY = (clickedObject.y || 0);
-          dragOffset.x = worldPos.x - objX;
-          dragOffset.y = worldPos.y - objY;
-          
-          canvas.style.cursor = 'grabbing';
-          redraw();
         }
       }
     });
@@ -1583,6 +1745,11 @@ document.addEventListener("DOMContentLoaded", () => {
         
         redraw();
       } else if (isDraggingScalingLine && draggedScalingLineType) {
+        if (!isRoomCanvasActive()) {
+          isDraggingScalingLine = false;
+          draggedScalingLineType = null;
+          return;
+        }
         // Handle scaling line drag
         e.preventDefault();
         const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
@@ -1613,6 +1780,12 @@ document.addEventListener("DOMContentLoaded", () => {
         canvas.style.cursor = 'ns-resize';
         redraw();
       } else if (isDraggingObject && draggedObject) {
+        if (!isRoomCanvasActive()) {
+          isDraggingObject = false;
+          draggedObject = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
         // Lock scene objects if a hotspot is selected
         if (activeHotspotId) {
           isDraggingObject = false;
@@ -1695,6 +1868,57 @@ document.addEventListener("DOMContentLoaded", () => {
         
         refreshGuiButtonsList();
         redraw();
+      } else if (isDraggingInventorySlot && draggedInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        draggedInventorySlot.x = Math.round(worldPos.x - inventorySlotDragOffset.x);
+        draggedInventorySlot.y = Math.round(worldPos.y - inventorySlotDragOffset.y);
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isResizingInventorySlot && draggedInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const minSize = 20;
+        const ox = draggedInventorySlot.x;
+        const oy = draggedInventorySlot.y;
+        const ow = draggedInventorySlot.w;
+        const oh = draggedInventorySlot.h;
+        switch (resizeInventoryHandle) {
+          case 'nw':
+            if (ow + (ox - worldPos.x) >= minSize) { draggedInventorySlot.x = worldPos.x; draggedInventorySlot.w = ow + (ox - worldPos.x); }
+            if (oh + (oy - worldPos.y) >= minSize) { draggedInventorySlot.y = worldPos.y; draggedInventorySlot.h = oh + (oy - worldPos.y); }
+            break;
+          case 'ne':
+            draggedInventorySlot.w = Math.max(minSize, worldPos.x - ox);
+            if (oh + (oy - worldPos.y) >= minSize) { draggedInventorySlot.y = worldPos.y; draggedInventorySlot.h = oh + (oy - worldPos.y); }
+            break;
+          case 'sw':
+            if (ow + (ox - worldPos.x) >= minSize) { draggedInventorySlot.x = worldPos.x; draggedInventorySlot.w = ow + (ox - worldPos.x); }
+            draggedInventorySlot.h = Math.max(minSize, worldPos.y - oy);
+            break;
+          case 'se':
+            draggedInventorySlot.w = Math.max(minSize, worldPos.x - ox);
+            draggedInventorySlot.h = Math.max(minSize, worldPos.y - oy);
+            break;
+        }
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isDrawingInventorySlot && inventorySlotDrawStart) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const x0 = Math.min(inventorySlotDrawStart.x, worldPos.x);
+        const y0 = Math.min(inventorySlotDrawStart.y, worldPos.y);
+        const w = Math.abs(worldPos.x - inventorySlotDrawStart.x);
+        const h = Math.abs(worldPos.y - inventorySlotDrawStart.y);
+        const slots = inventoryDefinition.slots;
+        if (slots.length && slots[slots.length - 1].id === '__drawing__') {
+          const tmp = slots[slots.length - 1];
+          tmp.x = Math.round(x0);
+          tmp.y = Math.round(y0);
+          tmp.w = Math.round(w);
+          tmp.h = Math.round(h);
+        }
+        redraw();
       } else if (isDrawingGuiButton && guiDrawStart) {
         e.preventDefault();
         const worldPos = screenToWorld(e.clientX, e.clientY);
@@ -1702,7 +1926,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const y0 = Math.min(guiDrawStart.y, worldPos.y);
         const w = Math.abs(worldPos.x - guiDrawStart.x);
         const h = Math.abs(worldPos.y - guiDrawStart.y);
-        // temporary preview by updating last placeholder
         if (guiButtons.length && guiButtons[guiButtons.length-1].id === '__drawing__') {
           const tmp = guiButtons[guiButtons.length-1];
           tmp.x = Math.round(x0); tmp.y = Math.round(y0); tmp.w = Math.round(w); tmp.h = Math.round(h);
@@ -1758,6 +1981,37 @@ document.addEventListener("DOMContentLoaded", () => {
         draggedGuiButton = null;
         canvas.style.cursor = 'default';
         saveCurrentGUI();
+        redraw();
+      } else if (isDraggingInventorySlot) {
+        isDraggingInventorySlot = false;
+        draggedInventorySlot = null;
+        canvas.style.cursor = 'default';
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isResizingInventorySlot) {
+        isResizingInventorySlot = false;
+        resizeInventoryHandle = null;
+        draggedInventorySlot = null;
+        canvas.style.cursor = 'default';
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isDrawingInventorySlot && inventorySlotDrawStart) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const x0 = Math.min(inventorySlotDrawStart.x, worldPos.x);
+        const y0 = Math.min(inventorySlotDrawStart.y, worldPos.y);
+        const w = Math.abs(worldPos.x - inventorySlotDrawStart.x);
+        const h = Math.abs(worldPos.y - inventorySlotDrawStart.y);
+        let slot = inventoryDefinition.slots.pop();
+        const slotNum = inventoryDefinition.slots.filter(s => s.id !== '__drawing__').length + 1;
+        slot = { id: uid('invslot'), name: 'Slot ' + slotNum, x: Math.round(x0), y: Math.round(y0), w: Math.round(w), h: Math.round(h) };
+        if (slot.w >= 8 && slot.h >= 8) {
+          inventoryDefinition.slots.push(slot);
+          selectedInventorySlotId = slot.id;
+          showNotification('Inventory slot created (' + slot.w + 'x' + slot.h + ')', 'success');
+        }
+        isDrawingInventorySlot = false;
+        inventorySlotDrawStart = null;
+        refreshInventorySlotsListUI();
         redraw();
       } else if (isDrawingGuiButton && guiDrawStart) {
         const worldPos = screenToWorld(e.clientX, e.clientY);
@@ -1886,6 +2140,21 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     }
+
+    if (activeTab === 'gui') {
+      const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+      const hit = guiButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+      if (hit) {
+        selectedGuiButtonId = hit.id;
+        refreshGuiButtonsList();
+        redraw();
+      }
+      return;
+    }
+
+    if (!isRoomCanvasActive()) {
+      return;
+    }
     
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     if (isDrawingWalkable) {
@@ -1907,16 +2176,6 @@ document.addEventListener("DOMContentLoaded", () => {
       refreshHotspotsListUI();
       redraw();
       return;
-    }
-
-    // GUI selection when in GUI tab
-    if (activeTab === 'gui') {
-      const hit = guiButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
-      if (hit) {
-        selectedGuiButtonId = hit.id;
-        refreshGuiButtonsList();
-        redraw();
-      }
     }
 
     // ⚠️ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
@@ -1967,6 +2226,7 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     if (editorState.isPanning) return;
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // click aggiunge punti, niente drag mentre disegniamo
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     const idx = findWalkableVertexNear(x, y);
@@ -1981,6 +2241,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDraggingWalkableVertex) return;
+    if (!isRoomCanvasActive()) return;
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     const idx = draggedWalkableVertexIndex;
     if (idx < 0 || idx >= walkableArea.length) return;
@@ -2009,6 +2270,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Click per selezionare un vertice walkable quando non stiamo disegnando
   canvas.addEventListener('click', (e) => {
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // già gestito sopra
     if (isDraggingWalkableVertex) return;
     // evita conflitti con hotspot: se stai disegnando hotspot non selezionare walkable
@@ -2030,10 +2292,22 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // Walkable area controls
-  window.startWalkableDrawing = function() { isDrawingWalkable = true; showWalkable = true; redraw(); };
-  window.finishWalkableDrawing = function() { isDrawingWalkable = false; redraw(); };
-  window.clearWalkableArea = function() { walkableArea = []; redraw(); };
-  window.toggleWalkableVisibility = function() { showWalkable = !showWalkable; redraw(); };
+  window.startWalkableDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    isDrawingWalkable = true; showWalkable = true; redraw();
+  };
+  window.finishWalkableDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    isDrawingWalkable = false; redraw();
+  };
+  window.clearWalkableArea = function() {
+    if (!isRoomCanvasActive()) return;
+    walkableArea = []; redraw();
+  };
+  window.toggleWalkableVisibility = function() {
+    if (!isRoomCanvasActive()) return;
+    showWalkable = !showWalkable; redraw();
+  };
 
   // ===== Character scaling controls & UI =====
   // updateScalingUI is defined earlier, before bindRoomRefs
@@ -2278,6 +2552,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   window.startHotspotDrawing = function() {
+    if (!isRoomCanvasActive()) return;
     if (!activeHotspotId) {
       showNotification('No hotspot selected. Create one first.', 'warning');
       return;
@@ -2289,6 +2564,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   window.finishHotspotDrawing = function() {
+    if (!isRoomCanvasActive()) return;
     isDrawingHotspot = false;
     redraw();
   };
@@ -2355,6 +2631,7 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return; // only left button for dragging vertices
     if (editorState.isPanning) return; // already handled by panning
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // hotspot vertex editing disabled while drawing walkable
 
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
@@ -2375,6 +2652,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDraggingHotspotVertex) return;
+    if (!isRoomCanvasActive()) return;
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
     if (!hs) return;
     const idx = draggedHotspotVertexIndex;
@@ -2464,6 +2742,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Click to select a vertex when not drawing
   canvas.addEventListener('click', (e) => {
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // handled earlier
     if (isDrawingHotspot) return; // handled earlier for adding points
     if (isDraggingHotspotVertex) return; // avoid double triggering after drag
@@ -3838,72 +4117,246 @@ window.selectRoom = function(roomId) {
      PART 3 - Funzioni per le Tabs
      ============================ */
 
-  // Functions for Inventory Objects tab
-  window.addInventoryObject = function() {
-    document.getElementById('inventory-upload').click();
-  };
+  // ===== Inventory tab =====
+  function syncInventoryItemScript(item) {
+    if (!item) return;
+    const scriptName = (item.scriptName || '').trim();
+    if (scriptName) inventoryScripts.set(item.name, scriptName);
+    else inventoryScripts.delete(item.name);
+  }
 
-  window.uploadInventoryObject = function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    // Generate unique name even for same image
-    const baseName = file.name.replace(/\.[^/.]+$/, "");
-    const timestamp = Date.now();
-    const objectName = `${baseName}_${timestamp}`;
-    const inventoryList = document.getElementById('inventory-list');
-    
-    const newObject = document.createElement('div');
-    newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-    newObject.innerHTML = `
-      <div>
-        <strong>${objectName}</strong>
-        <br><small>Inventory item</small>
-        <br><span class="badge bg-primary">Pickup</span>
-      </div>
-      <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
-        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
-      </div>
-    `;
-    
-    inventoryList.appendChild(newObject);
-    
-    // Reset input to allow same file selection again
-    input.value = '';
-    
-    // Show notification
-    showNotification(`Inventory item "${objectName}" added!`, 'success');
-  };
+  function updateInventoryItemFormImageLabel() {
+    const label = document.getElementById('inventory-item-image-label');
+    if (!label) return;
+    if (pendingInventoryItemImage) {
+      label.textContent = 'Image selected';
+    } else if (selectedInventoryItemId) {
+      const item = inventoryItems.find(i => i.id === selectedInventoryItemId);
+      label.textContent = item && item.image ? 'Current image' : 'No image';
+    } else {
+      label.textContent = 'No image';
+    }
+  }
+
+  function clearInventoryItemForm() {
+    selectedInventoryItemId = null;
+    pendingInventoryItemImage = null;
+    const nameEl = document.getElementById('inventory-item-name');
+    const scriptEl = document.getElementById('inventory-item-script-name');
+    const fileEl = document.getElementById('inventory-item-image-input');
+    const updateBtn = document.getElementById('btn-inventory-item-update');
+    if (nameEl) nameEl.value = '';
+    if (scriptEl) scriptEl.value = '';
+    if (fileEl) fileEl.value = '';
+    if (updateBtn) updateBtn.disabled = true;
+    updateInventoryItemFormImageLabel();
+    refreshInventoryItemsListUI();
+  }
+
+  function selectInventoryItem(itemId) {
+    selectedInventoryItemId = itemId;
+    const item = inventoryItems.find(i => i.id === itemId);
+    const nameEl = document.getElementById('inventory-item-name');
+    const scriptEl = document.getElementById('inventory-item-script-name');
+    const updateBtn = document.getElementById('btn-inventory-item-update');
+    pendingInventoryItemImage = null;
+    if (item) {
+      if (nameEl) nameEl.value = item.name || '';
+      if (scriptEl) scriptEl.value = item.scriptName || '';
+    }
+    if (updateBtn) updateBtn.disabled = !item;
+    updateInventoryItemFormImageLabel();
+    refreshInventoryItemsListUI();
+  }
+
+  function refreshInventoryItemsListUI() {
+    const list = document.getElementById('inventory-list');
+    if (!list) return;
+    list.innerHTML = '';
+    inventoryItems.forEach((item) => {
+      const isSelected = item.id === selectedInventoryItemId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      el.dataset.itemId = item.id;
+      const info = document.createElement('div');
+      const scriptLabel = item.scriptName ? item.scriptName : '(no script)';
+      const hasImg = item.image ? 'with image' : 'no image';
+      info.innerHTML = '<strong>' + item.name + '</strong><br><small class="text-info">Script: ' + scriptLabel + '</small><br><small class="text-muted">' + hasImg + '</small>';
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectInventoryItem(item.id));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => removeInventoryItemById(item.id));
+      controls.appendChild(selectBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      list.appendChild(el);
+    });
+    refreshInventoryScriptTargets();
+  }
+
+  function refreshInventorySlotsListUI() {
+    const list = document.getElementById('inventory-slots-list');
+    if (!list) return;
+    list.innerHTML = '';
+    inventoryDefinition.slots.filter(s => s.id !== '__drawing__').forEach((slot, index) => {
+      const isSelected = slot.id === selectedInventorySlotId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-warning');
+      el.innerHTML = '<div><strong>' + (slot.name || ('Slot ' + (index + 1))) + '</strong><br><small>' + slot.w + 'x' + slot.h + ' @ ' + slot.x + ', ' + slot.y + '</small></div>';
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-light';
+      btn.textContent = isSelected ? 'Active' : 'Select';
+      btn.addEventListener('click', () => {
+        selectedInventorySlotId = slot.id;
+        refreshInventorySlotsListUI();
+        redraw();
+      });
+      el.appendChild(btn);
+      list.appendChild(el);
+    });
+  }
 
   window.filterInventoryObjects = function(searchTerm) {
     const objects = document.querySelectorAll('#inventory-list .list-group-item');
+    const q = (searchTerm || '').toLowerCase();
     objects.forEach(obj => {
-      const text = obj.textContent.toLowerCase();
-      const matches = text.includes(searchTerm.toLowerCase());
-      obj.style.display = matches ? 'flex' : 'none';
+      obj.style.display = obj.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
     });
   };
 
   window.removeInventoryObject = function(button) {
-    if (confirm('Are you sure you want to delete this inventory item?')) {
-      button.closest('.list-group-item').remove();
-      showNotification('Inventory item deleted!', 'info');
-    }
+    const row = button.closest('.list-group-item');
+    const id = row && row.dataset.itemId;
+    if (id) removeInventoryItemById(id);
   };
 
-  window.editInventoryObject = function(button) {
-    const listItem = button.closest('.list-group-item');
-    const nameElement = listItem.querySelector('strong');
-    const currentName = nameElement.textContent;
-    
-    const newName = prompt('Edit inventory item name:', currentName);
-    if (newName && newName.trim() !== '') {
-      nameElement.textContent = newName.trim();
-      showNotification(`Inventory item renamed to "${newName.trim()}"`, 'success');
-    }
+  function removeInventoryItemById(itemId) {
+    const item = inventoryItems.find(i => i.id === itemId);
+    if (!item) return;
+    if (!confirm('Delete this inventory item?')) return;
+    inventoryScripts.delete(item.name);
+    inventoryItems = inventoryItems.filter(i => i.id !== itemId);
+    if (selectedInventoryItemId === itemId) clearInventoryItemForm();
+    else refreshInventoryItemsListUI();
+    showNotification('Inventory item deleted', 'info');
+  }
+
+  window.createInventoryItemFromForm = function() {
+    const name = (document.getElementById('inventory-item-name')?.value || '').trim();
+    const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
+    if (!name) { showNotification('Enter a name for the item', 'warning'); return; }
+    if (inventoryItems.some(i => i.name === name)) { showNotification('Name already in use', 'warning'); return; }
+    const item = { id: uid('invitem'), name, scriptName: scriptName || name, image: pendingInventoryItemImage || null };
+    syncInventoryItemScript(item);
+    inventoryItems.push(item);
+    pendingInventoryItemImage = null;
+    clearInventoryItemForm();
+    showNotification('Item created: ' + name, 'success');
+    redraw();
   };
 
+  window.updateInventoryItemFromForm = function() {
+    const item = inventoryItems.find(i => i.id === selectedInventoryItemId);
+    if (!item) { showNotification('Select an item to edit', 'warning'); return; }
+    const oldName = item.name;
+    const name = (document.getElementById('inventory-item-name')?.value || '').trim();
+    const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
+    if (!name) { showNotification('Name cannot be empty', 'warning'); return; }
+    if (inventoryItems.some(i => i.id !== item.id && i.name === name)) { showNotification('Name already in use', 'warning'); return; }
+    if (oldName !== name && inventoryScripts.has(oldName)) inventoryScripts.delete(oldName);
+    item.name = name;
+    item.scriptName = scriptName || name;
+    if (pendingInventoryItemImage) item.image = pendingInventoryItemImage;
+    syncInventoryItemScript(item);
+    pendingInventoryItemImage = null;
+    selectInventoryItem(item.id);
+    showNotification('Item updated: ' + name, 'success');
+    redraw();
+  };
+
+  window.loadInventoryItemImagePreview = function(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => { pendingInventoryItemImage = img; updateInventoryItemFormImageLabel(); };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  window.clearPendingInventoryItemImage = function() {
+    pendingInventoryItemImage = null;
+    const fileEl = document.getElementById('inventory-item-image-input');
+    if (fileEl) fileEl.value = '';
+    updateInventoryItemFormImageLabel();
+  };
+
+  function setupInventoryEditorUI() {
+    const btnBg = document.getElementById('btn-inventory-bg');
+    const btnSlot = document.getElementById('btn-inventory-slot');
+    const btnSlotDel = document.getElementById('btn-inventory-slot-delete');
+    const btnCreate = document.getElementById('btn-inventory-item-create');
+    const btnUpdate = document.getElementById('btn-inventory-item-update');
+    const imgInput = document.getElementById('inventory-item-image-input');
+    const btnClearImg = document.getElementById('btn-inventory-item-clear-image');
+    if (btnBg) btnBg.addEventListener('click', uploadInventoryBackground);
+    if (btnSlot) btnSlot.addEventListener('click', startDrawInventorySlot);
+    if (btnSlotDel) btnSlotDel.addEventListener('click', deleteSelectedInventorySlot);
+    if (btnCreate) btnCreate.addEventListener('click', () => window.createInventoryItemFromForm());
+    if (btnUpdate) btnUpdate.addEventListener('click', () => window.updateInventoryItemFromForm());
+    if (imgInput) imgInput.addEventListener('change', () => window.loadInventoryItemImagePreview(imgInput));
+    if (btnClearImg) btnClearImg.addEventListener('click', () => window.clearPendingInventoryItemImage());
+  }
+
+  function uploadInventoryBackground() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          inventoryDefinition.background = img;
+          showNotification('Inventory background loaded', 'success');
+          redraw();
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }
+
+  function startDrawInventorySlot() {
+    isDrawingInventorySlot = true;
+    inventorySlotDrawStart = null;
+    inventoryDefinition.slots.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
+    showNotification('Drag on the canvas to draw a slot', 'info');
+  }
+
+  function deleteSelectedInventorySlot() {
+    if (!selectedInventorySlotId) { showNotification('No slot selected', 'warning'); return; }
+    inventoryDefinition.slots = inventoryDefinition.slots.filter(s => s.id !== selectedInventorySlotId);
+    selectedInventorySlotId = null;
+    refreshInventorySlotsListUI();
+    redraw();
+    showNotification('Slot deleted', 'info');
+  }
+
+  setupInventoryEditorUI();
   // Functions for Scene Objects (in Rooms tab)
   function ensureSceneObjectSelection() {
     // Don't auto-select scene objects if a hotspot is active
@@ -8196,10 +8649,11 @@ window.selectRoom = function(roomId) {
     optNone.value = '';
     optNone.textContent = 'Select inventory item...';
     sel.appendChild(optNone);
-    document.querySelectorAll('#inventory-list .list-group-item strong').forEach(s => {
-      const name = s.textContent.trim();
+    inventoryItems.forEach(item => {
       const o = document.createElement('option');
-      o.value = name; o.textContent = name; sel.appendChild(o);
+      o.value = item.name;
+      o.textContent = item.name;
+      sel.appendChild(o);
     });
   }
 
@@ -8231,8 +8685,8 @@ window.selectRoom = function(roomId) {
     if (e.detail.currentTab === 'characters') {
       setTimeout(() => { refreshCharacterScriptTargets(); updateCursorTargets(); }, 0);
     }
-    if (e.detail.currentTab === 'objects') {
-      setTimeout(() => { refreshInventoryScriptTargets(); updateCursorTargets(); }, 0);
+    if (e.detail.currentTab === 'inventory') {
+      setTimeout(() => { refreshInventoryScriptTargets(); refreshInventoryItemsListUI(); refreshInventorySlotsListUI(); updateCursorTargets(); redraw(); }, 0);
     }
     if (e.detail.currentTab === 'gui') {
       setTimeout(() => { refreshGuiButtonsList(); refreshGuiScriptTargets(); updateCursorTargets(); }, 0);
@@ -8653,14 +9107,23 @@ window.selectRoom = function(roomId) {
     
     // Add specific logic for each tab
     switch(e.detail.currentTab) {
-      case 'objects':
-        // Update objects list if necessary
+      case 'inventory':
+        disableRoomCanvasEditing();
+        refreshInventoryItemsListUI();
+        refreshInventorySlotsListUI();
+        redraw();
+        break;
+      case 'rooms':
+        disableRoomCanvasEditing();
+        redraw();
         break;
       case 'gui':
+        disableRoomCanvasEditing();
         refreshGuiButtonsList();
         redraw();
         break;
       case 'characters':
+        disableRoomCanvasEditing();
         // ensure character selector refreshed and redraw preview
         refreshCharacterSelector();
         redraw();
@@ -11761,12 +12224,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function serializeInventory() {
-    const items = [];
-    try {
-      document.querySelectorAll('#inventory-list .list-group-item strong').forEach(s => items.push({ name: s.textContent.trim() }));
-    } catch (_) {}
-    return items;
+    return {
+      background: serializeImage(inventoryDefinition.background),
+      slots: Array.isArray(inventoryDefinition.slots)
+        ? inventoryDefinition.slots
+            .filter(s => s && s.id !== '__drawing__')
+            .map(s => ({
+              id: s.id,
+              name: s.name || 'Slot',
+              x: Number(s.x) || 0,
+              y: Number(s.y) || 0,
+              w: Number(s.w) || 0,
+              h: Number(s.h) || 0
+            }))
+        : [],
+      items: inventoryItems.map(item => ({
+        id: item.id,
+        name: item.name,
+        scriptName: item.scriptName || item.name,
+        image: serializeImage(item.image)
+      }))
+    };
   }
+
 
   function serializeScripts() {
     const scriptsObj = {};
@@ -12864,7 +13344,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Abilita/disabilita altre tab (tutte tranne Projects)
    */
   function enableOtherTabs(enabled) {
-    const tabsToDisable = ['rooms', 'objects', 'characters', 'gui', 'scripts', 'play'];
+    const tabsToDisable = ['rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
     tabsToDisable.forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
@@ -14997,31 +15477,75 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.error('[Load] Errore caricamento character:', error);
       }
 
-      // Inventory UI (lista DOM)
+      // Inventory (layout + items)
       try {
-        const inv = Array.isArray(projectObj.inventory) ? projectObj.inventory : [];
-        const list = document.getElementById('inventory-list');
-        if (list) {
-          list.innerHTML = '';
-          inv.forEach(item => {
-            const el = document.createElement('div');
-            el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-            el.innerHTML = `
-              <div>
-                <strong>${item.name || 'Item'}</strong>
-                <br><small>Inventory item</small>
-              </div>
-              <div>
-                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
-                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
-              </div>
-            `;
-            list.appendChild(el);
+        inventoryItems = [];
+        inventoryDefinition = { background: null, slots: [] };
+        selectedInventorySlotId = null;
+        selectedInventoryItemId = null;
+        const invData = projectObj.inventory;
+        const itemSources = [];
+        if (Array.isArray(invData)) {
+          invData.forEach(item => {
+            itemSources.push({ ...item, _legacy: true });
           });
+        } else if (invData && typeof invData === 'object') {
+          if (Array.isArray(invData.items)) itemSources.push(...invData.items);
+          if (Array.isArray(invData.slots)) {
+            inventoryDefinition.slots = invData.slots.map(s => ({
+              id: s.id || uid('invslot'),
+              name: s.name || 'Slot',
+              x: Number(s.x) || 0,
+              y: Number(s.y) || 0,
+              w: Number(s.w) || 0,
+              h: Number(s.h) || 0
+            }));
+          }
+          if (invData.background) {
+            const bgRef = invData.background;
+            Promise.resolve().then(async () => {
+              const img = await createImageFromDataUrl(bgRef, projectId);
+              if (img) {
+                inventoryDefinition.background = img;
+                if (typeof bgRef === 'string' && bgRef.startsWith('asset:')) {
+                  imageAssetMap.set(img, { assetId: bgRef.replace('asset:', ''), type: 'inventory', projectId });
+                }
+                redraw();
+              }
+            });
+          }
         }
-        refreshInventoryScriptTargets();
-      } catch(_) {}
-
+        itemSources.forEach(item => {
+          const entry = {
+            id: item.id || uid('invitem'),
+            name: item.name || 'Item',
+            scriptName: item.scriptName || item.name || 'Item',
+            image: null,
+            _imageRef: item.image || null
+          };
+          inventoryItems.push(entry);
+          if (item.scriptName) inventoryScripts.set(entry.name, item.scriptName);
+        });
+        Promise.resolve().then(async () => {
+          for (const item of inventoryItems) {
+            if (item._imageRef) {
+              item.image = await createImageFromDataUrl(item._imageRef, projectId);
+              if (item.image && typeof item._imageRef === 'string' && item._imageRef.startsWith('asset:')) {
+                imageAssetMap.set(item.image, { assetId: item._imageRef.replace('asset:', ''), type: 'inventory', projectId });
+              }
+            }
+            delete item._imageRef;
+            syncInventoryItemScript(item);
+          }
+          refreshInventoryItemsListUI();
+          refreshInventorySlotsListUI();
+          redraw();
+        });
+        refreshInventoryItemsListUI();
+        refreshInventorySlotsListUI();
+      } catch (invErr) {
+        console.error('[Load] Errore caricamento inventory:', invErr);
+      }
       // Scripts
       try {
         jsScripts.clear();

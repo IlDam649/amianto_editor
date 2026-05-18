@@ -1,33 +1,62 @@
 # 🎮 Funzioni da Implementare - Amianto Editor
 
+> **Aggiornamento: Maggio 2026** — Questo file elenca API **target** (wishlist + core). Per lo **stato reale nel codice** e il piano di unificazione editor/runtime vedi anche [`ROADMAP.md`](ROADMAP.md) e [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md).
+
+## Legenda stato
+
+| Simbolo | Significato |
+|---------|-------------|
+| ✅ | Disponibile in **runtime** (`JS/runtime.js`) — Play Test / `runtime.html` |
+| 🟡 | Parziale, solo editor legacy, o alias mancante |
+| ❌ | Non implementato |
+| 📋 | Backlog / bassa priorità |
+
+**Dove girano gli script:** Play Test → iframe → `runtime.js` (`compileScript` + `GameAPI`). Il vecchio `sandboxApi` in `main.js` **non è collegato**.
+
+---
+
+## 📊 Riepilogo rapido (runtime)
+
+| Categoria | ✅ Runtime | 🟡 Da portare (Fase B) | ❌ Backlog |
+|-----------|------------|------------------------|------------|
+| Eventi core | 6 handler | hover, pause, inventory click | `on_game_end`, … |
+| Base / log | `print`, `show_message`, `move_object` | — | — |
+| Stanze | `load_room`, `getCurrentRoom` | `get_room_objects`, `set_room_background` | `unload_room`, … |
+| Variabili | `getVariable`, `setVariable` | `get_var`, `Game.getVar` | array/object vars |
+| Personaggi | 5 API movimento/spawn | AI patrol/follow | health, talk state |
+| Inventario | — | 5 API base | slot, peso, sort |
+| Oggetti scena | enable/disable, `move_object` | spawn/despawn/rotate/scale | proprietà custom |
+| Dialoghi / audio / save | — | — | tutta la sezione |
+
+**Infrastruttura ✅ (Fase A):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`.
+
+---
+
 ## 📋 Lista Completa di Funzioni Utili per Editor Point-and-Click
 
 ### 🎯 **Sistema di Eventi Base**
 
 #### Eventi di Gioco
 ```javascript
-// Eventi principali
+// ✅ Runtime
 on_game_start()                    // All'avvio del gioco
+on_room_change(oldRoom, newRoom)   // Cambio di stanza (nome handler ufficiale)
+on_object_click(objectId, x, y)    // Click su oggetto
+on_character_click(characterId)    // Click su personaggio
+on_hotspot_click(hotspotId)        // Click su hotspot
+on_gui_click(buttonId)             // Click su pulsante GUI (non on_gui_button_click)
+
+// ❌ Non implementati
 on_game_end()                      // Alla fine del gioco
 on_game_pause()                    // Quando il gioco viene messo in pausa
 on_game_resume()                   // Quando il gioco viene ripreso
-
-// Eventi di stanza
-on_room_enter(roomId)              // Quando si entra in una stanza
-on_room_exit(roomId)               // Quando si esce da una stanza
-on_room_change(oldRoom, newRoom)   // Cambio di stanza
-
-// Eventi di interazione
-on_object_click(objectId, x, y)    // Click su oggetto
+on_room_enter(roomId)              // Usare on_room_change + logica in script
+on_room_exit(roomId)               // —
 on_object_hover(objectId)          // Hover su oggetto
-on_object_drag(objectId, x, y)    // Trascinamento oggetto
-on_character_click(characterId)    // Click su personaggio
+on_object_drag(objectId, x, y)     // Trascinamento oggetto
 on_character_talk(characterId)     // Dialogo con personaggio
-on_hotspot_click(hotspotId)        // Click su hotspot
 on_hotspot_hover(hotspotId)        // Hover su hotspot
-
-// Eventi GUI
-on_gui_button_click(buttonId)      // Click su pulsante GUI
+on_gui_button_click(buttonId)      // Alias non usato; usare on_gui_click
 on_inventory_item_use(itemId)      // Uso oggetto inventario
 on_inventory_item_click(itemId)    // Click su oggetto inventario
 on_cursor_change(cursorType)       // Cambio cursore
@@ -37,33 +66,31 @@ on_cursor_change(cursorType)       // Cambio cursore
 
 #### Gestione Inventario
 ```javascript
-// Operazioni base
+// 🟡 Solo in main.js sandboxApi (NON runtime) — prossimo: Fase B.1
 add_to_inventory(itemId, quantity) // Aggiungi oggetto all'inventario
 remove_from_inventory(itemId, quantity) // Rimuovi oggetto dall'inventario
 has_item(itemId)                   // Verifica se l'oggetto è nell'inventario
 get_item_count(itemId)             // Ottieni quantità oggetto
-get_inventory_items()              // Ottieni lista completa inventario
 clear_inventory()                  // Svuota inventario
 
-// Operazioni avanzate
+// ❌ Backlog
+get_inventory_items()              // Ottieni lista completa inventario
 swap_inventory_items(item1, item2)  // Scambia posizione oggetti
 sort_inventory(sortType)           // Ordina inventario
 search_inventory(searchTerm)       // Cerca oggetti nell'inventario
 get_inventory_weight()             // Calcola peso totale inventario
 is_inventory_full()                // Verifica se inventario è pieno
-
-// Gestione slot
 get_inventory_slots()              // Ottieni numero slot disponibili
 set_inventory_slots(count)         // Imposta numero slot
 get_item_in_slot(slotIndex)        // Ottieni oggetto in slot specifico
 move_item_to_slot(itemId, slot)    // Sposta oggetto in slot specifico
 ```
 
-### 🗣️ **Sistema Dialoghi**
+### 🗣️ **Sistema Dialoghi** — ❌ Non implementato (Fase 2.4 roadmap)
 
 #### Dialoghi Base
 ```javascript
-// Gestione dialoghi
+// ❌ Tutti in backlog
 start_dialogue(characterId)        // Inizia dialogo con personaggio
 end_dialogue()                     // Termina dialogo corrente
 show_dialogue_text(text, speaker)  // Mostra testo dialogo
@@ -82,11 +109,11 @@ change_reputation(faction, amount)  // Modifica reputazione
 get_all_reputations()              // Ottieni tutte le reputazioni
 ```
 
-### 🎵 **Sistema Audio**
+### 🎵 **Sistema Audio** — ❌ Non implementato (Fase 3.1 roadmap)
 
 #### Gestione Suoni
 ```javascript
-// Musica
+// ❌ Tutti in backlog
 play_music(trackId, loop)           // Riproduci musica
 stop_music()                        // Ferma musica
 pause_music()                       // Metti in pausa musica
@@ -104,11 +131,11 @@ play_ambient_sound(soundId)         // Riproduci suono ambientale
 stop_ambient_sound(soundId)         // Ferma suono ambientale
 ```
 
-### 🎨 **Sistema Visivo**
+### 🎨 **Sistema Visivo** — ❌ Non implementato (Fase 3.2 roadmap)
 
 #### Effetti Visivi
 ```javascript
-// Effetti di transizione
+// ❌ Backlog
 fade_in(duration)                   // Fade in schermo
 fade_out(duration)                  // Fade out schermo
 transition_to_room(roomId, effect)  // Transizione verso stanza
@@ -133,15 +160,19 @@ animate_layer(layerId, animation)    // Anima layer
 
 #### Gestione Oggetti
 ```javascript
-// Operazioni oggetti
+// ✅ Runtime
+move_object(objectId, x, y)         // Sposta oggetto
+enableObject(objectId)              // Abilita oggetto (GameAPI)
+disableObject(objectId)             // Disabilita / nasconde (GameAPI)
+
+// 🟡 Solo main.js legacy — Fase B.2
 spawn_object(objectId, x, y)        // Spawna oggetto
 despawn_object(objectId)            // Rimuovi oggetto
-move_object(objectId, x, y)         // Sposta oggetto
 rotate_object(objectId, angle)      // Ruota oggetto
 scale_object(objectId, scale)       // Scala oggetto
 set_object_visible(objectId, visible) // Mostra/nascondi oggetto
 
-// Proprietà oggetti
+// ❌ Backlog — proprietà oggetti
 get_object_position(objectId)       // Ottieni posizione oggetto
 get_object_rotation(objectId)        // Ottieni rotazione oggetto
 get_object_scale(objectId)          // Ottieni scala oggetto
@@ -158,15 +189,18 @@ set_object_interactive(objectId, interactive) // Imposta interattività
 
 #### Gestione Stanze
 ```javascript
-// Operazioni stanze
-load_room(roomId)                   // Carica stanza
-unload_room(roomId)                 // Scarica stanza
-get_current_room()                  // Ottieni stanza corrente
-get_room_objects(roomId)            // Ottieni oggetti della stanza
-get_room_characters(roomId)         // Ottieni personaggi della stanza
+// ✅ Runtime
+load_room(roomId)                   // Carica stanza (ID o nome)
+getCurrentRoom()                    // Stanza corrente (anche come parametro compile)
 
-// Proprietà stanze
+// 🟡 Fase B — da portare in runtime
+get_current_room()                  // Alias snake_case di getCurrentRoom
+get_room_objects(roomId)            // Oggetti stanza corrente
 set_room_background(roomId, image)  // Imposta sfondo stanza
+
+// ❌ Backlog
+unload_room(roomId)                 // Scarica stanza
+get_room_characters(roomId)         // Ottieni personaggi della stanza
 set_room_lighting(roomId, level)    // Imposta illuminazione stanza
 set_room_ambient_sound(roomId, sound) // Imposta suono ambientale
 get_room_size(roomId)               // Ottieni dimensioni stanza
@@ -182,14 +216,15 @@ get_connected_rooms(roomId)          // Ottieni stanze collegate
 
 #### Gestione Personaggi
 ```javascript
-// Operazioni personaggi
-spawn_character(characterId, x, y)  // Spawna personaggio
-despawn_character(characterId)       // Rimuovi personaggio
-move_character(characterId, x, y)   // Sposta personaggio
-animate_character(characterId, animation) // Anima personaggio
-set_character_direction(characterId, direction) // Imposta direzione
+// ✅ Runtime
+spawn_character(characterName, x, y, direction, characterId)
+move_character(characterIdOrName, x, y)
+walk_character(characterIdOrName, x, y)  // Pathfinding; coda comandi su window
+set_character_direction(characterIdOrName, direction)
+animate_character(characterIdOrName, enabled)
 
-// Proprietà personaggi
+// ❌ Backlog
+despawn_character(characterId)       // Rimuovi personaggio
 get_character_position(characterId)  // Ottieni posizione personaggio
 get_character_animation(characterId) // Ottieni animazione personaggio
 set_character_visible(characterId, visible) // Mostra/nascondi personaggio
@@ -207,13 +242,19 @@ stop_character_ai(characterId)       // Ferma AI personaggio
 
 #### Stato del Gioco
 ```javascript
-// Variabili globali
-get_game_variable(name)             // Ottieni variabile di gioco
-set_game_variable(name, value)       // Imposta variabile di gioco
+// ✅ Runtime (nomi camelCase in GameAPI)
+getVariable(name)                   // Leggi variabile
+setVariable(name, value)            // Scrivi variabile
+
+// 🟡 Solo editor UI / main.js — Fase B alias
+get_game_variable(name)             // → getVariable / Game.getVar
+set_game_variable(name, value)      // → setVariable / Game.setVar
+get_var(name) / set_var(name, value)
+Game.getVar / Game.setVar / Game.hasVar / Game.toggleVar
+
+// ❌ Backlog
 get_all_game_variables()            // Ottieni tutte le variabili
 clear_game_variables()              // Pulisci tutte le variabili
-
-// Sistema di salvataggio
 save_game(slot)                     // Salva gioco
 load_game(slot)                     // Carica gioco
 delete_save(slot)                   // Elimina salvataggio
@@ -228,11 +269,11 @@ get_high_score()                    // Ottieni miglior punteggio
 reset_score()                       // Reset punteggio
 ```
 
-### 🔧 **Sistema Utilità**
+### 🔧 **Sistema Utilità** — ❌ Backlog
 
 #### Funzioni di Utilità
 ```javascript
-// Matematica e geometria
+// ❌ Backlog
 distance(x1, y1, x2, y2)            // Calcola distanza tra due punti
 angle_between(x1, y1, x2, y2)       // Calcola angolo tra due punti
 point_in_rect(x, y, rect)           // Verifica se punto è in rettangolo
@@ -265,8 +306,12 @@ format_time(seconds)                 // Formatta tempo
 
 #### Interfaccia Utente
 ```javascript
-// Elementi UI
-show_message(text, duration)         // Mostra messaggio
+// ✅ Runtime
+show_message(text)                    // Overlay messaggio (coda comandi)
+print(...)                            // Log script
+
+// ❌ Backlog
+show_message(text, duration)         // Durata custom non esposta
 hide_message()                       // Nascondi messaggio
 show_tooltip(text, x, y)            // Mostra tooltip
 hide_tooltip()                       // Nascondi tooltip
@@ -377,28 +422,33 @@ if_loading_complete(action)                       // Se caricamento è completat
 
 ## 📝 Note per l'Implementazione
 
-### Priorità di Implementazione
-1. **Alta**: Sistema eventi base, inventario, oggetti
-2. **Media**: Dialoghi, audio, stanze, personaggi
-3. **Bassa**: Networking, debug avanzato, effetti particellari
+### Priorità aggiornate (maggio 2026)
+
+1. **Immediata — Fase B** ([`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
+   - Inventario runtime (5 API)
+   - Oggetti dinamici (spawn, despawn, rotate, scale, visible)
+   - `get_room_objects`, `set_room_background`
+   - Alias `get_var` / `Game.getVar`
+2. **Alta — Gameplay:** cursori contestuali, inventario GUI visuale, dialoghi base
+3. **Media:** audio, transizioni, salvataggi gioco
+4. **Bassa:** utility math, debug avanzato, condizionali helper, particelle
 
 ### Considerazioni Tecniche
-- Implementare le funzioni gradualmente
-- Testare ogni funzione prima di passare alla successiva
-- Mantenere compatibilità con il sistema esistente
-- Documentare ogni nuova funzione aggiunta
+- Aggiungere ogni nuova API in **tre punti:** `GameAPI`, `getScriptApiBindings()`, test Play Test
+- Non duplicare logica in `main.js` `sandboxApi` (rimuovere dopo Fase B)
+- `compileScript` usa `buildScriptExecutor` — estendere solo `getScriptApiBindings()`
+- Handler: in futuro estendere `scriptScope` con tutte le API (Fase C checklist)
 
-### Struttura Consigliata
+### Struttura attuale (runtime)
 ```javascript
-// Esempio di implementazione
-window.gameAPI = {
-    // Eventi
-    onGameStart: function() { /* implementazione */ },
-    
-    // Inventario
-    addToInventory: function(itemId, quantity) { /* implementazione */ },
-    
-    // Oggetti
-    spawnObject: function(objectId, x, y) { /* implementazione */ }
-};
+// Fonte unica: GameAPI in JS/runtime.js
+// Esposizione script: getScriptApiBindings() → compileScript / window
+// Esempio estensione Fase B:
+GameAPI.add_to_inventory = function(itemId, quantity) { /* gameState.inventory */ };
+// Poi aggiungere { name: 'add_to_inventory', value: bindGameApiMethod(api, 'add_to_inventory') }
+// in getScriptApiBindings()
 ```
+
+---
+
+*Ultimo aggiornamento: Maggio 2026 — allineato a Fase A unificazione API e stato reale `runtime.js`.*
