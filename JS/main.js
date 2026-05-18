@@ -67,7 +67,7 @@ async function bootstrapApp() {
   updateAppState({ loading: true, error: null });
   
   // Mostra loading overlay visivamente
-  showLoadingOverlay('Caricamento applicazione...');
+  showLoadingOverlay('Loading application...');
   
   try {
     // STEP 1: Attendi che Firebase sia disponibile
@@ -147,7 +147,7 @@ async function bootstrapApp() {
       }
       
       // Se anche la cache è vuota, continua comunque (utente nuovo)
-      updateAppState({ error: error.message || 'Errore caricamento progetti' });
+      updateAppState({ error: error.message || 'Error loading projects' });
     }
     
     // STEP 5: Popola AppState
@@ -168,7 +168,7 @@ async function bootstrapApp() {
     updateAppState({ 
       loading: false,
       initialized: true, // Inizializzato anche in caso di errore per permettere login
-      error: error.message || 'Errore durante il bootstrap'
+      error: error.message || 'Error during bootstrap'
     });
     
     console.log('========================================');
@@ -521,6 +521,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Struttura: Map<Image, {assetId, type, projectId}>
   // Usata per serializzare assetId invece di dataURL
   const imageAssetMap = new Map();
+  window.amiantoImageAssetMap = imageAssetMap;
   
   // Contextual cursors management
   let contextualCursors = []; // Array of cursor objects: { id, targetType, targetId, cursorImage, actionText, scriptName }
@@ -2064,10 +2065,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // Copy to clipboard
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(coordString).then(() => {
-            showNotification(`Coordinate copiate: ${coordString}`, 'success');
+            showNotification(`Coordinates copied: ${coordString}`, 'success');
           }).catch(err => {
             console.error('Errore copia negli appunti:', err);
-            showNotification('Errore durante la copia', 'error');
+            showNotification('Error while copying', 'error');
           });
         } else {
           // Fallback per browser che non supportano Clipboard API
@@ -2079,10 +2080,10 @@ document.addEventListener("DOMContentLoaded", () => {
           textArea.select();
           try {
             document.execCommand('copy');
-            showNotification(`Coordinate copiate: ${coordString}`, 'success');
+            showNotification(`Coordinates copied: ${coordString}`, 'success');
           } catch (err) {
             console.error('Errore copia negli appunti (fallback):', err);
-            showNotification('Errore durante la copia', 'error');
+            showNotification('Error while copying', 'error');
           }
           document.body.removeChild(textArea);
         }
@@ -2592,7 +2593,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Don't allow deletion if it would make the polygon invalid (less than 3 points)
     if (hs.points.length <= 3) {
-      showNotification('Un hotspot deve avere almeno 3 vertici', 'warning');
+      showNotification('A hotspot must have at least 3 vertices', 'warning');
       return;
     }
     
@@ -2601,7 +2602,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
     refreshHotspotsListUI();
     redraw();
-    showNotification('Vertice eliminato dall\'hotspot', 'success');
+    showNotification('Vertex removed from hotspot', 'success');
   };
 
   // ===== Hotspot vertex interactions (select, drag, delete) =====
@@ -2771,7 +2772,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (r) r.hotspots = hotspots;
       
       redraw();
-      showNotification('Vertex aggiunto all\'hotspot', 'success');
+      showNotification('Vertex added to hotspot', 'success');
     }
   });
 
@@ -3310,68 +3311,72 @@ window.selectRoom = function(roomId) {
     return prefix + "-" + Math.random().toString(36).slice(2, 9);
   }
 
+  function getActiveProjectId() {
+    const projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName) return null;
+    return projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+  }
+
+  async function pickResourceImage(options = {}) {
+    if (!window.amiantoResources || !window.amiantoResources.pick) {
+      showNotification('Resources unavailable. Reload the page.', 'warning');
+      return options.multiple ? [] : null;
+    }
+    return window.amiantoResources.pick(options);
+  }
+
+  async function loadImageFromResourceEntry(resource) {
+    if (!resource) return null;
+    const img = await window.amiantoResources.loadImageFromResource(resource);
+    window.amiantoResources.registerImageAsset(img, resource);
+    return img;
+  }
+
+  async function deleteFirestoreAssetDoc(projectId, assetId) {
+    if (!window.firebaseDB || !window.firebaseAuth?.currentUser || !assetId) return false;
+    try {
+      await window.firebaseDB
+        .collection('users')
+        .doc(window.firebaseAuth.currentUser.uid)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId)
+        .delete();
+      return true;
+    } catch (err) {
+      console.warn('[Asset] Errore eliminazione metadata Firestore:', err);
+      return false;
+    }
+  }
+
   // ==== Handlers for Add Background / Add Foreground buttons ====
   const btnAddBg = document.getElementById("btn-add-bg");
   const btnAddFg = document.getElementById("btn-add-fg");
 
   if (btnAddBg) {
-    btnAddBg.addEventListener("click", () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = async (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        
-        // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+    btnAddBg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please login to upload images', 'warning');
+          showNotification('Please log in to select images', 'warning');
           return;
         }
-        
-        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
-        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        const projectId = getActiveProjectId();
+        if (!projectId) return;
+
+        const resource = await pickResourceImage({ title: 'Select background from Resources' });
+        if (!resource) return;
         
         try {
-          showNotification('Uploading background...', 'info');
+          showNotification('Loading background...', 'info');
 
           const room = rooms.get(currentRoomId);
-          const existingBgInfo = room && room.background ? imageAssetMap.get(room.background) : null;
-          const existingAssetId = existingBgInfo && existingBgInfo.assetId ? existingBgInfo.assetId : null;
-          
-          // Elimina il vecchio background da Supabase se presente
-          if (room && room.background && existingBgInfo && existingBgInfo.assetId) {
-            try {
-              await deleteAssetFromImage(room.background);
-            } catch (error) {
-              console.error('[Asset] Errore eliminazione vecchio background:', error);
-              // Continua comunque con l'upload del nuovo background
-            }
-          }
-          
           if (room && room.background) {
             imageAssetMap.delete(room.background);
           }
           
-          // Costruisci subfolder per questa stanza: rooms/roomname
-          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
-          const roomSubfolder = `rooms/${roomName}`;
-          
-          // Genera assetId determinista per il background
-          const bgAssetId = existingAssetId || `bg_${currentRoomId}`;
-          
-          // Upload immagine su Firebase Storage
-          const { assetId, downloadURL, fileName } = await uploadImage(
-            file,
-            projectId,
-            'background',
-            { assetId: bgAssetId, overwriteExisting: true, fileName: existingBgInfo && existingBgInfo.fileName ? existingBgInfo.fileName : null, subfolder: roomSubfolder }
-          );
-          
-          // Carica immagine dall'URL
-          const img = await loadImageFromUrl(downloadURL);
+          const img = await loadImageFromResourceEntry(resource);
           if (!img) {
-            throw new Error('Failed to load image from URL');
+            throw new Error('Failed to load image from Resources');
           }
           
           // Verifica che l'immagine sia completamente caricata
@@ -3423,120 +3428,46 @@ window.selectRoom = function(roomId) {
             finalHeight
           });
           
-          // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
-          imageAssetMap.set(img, { assetId, type: 'background', projectId, fileName: fileName || null, subfolder: roomSubfolder });
-          
-          // Imposta come background corrente
+          // Imposta come background corrente (riferimento a Resources)
           background = img;
           if (room) room.background = img;
           
-          showNotification(`Background uploaded: ${finalWidth}×${finalHeight}`, 'success');
+          showNotification(`Background set: ${finalWidth}×${finalHeight}`, 'success');
           redraw();
         } catch (error) {
-          console.error('[Asset] Errore upload background:', error);
-          showNotification(`Failed to upload background: ${error.message}`, 'error');
-          
-          // Fallback: carica localmente senza upload
-          const img = new Image();
-          img.onload = () => {
-            background = img;
-            const r = rooms.get(currentRoomId); if (r) r.background = img;
-            showNotification(`Background loaded locally (not saved): ${img.width}×${img.height}`, 'warning');
-            redraw();
-          };
-          img.src = URL.createObjectURL(file);
+          console.error('[Asset] Errore background da Resources:', error);
+          showNotification(`Background error: ${error.message}`, 'error');
         }
-      };
-      input.click();
     });
   } else {
     // console.warn("btn-add-bg not found");
   }
 
   if (btnAddFg) {
-    btnAddFg.addEventListener("click", () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = async (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        
-        // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+    btnAddFg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please login to upload images', 'warning');
+          showNotification('Please log in to select images', 'warning');
           return;
         }
-        
-        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
-        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        
+        if (!getActiveProjectId()) return;
+
+        const resource = await pickResourceImage({ title: 'Select foreground from Resources' });
+        if (!resource) return;
+
         try {
-          showNotification('Uploading foreground layer...', 'info');
-
-          // Se esiste un layer selezionato, prova a riutilizzarne l'assetId/fileName per sovrascrivere
-          let existingAssetId = null;
-          let existingFileName = null;
+          showNotification('Loading foreground...', 'info');
           const selectedLayer = foregrounds.find(fg => fg.id === selectedForegroundId);
-          if (selectedLayer && selectedLayer.img) {
-            const existingInfo = imageAssetMap.get(selectedLayer.img);
-            if (existingInfo && existingInfo.assetId) {
-              existingAssetId = existingInfo.assetId;
-              existingFileName = existingInfo.fileName || null;
-            } else {
-              // Se non c'è assetId da riutilizzare, elimina il vecchio asset se presente
-              if (selectedLayer.img) {
-                try {
-                  await deleteAssetFromImage(selectedLayer.img);
-                } catch (error) {
-                  console.error('[Asset] Errore eliminazione vecchio foreground:', error);
-                  // Continua comunque con l'upload del nuovo foreground
-                }
-              }
-            }
-          }
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
 
-          // Costruisci subfolder per questa stanza: rooms/roomname
-          const room = rooms.get(currentRoomId);
-          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
-          const roomSubfolder = `rooms/${roomName}`;
-
-          // Genera assetId determinista per il foreground
-          const fgAssetId = existingAssetId || (selectedLayer ? `fg_${currentRoomId}_${selectedLayer.id}` : `fg_${currentRoomId}_${uid('fg')}`);
-
-          // Upload immagine su Supabase Storage
-          const { assetId, downloadURL, fileName } = await uploadImage(
-            file,
-            projectId,
-            'foreground',
-            {
-              assetId: fgAssetId,
-              overwriteExisting: !!existingAssetId,
-              fileName: existingFileName,
-              subfolder: roomSubfolder
-            }
-          );
-          
-          // Carica immagine dall'URL
-          const img = await loadImageFromUrl(downloadURL);
-          if (!img) {
-            throw new Error('Failed to load image from URL');
-          }
-          
-          // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
-          imageAssetMap.set(img, { assetId, type: 'foreground', projectId, fileName: fileName || null, subfolder: roomSubfolder });
-
-          let r = rooms.get(currentRoomId);
-
+          const r = rooms.get(currentRoomId);
           if (selectedLayer) {
-            // Sostituisci immagine nel layer selezionato
             selectedLayer.img = img;
             if (r) r.foregrounds = foregrounds;
           } else {
-            // Crea nuovo layer foreground
             const layer = {
               id: uid("fg"),
-              name: file.name || `Layer ${foregrounds.length + 1}`,
+              name: resource.displayName || `Layer ${foregrounds.length + 1}`,
               img: img,
               offsetX: 0,
               offsetY: 0
@@ -3545,35 +3476,14 @@ window.selectRoom = function(roomId) {
             if (r) r.foregrounds = foregrounds;
             selectedForegroundId = layer.id;
           }
-          
+
           refreshForegroundListUI();
-          showNotification(selectedLayer ? 'Foreground layer replaced' : 'Foreground layer uploaded', 'success');
+          showNotification(selectedLayer ? 'Foreground replaced' : 'Foreground added', 'success');
           redraw();
         } catch (error) {
-          console.error('[Asset] Errore upload foreground:', error);
-          showNotification(`Failed to upload foreground: ${error.message}`, 'error');
-          
-          // Fallback: carica localmente senza upload
-          const img = new Image();
-          img.onload = () => {
-            const layer = {
-              id: uid("fg"),
-              name: file.name || `Layer ${foregrounds.length + 1}`,
-              img: img,
-              offsetX: 0,
-              offsetY: 0
-            };
-            foregrounds.push(layer);
-            const r = rooms.get(currentRoomId); if (r) r.foregrounds = foregrounds;
-            selectedForegroundId = layer.id;
-            refreshForegroundListUI();
-            showNotification('Foreground loaded locally (not saved)', 'warning');
-            redraw();
-          };
-          img.src = URL.createObjectURL(file);
+          console.error('[Asset] Errore foreground da Resources:', error);
+          showNotification(`Foreground error: ${error.message}`, 'error');
         }
-      };
-      input.click();
     });
   } else {
     // console.warn("btn-add-fg not found");
@@ -3600,83 +3510,32 @@ window.selectRoom = function(roomId) {
   const guiSettingsContainer = document.getElementById('gui-settings-container');
 
   if (btnAddGuiBg) {
-    btnAddGuiBg.addEventListener('click', () => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = async (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        
-        // Verifica autenticazione e progetto
+    btnAddGuiBg.addEventListener('click', async () => {
         if (!currentUser) {
-          showNotification('Please login to upload GUI background', 'warning');
-          input.value = '';
+          showNotification('Please log in to select images', 'warning');
+          return;
+        }
+        if (!getActiveProjectId()) {
+          showNotification('No project is open', 'warning');
           return;
         }
 
-        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-        if (!activeProjectName) {
-          showNotification('No project is currently open', 'warning');
-          input.value = '';
-          return;
-        }
+        const resource = await pickResourceImage({ title: 'Select GUI background from Resources' });
+        if (!resource) return;
 
-        const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
         const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
-        
         try {
-          showNotification('Uploading GUI background...', 'info');
-          
-          // Genera assetId determinista per il GUI background
-          const guiAssetId = gui ? `gui_${gui.id}_background` : `gui_background_${Date.now()}`;
-          
-          // Verifica se esiste già un assetId per questo GUI background
-          let existingAssetId = null;
-          if (gui && gui.background) {
-            const existingInfo = imageAssetMap.get(gui.background);
-            if (existingInfo && existingInfo.assetId) {
-              existingAssetId = existingInfo.assetId;
-            }
-          }
-          
-          // Upload su storage
-          const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'gui', {
-            assetId: existingAssetId || guiAssetId,
-            overwriteExisting: !!existingAssetId,
-            subfolder: null
-          });
-          
-          // Carica immagine dall'URL
-          const img = await loadImageFromUrl(downloadURL);
-          if (!img) {
-            throw new Error('Failed to load image from URL');
-          }
-          
-          // Registra nella mappa asset
-          imageAssetMap.set(img, { 
-            assetId, 
-            type: 'gui', 
-            projectId, 
-            fileName: fileName || null, 
-            subfolder: null 
-          });
-          
-          // Aggiorna GUI background
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
           guiBackground = img;
           if (gui) gui.background = img;
-          
           saveCurrentGUI();
-          showNotification('GUI background uploaded', 'success');
+          showNotification('GUI background set', 'success');
           redraw();
         } catch (error) {
-          console.error('[Asset] Errore upload GUI background:', error);
-          showNotification(`Failed to upload GUI background: ${error.message}`, 'error');
-        } finally {
-          input.value = '';
+          console.error('[Asset] Errore GUI background da Resources:', error);
+          showNotification(`GUI background error: ${error.message}`, 'error');
         }
-      };
-      input.click();
     });
   }
 
@@ -3942,81 +3801,29 @@ window.selectRoom = function(roomId) {
         if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
       });
       btnImage.addEventListener('click', async () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.onchange = async (e) => {
-          const file = e.target.files ? e.target.files[0] : null;
-          if (!file) return;
-          
-          // Verifica autenticazione e progetto
           if (!currentUser) {
-            showNotification('Please login to upload button image', 'warning');
-            input.value = '';
+            showNotification('Please log in to select images', 'warning');
+            return;
+          }
+          if (!getActiveProjectId()) {
+            showNotification('No project is open', 'warning');
             return;
           }
 
-          const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-          if (!activeProjectName) {
-            showNotification('No project is currently open', 'warning');
-            input.value = '';
-            return;
-          }
+          const resource = await pickResourceImage({ title: `Button image: ${btn.name}` });
+          if (!resource) return;
 
-          const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
-          
           try {
-            showNotification('Uploading button image...', 'info');
-            
-            // Genera assetId determinista per il button
-            const buttonAssetId = gui ? `gui_${gui.id}_btn_${btn.id}` : `gui_btn_${btn.id}_${Date.now()}`;
-            
-            // Verifica se esiste già un assetId per questo button
-            let existingAssetId = null;
-            if (btn.backgroundImage) {
-              const existingInfo = imageAssetMap.get(btn.backgroundImage);
-              if (existingInfo && existingInfo.assetId) {
-                existingAssetId = existingInfo.assetId;
-              }
-            }
-            
-            // Upload su storage
-            const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'gui', {
-              assetId: existingAssetId || buttonAssetId,
-              overwriteExisting: !!existingAssetId,
-              subfolder: null
-            });
-            
-            // Carica immagine dall'URL
-            const img = await loadImageFromUrl(downloadURL);
-            if (!img) {
-              throw new Error('Failed to load image from URL');
-            }
-            
-            // Registra nella mappa asset
-            imageAssetMap.set(img, { 
-              assetId, 
-              type: 'gui', 
-              projectId, 
-              fileName: fileName || null, 
-              subfolder: null 
-            });
-            
-            // Aggiorna button background image
+            const img = await loadImageFromResourceEntry(resource);
+            if (!img) throw new Error('Failed to load image from Resources');
             btn.backgroundImage = img;
-            
             saveCurrentGUI();
-            showNotification(`Background image uploaded for ${btn.name}`, 'success');
+            showNotification(`Image set for ${btn.name}`, 'success');
             redraw();
           } catch (error) {
-            console.error('[Asset] Errore upload button image:', error);
-            showNotification(`Failed to upload button image: ${error.message}`, 'error');
-          } finally {
-            input.value = '';
+            console.error('[Asset] Errore immagine pulsante GUI:', error);
+            showNotification(`Error: ${error.message}`, 'error');
           }
-        };
-        input.click();
       });
       btnText.addEventListener('click', () => {
         const newText = prompt('Button text:', btn.text || '');
@@ -4141,13 +3948,12 @@ window.selectRoom = function(roomId) {
   function clearInventoryItemForm() {
     selectedInventoryItemId = null;
     pendingInventoryItemImage = null;
+    pendingInventoryItemImageResource = null;
     const nameEl = document.getElementById('inventory-item-name');
     const scriptEl = document.getElementById('inventory-item-script-name');
-    const fileEl = document.getElementById('inventory-item-image-input');
     const updateBtn = document.getElementById('btn-inventory-item-update');
     if (nameEl) nameEl.value = '';
     if (scriptEl) scriptEl.value = '';
-    if (fileEl) fileEl.value = '';
     if (updateBtn) updateBtn.disabled = true;
     updateInventoryItemFormImageLabel();
     refreshInventoryItemsListUI();
@@ -4282,22 +4088,23 @@ window.selectRoom = function(roomId) {
     redraw();
   };
 
-  window.loadInventoryItemImagePreview = function(input) {
-    const file = input.files && input.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => { pendingInventoryItemImage = img; updateInventoryItemFormImageLabel(); };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+  window.browseInventoryItemImage = async function() {
+    const resource = await pickResourceImage({ title: 'Inventory item image' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      pendingInventoryItemImage = img;
+      pendingInventoryItemImageResource = resource;
+      updateInventoryItemFormImageLabel();
+    } catch (err) {
+      showNotification('Error loading image: ' + err.message, 'error');
+    }
   };
+  let pendingInventoryItemImageResource = null;
 
   window.clearPendingInventoryItemImage = function() {
     pendingInventoryItemImage = null;
-    const fileEl = document.getElementById('inventory-item-image-input');
-    if (fileEl) fileEl.value = '';
+    pendingInventoryItemImageResource = null;
     updateInventoryItemFormImageLabel();
   };
 
@@ -4307,37 +4114,28 @@ window.selectRoom = function(roomId) {
     const btnSlotDel = document.getElementById('btn-inventory-slot-delete');
     const btnCreate = document.getElementById('btn-inventory-item-create');
     const btnUpdate = document.getElementById('btn-inventory-item-update');
-    const imgInput = document.getElementById('inventory-item-image-input');
+    const btnBrowseImg = document.getElementById('btn-inventory-item-browse-image');
     const btnClearImg = document.getElementById('btn-inventory-item-clear-image');
     if (btnBg) btnBg.addEventListener('click', uploadInventoryBackground);
     if (btnSlot) btnSlot.addEventListener('click', startDrawInventorySlot);
     if (btnSlotDel) btnSlotDel.addEventListener('click', deleteSelectedInventorySlot);
     if (btnCreate) btnCreate.addEventListener('click', () => window.createInventoryItemFromForm());
     if (btnUpdate) btnUpdate.addEventListener('click', () => window.updateInventoryItemFromForm());
-    if (imgInput) imgInput.addEventListener('change', () => window.loadInventoryItemImagePreview(imgInput));
+    if (btnBrowseImg) btnBrowseImg.addEventListener('click', () => window.browseInventoryItemImage());
     if (btnClearImg) btnClearImg.addEventListener('click', () => window.clearPendingInventoryItemImage());
   }
 
-  function uploadInventoryBackground() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.onchange = async () => {
-      const file = input.files && input.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          inventoryDefinition.background = img;
-          showNotification('Inventory background loaded', 'success');
-          redraw();
-        };
-        img.src = e.target.result;
-      };
-      reader.readAsDataURL(file);
-    };
-    input.click();
+  async function uploadInventoryBackground() {
+    const resource = await pickResourceImage({ title: 'Inventory background from Resources' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      inventoryDefinition.background = img;
+      showNotification('Inventory background set', 'success');
+      redraw();
+    } catch (err) {
+      showNotification('Error: ' + err.message, 'error');
+    }
   }
 
   function startDrawInventorySlot() {
@@ -4448,62 +4246,31 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.addSceneObject = function() {
-    document.getElementById('scene-object-upload').click();
-  };
-
-  window.uploadSceneObject = async function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    // Verifica che l'utente sia autenticato e che ci sia un progetto aperto
+  window.addSceneObject = async function() {
     if (!currentUser || !currentUser.uid) {
-      showNotification('Please login to upload images', 'warning');
+      showNotification('Please log in to select images', 'warning');
       return;
     }
-    
-    const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    
+    if (!getActiveProjectId()) return;
+
+    const resource = await pickResourceImage({ title: 'Scene object from Resources' });
+    if (!resource) return;
+
     try {
-      showNotification('Uploading scene object...', 'info');
+      showNotification('Adding scene object...', 'info');
       
-      // Costruisci subfolder per questa stanza: rooms/roomname
-      const room = rooms.get(currentRoomId);
-      const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
-      const roomSubfolder = `rooms/${roomName}`;
-      
-      // Genera ID per il scene object prima dell'upload
       const objectId = uid("scene");
-      // Genera assetId determinista per il scene object
-      const objAssetId = `obj_${currentRoomId}_${objectId}`;
-      
-      // Upload immagine su Firebase Storage
-      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'sprite', { 
-        assetId: objAssetId,
-        subfolder: roomSubfolder 
-      });
-      
-      // Carica immagine dall'URL
-      const img = await loadImageFromUrl(downloadURL);
-      if (!img) {
-        throw new Error('Failed to load image from URL');
-      }
-      
-      // Registra nella mappa asset (include fileName e subfolder per eliminazione futura)
-      imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null, subfolder: roomSubfolder });
-      
-      // Generate unique name even for same image
-      const baseName = file.name.replace(/\.[^/.]+$/, "");
-      const timestamp = Date.now();
-      const objectName = `${baseName}_${timestamp}`;
-      
-      // Create scene object data
+      const img = await loadImageFromResourceEntry(resource);
+      if (!img) throw new Error('Failed to load image from Resources');
+
+      const baseName = (resource.displayName || resource.fileName || 'object').replace(/\.[^/.]+$/, '');
+      const objectName = `${baseName}_${Date.now()}`;
+
       const sceneObject = {
         id: objectId,
         name: objectName,
         img: img,
-        x: 100 + Math.random() * 200, // Random position for demo
+        x: 100 + Math.random() * 200,
         y: 100 + Math.random() * 200,
         type: "Interactive",
         rotationRad: 0,
@@ -4511,59 +4278,19 @@ window.selectRoom = function(roomId) {
         scaleY: 1,
         visible: true
       };
-      
-      // Add to scene objects array (room-scoped)
+
       sceneObjects.push(sceneObject);
-      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      const r = rooms.get(currentRoomId);
+      if (r) r.sceneObjects = sceneObjects;
       selectedSceneObjectId = sceneObject.id;
-      
-      showNotification('Scene object uploaded', 'success');
-      
+
       refreshSceneObjectsListUI();
-      
-      // Redraw canvas to show the new object
       redraw();
-      
-      // Show notification
-      showNotification(`Scene object "${objectName}" added to canvas!`, 'success');
+      showNotification(`Scene object "${objectName}" added`, 'success');
     } catch (error) {
-      console.error('[Asset] Errore upload scene object:', error);
-      showNotification(`Failed to upload scene object: ${error.message}`, 'error');
-      
-      // Fallback: carica localmente senza upload
-      const img = new Image();
-      img.onload = () => {
-        const baseName = file.name.replace(/\.[^/.]+$/, "");
-        const timestamp = Date.now();
-        const objectName = `${baseName}_${timestamp}`;
-        
-        const sceneObject = {
-          id: uid("scene"),
-          name: objectName,
-          img: img,
-          x: 100 + Math.random() * 200,
-          y: 100 + Math.random() * 200,
-          type: "Interactive",
-          rotationRad: 0,
-          scaleX: 1,
-          scaleY: 1,
-          visible: true
-        };
-        
-        sceneObjects.push(sceneObject);
-        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-        selectedSceneObjectId = sceneObject.id;
-        
-        refreshSceneObjectsListUI();
-        
-        showNotification(`Scene object "${objectName}" loaded locally (not saved)`, 'warning');
-        redraw();
-      };
-      img.src = URL.createObjectURL(file);
+      console.error('[Asset] Errore scene object da Resources:', error);
+      showNotification(`Scene object error: ${error.message}`, 'error');
     }
-    
-    // Reset input to allow same file selection again
-    input.value = '';
   };
 
   window.filterSceneObjects = function(searchTerm) {
@@ -4580,7 +4307,7 @@ window.selectRoom = function(roomId) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
       if (objectId !== selectedSceneObjectId) {
-        showNotification('Seleziona l\'oggetto prima di eliminarlo', 'warning');
+        showNotification('Select the object before deleting it', 'warning');
         return;
       }
       
@@ -4612,7 +4339,7 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.editSceneObject = function(button) {
+  window.editSceneObject = async function(button) {
     const listItem = button.closest('.list-group-item');
     const objectId = listItem.dataset.objectId;
     const sceneObject = sceneObjects.find(obj => obj.id === objectId);
@@ -4629,9 +4356,9 @@ window.selectRoom = function(roomId) {
     // Semplice menu di scelta: rinomina o cambia immagine
     const action = window.prompt(
       `Edit scene object "${currentName}"\n` +
-      `Scrivi:\n` +
-      `- "name" per rinominare\n` +
-      `- "image" per sostituire l'immagine`,
+      `Type:\n` +
+      `- "name" to rename\n` +
+      `- "image" to replace the image`,
       'name'
     );
 
@@ -4654,82 +4381,21 @@ window.selectRoom = function(roomId) {
         showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
       }
     } else if (normalized === 'image') {
-      // Sostituzione immagine: riusa assetId/fileName se esistono
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = async (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-
-        if (!currentUser || !currentUser.uid) {
-          showNotification('Please login to upload images', 'warning');
-          return;
-        }
-
-        const projectName = localStorage.getItem('amiantoActiveProjectName') || 'amianto-project';
-        const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-
-        try {
-          showNotification('Replacing scene object image...', 'info');
-
-          let existingAssetId = null;
-          let existingFileName = null;
-          if (sceneObject.img) {
-            const existingInfo = imageAssetMap.get(sceneObject.img);
-            if (existingInfo && existingInfo.assetId) {
-              existingAssetId = existingInfo.assetId;
-              existingFileName = existingInfo.fileName || null;
-            } else {
-              // Se non c'è assetId da riutilizzare, elimina il vecchio asset se presente
-              try {
-                await deleteAssetFromImage(sceneObject.img);
-              } catch (error) {
-                console.error('[Asset] Errore eliminazione vecchio scene object:', error);
-                // Continua comunque con l'upload del nuovo scene object
-              }
-            }
-          }
-
-          // Costruisci subfolder per questa stanza: rooms/roomname
-          const room = rooms.get(currentRoomId);
-          const roomName = room ? (room.name || room.id || currentRoomId) : currentRoomId;
-          const roomSubfolder = `rooms/${roomName}`;
-
-          // Genera assetId determinista per il scene object
-          const objAssetId = existingAssetId || `obj_${currentRoomId}_${sceneObject.id}`;
-
-          const { assetId, downloadURL, fileName } = await uploadImage(
-            file,
-            projectId,
-            'sprite',
-            {
-              assetId: objAssetId,
-              overwriteExisting: !!existingAssetId,
-              fileName: existingFileName,
-              subfolder: roomSubfolder
-            }
-          );
-
-          const img = await loadImageFromUrl(downloadURL);
-          if (!img) {
-            throw new Error('Failed to load image from URL');
-          }
-
-          // Aggiorna mappa asset e oggetto di scena
-          imageAssetMap.set(img, { assetId, type: 'sprite', projectId, fileName: fileName || null, subfolder: roomSubfolder });
-          sceneObject.img = img;
-
-          redraw();
-          showNotification('Scene object image replaced', 'success');
-        } catch (err) {
-          console.error('[Asset] Errore sostituzione immagine oggetto di scena:', err);
-          showNotification(`Failed to replace scene object image: ${err.message}`, 'error');
-        } finally {
-          input.value = '';
-        }
-      };
-      input.click();
+      if (!currentUser?.uid) {
+        showNotification('Please log in', 'warning');
+        return;
+      }
+      const resource = await pickResourceImage({ title: 'New scene object image' });
+      if (!resource) return;
+      try {
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) throw new Error('Failed to load image');
+        sceneObject.img = img;
+        redraw();
+        showNotification('Scene object image updated', 'success');
+      } catch (err) {
+        showNotification('Error: ' + err.message, 'error');
+      }
     }
     
     // Ask for position change
@@ -5542,32 +5208,30 @@ window.selectRoom = function(roomId) {
     }
   });
 
-  window.uploadCharacterFrames = async function(input) {
+  window.uploadCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
-    if (!who) { showNotification('Select a character first', 'warning'); input.value = ''; return; }
-    const files = Array.from(input.files || []);
-    if (!files.length) return;
+    if (!who) { showNotification('Select a character first', 'warning'); return; }
+
+    const resources = await pickResourceImage({
+      title: `Animation frames (${who}) from Resources`,
+      multiple: true
+    });
+    if (!resources || !resources.length) return;
 
     const dirSel = document.getElementById('direction-selector');
     const direction = dirSel ? dirSel.value : 'south';
 
-    // Verifica autenticazione e progetto
     if (!currentUser) {
-      showNotification('Please login to upload frames', 'warning');
-      input.value = '';
+      showNotification('Please log in', 'warning');
       return;
     }
 
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProjectName) {
-      showNotification('No project is currently open', 'warning');
-      input.value = '';
+    const projectId = getActiveProjectId();
+    if (!projectId) {
+      showNotification('No project is open', 'warning');
       return;
     }
-
-    const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    const characterSubfolder = `characters/${who}`;
 
     let charData = characterFrames.get(who);
     if (!charData) {
@@ -5633,10 +5297,10 @@ window.selectRoom = function(roomId) {
       return numberMatches[numberMatches.length - 1].value;
     };
     
-    // Ordina i file in base al numero presente nel nome (ordine crescente)
-    const sortedFiles = [...files].sort((a, b) => {
-      const numA = extractNumberFromFileName(a.name);
-      const numB = extractNumberFromFileName(b.name);
+    // Ordina le risorse in base al numero presente nel nome (ordine crescente)
+    const sortedFiles = [...resources].sort((a, b) => {
+      const numA = extractNumberFromFileName(a.displayName || a.fileName || a.name);
+      const numB = extractNumberFromFileName(b.displayName || b.fileName || b.name);
       
       // Se entrambi hanno numeri, ordina per numero (crescente)
       if (numA !== Infinity && numB !== Infinity) {
@@ -5648,68 +5312,44 @@ window.selectRoom = function(roomId) {
       if (numB !== Infinity) return 1;
       
       // Se nessuno ha numeri, ordina alfabeticamente
-      return a.name.localeCompare(b.name);
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name);
     });
     
-    // Log per debug: mostra l'ordine originale e quello ordinato
-    console.log(`[Frame] 📁 File originali (${files.length}):`, files.map(f => f.name));
-    console.log(`[Frame] ✅ File ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
-      const num = extractNumberFromFileName(f.name);
-      return `${f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
+    console.log(`[Frame] 📁 Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
+    console.log(`[Frame] ✅ Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
+      const num = extractNumberFromFileName(f.displayName || f.fileName || f.name);
+      return `${f.displayName || f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
     }));
     
     // Verifica che l'ordinamento sia corretto
     const orderCheck = sortedFiles.map((f, idx) => {
-      const num = extractNumberFromFileName(f.name);
-      const prevNum = idx > 0 ? extractNumberFromFileName(sortedFiles[idx - 1].name) : -1;
+      const label = f.displayName || f.name;
+      const num = extractNumberFromFileName(label);
+      const prevNum = idx > 0 ? extractNumberFromFileName(sortedFiles[idx - 1].displayName || sortedFiles[idx - 1].name) : -1;
       const isOrdered = num === Infinity || prevNum === Infinity || num >= prevNum;
-      return { file: f.name, num, isOrdered };
+      return { file: label, num, isOrdered };
     });
     console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
     
     // Carica i frame su storage e registra nella mappa
-    showNotification(`Uploading ${sortedFiles.length} frames to storage...`, 'info');
+    showNotification(`Loading ${sortedFiles.length} frame(s) from Resources...`, 'info');
     
     try {
-      const framePromises = sortedFiles.map(async (file, index) => {
+      const framePromises = sortedFiles.map(async (resource, index) => {
         try {
-          // Calcola l'indice effettivo del frame (esistenti + nuovi)
           const actualFrameIndex = existingFrameCount + index;
-          // Genera assetId determinista per il frame
-          const frameAssetId = `frame_${who}_${direction}_${actualFrameIndex}`;
-          
-          // Carica il frame su storage (consenti overwrite per frame con stesso indice)
-          const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'character', {
-            assetId: frameAssetId,
-            overwriteExisting: true, // Permetti sovrascrittura per frame con stesso indice
-            subfolder: characterSubfolder
-          });
-          
-          // Carica l'immagine dall'URL
-          const img = await loadImageFromUrl(downloadURL);
-          if (!img) {
-            throw new Error('Failed to load image from URL');
-          }
-          
-          // Registra nella mappa asset
-          imageAssetMap.set(img, { 
-            assetId, 
-            type: 'character', 
-            projectId, 
-            fileName: fileName || null, 
-            subfolder: characterSubfolder 
-          });
-          
-          // Crea frameData con riferimento all'immagine (serializzato come assetId)
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
+
           const frameData = {
             img: img,
-            name: file.name,
-            orderIndex: actualFrameIndex // Usa l'indice effettivo invece dell'indice locale
+            name: resource.displayName || resource.fileName || resource.name,
+            orderIndex: actualFrameIndex
           };
           
-          return { frameData, index: actualFrameIndex, assetId };
+          return { frameData, index: actualFrameIndex, assetId: resource.assetId };
         } catch (error) {
-          console.error(`[Frame] ❌ Errore upload frame ${file.name}:`, error);
+          console.error(`[Frame] ❌ Errore frame ${resource.displayName || resource.name}:`, error);
           return { frameData: null, index: existingFrameCount + index, error: error.message };
         }
       });
@@ -5752,10 +5392,12 @@ window.selectRoom = function(roomId) {
       console.error('[Frame] ❌ Errore durante upload frame:', error);
       showNotification('Error uploading frames', 'error');
     }
-    
-    // Reset input
-    input.value = '';
   };
+
+  const btnCharacterFramesBrowse = document.getElementById('btn-character-frames-browse');
+  if (btnCharacterFramesBrowse) {
+    btnCharacterFramesBrowse.addEventListener('click', () => window.uploadCharacterFrames());
+  }
 
   window.startCharacterPreview = function() {
     const sel = document.getElementById('character-selector');
@@ -6308,7 +5950,7 @@ window.selectRoom = function(roomId) {
         updateDirectionInfo();
         refreshFramesPreview();
         redraw();
-        showNotification(`Frame specchiato rimosso`, 'success');
+        showNotification(`Mirrored frame removed`, 'success');
         return;
       }
       
@@ -7999,7 +7641,7 @@ window.selectRoom = function(roomId) {
     
     // Script handler non più supportato in modalità iframe
     // Gli script vengono eseguiti nel runtime standalone
-    addDebugMessage(`[Script] Handler "${handlerName}" - gli script vengono eseguiti nel runtime standalone`, 'info');
+    addDebugMessage(`[Script] Handler "${handlerName}" - scripts run in the standalone runtime`, 'info');
   }
 
   window.newScript = function() {
@@ -8217,7 +7859,7 @@ window.selectRoom = function(roomId) {
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
     
     if (!content || !content.trim()) {
-      showNotification('Script vuoto!', 'warning');
+      showNotification('Script is empty!', 'warning');
       return;
     }
     
@@ -8235,11 +7877,11 @@ window.selectRoom = function(roomId) {
     );
 
     if (!runtimeWindow) {
-      showNotification('Impossibile aprire la finestra runtime. Verifica che i popup non siano bloccati.', 'error');
+      showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
       return;
     }
 
-    showNotification('Runtime aperto in nuova finestra. Lo script verrà eseguito automaticamente.', 'info');
+    showNotification('Runtime opened in a new window. The script will run automatically.', 'info');
   };
 
   window.deleteScript = function() {
@@ -8251,12 +7893,12 @@ window.selectRoom = function(roomId) {
     }
     
     if (!scriptName || !scriptName.trim()) {
-      showNotification('Seleziona uno script da eliminare', 'warning');
+      showNotification('Select a script to delete', 'warning');
       return;
     }
     
     // Chiedi conferma
-    if (!confirm(`Vuoi eliminare lo script "${scriptName}"?\n\nQuesta azione non può essere annullata.`)) {
+    if (!confirm(`Delete script "${scriptName}"?\n\nThis action cannot be undone.`)) {
       return;
     }
     
@@ -8413,7 +8055,7 @@ window.selectRoom = function(roomId) {
     try { refreshHotspotScriptTargets(); } catch(_) {}
     try { refreshCursorScriptTargets(); } catch(_) {}
     
-    showNotification(`Script "${scriptName}" eliminato`, 'success');
+    showNotification(`Script "${scriptName}" deleted`, 'success');
   };
 
   window.stopScript = function() {
@@ -8918,12 +8560,27 @@ window.selectRoom = function(roomId) {
   };
 
   // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
+  function setMainWorkspaceMode(mode) {
+    const canvasInfo = document.querySelector('.canvas-info');
+    const canvasControls = document.querySelector('.canvas-controls');
+    const canvasContainer = document.getElementById('canvasContainer');
+    const codeEditorContainer = document.getElementById('codeEditorContainer');
+    const resourcesMainPanel = document.getElementById('resourcesMainPanel');
+
+    const showCanvas = mode === 'canvas';
+    const showScripts = mode === 'scripts';
+    const showResources = mode === 'resources';
+
+    if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
+    if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
+    if (canvasContainer) canvasContainer.style.display = showCanvas ? 'block' : 'none';
+    if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
+    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'flex' : 'none';
+  }
+
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
-      const canvasContainer = document.getElementById('canvasContainer');
-      const codeEditorContainer = document.getElementById('codeEditorContainer');
-      if (canvasContainer) canvasContainer.style.display = 'none';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'flex'; // Cambiato a flex per il layout
+      setMainWorkspaceMode('scripts');
       // Applica lo stato salvato delle console log invece di forzare la visibilità
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
@@ -8947,11 +8604,13 @@ window.selectRoom = function(roomId) {
           largeCodeMirrorEditor.refresh();
         }
       }, 100);
+    } else if (e.detail.currentTab === 'resources') {
+      setMainWorkspaceMode('resources');
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     } else {
-      const canvasContainer = document.getElementById('canvasContainer');
-      const codeEditorContainer = document.getElementById('codeEditorContainer');
-      if (canvasContainer) canvasContainer.style.display = 'block';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'none';
+      setMainWorkspaceMode('canvas');
       // Applica lo stato salvato delle console log invece di forzare la visibilità
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
@@ -9893,7 +9552,7 @@ window.selectRoom = function(roomId) {
     // Se c'è un progetto attivo e un utente autenticato, prova a ricaricarlo da Firebase
     if (activeProjectName && currentUser && currentUser.uid && window.firebaseDB) {
       try {
-        addDebugMessage('Caricamento progetto da Firebase per playtest...', 'info');
+        addDebugMessage('Loading project from Firebase for playtest...', 'info');
         
         // Cerca il progetto nella lista progetti per ottenere l'ID
         const projects = AppState.projects || [];
@@ -9922,7 +9581,7 @@ window.selectRoom = function(roomId) {
         }
       } catch (error) {
         console.error('[PlayTest] Errore caricamento da Firebase:', error);
-        addDebugMessage('Errore caricamento da Firebase, uso progetto corrente', 'warning');
+        addDebugMessage('Firebase load error, using current project', 'warning');
       }
     }
 
@@ -9930,7 +9589,7 @@ window.selectRoom = function(roomId) {
     if (!projectObj || !jsonString) {
       jsonString = window.serializeProjectToJsonString(true);
       projectObj = window.serializeProject();
-      addDebugMessage('Uso progetto corrente serializzato', 'info');
+      addDebugMessage('Using serialized current project', 'info');
     }
 
     // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
@@ -9939,7 +9598,7 @@ window.selectRoom = function(roomId) {
       addDebugMessage('Progetto salvato in localStorage per runtime', 'success');
     } catch (error) {
       console.error('[PlayTest] Errore salvataggio localStorage:', error);
-      addDebugMessage('Errore salvataggio localStorage: ' + error.message, 'error');
+      addDebugMessage('localStorage save error: ' + error.message, 'error');
     }
     
     // Salva anche in cache locale con chiave progetto (backup)
@@ -9980,7 +9639,7 @@ window.selectRoom = function(roomId) {
     );
 
     if (!runtimeWindow) {
-      showNotification('Impossibile aprire la finestra runtime. Verifica che i popup non siano bloccati.', 'error');
+      showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
       return;
     }
 
@@ -10055,7 +9714,7 @@ window.selectRoom = function(roomId) {
     
     if (globalScripts.length === 0) {
       addScriptLogMessage('Nessuno script globale trovato. Crea uno script con Scope=Global, Target=main, Event=onGameStart', 'warning');
-      showNotification('Nessuno script globale trovato', 'warning');
+      showNotification('No global script found', 'warning');
       return;
     }
     
@@ -10067,7 +9726,7 @@ window.selectRoom = function(roomId) {
         addScriptLogMessage(`Eseguendo script: ${scriptName}`, 'info');
         executeScriptHandler(content, 'on_game_start', []);
       } else {
-        addScriptLogMessage(`Script "${scriptName}" è vuoto`, 'warning');
+        addScriptLogMessage(`Script "${scriptName}" is empty`, 'warning');
       }
     });
     
@@ -10077,7 +9736,7 @@ window.selectRoom = function(roomId) {
     triggerGameStart();
     
     addScriptLogMessage('=== Test Game Start completato ===', 'info');
-    showNotification('Game Start testato! Controlla la Script Console', 'success');
+    showNotification('Game Start tested! Check the Script Console', 'success');
   };
 
   window.testRoomChange = function() {
@@ -10448,7 +10107,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Verifica che ci sia un progetto aperto
     const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
     if (!activeProjectName) {
-      showNotification('Nessun progetto aperto. Apri o crea un progetto prima di modificare le impostazioni.', 'warning');
+      showNotification('No project is open. Open or create a project before changing settings.', 'warning');
       return;
     }
 
@@ -10587,13 +10246,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // Save project settings function
   window.saveProjectSettings = function() {
     if (!currentUser) {
-      showNotification('Devi essere loggato per salvare le impostazioni del progetto', 'warning');
+      showNotification('You must be logged in to save project settings', 'warning');
       return;
     }
 
     const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
     if (!activeProjectName) {
-      showNotification('Nessun progetto aperto. Apri o crea un progetto prima di salvare le impostazioni.', 'warning');
+      showNotification('No project is open. Open or create a project before saving settings.', 'warning');
       return;
     }
 
@@ -10602,7 +10261,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const newProjectName = document.getElementById('projectName').value.trim();
     
     if (!newProjectName) {
-      showNotification('Il nome del progetto non può essere vuoto', 'warning');
+      showNotification('Project name cannot be empty', 'warning');
       return;
     }
     
@@ -10677,7 +10336,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           // Salva il progetto (questo aggiornerà anche Firestore se disponibile)
           window.saveCurrentProject().catch(error => {
             console.warn('[ProjectSettings] Errore salvataggio progetto:', error);
-            showNotification('Impostazioni salvate localmente, ma errore nel salvataggio completo del progetto', 'warning');
+            showNotification('Settings saved locally, but full project save failed', 'warning');
           });
         } else {
           // Fallback: salva solo in cache locale
@@ -10697,7 +10356,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       modal.hide();
     }
     
-    showNotification(`Impostazioni progetto salvate! Viewport: ${newWidth}×${newHeight}`, 'success');
+    showNotification(`Project settings saved! Viewport: ${newWidth}×${newHeight}`, 'success');
     
     // Log settings for debugging
     console.log('Project settings saved:', settings);
@@ -11025,7 +10684,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         // Nuovo login: esegui bootstrap completo
         updateAppState({ loading: true, user: null, projects: [] });
-        showLoadingOverlay('Caricamento progetti...');
+        showLoadingOverlay('Loading projects...');
         await bootstrapApp();
         hideLoadingOverlay();
         
@@ -11330,7 +10989,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // STEP 1: Verifica stato di caricamento
       if (AppState.loading) {
         console.log('[ProjectModal] App in caricamento, mostra loader...');
-        showLoadingOverlay('Caricamento progetti...');
+        showLoadingOverlay('Loading projects...');
       }
 
       // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÀ)
@@ -11502,7 +11161,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             
             // Se AppState.loading è true, mostra loader
             if (AppState.loading) {
-              showLoadingOverlay('Caricamento progetti...');
+              showLoadingOverlay('Loading projects...');
             } else {
               hideLoadingOverlay();
             }
@@ -11542,7 +11201,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.error('[ProjectModal] Network error:', error);
       } else if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
         console.error('[ProjectModal] DOM/Bootstrap error:', error);
-        showNotification('Errore durante la creazione del modale. Ricarica la pagina.', 'danger');
+        showNotification('Error creating modal. Reload the page.', 'danger');
         return;
       } else {
         console.error('[ProjectModal] Unexpected error:', error);
@@ -11603,7 +11262,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Mostra loading overlay durante la sincronizzazione progetti
     // IMPORTANTE: Durante il caricamento si vede SOLO il loading, NON il modale
-    showLoadingOverlay('Caricamento progetti...');
+    showLoadingOverlay('Loading projects...');
 
     // Sincronizza progetti da Firestore PRIMA di mostrare la dashboard
     if (user.uid && window.firebaseDB && window.firebaseAuth) {
@@ -11647,7 +11306,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           // Non mostrare notifica per permission-denied, il modale gestirà l'errore
         } else if (error.code === 'network-error') {
           console.error('[Login] Network error');
-          showNotification('Errore di connessione. Puoi comunque creare un nuovo progetto.', 'warning');
+          showNotification('Connection error. You can still create a new project.', 'warning');
         } else {
           // Per altri errori, mostra un messaggio informativo
           console.warn('[Login] Errore sincronizzazione. L\'utente può comunque creare progetti.');
@@ -13344,7 +13003,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Abilita/disabilita altre tab (tutte tranne Projects)
    */
   function enableOtherTabs(enabled) {
-    const tabsToDisable = ['rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
+    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
     tabsToDisable.forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
@@ -14430,6 +14089,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return 'cursors';
       case 'audio':
         return 'audio';
+      case 'resource':
+        return 'resources';
       default:
         // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
         return assetType ? assetType.toLowerCase() : 'sprites';
@@ -15078,7 +14739,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Prova comunque a caricarlo (potrebbe funzionare se le regole CORS sono configurate)
       const img = await loadImageFromUrl(urlOrAssetId);
       if (!img) {
-        showNotification('Errore CORS: immagine non caricabile. Ricarica l\'immagine dal progetto.', 'error');
+        showNotification('CORS error: image could not be loaded. Re-import the image from the project.', 'error');
       }
       return img;
     }
@@ -15828,7 +15489,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       showNotification('Project loaded', 'success');
     } catch (err) {
       addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
-      showNotification('Errore nel caricamento del progetto', 'danger');
+      showNotification('Error loading project', 'danger');
     }
   }
 
@@ -15838,7 +15499,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       await applyProjectObject(obj);
     } catch (err) {
       addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
-      showNotification('JSON progetto non valido', 'danger');
+      showNotification('Invalid project JSON', 'danger');
     }
   };
 
@@ -15967,19 +15628,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     try {
       const indicator = document.getElementById('projectSizeIndicator');
       const sizeText = document.getElementById('projectSizeText');
-      const supabaseIndicator = document.getElementById('supabaseSizeIndicator');
-      const supabaseSizeText = document.getElementById('supabaseSizeText');
       
       if (!indicator || !sizeText) {
         return; // Elementi non ancora disponibili
       }
       
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
       
       if (!activeProjectName) {
         indicator.style.display = 'none';
-        if (supabaseIndicator) supabaseIndicator.style.display = 'none';
         return;
       }
       
@@ -16014,63 +15671,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
       
       indicator.style.display = 'block';
-      
-      // Calcola dimensione Supabase Storage (asset)
-      if (supabaseIndicator && supabaseSizeText) {
-        // Usa projectId se disponibile, altrimenti prova a ricavarlo dal projectName
-        let projectIdToUse = activeProjectId;
-        if (!projectIdToUse && activeProjectName) {
-          projectIdToUse = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        }
-        
-        console.log('[ProjectSize] Calcolo dimensione Supabase:', { activeProjectId, activeProjectName, projectIdToUse });
-        
-        if (projectIdToUse) {
-          try {
-            if (window.supabaseStorage && window.supabaseStorage.getProjectStorageSize && window.supabaseStorage.isAvailable()) {
-              const storageSize = await window.supabaseStorage.getProjectStorageSize(projectIdToUse);
-              
-              console.log('[ProjectSize] Dimensione Supabase calcolata:', storageSize);
-              
-              if (storageSize && storageSize.totalBytes > 0) {
-                let supabaseDisplay;
-                if (storageSize.totalBytes >= 1024 * 1024) {
-                  supabaseDisplay = `Supabase: ${storageSize.totalMB} MB (${storageSize.fileCount} file)`;
-                } else {
-                  supabaseDisplay = `Supabase: ${storageSize.totalKB} KB (${storageSize.fileCount} file)`;
-                }
-                
-                supabaseSizeText.textContent = supabaseDisplay;
-                supabaseSizeText.style.color = '#aaa'; // Grigio di default
-                supabaseIndicator.style.display = 'block';
-              } else {
-                supabaseSizeText.textContent = 'Supabase: 0 KB';
-                supabaseSizeText.style.color = '#666';
-                supabaseIndicator.style.display = 'block';
-              }
-            } else {
-              // Supabase non disponibile - mostra comunque il contatore con messaggio
-              console.log('[ProjectSize] Supabase non disponibile');
-              supabaseSizeText.textContent = 'Supabase: N/A';
-              supabaseSizeText.style.color = '#666';
-              supabaseIndicator.style.display = 'block';
-            }
-          } catch (error) {
-            console.warn('[ProjectSize] Errore calcolo dimensione Supabase:', error);
-            supabaseSizeText.textContent = 'Supabase: Errore';
-            supabaseSizeText.style.color = '#ff6b6b';
-            supabaseIndicator.style.display = 'block';
-          }
-        } else {
-          // Nessun projectId disponibile - mostra comunque il contatore
-          console.log('[ProjectSize] Nessun projectId disponibile');
-          supabaseSizeText.textContent = 'Supabase: -';
-          supabaseSizeText.style.color = '#666';
-          supabaseIndicator.style.display = 'block';
-        }
-      } else {
-        console.warn('[ProjectSize] Elementi HTML contatore Supabase non trovati:', { supabaseIndicator: !!supabaseIndicator, supabaseSizeText: !!supabaseSizeText });
-      }
     } catch (error) {
       console.warn('[ProjectSize] Errore aggiornamento indicatore:', error);
     }
@@ -16990,87 +16590,43 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Cursor deleted', 'success');
   };
 
-  window.uploadCursorImage = async function(input) {
+  window.uploadCursorImage = async function() {
     if (!selectedCursorId) {
-      showNotification('Please select a cursor first', 'warning');
-      input.value = '';
+      showNotification('Select a cursor first', 'warning');
       return;
     }
-    
-    const file = input.files ? input.files[0] : null;
-    if (!file) return;
-    
+
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
-    if (!cursor) {
-      input.value = '';
-      return;
-    }
+    if (!cursor) return;
 
-    // Verifica autenticazione e progetto
     if (!currentUser) {
-      showNotification('Please login to upload cursor images', 'warning');
-      input.value = '';
+      showNotification('Please log in', 'warning');
+      return;
+    }
+    if (!getActiveProjectId()) {
+      showNotification('No project is open', 'warning');
       return;
     }
 
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProjectName) {
-      showNotification('No project is currently open', 'warning');
-      input.value = '';
-      return;
-    }
+    const resource = await pickResourceImage({ title: 'Cursor image from Resources' });
+    if (!resource) return;
 
-    const projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    
     try {
-      showNotification('Uploading cursor image...', 'info');
-      
-      // Genera assetId determinista per il cursor
-      const cursorAssetId = `cursor_${cursor.id}`;
-      
-      // Verifica se esiste già un assetId per questo cursor
-      let existingAssetId = null;
-      if (cursor.cursorImage) {
-        const existingInfo = imageAssetMap.get(cursor.cursorImage);
-        if (existingInfo && existingInfo.assetId) {
-          existingAssetId = existingInfo.assetId;
-        }
-      }
-      
-      // Upload su storage
-      const { assetId, downloadURL, fileName } = await uploadImage(file, projectId, 'cursor', {
-        assetId: existingAssetId || cursorAssetId,
-        overwriteExisting: !!existingAssetId,
-        subfolder: null
-      });
-      
-      // Carica immagine dall'URL
-      const img = await loadImageFromUrl(downloadURL);
-      if (!img) {
-        throw new Error('Failed to load image from URL');
-      }
-      
-      // Registra nella mappa asset
-      imageAssetMap.set(img, { 
-        assetId, 
-        type: 'cursor', 
-        projectId, 
-        fileName: fileName || null, 
-        subfolder: null 
-      });
-      
-      // Aggiorna cursor
+      const img = await loadImageFromResourceEntry(resource);
+      if (!img) throw new Error('Failed to load image from Resources');
       cursor.cursorImage = img;
-      
-      showNotification(`Cursor image uploaded: ${cursor.targetType}: ${cursor.targetId}`, 'success');
+      showNotification(`Cursor set: ${cursor.targetType} / ${cursor.targetId}`, 'success');
       refreshCursorsList();
     } catch (error) {
-      console.error('[Asset] Errore upload cursor image:', error);
-      showNotification(`Failed to upload cursor image: ${error.message}`, 'error');
-    } finally {
-      input.value = '';
+      console.error('[Asset] Errore cursore da Resources:', error);
+      showNotification(`Errore: ${error.message}`, 'error');
     }
   };
+
+  const btnCursorBrowse = document.getElementById('btn-cursor-browse-image');
+  if (btnCursorBrowse) {
+    btnCursorBrowse.addEventListener('click', () => window.uploadCursorImage());
+  }
 
   updateCursorTargets = function() {
     const targetType = document.getElementById('cursor-target-type').value;
@@ -17461,4 +17017,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.showNotification = showNotification;
   window.addDebugMessage = addDebugMessage;
   window.redraw = redraw;
+
+  if (typeof window.initAmiantoResources === 'function') {
+    window.initAmiantoResources({
+      getProjectId: getActiveProjectId,
+      uploadImage: uploadImage,
+      saveAssetMetadata: saveAssetMetadata,
+      deleteFirestoreAsset: deleteFirestoreAssetDoc,
+      showNotification: showNotification,
+      generateAssetId: generateAssetId,
+      updateProjectSizeIndicator: typeof updateProjectSizeIndicator === 'function' ? updateProjectSizeIndicator : null
+    });
+  }
 });

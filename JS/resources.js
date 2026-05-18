@@ -1,0 +1,784 @@
+/**
+ * Amianto Editor — Resources (centralized file browser on Supabase Storage)
+ * Import images into Resources, then assign them from other editors.
+ */
+(function () {
+  'use strict';
+
+  let deps = {
+    getProjectId: () => null,
+    uploadImage: null,
+    saveAssetMetadata: null,
+    deleteFirestoreAsset: null,
+    showNotification: (msg) => console.log(msg),
+    generateAssetId: () => 'asset_' + Date.now()
+  };
+
+  const state = {
+    entries: [],
+    filtered: [],
+    selectedIds: new Set(),
+    loading: false,
+    picker: null,
+    activeSubTab: 'images'
+  };
+
+  const soundState = {
+    entries: [],
+    filtered: [],
+    selectedIds: new Set(),
+    loading: false,
+    previewAudio: null
+  };
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '—';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  function getProjectId() {
+    return deps.getProjectId ? deps.getProjectId() : null;
+  }
+
+  async function mergeFirestoreMetadata(projectId, storageEntries, assetType = 'resource') {
+    if (!window.firebaseDB || !window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      return storageEntries;
+    }
+    try {
+      const userId = window.firebaseAuth.currentUser.uid;
+      const snap = await window.firebaseDB
+        .collection('users').doc(userId)
+        .collection('projects').doc(projectId)
+        .collection('assets')
+        .where('type', '==', assetType)
+        .get();
+
+      const metaById = new Map();
+      snap.forEach(doc => {
+        const d = doc.data();
+        const id = d.assetId || doc.id;
+        metaById.set(id, d);
+      });
+
+      return storageEntries.map(entry => {
+        const meta = metaById.get(entry.assetId);
+        if (!meta) return entry;
+        return {
+          ...entry,
+          displayName: meta.name || entry.name,
+          publicUrl: meta.publicUrl || entry.publicUrl,
+          firestoreId: meta.assetId || entry.assetId
+        };
+      });
+    } catch (err) {
+      console.warn('[Resources] Could not load Firestore metadata:', err);
+      return storageEntries;
+    }
+  }
+
+  async function loadResources() {
+    const projectId = getProjectId();
+    const grid = document.getElementById('resources-grid');
+    const status = document.getElementById('resources-status');
+
+    if (!projectId) {
+      state.entries = [];
+      state.filtered = [];
+      if (status) status.textContent = 'Open a project to manage resources.';
+      if (grid) grid.innerHTML = '<div class="resources-empty">No project open</div>';
+      return [];
+    }
+
+    if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
+      if (status) status.textContent = 'Supabase Storage is not configured.';
+      return [];
+    }
+
+    state.loading = true;
+    if (status) status.textContent = 'Loading images from Supabase...';
+    if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
+
+    try {
+      let entries = await window.supabaseStorage.listProjectResources(projectId);
+      entries = await mergeFirestoreMetadata(projectId, entries);
+      entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
+      state.entries = entries;
+      applyResourcesFilter();
+      if (status) {
+        status.textContent = entries.length
+          ? `${entries.length} image(s) in Resources`
+          : 'No images yet. Use Import to add some.';
+      }
+      return entries;
+    } catch (err) {
+      console.error('[Resources] Load error:', err);
+      if (status) status.textContent = 'Load error: ' + err.message;
+      return [];
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  function applyResourcesFilter() {
+    const q = (document.getElementById('resources-search')?.value || '').trim().toLowerCase();
+    state.filtered = !q
+      ? [...state.entries]
+      : state.entries.filter(e =>
+          (e.displayName || e.name || '').toLowerCase().includes(q) ||
+          (e.relativePath || '').toLowerCase().includes(q)
+        );
+    renderResourcesGrid(state.filtered, 'resources-grid');
+    const countEl = document.getElementById('resources-count');
+    if (countEl) countEl.textContent = state.filtered.length + ' / ' + state.entries.length;
+  }
+
+  function showResourceSubTab(tabId) {
+    const tab = tabId === 'sounds' ? 'sounds' : 'images';
+    state.activeSubTab = tab;
+
+    const imagesPane = document.getElementById('resources-images-pane');
+    const soundsPane = document.getElementById('resources-sounds-pane');
+    if (imagesPane) imagesPane.style.display = tab === 'images' ? 'flex' : 'none';
+    if (soundsPane) soundsPane.style.display = tab === 'sounds' ? 'flex' : 'none';
+
+    document.querySelectorAll('[data-resource-tab]').forEach(btn => {
+      const isActive = btn.getAttribute('data-resource-tab') === tab;
+      if (btn.classList.contains('nav-link')) {
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      } else {
+        btn.classList.toggle('active', isActive);
+      }
+    });
+
+    if (tab === 'sounds') {
+      loadSounds();
+    } else {
+      loadResources();
+    }
+  }
+
+  async function loadSounds() {
+    const projectId = getProjectId();
+    const grid = document.getElementById('sounds-grid');
+    const status = document.getElementById('sounds-status');
+
+    if (!projectId) {
+      soundState.entries = [];
+      soundState.filtered = [];
+      if (status) status.textContent = 'Apri un progetto per gestire i suoni.';
+      if (grid) grid.innerHTML = '<div class="resources-empty">Nessun progetto aperto</div>';
+      return [];
+    }
+
+    if (!window.supabaseStorage?.listProjectAudio) {
+      if (status) status.textContent = 'Supabase Storage non configurato.';
+      return [];
+    }
+
+    soundState.loading = true;
+    if (status) status.textContent = 'Caricamento audio da Supabase...';
+    if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Caricamento...</div>';
+
+    try {
+      let entries = await window.supabaseStorage.listProjectAudio(projectId);
+      entries = await mergeFirestoreMetadata(projectId, entries, 'audio');
+      entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
+      soundState.entries = entries;
+      applySoundsFilter();
+      if (status) {
+        status.textContent = entries.length
+          ? `${entries.length} file audio nel progetto`
+          : 'Nessun suono. Usa Importa per aggiungerne.';
+      }
+      return entries;
+    } catch (err) {
+      console.error('[Resources] Errore caricamento audio:', err);
+      if (status) status.textContent = 'Errore: ' + err.message;
+      return [];
+    } finally {
+      soundState.loading = false;
+    }
+  }
+
+  function applySoundsFilter() {
+    const q = (document.getElementById('sounds-search')?.value || '').trim().toLowerCase();
+    soundState.filtered = !q
+      ? [...soundState.entries]
+      : soundState.entries.filter(e =>
+          (e.displayName || e.name || '').toLowerCase().includes(q) ||
+          (e.relativePath || '').toLowerCase().includes(q)
+        );
+    renderSoundsGrid(soundState.filtered);
+    const countEl = document.getElementById('sounds-count');
+    if (countEl) countEl.textContent = soundState.filtered.length + ' / ' + soundState.entries.length;
+  }
+
+  function stopSoundPreview() {
+    if (soundState.previewAudio) {
+      soundState.previewAudio.pause();
+      soundState.previewAudio = null;
+    }
+  }
+
+  function playSoundPreview(entry) {
+    if (!entry?.publicUrl) return;
+    stopSoundPreview();
+    const audio = new Audio(entry.publicUrl);
+    soundState.previewAudio = audio;
+    audio.play().catch(() => {
+      deps.showNotification('Impossibile riprodurre il file audio', 'warning');
+    });
+  }
+
+  function renderSoundsGrid(entries) {
+    const grid = document.getElementById('sounds-grid');
+    if (!grid) return;
+
+    if (!entries.length) {
+      grid.innerHTML = '<div class="resources-empty text-muted">Nessun suono trovato</div>';
+      return;
+    }
+
+    grid.innerHTML = '';
+    entries.forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'resource-card resource-sound-card';
+      card.dataset.assetId = entry.assetId;
+      card.title = entry.displayName || entry.name;
+
+      const thumb = document.createElement('div');
+      thumb.className = 'resource-thumb';
+      thumb.innerHTML = '<i class="fas fa-volume-up" aria-hidden="true"></i>';
+
+      const meta = document.createElement('div');
+      meta.className = 'resource-meta';
+      meta.innerHTML = `
+        <span class="resource-name">${escapeHtml(entry.displayName || entry.name)}</span>
+        <span class="resource-size">${formatBytes(entry.size)}</span>
+      `;
+
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'btn btn-outline-success btn-sm resource-play-btn w-100';
+      playBtn.innerHTML = '<i class="fas fa-play"></i> Ascolta';
+      playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        playSoundPreview(entry);
+      });
+
+      card.appendChild(thumb);
+      card.appendChild(meta);
+      card.appendChild(playBtn);
+
+      card.addEventListener('click', () => {
+        soundState.selectedIds.clear();
+        soundState.selectedIds.add(entry.assetId);
+        grid.querySelectorAll('.resource-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+      });
+
+      grid.appendChild(card);
+    });
+  }
+
+  function renderResourcesGrid(entries, containerId, options = {}) {
+    const grid = document.getElementById(containerId);
+    if (!grid) return;
+
+    const { pickerMode = false, multi = false } = options;
+
+    if (!entries.length) {
+      grid.innerHTML = '<div class="resources-empty text-muted">No images found</div>';
+      return;
+    }
+
+    grid.innerHTML = '';
+    entries.forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'resource-card';
+      card.dataset.assetId = entry.assetId;
+      card.title = entry.displayName || entry.name;
+
+      if (pickerMode && state.picker && state.picker.selected.has(entry.assetId)) {
+        card.classList.add('selected');
+      }
+
+      const thumb = document.createElement('div');
+      thumb.className = 'resource-thumb';
+      const img = document.createElement('img');
+      img.src = entry.publicUrl;
+      img.alt = entry.displayName || entry.name;
+      img.loading = 'lazy';
+      img.onerror = () => { thumb.classList.add('broken'); };
+      thumb.appendChild(img);
+
+      const meta = document.createElement('div');
+      meta.className = 'resource-meta';
+      meta.innerHTML = `
+        <span class="resource-name">${escapeHtml(entry.displayName || entry.name)}</span>
+        <span class="resource-size">${formatBytes(entry.size)}</span>
+      `;
+
+      card.appendChild(thumb);
+      card.appendChild(meta);
+
+      card.addEventListener('click', () => {
+        if (pickerMode) {
+          togglePickerSelection(entry.assetId, card, multi);
+        } else {
+          state.selectedIds.clear();
+          state.selectedIds.add(entry.assetId);
+          grid.querySelectorAll('.resource-card').forEach(c => c.classList.remove('selected'));
+          card.classList.add('selected');
+        }
+      });
+
+      grid.appendChild(card);
+    });
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function togglePickerSelection(assetId, cardEl, multi) {
+    if (!state.picker) return;
+    if (multi) {
+      if (state.picker.selected.has(assetId)) {
+        state.picker.selected.delete(assetId);
+        cardEl.classList.remove('selected');
+      } else {
+        state.picker.selected.add(assetId);
+        cardEl.classList.add('selected');
+      }
+    } else {
+      state.picker.selected.clear();
+      state.picker.selected.add(assetId);
+      document.querySelectorAll('#resource-picker-grid .resource-card').forEach(c => c.classList.remove('selected'));
+      cardEl.classList.add('selected');
+    }
+    updatePickerSelectionLabel();
+  }
+
+  function updatePickerSelectionLabel() {
+    const label = document.getElementById('resource-picker-selection');
+    if (!label || !state.picker) return;
+    const n = state.picker.selected.size;
+    label.textContent = n ? `${n} selected` : 'No selection';
+  }
+
+  function entryByAssetId(assetId) {
+    return state.entries.find(e => e.assetId === assetId) || state.picker?.entries?.find(e => e.assetId === assetId);
+  }
+
+  function toResourcePayload(entry) {
+    const projectId = getProjectId();
+    return {
+      assetId: entry.assetId,
+      fileName: entry.name,
+      publicUrl: entry.publicUrl,
+      storagePath: entry.storagePath,
+      displayName: entry.displayName || entry.name,
+      projectId,
+      type: 'resource',
+      subfolder: null
+    };
+  }
+
+  async function uploadResourceFile(file) {
+    const projectId = getProjectId();
+    if (!projectId) {
+      deps.showNotification('Open a project before importing', 'warning');
+      return null;
+    }
+    if (!deps.uploadImage) {
+      deps.showNotification('Upload is not available', 'error');
+      return null;
+    }
+
+    const assetId = deps.generateAssetId();
+    deps.showNotification('Importing to Resources...', 'info');
+
+    try {
+      const { assetId: finalId, downloadURL, fileName } = await deps.uploadImage(file, projectId, 'resource', {
+        assetId,
+        overwriteExisting: false,
+        subfolder: null
+      });
+
+      await loadResources();
+      const entry = state.entries.find(e => e.assetId === finalId) || {
+        assetId: finalId,
+        name: fileName,
+        displayName: file.name,
+        publicUrl: downloadURL,
+        storagePath: null,
+        relativePath: 'resources/' + fileName
+      };
+
+      deps.showNotification('Image imported to Resources', 'success');
+      if (typeof deps.updateProjectSizeIndicator === 'function') {
+        deps.updateProjectSizeIndicator();
+      }
+      return toResourcePayload(entry);
+    } catch (err) {
+      console.error('[Resources] Upload failed:', err);
+      deps.showNotification('Import failed: ' + err.message, 'error');
+      return null;
+    }
+  }
+
+  async function deleteSelectedResources() {
+    const projectId = getProjectId();
+    if (!projectId || !state.selectedIds.size) {
+      deps.showNotification('Select at least one image to delete', 'warning');
+      return;
+    }
+
+    if (!confirm(`Delete ${state.selectedIds.size} image(s) from Resources?`)) return;
+
+    let deleted = 0;
+    for (const assetId of state.selectedIds) {
+      const entry = state.entries.find(e => e.assetId === assetId);
+      if (!entry) continue;
+
+      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
+        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      }
+
+      if (deps.deleteFirestoreAsset) {
+        await deps.deleteFirestoreAsset(projectId, assetId);
+      }
+      deleted++;
+    }
+
+    state.selectedIds.clear();
+    await loadResources();
+    deps.showNotification(`Deleted ${deleted} resource(s)`, 'success');
+    if (typeof deps.updateProjectSizeIndicator === 'function') {
+      deps.updateProjectSizeIndicator();
+    }
+  }
+
+  function triggerHiddenFileInput(multiple, onFiles) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = !!multiple;
+    input.onchange = () => {
+      const files = Array.from(input.files || []);
+      if (files.length) onFiles(files);
+    };
+    input.click();
+  }
+
+  function triggerAudioFileInput(multiple, onFiles) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*,.mp3,.ogg,.wav,.m4a,.aac,.flac,.webm';
+    input.multiple = !!multiple;
+    input.onchange = () => {
+      const files = Array.from(input.files || []);
+      if (files.length) onFiles(files);
+    };
+    input.click();
+  }
+
+  async function uploadSoundFile(file) {
+    const projectId = getProjectId();
+    if (!projectId) {
+      deps.showNotification('Apri un progetto prima di importare', 'warning');
+      return null;
+    }
+    if (!deps.uploadImage) {
+      deps.showNotification('Upload non disponibile', 'error');
+      return null;
+    }
+
+    const assetId = deps.generateAssetId();
+    deps.showNotification('Importazione audio...', 'info');
+
+    try {
+      await deps.uploadImage(file, projectId, 'audio', {
+        assetId,
+        overwriteExisting: false,
+        subfolder: null
+      });
+      await loadSounds();
+      deps.showNotification('Audio importato', 'success');
+      if (typeof deps.updateProjectSizeIndicator === 'function') {
+        deps.updateProjectSizeIndicator();
+      }
+      return true;
+    } catch (err) {
+      console.error('[Resources] Upload audio fallito:', err);
+      deps.showNotification('Importazione fallita: ' + err.message, 'error');
+      return null;
+    }
+  }
+
+  async function deleteSelectedSounds() {
+    const projectId = getProjectId();
+    if (!projectId || !soundState.selectedIds.size) {
+      deps.showNotification('Seleziona almeno un suono da eliminare', 'warning');
+      return;
+    }
+
+    if (!confirm(`Eliminare ${soundState.selectedIds.size} file audio?`)) return;
+
+    let deleted = 0;
+    for (const assetId of soundState.selectedIds) {
+      const entry = soundState.entries.find(e => e.assetId === assetId);
+      if (!entry) continue;
+
+      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
+        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      }
+
+      if (deps.deleteFirestoreAsset) {
+        await deps.deleteFirestoreAsset(projectId, assetId);
+      }
+      deleted++;
+    }
+
+    soundState.selectedIds.clear();
+    stopSoundPreview();
+    await loadSounds();
+    deps.showNotification(`Eliminati ${deleted} file audio`, 'success');
+    if (typeof deps.updateProjectSizeIndicator === 'function') {
+      deps.updateProjectSizeIndicator();
+    }
+  }
+
+  async function openPicker(options = {}) {
+    const {
+      title = 'Select image from Resources',
+      multiple = false,
+      allowUpload = true
+    } = options;
+
+    const projectId = getProjectId();
+    if (!projectId) {
+      deps.showNotification('Open a project to select resources', 'warning');
+      return multiple ? [] : null;
+    }
+
+    const modalEl = document.getElementById('resourcePickerModal');
+    if (!modalEl || typeof bootstrap === 'undefined') {
+      deps.showNotification('Resource picker is not available', 'error');
+      return multiple ? [] : null;
+    }
+
+    const titleEl = document.getElementById('resource-picker-title');
+    const searchEl = document.getElementById('resource-picker-search');
+    const uploadBtn = document.getElementById('resource-picker-upload-btn');
+    const confirmBtn = document.getElementById('resource-picker-confirm-btn');
+
+    if (titleEl) titleEl.textContent = title;
+    if (uploadBtn) uploadBtn.style.display = allowUpload ? '' : 'none';
+    if (confirmBtn) confirmBtn.textContent = multiple ? 'Add selection' : 'Use image';
+
+    const entries = await loadResourcesForPicker();
+    state.picker = {
+      selected: new Set(),
+      entries,
+      multiple,
+      filter: ''
+    };
+
+    renderPickerGrid(entries);
+    updatePickerSelectionLabel();
+    if (searchEl) searchEl.value = '';
+
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      const cleanup = () => {
+        confirmBtn?.removeEventListener('click', onConfirm);
+        uploadBtn?.removeEventListener('click', onUpload);
+        searchEl?.removeEventListener('input', onSearch);
+        modalEl.removeEventListener('hidden.bs.modal', onHidden);
+        state.picker = null;
+      };
+
+      const onHidden = () => {
+        cleanup();
+        finish(multiple ? [] : null);
+      };
+
+      const onConfirm = () => {
+        const selected = Array.from(state.picker.selected)
+          .map(id => entryByAssetId(id))
+          .filter(Boolean)
+          .map(toResourcePayload);
+
+        if (!selected.length) {
+          deps.showNotification('Select at least one image', 'warning');
+          return;
+        }
+
+        cleanup();
+        modal.hide();
+        finish(multiple ? selected : selected[0]);
+      };
+
+      const onUpload = () => {
+        triggerHiddenFileInput(multiple, async (files) => {
+          for (const file of files) {
+            await uploadResourceFile(file);
+          }
+          const refreshed = await loadResourcesForPicker();
+          state.picker.entries = refreshed;
+          renderPickerGrid(filterPickerEntries(refreshed, searchEl?.value || ''));
+        });
+      };
+
+      const onSearch = () => {
+        renderPickerGrid(filterPickerEntries(state.picker.entries, searchEl.value));
+      };
+
+      confirmBtn?.addEventListener('click', onConfirm);
+      uploadBtn?.addEventListener('click', onUpload);
+      searchEl?.addEventListener('input', onSearch);
+      modalEl.addEventListener('hidden.bs.modal', onHidden, { once: true });
+
+      modal.show();
+    });
+  }
+
+  async function loadResourcesForPicker() {
+    if (!window.supabaseStorage?.listProjectResources) return [];
+    const projectId = getProjectId();
+    let entries = await window.supabaseStorage.listProjectResources(projectId);
+    return mergeFirestoreMetadata(projectId, entries);
+  }
+
+  function filterPickerEntries(entries, query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter(e =>
+      (e.displayName || e.name || '').toLowerCase().includes(q) ||
+      (e.relativePath || '').toLowerCase().includes(q)
+    );
+  }
+
+  function renderPickerGrid(entries) {
+    renderResourcesGrid(entries, 'resource-picker-grid', {
+      pickerMode: true,
+      multi: state.picker?.multiple
+    });
+  }
+
+  function setupResourcesTabUI() {
+    const search = document.getElementById('resources-search');
+    const btnRefresh = document.getElementById('btn-resources-refresh');
+    const btnImport = document.getElementById('btn-resources-import');
+    const btnDelete = document.getElementById('btn-resources-delete');
+
+    if (search) {
+      search.addEventListener('input', applyResourcesFilter);
+    }
+    if (btnRefresh) {
+      btnRefresh.addEventListener('click', () => loadResources());
+    }
+    if (btnImport) {
+      btnImport.addEventListener('click', () => {
+        triggerHiddenFileInput(true, async (files) => {
+          for (const file of files) {
+            await uploadResourceFile(file);
+          }
+        });
+      });
+    }
+    if (btnDelete) {
+      btnDelete.addEventListener('click', deleteSelectedResources);
+    }
+
+    const soundsSearch = document.getElementById('sounds-search');
+    const btnSoundsRefresh = document.getElementById('btn-sounds-refresh');
+    const btnSoundsImport = document.getElementById('btn-sounds-import');
+    const btnSoundsDelete = document.getElementById('btn-sounds-delete');
+
+    if (soundsSearch) {
+      soundsSearch.addEventListener('input', applySoundsFilter);
+    }
+    if (btnSoundsRefresh) {
+      btnSoundsRefresh.addEventListener('click', () => loadSounds());
+    }
+    if (btnSoundsImport) {
+      btnSoundsImport.addEventListener('click', () => {
+        triggerAudioFileInput(true, async (files) => {
+          for (const file of files) {
+            await uploadSoundFile(file);
+          }
+        });
+      });
+    }
+    if (btnSoundsDelete) {
+      btnSoundsDelete.addEventListener('click', deleteSelectedSounds);
+    }
+
+    document.querySelectorAll('[data-resource-tab]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        showResourceSubTab(btn.getAttribute('data-resource-tab'));
+      });
+    });
+
+    document.addEventListener('tabChanged', (e) => {
+      if (e.detail?.currentTab === 'resources') {
+        showResourceSubTab(state.activeSubTab);
+      } else {
+        stopSoundPreview();
+      }
+    });
+  }
+
+  window.initAmiantoResources = function (dependencies) {
+    deps = { ...deps, ...dependencies };
+    setupResourcesTabUI();
+  };
+
+  window.amiantoResources = {
+    refresh: loadResources,
+    refreshSounds: loadSounds,
+    showSubTab: showResourceSubTab,
+    pick: openPicker,
+    upload: uploadResourceFile,
+    uploadSound: uploadSoundFile,
+    loadImageFromResource: async function (resource) {
+      if (!resource || !resource.publicUrl) return null;
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Could not load image'));
+        img.src = resource.publicUrl;
+      });
+    },
+    registerImageAsset: function (img, resource) {
+      if (!img || !resource || !window.amiantoImageAssetMap) return;
+      window.amiantoImageAssetMap.set(img, {
+        assetId: resource.assetId,
+        type: 'resource',
+        projectId: resource.projectId,
+        fileName: resource.fileName,
+        subfolder: null
+      });
+    }
+  };
+})();

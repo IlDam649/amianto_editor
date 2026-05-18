@@ -94,10 +94,6 @@
         <div id="projectSizeIndicator" style="display: none; margin-top: 8px; font-size: 0.85rem; color: #aaa;">
           <i class="fas fa-database"></i> <span id="projectSizeText">-</span>
         </div>
-        <!-- Supabase storage size indicator -->
-        <div id="supabaseSizeIndicator" style="display: none; margin-top: 4px; font-size: 0.85rem; color: #aaa;">
-          <i class="fas fa-cloud"></i> <span id="supabaseSizeText">-</span>
-        </div>
       </div>
     </div>
   </div>
@@ -213,7 +209,7 @@
             <div class="spinner-border text-primary" role="status">
               <span class="visually-hidden">Loading...</span>
             </div>
-            <p class="text-muted mt-3">Caricamento progetti...</p>
+            <p class="text-muted mt-3">Loading projects...</p>
           </div>
         </div>
       </div>
@@ -227,12 +223,13 @@
       <div class="container-fluid d-flex justify-content-center">
 
         <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
-        <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)" disabled>Rooms</button>
-        <button class="section-btn" data-section="inventory" aria-label="Manage inventory" title="Manage inventory and items (Ctrl+2)">Inventory</button>
-        <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+3)">Characters</button>
-        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+4)">GUI</button>
-        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+5)">Scripts</button>
-        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+6)">PLAY</button>
+        <button class="section-btn" data-section="resources" aria-label="Game resources library" title="Central image library on Supabase (Ctrl+1)" disabled>Resources</button>
+        <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+2)" disabled>Rooms</button>
+        <button class="section-btn" data-section="inventory" aria-label="Manage inventory" title="Manage inventory and items (Ctrl+3)">Inventory</button>
+        <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+4)">Characters</button>
+        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+5)">GUI</button>
+        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+6)">Scripts</button>
+        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+7)">PLAY</button>
       </div>
     </nav>
 
@@ -263,6 +260,61 @@
           <textarea id="script-editor-large" style="width: 100%; height: 100%;"></textarea>
         </div>
         
+        <!-- Resources panel (Resources tab — occupa lo spazio del canvas) -->
+        <div id="resourcesMainPanel" class="resources-main-panel" style="display: none;">
+          <div class="resources-main-header">
+            <h4 class="resources-main-title"><i class="fas fa-folder-open"></i> Libreria risorse</h4>
+            <ul class="nav nav-tabs resources-subtabs" id="resources-subtabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="resources-tab-images" data-resource-tab="images" type="button" role="tab" aria-selected="true">
+                  <i class="fas fa-image"></i> Immagini
+                </button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="resources-tab-sounds" data-resource-tab="sounds" type="button" role="tab" aria-selected="false">
+                  <i class="fas fa-music"></i> Suoni
+                </button>
+              </li>
+            </ul>
+          </div>
+          <div id="resources-images-pane" class="resources-pane" role="tabpanel">
+            <div class="alert alert-info py-2 mb-2" role="alert">
+              <small><strong>Libreria centralizzata</strong> — importa qui tutte le immagini di gioco (Supabase). Gli altri editor aprono il picker da questa cartella.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              <button class="btn btn-success btn-sm" id="btn-resources-import" type="button"><i class="fas fa-file-import"></i> Importa</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button"><i class="fas fa-sync-alt"></i> Aggiorna</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button"><i class="fas fa-trash"></i> Elimina</button>
+            </div>
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Cerca immagini...">
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <small class="text-muted" id="resources-status">Caricamento...</small>
+              <small class="text-muted" id="resources-count"></small>
+            </div>
+            <div id="resources-grid" class="resources-grid resources-grid-main"></div>
+          </div>
+          <div id="resources-sounds-pane" class="resources-pane" role="tabpanel" style="display: none;">
+            <div class="alert alert-info py-2 mb-2" role="alert">
+              <small><strong>Audio</strong> — importa musica ed effetti sonori (cartella <code>audio/</code> su Supabase).</small>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button"><i class="fas fa-file-import"></i> Importa</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button"><i class="fas fa-sync-alt"></i> Aggiorna</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button"><i class="fas fa-trash"></i> Elimina</button>
+            </div>
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Cerca suoni...">
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <small class="text-muted" id="sounds-status">Caricamento...</small>
+              <small class="text-muted" id="sounds-count"></small>
+            </div>
+            <div id="sounds-grid" class="resources-grid resources-grid-main sounds-grid"></div>
+          </div>
+        </div>
+
         <!-- Canvas Container -->
         <div id="canvasContainer" style="background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
           <canvas id="editorCanvas"></canvas>
@@ -279,7 +331,7 @@
             <i class="fas fa-eye" id="console-log-toggle-icon"></i>
           </button>
           <!-- Resize handle per ridimensionare verticalmente le console -->
-          <div id="console-resize-handle" class="console-resize-handle" title="Trascina per ridimensionare le console">
+          <div id="console-resize-handle" class="console-resize-handle" title="Drag to resize consoles">
             <i class="fas fa-grip-lines"></i>
           </div>
           <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
@@ -365,6 +417,27 @@
           </div>
         </div>
 
+        <div id="resources" class="section">
+          <h3>Resources</h3>
+          <div class="section-content">
+            <div class="alert alert-info py-2 mb-2" role="alert">
+              <small>
+                <strong>Libreria centralizzata</strong> — la griglia è nel pannello principale.
+                Usa le schede <strong>Immagini</strong> e <strong>Suoni</strong>.
+              </small>
+            </div>
+            <div class="resources-sidebar-subtabs btn-group btn-group-sm w-100 mb-2" role="group">
+              <button type="button" class="btn btn-outline-success active" data-resource-tab="images" id="resources-sidebar-tab-images">
+                <i class="fas fa-image"></i> Immagini
+              </button>
+              <button type="button" class="btn btn-outline-success" data-resource-tab="sounds" id="resources-sidebar-tab-sounds">
+                <i class="fas fa-music"></i> Suoni
+              </button>
+            </div>
+            <p class="text-muted small mb-0" id="resources-sidebar-hint">Importa, cerca ed elimina file dal pannello principale.</p>
+          </div>
+        </div>
+
         <div id="rooms" class="section">
       <h3>Rooms</h3>
 
@@ -405,7 +478,6 @@
           <button class="btn btn-info btn-sm w-100 mb-2" onclick="addSceneObject()">
             <i class="fas fa-plus"></i> Add Scene Object
           </button>
-          <input type="file" id="scene-object-upload" accept="image/*" style="display: none;" onchange="uploadSceneObject(this)">
         </div>
         
         <div class="mb-3">
@@ -465,7 +537,7 @@
         <h5 style="color: #39ff14; margin-bottom: 15px;">Character Scaling</h5>
         <div class="alert alert-info" role="alert">
           <small>
-            <strong>💡 Tip:</strong> Disegna due linee orizzontali sul canvas per definire i piani di scaling. Trascina le linee per spostarle. La linea superiore (background) e quella inferiore (foreground) determinano la scala del personaggio in base alla posizione Y.
+            <strong>💡 Tip:</strong> Draw two horizontal lines on the canvas to define scaling planes. Drag the lines to move them. The top line (background) and bottom line (foreground) set character scale based on Y position.
           </small>
         </div>
         <div class="mb-3">
@@ -513,7 +585,9 @@
               <div class="mb-2">
                 <label class="form-label text-light mb-1">Item image</label>
                 <div class="input-group input-group-sm">
-                  <input type="file" class="form-control" id="inventory-item-image-input" accept="image/*">
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-browse-image">
+                    <i class="fas fa-folder-open"></i> Browse Resources
+                  </button>
                   <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-clear-image">Remove</button>
                 </div>
                 <small class="text-muted" id="inventory-item-image-label">No image</small>
@@ -579,7 +653,9 @@
             <!-- Container per upload frames -->
             <div class="mb-3" id="frame-upload-container">
               <label class="form-label text-light">Animation frames for selected direction:</label>
-              <input type="file" id="character-frames-upload" class="form-control form-control-sm" accept="image/*" multiple onchange="uploadCharacterFrames(this)">
+              <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-character-frames-browse">
+                <i class="fas fa-folder-open"></i> Browse Resources (frames)
+              </button>
             </div>
             
             <!-- Container per specchiare direzione -->
@@ -681,7 +757,7 @@
               <div id="character-spawn-speed-container" style="display: none;">
                 <label class="form-label text-light">Movement speed (pixel/second):</label>
                 <input type="number" class="form-control form-control-sm" id="character-spawn-speed" value="100" min="1" max="1000" step="1">
-                <small class="text-muted">Velocità di movimento del character in pixel al secondo</small>
+                <small class="text-muted">Character movement speed in pixels per second</small>
               </div>
             </div>
             
@@ -777,10 +853,9 @@
 
               <div class="mb-3">
                 <label class="form-label text-light">Cursor Image:</label>
-                <div class="input-group input-group-sm">
-                  <input type="file" class="form-control" id="cursor-image-upload" accept="image/*" onchange="uploadCursorImage(this)">
-                  <button class="btn btn-outline-light" onclick="document.getElementById('cursor-image-upload').click()">Browse</button>
-                </div>
+                <button class="btn btn-outline-light btn-sm w-100" type="button" id="btn-cursor-browse-image">
+                  <i class="fas fa-folder-open"></i> Browse Resources
+                </button>
               </div>
 
               <div class="mb-3">
@@ -958,5 +1033,32 @@
   <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js non trovato. Configura SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js o crea supabase-config.js')"></script>
   <script src="JS/supabase.js"></script>
   <script src="JS/main.js"></script>
+  <script src="JS/resources.js"></script>
+
+  <!-- Resource picker modal (usato da tutti i Browse) -->
+  <div class="modal fade" id="resourcePickerModal" tabindex="-1" aria-labelledby="resourcePickerModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content bg-dark text-light border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="resource-picker-title">Select image</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+            <input type="text" class="form-control form-control-sm flex-grow-1" id="resource-picker-search" placeholder="Search...">
+            <button type="button" class="btn btn-success btn-sm" id="resource-picker-upload-btn">
+              <i class="fas fa-file-import"></i> Import
+            </button>
+          </div>
+          <small class="text-muted d-block mb-2" id="resource-picker-selection">No selection</small>
+          <div id="resource-picker-grid" class="resources-grid resources-grid-picker"></div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-success btn-sm" id="resource-picker-confirm-btn">Use image</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

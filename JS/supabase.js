@@ -155,6 +155,8 @@ function getSupabaseFolderForType(assetType) {
       return 'cursors';
     case 'audio':
       return 'audio';
+    case 'resource':
+      return 'resources';
     default:
       // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
       return assetType ? assetType.toLowerCase() : 'sprites';
@@ -590,6 +592,11 @@ async function resolveAssetUrl(projectId, assetId, category, originalFileName = 
       }
       // NON cercare nella cartella categoria per character frames
       // questi asset sono sempre in characters/{charactername}/
+    } else if (category === 'resource') {
+      const resourcesPath = userId
+        ? `${userId}/${projectId}/resources`
+        : `${projectId}/resources`;
+      result = await searchInPath(resourcesPath);
     } else {
       // Per altre categorie (gui, cursor, audio), cerca solo nella cartella principale
       const folder = getSupabaseFolderForType(category);
@@ -1014,6 +1021,161 @@ async function deleteCharacterFolder(projectId, characterName) {
   }
 }
 
+const IMAGE_FILE_PATTERN = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+const AUDIO_FILE_PATTERN = /\.(mp3|ogg|wav|m4a|aac|flac|webm)$/i;
+
+/**
+ * Elenca ricorsivamente i file in una cartella Storage che corrispondono al pattern
+ * @param {string} folderPath - Percorso completo (es. userId/projectId/resources)
+ * @param {string} displayPrefix - Prefisso per UI (es. resources/sub)
+ * @param {RegExp} filePattern - Pattern estensioni file
+ */
+async function listMediaInFolder(folderPath, displayPrefix = '', filePattern = IMAGE_FILE_PATTERN) {
+  const results = [];
+  if (!isSupabaseAvailable()) {
+    return results;
+  }
+
+  const { data: items, error } = await supabaseClient.storage
+    .from(SUPABASE_BUCKET_NAME)
+    .list(folderPath, {
+      limit: 1000,
+      offset: 0,
+      sortBy: { column: 'name', order: 'asc' }
+    });
+
+  if (error || !items) {
+    if (error && !String(error.message || '').includes('not found')) {
+      console.warn('[Supabase] Errore list media:', folderPath, error);
+    }
+    return results;
+  }
+
+  for (const item of items) {
+    const itemPath = `${folderPath}/${item.name}`;
+    const relPath = displayPrefix ? `${displayPrefix}/${item.name}` : item.name;
+
+    if (item.id === null) {
+      const nested = await listMediaInFolder(itemPath, relPath, filePattern);
+      results.push(...nested);
+      continue;
+    }
+
+    if (!filePattern.test(item.name)) {
+      continue;
+    }
+
+    const { data: urlData } = supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .getPublicUrl(itemPath);
+
+    const nameWithoutExt = item.name.replace(/\.[^.]+$/, '');
+    results.push({
+      name: item.name,
+      displayName: item.name,
+      assetId: nameWithoutExt,
+      storagePath: itemPath,
+      publicUrl: urlData.publicUrl || null,
+      relativePath: relPath,
+      size: item.metadata?.size || 0,
+      updatedAt: item.updated_at || item.created_at || null
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Elenca ricorsivamente le immagini in una cartella Storage
+ */
+async function listImagesInFolder(folderPath, displayPrefix = '') {
+  return listMediaInFolder(folderPath, displayPrefix, IMAGE_FILE_PATTERN);
+}
+
+/**
+ * Elenca tutte le immagini nella cartella resources/ del progetto
+ * @param {string} projectId
+ * @returns {Promise<Array>}
+ */
+async function listProjectResources(projectId) {
+  try {
+    if (!isSupabaseAvailable()) {
+      return [];
+    }
+
+    let userId = null;
+    if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+      userId = window.firebaseAuth.currentUser.uid;
+    }
+    if (!userId) {
+      console.warn('[Supabase] Utente non autenticato, impossibile elencare resources');
+      return [];
+    }
+
+    const resourcesPath = `${userId}/${projectId}/resources`;
+    return await listImagesInFolder(resourcesPath, 'resources');
+  } catch (error) {
+    console.error('[Supabase] Errore listProjectResources:', error);
+    return [];
+  }
+}
+
+/**
+ * Elenca tutti i file audio nella cartella audio/ del progetto
+ * @param {string} projectId
+ * @returns {Promise<Array>}
+ */
+async function listProjectAudio(projectId) {
+  try {
+    if (!isSupabaseAvailable()) {
+      return [];
+    }
+
+    let userId = null;
+    if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+      userId = window.firebaseAuth.currentUser.uid;
+    }
+    if (!userId) {
+      console.warn('[Supabase] Utente non autenticato, impossibile elencare audio');
+      return [];
+    }
+
+    const audioPath = `${userId}/${projectId}/audio`;
+    return await listMediaInFolder(audioPath, 'audio', AUDIO_FILE_PATTERN);
+  } catch (error) {
+    console.error('[Supabase] Errore listProjectAudio:', error);
+    return [];
+  }
+}
+
+/**
+ * Elimina un file per percorso Storage completo
+ * @param {string} storagePath
+ * @returns {Promise<boolean>}
+ */
+async function deleteFileByPath(storagePath) {
+  try {
+    if (!isSupabaseAvailable() || !storagePath) {
+      return false;
+    }
+
+    const { error } = await supabaseClient.storage
+      .from(SUPABASE_BUCKET_NAME)
+      .remove([storagePath]);
+
+    if (error) {
+      console.error('[Supabase] Errore eliminazione file:', storagePath, error);
+      return false;
+    }
+
+    console.log('[Supabase] ✅ File eliminato:', storagePath);
+    return true;
+  } catch (error) {
+    console.error('[Supabase] Errore deleteFileByPath:', error);
+    return false;
+  }
+}
+
 // ============================================
 // ESPORTAZIONE FUNZIONI GLOBALI
 // ============================================
@@ -1032,7 +1194,14 @@ if (typeof window !== 'undefined') {
     deleteCharacterFolder: deleteCharacterFolder,
     getProjectStorageSize: getProjectStorageSize,
     getSupabaseFolderForType: getSupabaseFolderForType,
-    buildStoragePath: buildStoragePath
+    buildStoragePath: buildStoragePath,
+    listProjectResources: listProjectResources,
+    listProjectAudio: listProjectAudio,
+    listImagesInFolder: listImagesInFolder,
+    listMediaInFolder: listMediaInFolder,
+    deleteFileByPath: deleteFileByPath,
+    IMAGE_FILE_PATTERN: IMAGE_FILE_PATTERN,
+    AUDIO_FILE_PATTERN: AUDIO_FILE_PATTERN
   };
 
   // Funzione per inizializzare quando tutto è pronto
