@@ -477,7 +477,15 @@ document.addEventListener("DOMContentLoaded", () => {
   let isResizingGuiButton = false;
 
   // Inventory editor (layout + items)
-  let inventoryDefinition = { background: null, slots: [] };
+  let inventoryDefinition = {
+    background: null,
+    slots: [],
+    displayMode: 'popup',
+    popupEdgeHeight: 48,
+    panel: null,
+    toggleIcon: null,
+    toggleIconBounds: null
+  };
   let inventoryItems = []; // { id, name, scriptName, image: Image|null }
   let selectedInventorySlotId = null;
   let selectedInventoryItemId = null;
@@ -1107,15 +1115,31 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
       ctx.scale(editorState.zoom, editorState.zoom);
 
+      ensureInventoryRects();
+      const panel = inventoryDefinition.panel;
       if (inventoryDefinition.background) {
-        ctx.drawImage(inventoryDefinition.background, 0, 0, gameViewport.width, gameViewport.height);
+        ctx.drawImage(inventoryDefinition.background, panel.x, panel.y, panel.w, panel.h);
       } else {
         ctx.fillStyle = '#1a1a2e';
-        ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
+        ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
         ctx.fillStyle = '#888';
         ctx.font = '14px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('Load the inventory background from the panel on the right', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.fillText('Load the inventory background from the panel on the right', panel.x + panel.w / 2, panel.y + panel.h / 2);
+      }
+      ctx.strokeStyle = 'rgba(100, 200, 255, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+      ctx.setLineDash([]);
+
+      if (inventoryDefinition.displayMode === 'toggle' && inventoryDefinition.toggleIcon) {
+        const tb = inventoryDefinition.toggleIconBounds;
+        try {
+          ctx.drawImage(inventoryDefinition.toggleIcon, tb.x, tb.y, tb.w, tb.h);
+        } catch (_) {}
+        ctx.strokeStyle = 'rgba(255, 200, 80, 0.7)';
+        ctx.strokeRect(tb.x, tb.y, tb.w, tb.h);
       }
 
       for (const slot of inventoryDefinition.slots) {
@@ -3648,22 +3672,6 @@ window.selectRoom = function(roomId) {
         ], settings.appear || 'instant'));
         break;
       }
-      case 'Inventory': {
-        frag.appendChild(makeInput('Rows', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
-        frag.appendChild(makeInput('Columns', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
-        frag.appendChild(makeSelect('Slot style', 'gui-set-slot-style', [
-          {value:'square', label:'Square'},
-          {value:'rounded', label:'Rounded'},
-          {value:'circle', label:'Circle'}
-        ], settings.slotStyle || 'square'));
-        frag.appendChild(makeInput('Background', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.5)'));
-        frag.appendChild(makeSelect('Open animation', 'gui-set-open-anim', [
-          {value:'none', label:'None'},
-          {value:'scale', label:'Scale'},
-          {value:'fade', label:'Fade'}
-        ], settings.openAnim || 'none'));
-        break;
-      }
       case 'VerbGUI': {
         frag.appendChild(makeTextarea('Verb list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
         frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
@@ -3722,14 +3730,6 @@ window.selectRoom = function(roomId) {
           font: get('gui-set-font') || '16px Arial',
           portrait: get('gui-set-portrait') || '',
           appear: get('gui-set-appear') || 'instant'
-        };
-      case 'Inventory':
-        return {
-          rows: get('gui-set-rows') || 3,
-          cols: get('gui-set-cols') || 5,
-          slotStyle: get('gui-set-slot-style') || 'square',
-          background: get('gui-set-bg') || 'rgba(0,0,0,0.5)',
-          openAnim: get('gui-set-open-anim') || 'none'
         };
       case 'VerbGUI': {
         const verbsStr = get('gui-set-verbs') || '';
@@ -4108,6 +4108,170 @@ window.selectRoom = function(roomId) {
     updateInventoryItemFormImageLabel();
   };
 
+  const INVENTORY_DISPLAY_MODES = ['popup', 'always', 'toggle'];
+
+  function normalizeInventoryDisplayMode(mode) {
+    const m = String(mode || 'popup').toLowerCase();
+    return INVENTORY_DISPLAY_MODES.includes(m) ? m : 'popup';
+  }
+
+  function defaultInventoryPanel() {
+    return { x: 0, y: 0, w: gameViewport.width, h: gameViewport.height };
+  }
+
+  function defaultInventoryToggleIconBounds() {
+    const size = 48;
+    const margin = 8;
+    return {
+      x: Math.max(0, gameViewport.width - size - margin),
+      y: Math.max(0, gameViewport.height - size - margin),
+      w: size,
+      h: size
+    };
+  }
+
+  function normalizeInventoryRect(rect, fallback) {
+    const fb = fallback || { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      x: Math.round(Number(rect && rect.x != null ? rect.x : fb.x) || 0),
+      y: Math.round(Number(rect && rect.y != null ? rect.y : fb.y) || 0),
+      w: Math.max(1, Math.round(Number(rect && rect.w != null ? rect.w : fb.w) || fb.w)),
+      h: Math.max(1, Math.round(Number(rect && rect.h != null ? rect.h : fb.h) || fb.h))
+    };
+  }
+
+  function ensureInventoryRects() {
+    inventoryDefinition.panel = normalizeInventoryRect(
+      inventoryDefinition.panel,
+      defaultInventoryPanel()
+    );
+    inventoryDefinition.toggleIconBounds = normalizeInventoryRect(
+      inventoryDefinition.toggleIconBounds,
+      defaultInventoryToggleIconBounds()
+    );
+  }
+
+  function readInventoryPanelFromUI() {
+    ensureInventoryRects();
+    const get = (id) => document.getElementById(id);
+    const xEl = get('inventory-panel-x');
+    const yEl = get('inventory-panel-y');
+    const wEl = get('inventory-panel-w');
+    const hEl = get('inventory-panel-h');
+    if (!xEl || !yEl || !wEl || !hEl) return;
+    inventoryDefinition.panel = normalizeInventoryRect({
+      x: xEl.value,
+      y: yEl.value,
+      w: wEl.value,
+      h: hEl.value
+    }, defaultInventoryPanel());
+    redraw();
+  }
+
+  function readInventoryToggleBoundsFromUI() {
+    ensureInventoryRects();
+    const get = (id) => document.getElementById(id);
+    const xEl = get('inventory-toggle-x');
+    const yEl = get('inventory-toggle-y');
+    const wEl = get('inventory-toggle-w');
+    const hEl = get('inventory-toggle-h');
+    if (!xEl || !yEl || !wEl || !hEl) return;
+    inventoryDefinition.toggleIconBounds = normalizeInventoryRect({
+      x: xEl.value,
+      y: yEl.value,
+      w: wEl.value,
+      h: hEl.value
+    }, defaultInventoryToggleIconBounds());
+    redraw();
+  }
+
+  function applyInventoryRectsToUI() {
+    ensureInventoryRects();
+    const panel = inventoryDefinition.panel;
+    const toggle = inventoryDefinition.toggleIconBounds;
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.value = String(val);
+    };
+    set('inventory-panel-x', panel.x);
+    set('inventory-panel-y', panel.y);
+    set('inventory-panel-w', panel.w);
+    set('inventory-panel-h', panel.h);
+    set('inventory-toggle-x', toggle.x);
+    set('inventory-toggle-y', toggle.y);
+    set('inventory-toggle-w', toggle.w);
+    set('inventory-toggle-h', toggle.h);
+  }
+
+  function bindInventoryRectInputs(ids, onChange) {
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', onChange);
+      el.addEventListener('input', onChange);
+    });
+  }
+
+  function updateInventoryToggleIconLabel() {
+    const label = document.getElementById('inventory-toggle-icon-label');
+    if (!label) return;
+    if (inventoryDefinition.toggleIcon) {
+      label.textContent = 'Icon set';
+    } else {
+      label.textContent = 'No icon';
+    }
+  }
+
+  function refreshInventoryDisplayModeUI() {
+    const modeSel = document.getElementById('inventory-display-mode');
+    const toggleWrap = document.getElementById('inventory-toggle-icon-wrap');
+    const popupEdgeWrap = document.getElementById('inventory-popup-edge-wrap');
+    const popupHint = document.getElementById('inventory-popup-hint');
+    const popupEdgeInput = document.getElementById('inventory-popup-edge-height');
+    const mode = normalizeInventoryDisplayMode(inventoryDefinition.displayMode);
+    inventoryDefinition.displayMode = mode;
+    if (modeSel) modeSel.value = mode;
+    if (toggleWrap) toggleWrap.style.display = mode === 'toggle' ? '' : 'none';
+    const isPopup = mode === 'popup';
+    if (popupEdgeWrap) popupEdgeWrap.style.display = isPopup ? '' : 'none';
+    if (popupHint) popupHint.style.display = isPopup ? '' : 'none';
+    const edgeH = Math.max(16, Math.min(200, Number(inventoryDefinition.popupEdgeHeight) || 48));
+    inventoryDefinition.popupEdgeHeight = edgeH;
+    if (popupEdgeInput) popupEdgeInput.value = String(edgeH);
+    applyInventoryRectsToUI();
+    updateInventoryToggleIconLabel();
+  }
+
+  function setInventoryPopupEdgeHeight(px) {
+    inventoryDefinition.popupEdgeHeight = Math.max(16, Math.min(200, Number(px) || 48));
+  }
+
+  function setInventoryDisplayMode(mode) {
+    inventoryDefinition.displayMode = normalizeInventoryDisplayMode(mode);
+    refreshInventoryDisplayModeUI();
+  }
+
+  async function browseInventoryToggleIcon() {
+    const resource = await pickResourceImage({ title: 'Inventory toggle icon from Resources' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      inventoryDefinition.toggleIcon = img;
+      inventoryDefinition._toggleIconResource = resource;
+      updateInventoryToggleIconLabel();
+      showNotification('Toggle icon set', 'success');
+    } catch (err) {
+      showNotification('Error: ' + err.message, 'error');
+    }
+  }
+
+  function clearInventoryToggleIcon() {
+    inventoryDefinition.toggleIcon = null;
+    inventoryDefinition._toggleIconResource = null;
+    updateInventoryToggleIconLabel();
+    showNotification('Toggle icon removed', 'info');
+  }
+
   function setupInventoryEditorUI() {
     const btnBg = document.getElementById('btn-inventory-bg');
     const btnSlot = document.getElementById('btn-inventory-slot');
@@ -4116,6 +4280,10 @@ window.selectRoom = function(roomId) {
     const btnUpdate = document.getElementById('btn-inventory-item-update');
     const btnBrowseImg = document.getElementById('btn-inventory-item-browse-image');
     const btnClearImg = document.getElementById('btn-inventory-item-clear-image');
+    const displayModeSel = document.getElementById('inventory-display-mode');
+    const popupEdgeInput = document.getElementById('inventory-popup-edge-height');
+    const btnToggleIconBrowse = document.getElementById('btn-inventory-toggle-icon-browse');
+    const btnToggleIconClear = document.getElementById('btn-inventory-toggle-icon-clear');
     if (btnBg) btnBg.addEventListener('click', uploadInventoryBackground);
     if (btnSlot) btnSlot.addEventListener('click', startDrawInventorySlot);
     if (btnSlotDel) btnSlotDel.addEventListener('click', deleteSelectedInventorySlot);
@@ -4123,6 +4291,24 @@ window.selectRoom = function(roomId) {
     if (btnUpdate) btnUpdate.addEventListener('click', () => window.updateInventoryItemFromForm());
     if (btnBrowseImg) btnBrowseImg.addEventListener('click', () => window.browseInventoryItemImage());
     if (btnClearImg) btnClearImg.addEventListener('click', () => window.clearPendingInventoryItemImage());
+    if (displayModeSel) {
+      displayModeSel.addEventListener('change', () => setInventoryDisplayMode(displayModeSel.value));
+    }
+    if (popupEdgeInput) {
+      popupEdgeInput.addEventListener('change', () => setInventoryPopupEdgeHeight(popupEdgeInput.value));
+      popupEdgeInput.addEventListener('input', () => setInventoryPopupEdgeHeight(popupEdgeInput.value));
+    }
+    if (btnToggleIconBrowse) btnToggleIconBrowse.addEventListener('click', () => browseInventoryToggleIcon());
+    if (btnToggleIconClear) btnToggleIconClear.addEventListener('click', () => clearInventoryToggleIcon());
+    bindInventoryRectInputs(
+      ['inventory-panel-x', 'inventory-panel-y', 'inventory-panel-w', 'inventory-panel-h'],
+      () => readInventoryPanelFromUI()
+    );
+    bindInventoryRectInputs(
+      ['inventory-toggle-x', 'inventory-toggle-y', 'inventory-toggle-w', 'inventory-toggle-h'],
+      () => readInventoryToggleBoundsFromUI()
+    );
+    refreshInventoryDisplayModeUI();
   }
 
   async function uploadInventoryBackground() {
@@ -5214,8 +5400,9 @@ window.selectRoom = function(roomId) {
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     const resources = await pickResourceImage({
-      title: `Animation frames (${who}) from Resources`,
-      multiple: true
+      title: `Frame animazione — ${who}`,
+      multiple: true,
+      hint: 'Clicca più immagini per selezionarle. Conferma con «Aggiungi selezione». L’ordine dei frame segue i numeri nel nome file.'
     });
     if (!resources || !resources.length) return;
 
@@ -11884,6 +12071,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   function serializeInventory() {
     return {
+      displayMode: normalizeInventoryDisplayMode(inventoryDefinition.displayMode),
+      popupEdgeHeight: Math.max(16, Math.min(200, Number(inventoryDefinition.popupEdgeHeight) || 48)),
+      panel: (() => {
+        ensureInventoryRects();
+        const p = inventoryDefinition.panel;
+        return { x: p.x, y: p.y, w: p.w, h: p.h };
+      })(),
+      toggleIconBounds: (() => {
+        ensureInventoryRects();
+        const t = inventoryDefinition.toggleIconBounds;
+        return { x: t.x, y: t.y, w: t.w, h: t.h };
+      })(),
+      toggleIcon: serializeImage(inventoryDefinition.toggleIcon),
       background: serializeImage(inventoryDefinition.background),
       slots: Array.isArray(inventoryDefinition.slots)
         ? inventoryDefinition.slots
@@ -15012,10 +15212,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
           
+          const loadedGuiType = (g.type === 'Inventory') ? 'OverlayCustom' : (g.type || 'MainInterface');
           guis.push({
             id: g.id || uid('gui'),
             name: g.name || 'GUI',
-            type: g.type || 'MainInterface',
+            type: loadedGuiType,
             settings: g.settings || {},
             background: guiBg,
             buttons: buttons
@@ -15141,7 +15342,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Inventory (layout + items)
       try {
         inventoryItems = [];
-        inventoryDefinition = { background: null, slots: [] };
+        inventoryDefinition = {
+          background: null,
+          slots: [],
+          displayMode: 'popup',
+          popupEdgeHeight: 48,
+          panel: null,
+          toggleIcon: null,
+          toggleIconBounds: null
+        };
         selectedInventorySlotId = null;
         selectedInventoryItemId = null;
         const invData = projectObj.inventory;
@@ -15151,6 +15360,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             itemSources.push({ ...item, _legacy: true });
           });
         } else if (invData && typeof invData === 'object') {
+          inventoryDefinition.displayMode = normalizeInventoryDisplayMode(invData.displayMode);
+          inventoryDefinition.popupEdgeHeight = Math.max(16, Math.min(200, Number(invData.popupEdgeHeight) || 48));
+          inventoryDefinition.panel = normalizeInventoryRect(invData.panel, defaultInventoryPanel());
+          inventoryDefinition.toggleIconBounds = normalizeInventoryRect(
+            invData.toggleIconBounds,
+            defaultInventoryToggleIconBounds()
+          );
           if (Array.isArray(invData.items)) itemSources.push(...invData.items);
           if (Array.isArray(invData.slots)) {
             inventoryDefinition.slots = invData.slots.map(s => ({
@@ -15171,6 +15387,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 if (typeof bgRef === 'string' && bgRef.startsWith('asset:')) {
                   imageAssetMap.set(img, { assetId: bgRef.replace('asset:', ''), type: 'inventory', projectId });
                 }
+                redraw();
+              }
+            });
+          }
+          if (invData.toggleIcon) {
+            const iconRef = invData.toggleIcon;
+            Promise.resolve().then(async () => {
+              const img = await createImageFromDataUrl(iconRef, projectId);
+              if (img) {
+                inventoryDefinition.toggleIcon = img;
+                if (typeof iconRef === 'string' && iconRef.startsWith('asset:')) {
+                  imageAssetMap.set(img, { assetId: iconRef.replace('asset:', ''), type: 'inventory', projectId });
+                }
+                updateInventoryToggleIconLabel();
                 redraw();
               }
             });
@@ -15200,10 +15430,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
           refreshInventoryItemsListUI();
           refreshInventorySlotsListUI();
+          applyInventoryRectsToUI();
+          refreshInventoryDisplayModeUI();
           redraw();
         });
         refreshInventoryItemsListUI();
         refreshInventorySlotsListUI();
+        applyInventoryRectsToUI();
+        refreshInventoryDisplayModeUI();
       } catch (invErr) {
         console.error('[Load] Errore caricamento inventory:', invErr);
       }
@@ -16453,8 +16687,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (selector) selector.value = guiId;
     // Update type selector and render settings
     const typeSel = document.getElementById('gui-type-select');
-    if (typeSel) typeSel.value = gui.type || 'MainInterface';
-    renderGuiSettingsPanel(gui.type || 'MainInterface', gui.settings || {});
+    const guiType = (gui.type === 'Inventory') ? 'OverlayCustom' : (gui.type || 'MainInterface');
+    if (gui.type === 'Inventory') gui.type = guiType;
+    if (typeSel) typeSel.value = guiType;
+    renderGuiSettingsPanel(guiType, gui.settings || {});
     
     redraw();
     refreshGUIButtonsList();

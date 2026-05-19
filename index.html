@@ -560,6 +560,73 @@
           <div class="section-content">
             <div class="mt-1 p-2 mb-3" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
               <h6 class="m-0 mb-2" style="color:#eee">Inventory layout</h6>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1" for="inventory-display-mode">Display mode</label>
+                <select class="form-select form-select-sm" id="inventory-display-mode">
+                  <option value="popup">Pop-up (bottom edge hover)</option>
+                  <option value="always">Always on screen</option>
+                  <option value="toggle">Toggle via icon click</option>
+                </select>
+                <small class="text-muted d-block mt-1" id="inventory-popup-hint">Opens when the cursor enters the bottom edge of the screen.</small>
+              </div>
+              <div class="mb-2" id="inventory-popup-edge-wrap">
+                <label class="form-label text-light mb-1" for="inventory-popup-edge-height">Bottom edge height (px)</label>
+                <input type="number" class="form-control form-control-sm" id="inventory-popup-edge-height" min="16" max="200" value="48">
+              </div>
+              <div class="mb-2 p-2" style="background:#252525;border:1px solid #444;border-radius:6px;">
+                <h6 class="text-light mb-2" style="font-size:0.85rem;">Panel position &amp; size</h6>
+                <div class="row g-1 mb-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-x">X</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-x" value="0">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-y">Y</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-y" value="0">
+                  </div>
+                </div>
+                <div class="row g-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-w">Width</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-w" min="1" value="800">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-h">Height</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-h" min="1" value="600">
+                  </div>
+                </div>
+              </div>
+              <div class="mb-2" id="inventory-toggle-icon-wrap" style="display:none;">
+                <label class="form-label text-light mb-1">Toggle icon</label>
+                <div class="input-group input-group-sm mb-2">
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-browse">
+                    <i class="fas fa-folder-open"></i> Browse Resources
+                  </button>
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-clear">Remove</button>
+                </div>
+                <small class="text-muted d-block mb-2" id="inventory-toggle-icon-label">No icon</small>
+                <h6 class="text-light mb-2" style="font-size:0.85rem;">Icon position &amp; size</h6>
+                <div class="row g-1 mb-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-x">X</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-x" value="744">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-y">Y</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-y" value="544">
+                  </div>
+                </div>
+                <div class="row g-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-w">Width</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-w" min="1" value="48">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-h">Height</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-h" min="1" value="48">
+                  </div>
+                </div>
+              </div>
               <div class="btn-group w-100 mb-2" role="group">
                 <button class="btn btn-success btn-sm" id="btn-inventory-bg" type="button">Inventory background</button>
                 <button class="btn btn-primary btn-sm" id="btn-inventory-slot" type="button">Add slot</button>
@@ -656,6 +723,7 @@
               <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-character-frames-browse">
                 <i class="fas fa-folder-open"></i> Browse Resources (frames)
               </button>
+              <small class="text-muted d-block mt-1">Puoi selezionare più immagini dalla finestra Resources; l’ordine segue i numeri nel nome file.</small>
             </div>
             
             <!-- Container per specchiare direzione -->
@@ -800,7 +868,6 @@
                 <select class="form-select form-select-sm" id="gui-type-select">
                   <option value="MainInterface">MainInterface</option>
                   <option value="DialogBox">DialogBox</option>
-                  <option value="Inventory">Inventory</option>
                   <option value="Menu">Menu</option>
                   <option value="VerbGUI">VerbGUI</option>
                   <option value="VerbCoin">VerbCoin</option>
@@ -1032,8 +1099,8 @@
   <!-- Supabase Config (opzionale, crea supabase-config.js basandoti su supabase-config-template.js) -->
   <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js non trovato. Configura SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js o crea supabase-config.js')"></script>
   <script src="JS/supabase.js"></script>
-  <script src="JS/main.js"></script>
   <script src="JS/resources.js"></script>
+  <script src="JS/main.js"></script>
 
   <!-- Resource picker modal (usato da tutti i Browse) -->
   <div class="modal fade" id="resourcePickerModal" tabindex="-1" aria-labelledby="resourcePickerModalLabel" aria-hidden="true">
@@ -1050,6 +1117,11 @@
               <i class="fas fa-file-import"></i> Import
             </button>
           </div>
+          <small class="text-muted d-block mb-1" id="resource-picker-hint" style="display: none;"></small>
+          <div class="d-flex flex-wrap gap-2 mb-2 align-items-center" id="resource-picker-multi-actions" style="display: none;">
+            <button type="button" class="btn btn-outline-light btn-sm" id="resource-picker-select-all-btn">Seleziona tutto</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="resource-picker-clear-btn">Deseleziona</button>
+          </div>
           <small class="text-muted d-block mb-2" id="resource-picker-selection">No selection</small>
           <div id="resource-picker-grid" class="resources-grid resources-grid-picker"></div>
         </div>
@@ -1062,3 +1134,14 @@
   </div>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+

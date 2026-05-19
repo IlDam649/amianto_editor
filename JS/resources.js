@@ -371,7 +371,56 @@
     const label = document.getElementById('resource-picker-selection');
     if (!label || !state.picker) return;
     const n = state.picker.selected.size;
-    label.textContent = n ? `${n} selected` : 'No selection';
+    if (state.picker.multiple) {
+      label.textContent = n
+        ? `${n} immagin${n === 1 ? 'e' : 'i'} selezionat${n === 1 ? 'a' : 'e'}`
+        : 'Nessuna selezione';
+    } else {
+      label.textContent = n ? '1 immagine selezionata' : 'Nessuna selezione';
+    }
+  }
+
+  function getVisiblePickerEntries() {
+    if (!state.picker) return [];
+    const searchEl = document.getElementById('resource-picker-search');
+    return filterPickerEntries(state.picker.entries, searchEl?.value || '');
+  }
+
+  function setPickerMultiUi(options = {}) {
+    const { multiple = false, hint = '' } = options;
+    const hintEl = document.getElementById('resource-picker-hint');
+    const multiActions = document.getElementById('resource-picker-multi-actions');
+    const modalEl = document.getElementById('resourcePickerModal');
+
+    if (hintEl) {
+      if (multiple && hint) {
+        hintEl.textContent = hint;
+        hintEl.style.display = '';
+      } else {
+        hintEl.textContent = '';
+        hintEl.style.display = 'none';
+      }
+    }
+    if (multiActions) {
+      multiActions.style.display = multiple ? '' : 'none';
+    }
+    if (modalEl) {
+      modalEl.classList.toggle('resource-picker-multi', multiple);
+    }
+  }
+
+  function selectAllVisibleInPicker() {
+    if (!state.picker?.multiple) return;
+    getVisiblePickerEntries().forEach(entry => state.picker.selected.add(entry.assetId));
+    renderPickerGrid(getVisiblePickerEntries());
+    updatePickerSelectionLabel();
+  }
+
+  function clearPickerSelection() {
+    if (!state.picker) return;
+    state.picker.selected.clear();
+    renderPickerGrid(getVisiblePickerEntries());
+    updatePickerSelectionLabel();
   }
 
   function entryByAssetId(assetId) {
@@ -561,7 +610,8 @@
     const {
       title = 'Select image from Resources',
       multiple = false,
-      allowUpload = true
+      allowUpload = true,
+      hint = ''
     } = options;
 
     const projectId = getProjectId();
@@ -580,17 +630,23 @@
     const searchEl = document.getElementById('resource-picker-search');
     const uploadBtn = document.getElementById('resource-picker-upload-btn');
     const confirmBtn = document.getElementById('resource-picker-confirm-btn');
+    const selectAllBtn = document.getElementById('resource-picker-select-all-btn');
+    const clearBtn = document.getElementById('resource-picker-clear-btn');
 
     if (titleEl) titleEl.textContent = title;
     if (uploadBtn) uploadBtn.style.display = allowUpload ? '' : 'none';
-    if (confirmBtn) confirmBtn.textContent = multiple ? 'Add selection' : 'Use image';
+    if (confirmBtn) {
+      confirmBtn.textContent = multiple ? 'Aggiungi selezione' : 'Usa immagine';
+    }
+    setPickerMultiUi({ multiple, hint });
 
     const entries = await loadResourcesForPicker();
     state.picker = {
       selected: new Set(),
       entries,
       multiple,
-      filter: ''
+      filter: '',
+      hint
     };
 
     renderPickerGrid(entries);
@@ -611,8 +667,11 @@
         confirmBtn?.removeEventListener('click', onConfirm);
         uploadBtn?.removeEventListener('click', onUpload);
         searchEl?.removeEventListener('input', onSearch);
+        selectAllBtn?.removeEventListener('click', onSelectAll);
+        clearBtn?.removeEventListener('click', onClear);
         modalEl.removeEventListener('hidden.bs.modal', onHidden);
         state.picker = null;
+        setPickerMultiUi({ multiple: false });
       };
 
       const onHidden = () => {
@@ -627,7 +686,10 @@
           .map(toResourcePayload);
 
         if (!selected.length) {
-          deps.showNotification('Select at least one image', 'warning');
+          deps.showNotification(
+            multiple ? 'Seleziona almeno un\'immagine' : 'Seleziona un\'immagine',
+            'warning'
+          );
           return;
         }
 
@@ -651,9 +713,14 @@
         renderPickerGrid(filterPickerEntries(state.picker.entries, searchEl.value));
       };
 
+      const onSelectAll = () => selectAllVisibleInPicker();
+      const onClear = () => clearPickerSelection();
+
       confirmBtn?.addEventListener('click', onConfirm);
       uploadBtn?.addEventListener('click', onUpload);
       searchEl?.addEventListener('input', onSearch);
+      selectAllBtn?.addEventListener('click', onSelectAll);
+      clearBtn?.addEventListener('click', onClear);
       modalEl.addEventListener('hidden.bs.modal', onHidden, { once: true });
 
       modal.show();

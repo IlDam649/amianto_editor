@@ -36,7 +36,8 @@
     // Struttura: Map<scriptName, { on_hotspot_click: function, on_object_click: function, ... }>
     // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
     // Questo previene riesecuzione di codice JS a ogni evento
-    compiledScripts: new Map()
+    compiledScripts: new Map(),
+    inventory: null // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible }
   };
 
   // ⚠️ FLAG PROTEZIONE DOPPI EVENTI
@@ -59,6 +60,17 @@
     isLoading: false,
     loadComplete: false
   };
+
+  // Categorie usate per risolvere asset: (include 'resource' per immagini da Resources centralizzate)
+  const ASSET_RESOLVE_CATEGORIES = [
+    'resource',
+    'background',
+    'foreground',
+    'sprite',
+    'gui',
+    'character',
+    'cursor'
+  ];
 
   // ============================================
   // UTILITY
@@ -237,20 +249,19 @@
                 log(`[Runtime] resolveAssetId: ✓ URL trovato in Firestore: ${data.publicUrl.substring(0, 80)}...`, 'success');
                 return data.publicUrl;
               } else if (data.fileName) {
-                // IMPORTANTE: Usa sempre il fileName da Firestore, è la fonte più affidabile
-                // Il fileName include il baseName originale: assetId_baseName.ext
-                // Esempio: asset_1766443609527_ml2znk9_occhio_n1.png
-                // IMPORTANTE: Usa getSupabaseFolderForType per mappare correttamente la categoria
-                // "foreground" -> "foregrounds", "background" -> "backgrounds", ecc.
-                const folder = window.supabaseStorage.getSupabaseFolderForType ? window.supabaseStorage.getSupabaseFolderForType(category) : category;
-                const subfolder = data.subfolder || null; // Usa subfolder dai metadati se presente
-                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', categoria '${category}' -> folder '${folder}'${subfolder ? `, subfolder '${subfolder}'` : ''}`, 'info');
+                // Usa il tipo salvato in Firestore (es. 'resource' per Resources centralizzate)
+                const metaCategory = data.type || category;
+                const folder = window.supabaseStorage.getSupabaseFolderForType
+                  ? window.supabaseStorage.getSupabaseFolderForType(metaCategory)
+                  : metaCategory;
+                const subfolder = data.subfolder || null;
+                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', tipo metadata '${metaCategory}' -> folder '${folder}'${subfolder ? `, subfolder '${subfolder}'` : ''}`, 'info');
                 const url = window.supabaseStorage.getAssetPublicUrl(
-                  userId, // Usa userId da Firebase Auth corrente
+                  userId,
                   actualProjectId,
-                  category, // Passa la categoria originale (getSupabaseFolderForType la mapperà internamente)
-                  data.fileName, // Usa il fileName esatto salvato in Firestore (include baseName)
-                  subfolder // Passa subfolder se presente (es: "rooms/roomname")
+                  metaCategory,
+                  data.fileName,
+                  subfolder
                 );
                 if (url) {
                   log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName Firestore: ${url}`, 'success');
@@ -315,9 +326,11 @@
       if (window.supabaseStorage.resolveAssetUrl) {
         try {
           log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}${characterName ? ` (characterName: ${characterName})` : ''}`, 'info');
-          // Se abbiamo roomName, costruisci il subfolder: rooms/{roomName}
-          // Se abbiamo characterName, costruisci il subfolder: characters/{characterName}
-          const subfolder = roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null);
+          // Resources/gui/cursor vivono nella cartella di categoria, non in rooms/characters
+          const useRoomSubfolder = category !== 'resource' && category !== 'gui' && category !== 'cursor';
+          const subfolder = useRoomSubfolder
+            ? (roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null))
+            : null;
           const directUrl = await window.supabaseStorage.resolveAssetUrl(
             actualProjectId,
             assetId,
@@ -409,14 +422,9 @@
           }
         }
         
-        // Se non abbiamo ancora risolto, prova tutte le categorie in ordine
-        // Ordine ottimizzato: background prima (ora sono in backgrounds, non più in sprites)
-        // Poi foreground, sprite, gui (foreground prima di sprite perché potrebbe essere confuso)
+        // Se non abbiamo ancora risolto, prova tutte le categorie (incluso 'resource' per Resources centralizzate)
         if (!resolvedUrl) {
-          const categories = ['background', 'foreground', 'sprite', 'gui'];
-          
-          for (const category of categories) {
-            // Salta la categoria già provata
+          for (const category of ASSET_RESOLVE_CATEGORIES) {
             if (category === categoryHint) continue;
             
             try {
@@ -576,6 +584,7 @@
       gameState.variables.clear();
       gameState.objects.clear();
       gameState.guis.clear();
+      gameState.inventory = createEmptyInventoryState();
       gameState.characters.clear();
       gameState.characterDefinitions.clear();
       gameState.scripts = projectData.scripts || {};
@@ -741,6 +750,9 @@
       updateLoadingMessage('Caricamento GUI...');
       await loadGUIs(projectData.guis || []);
 
+      updateLoadingMessage('Caricamento inventario...');
+      loadInventory(projectData.inventory);
+
       updateLoadingMessage('Esecuzione script iniziali...');
       await executeGameStartScripts();
 
@@ -868,6 +880,24 @@
           });
         }
       });
+    }
+
+    // Inventory (background, toggle icon, item images)
+    const invData = projectData.inventory;
+    if (invData && typeof invData === 'object' && !Array.isArray(invData)) {
+      if (invData.background && typeof invData.background === 'string') {
+        assetsWithCategory.set(invData.background, { category: 'gui', roomName: null, characterName: null });
+      }
+      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
+        assetsWithCategory.set(invData.toggleIcon, { category: 'gui', roomName: null, characterName: null });
+      }
+      if (Array.isArray(invData.items)) {
+        invData.items.forEach(item => {
+          if (item && item.image && typeof item.image === 'string') {
+            assetsWithCategory.set(item.image, { category: 'gui', roomName: null, characterName: null });
+          }
+        });
+      }
     }
 
     // Character frames (hanno characterName invece di roomName)
@@ -1570,6 +1600,235 @@
     }
 
     log(`[Runtime] Caricamento GUI completato: ${guisData.length} GUI caricate`, 'success');
+  }
+
+  // ============================================
+  // GESTIONE INVENTARIO
+  // ============================================
+  function createEmptyInventoryState() {
+    return {
+      enabled: false,
+      displayMode: 'popup',
+      popupEdgeHeight: 48,
+      panel: { x: 0, y: 0, w: 800, h: 600 },
+      background: null,
+      toggleIcon: null,
+      toggleIconBounds: { x: 744, y: 544, w: 48, h: 48 },
+      toggleIconRect: null,
+      slots: [],
+      itemDefs: new Map(),
+      contents: new Map(),
+      visible: false
+    };
+  }
+
+  function normalizeInventoryDisplayMode(mode) {
+    const m = String(mode || 'popup').toLowerCase();
+    return (m === 'always' || m === 'toggle' || m === 'popup') ? m : 'popup';
+  }
+
+  function defaultRuntimeInventoryPanel() {
+    const w = canvas ? canvas.width : 800;
+    const h = canvas ? canvas.height : 600;
+    return { x: 0, y: 0, w, h };
+  }
+
+  function defaultRuntimeToggleIconBounds() {
+    const w = canvas ? canvas.width : 800;
+    const h = canvas ? canvas.height : 600;
+    const size = 48;
+    const margin = 8;
+    return {
+      x: Math.max(0, w - size - margin),
+      y: Math.max(0, h - size - margin),
+      w: size,
+      h: size
+    };
+  }
+
+  function normalizeRuntimeInventoryRect(rect, fallback) {
+    const fb = fallback || { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      x: Math.round(Number(rect && rect.x != null ? rect.x : fb.x) || 0),
+      y: Math.round(Number(rect && rect.y != null ? rect.y : fb.y) || 0),
+      w: Math.max(1, Math.round(Number(rect && rect.w != null ? rect.w : fb.w) || fb.w)),
+      h: Math.max(1, Math.round(Number(rect && rect.h != null ? rect.h : fb.h) || fb.h))
+    };
+  }
+
+  function loadInventory(invData) {
+    gameState.inventory = createEmptyInventoryState();
+    const inv = gameState.inventory;
+
+    if (!invData) {
+      return;
+    }
+
+    const itemSources = [];
+    if (Array.isArray(invData)) {
+      itemSources.push(...invData);
+    } else if (typeof invData === 'object') {
+      inv.displayMode = normalizeInventoryDisplayMode(invData.displayMode);
+      inv.popupEdgeHeight = Math.max(16, Math.min(200, Number(invData.popupEdgeHeight) || 48));
+      inv.panel = normalizeRuntimeInventoryRect(invData.panel, defaultRuntimeInventoryPanel());
+      inv.toggleIconBounds = normalizeRuntimeInventoryRect(
+        invData.toggleIconBounds,
+        defaultRuntimeToggleIconBounds()
+      );
+      if (invData.background && typeof invData.background === 'string') {
+        inv.background = AssetRegistry.images.get(invData.background) || null;
+      }
+      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
+        inv.toggleIcon = AssetRegistry.images.get(invData.toggleIcon) || null;
+      }
+      if (Array.isArray(invData.slots)) {
+        inv.slots = invData.slots.map(s => ({
+          id: s.id,
+          name: s.name || 'Slot',
+          x: Number(s.x) || 0,
+          y: Number(s.y) || 0,
+          w: Number(s.w) || 0,
+          h: Number(s.h) || 0
+        }));
+      }
+      if (Array.isArray(invData.items)) {
+        itemSources.push(...invData.items);
+      }
+    } else {
+      return;
+    }
+
+    itemSources.forEach(item => {
+      if (!item) return;
+      const id = String(item.id || item.name || '').trim();
+      if (!id) return;
+      let image = null;
+      if (item.image && typeof item.image === 'string') {
+        image = AssetRegistry.images.get(item.image) || null;
+      }
+      inv.itemDefs.set(id, {
+        id,
+        name: item.name || id,
+        scriptName: item.scriptName || item.name || id,
+        image
+      });
+      if (item.name && item.name !== id) {
+        inv.itemDefs.set(String(item.name), inv.itemDefs.get(id));
+      }
+      if (item.scriptName) {
+        inv.itemDefs.set(String(item.scriptName), inv.itemDefs.get(id));
+      }
+    });
+
+    const hasLayout = !!(inv.background || inv.slots.length > 0);
+    inv.enabled = hasLayout || inv.itemDefs.size > 0;
+    inv.visible = inv.displayMode === 'always';
+    updateInventoryToggleIconRect();
+
+    log(`[Runtime] Inventario caricato (mode: ${inv.displayMode}, slots: ${inv.slots.length}, items: ${inv.itemDefs.size})`, 'info');
+  }
+
+  function updateInventoryToggleIconRect() {
+    const inv = gameState.inventory;
+    if (!inv) {
+      return;
+    }
+    if (!inv.toggleIconBounds) {
+      inv.toggleIconBounds = defaultRuntimeToggleIconBounds();
+    }
+    inv.toggleIconRect = { ...inv.toggleIconBounds };
+  }
+
+  function updateInventoryVisibilityFromPointer(canvasY, inCanvas) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled) return;
+    if (inv.displayMode === 'always') {
+      inv.visible = true;
+      return;
+    }
+    if (inv.displayMode === 'popup') {
+      const edge = inv.popupEdgeHeight || 48;
+      inv.visible = !!(inCanvas && canvasY >= canvas.height - edge);
+    }
+  }
+
+  function resolveInventoryItemDef(itemKey) {
+    const inv = gameState.inventory;
+    if (!inv) return null;
+    const key = String(itemKey || '').trim();
+    if (!key) return null;
+    return inv.itemDefs.get(key) || null;
+  }
+
+  function getInventoryContentsList() {
+    const inv = gameState.inventory;
+    if (!inv) return [];
+    const list = [];
+    inv.contents.forEach((count, key) => {
+      const c = Math.max(0, Number(count) || 0);
+      if (c <= 0) return;
+      const def = resolveInventoryItemDef(key);
+      list.push({ key, count: c, def });
+    });
+    return list;
+  }
+
+  function renderInventoryPanel(ctx) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || !inv.visible) return;
+
+    const panel = inv.panel || defaultRuntimeInventoryPanel();
+    if (inv.background && inv.background.complete && inv.background.naturalWidth > 0) {
+      try {
+        ctx.drawImage(inv.background, panel.x, panel.y, panel.w, panel.h);
+      } catch (error) {
+        log(`[Runtime] Errore rendering inventario background: ${error.message}`, 'warning');
+      }
+    }
+
+    const contents = getInventoryContentsList();
+    inv.slots.forEach((slot, index) => {
+      const entry = contents[index];
+      if (!entry || !entry.def || !entry.def.image) return;
+      const img = entry.def.image;
+      if (!img.complete || img.naturalWidth <= 0) return;
+      try {
+        ctx.drawImage(img, slot.x, slot.y, slot.w, slot.h);
+      } catch (error) {
+        log(`[Runtime] Errore rendering item inventario: ${error.message}`, 'warning');
+      }
+    });
+  }
+
+  function renderInventoryToggleIcon(ctx) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || inv.displayMode !== 'toggle') return;
+    if (!inv.toggleIcon || !inv.toggleIcon.complete || inv.toggleIcon.naturalWidth <= 0) return;
+    updateInventoryToggleIconRect();
+    const r = inv.toggleIconRect || inv.toggleIconBounds;
+    if (!r) return;
+    try {
+      ctx.drawImage(inv.toggleIcon, r.x, r.y, r.w, r.h);
+    } catch (error) {
+      log(`[Runtime] Errore rendering icona toggle inventario: ${error.message}`, 'warning');
+    }
+  }
+
+  function renderInventory(ctx) {
+    renderInventoryPanel(ctx);
+    renderInventoryToggleIcon(ctx);
+  }
+
+  function handleInventoryToggleClick(x, y) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || inv.displayMode !== 'toggle') return false;
+    const r = inv.toggleIconRect;
+    if (!r) return false;
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+      inv.visible = !inv.visible;
+      return true;
+    }
+    return false;
   }
 
   // ============================================
@@ -3576,6 +3835,8 @@
         });
       }
     });
+
+    renderInventory(ctx);
   }
 
   // ============================================
@@ -3856,9 +4117,27 @@
   
   let clickListenerAttached = false;
   let clickHandlerFunction = null; // Riferimento alla funzione per cleanup
+  let inventoryPointerHandler = null;
+  let inventoryLeaveHandler = null;
   let clickHandledThisFrame = false; // Flag anti-double-fire per frame
   let lastClickTime = 0; // Timestamp ultimo click per debounce
   const CLICK_DEBOUNCE_MS = 50; // Debounce di 50ms tra click
+
+  function canvasCoordsFromClientEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) {
+      return { x: 0, y: 0, inCanvas: false };
+    }
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const inCanvas = e.clientX >= rect.left && e.clientX <= rect.right &&
+      e.clientY >= rect.top && e.clientY <= rect.bottom;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      inCanvas
+    };
+  }
   
   function setupInteraction() {
     if (!canvas) {
@@ -3951,6 +4230,23 @@
     
     canvas.addEventListener('click', clickHandlerFunction, { passive: false }); // passive: false per permettere stopImmediatePropagation
 
+    if (inventoryPointerHandler) {
+      canvas.removeEventListener('mousemove', inventoryPointerHandler);
+      canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
+    }
+    inventoryPointerHandler = function(e) {
+      if (!gameState.isRunning || !gameState.inventory || !gameState.inventory.enabled) return;
+      const coords = canvasCoordsFromClientEvent(e);
+      updateInventoryVisibilityFromPointer(coords.y, coords.inCanvas);
+    };
+    inventoryLeaveHandler = function() {
+      const inv = gameState.inventory;
+      if (!inv || !inv.enabled || inv.displayMode !== 'popup') return;
+      inv.visible = false;
+    };
+    canvas.addEventListener('mousemove', inventoryPointerHandler, { passive: true });
+    canvas.addEventListener('mouseleave', inventoryLeaveHandler, { passive: true });
+
     canvas.style.cursor = 'pointer';
     clickListenerAttached = true;
     runtime.eventsBound = true; // ⚠️ Marca eventi come bindati
@@ -3969,6 +4265,14 @@
       runtime.eventsBound = false; // ⚠️ Reset flag quando viene fatto cleanup
       log('[Runtime] cleanupInteraction: Listener rimosso con successo (runtime.eventsBound=false)', 'success');
     }
+    if (canvas && inventoryPointerHandler) {
+      canvas.removeEventListener('mousemove', inventoryPointerHandler);
+      inventoryPointerHandler = null;
+    }
+    if (canvas && inventoryLeaveHandler) {
+      canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
+      inventoryLeaveHandler = null;
+    }
   }
   
   // Funzione dispatch centralizzata
@@ -3985,6 +4289,10 @@
     }
 
     log(`[Runtime] handleClick: Click rilevato alle coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
+
+    if (handleInventoryToggleClick(x, y)) {
+      return;
+    }
 
     // ⚠️ NUOVA LOGICA: Usa find() invece di forEach per trovare UN SOLO hotspot
     // Questo garantisce che venga eseguito SOLO lo script dell'hotspot cliccato
@@ -4394,6 +4702,7 @@
         gameState.variables.clear();
         gameState.objects.clear();
         gameState.guis.clear();
+        gameState.inventory = createEmptyInventoryState();
         gameState.scripts = {};
         gameState.attachments = {};
         gameState.initialized = false;

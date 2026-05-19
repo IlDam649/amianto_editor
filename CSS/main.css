@@ -913,6 +913,28 @@ header {
   max-height: 360px;
 }
 
+#resource-picker-hint {
+  color: #9bdc9b;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.resource-picker-multi .resource-card.selected::after {
+  content: '✓';
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  color: #39ff14;
+  text-shadow: 0 0 4px #000;
+  pointer-events: none;
+}
+
+.resource-picker-multi .resource-card {
+  position: relative;
+}
+
 .resource-card {
   background: #222;
   border: 2px solid #333;
