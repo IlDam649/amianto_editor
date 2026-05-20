@@ -1760,6 +1760,20 @@
     return inv.itemDefs.get(key) || null;
   }
 
+  /** Chiave canonica per gameState.inventory.contents (id definizione se noto). */
+  function resolveInventoryContentKey(itemKey) {
+    const def = resolveInventoryItemDef(itemKey);
+    if (def && def.id) return def.id;
+    return String(itemKey || '').trim();
+  }
+
+  function ensureInventoryState() {
+    if (!gameState.inventory) {
+      gameState.inventory = createEmptyInventoryState();
+    }
+    return gameState.inventory;
+  }
+
   function getInventoryContentsList() {
     const inv = gameState.inventory;
     if (!inv) return [];
@@ -3173,6 +3187,64 @@
       });
     },
 
+    // Inventario (Fase B.1)
+    add_to_inventory: function(itemId, quantity) {
+      const key = resolveInventoryContentKey(itemId);
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!key) {
+        GameAPI.error('add_to_inventory: itemId non valido');
+        return 0;
+      }
+      const inv = ensureInventoryState();
+      const current = Number(inv.contents.get(key) || 0);
+      const next = current + q;
+      inv.contents.set(key, next);
+      log(`[Runtime] add_to_inventory: +${q} × "${key}" (totale: ${next})`, 'info');
+      return next;
+    },
+
+    remove_from_inventory: function(itemId, quantity) {
+      const key = resolveInventoryContentKey(itemId);
+      const q = Math.max(1, Number(quantity) || 1);
+      if (!key) {
+        GameAPI.error('remove_from_inventory: itemId non valido');
+        return 0;
+      }
+      const inv = ensureInventoryState();
+      const current = Number(inv.contents.get(key) || 0);
+      const next = Math.max(0, current - q);
+      if (next <= 0) {
+        inv.contents.delete(key);
+      } else {
+        inv.contents.set(key, next);
+      }
+      log(`[Runtime] remove_from_inventory: -${q} × "${key}" (totale: ${next})`, 'info');
+      return next;
+    },
+
+    has_item: function(itemId) {
+      const key = resolveInventoryContentKey(itemId);
+      if (!key) return false;
+      const inv = gameState.inventory;
+      if (!inv || !inv.contents) return false;
+      return Number(inv.contents.get(key) || 0) > 0;
+    },
+
+    get_item_count: function(itemId) {
+      const key = resolveInventoryContentKey(itemId);
+      if (!key) return 0;
+      const inv = gameState.inventory;
+      if (!inv || !inv.contents) return 0;
+      return Number(inv.contents.get(key) || 0);
+    },
+
+    clear_inventory: function() {
+      const inv = ensureInventoryState();
+      inv.contents.clear();
+      log('[Runtime] clear_inventory: inventario svuotato', 'info');
+      return true;
+    },
+
     // Character API
     spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
       if (!characterName) {
@@ -3583,6 +3655,11 @@
       { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
       { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
       { name: 'move_object', value: bindGameApiMethod(api, 'move_object') },
+      { name: 'add_to_inventory', value: bindGameApiMethod(api, 'add_to_inventory') },
+      { name: 'remove_from_inventory', value: bindGameApiMethod(api, 'remove_from_inventory') },
+      { name: 'has_item', value: bindGameApiMethod(api, 'has_item') },
+      { name: 'get_item_count', value: bindGameApiMethod(api, 'get_item_count') },
+      { name: 'clear_inventory', value: bindGameApiMethod(api, 'clear_inventory') },
       { name: 'showText', value: bindGameApiMethod(api, 'showText') },
       { name: 'show_message', value: bindGameApiMethod(api, 'show_message') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },

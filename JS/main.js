@@ -4497,19 +4497,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Trova l'oggetto prima di rimuoverlo per eliminare l'asset
-      const sceneObject = sceneObjects.find(obj => obj.id === objectId);
-      
-      // Elimina l'asset da Supabase se presente
-      if (sceneObject && sceneObject.img) {
-        try {
-          await deleteAssetFromImage(sceneObject.img);
-        } catch (error) {
-          console.error('[Asset] Errore eliminazione asset oggetto di scena:', error);
-          // Continua comunque con l'eliminazione dell'oggetto anche se l'asset non viene eliminato
-        }
-      }
-      
+      // Rimuove solo dall'editor; i file su Supabase restano (eliminabili da Resources)
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
@@ -4688,173 +4676,9 @@ window.selectRoom = function(roomId) {
         stopCharacterPreview();
       }
       
-      // Elimina tutti gli asset del character da Supabase
       const charData = characterFrames.get(characterName);
-      
-      // Ottieni projectId corrente
-      let projectId = null;
-      try {
-        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-        if (activeProjectName) {
-          projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        }
-      } catch (e) {
-        console.warn('[Character] Impossibile ottenere projectId per eliminazione character:', e);
-      }
-      
-      if (charData && charData.directions) {
-        try {
-          let deletedCount = 0;
-          const characterSubfolder = `characters/${characterName}`;
-          
-          // Prima: elimina i frame individuali
-          for (const [dir, dirData] of Object.entries(charData.directions)) {
-            if (dirData.frames && Array.isArray(dirData.frames)) {
-              for (let i = 0; i < dirData.frames.length; i++) {
-                const frame = dirData.frames[i];
-                let deleted = false;
-                
-                // Gestisce diversi formati: { img: Image }, Image direttamente, o assetId stringa
-                if (frame && typeof frame === 'object' && frame.img) {
-                  // Formato nuovo: oggetto con proprietà img
-                  deleted = await deleteAssetFromImage(frame.img);
-                } else if (frame && typeof frame === 'object' && frame.src) {
-                  // Formato salvato: oggetto Image direttamente
-                  deleted = await deleteAssetFromImage(frame);
-                } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
-                  // IMPORTANTE: Se è un assetId stringa, elimina direttamente usando l'assetId
-                  const assetId = frame.replace('asset:', '');
-                  
-                  // Prova prima a trovare l'immagine in imageAssetMap
-                  let frameImage = null;
-                  for (const [img, assetInfo] of imageAssetMap.entries()) {
-                    if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
-                      frameImage = img;
-                      break;
-                    }
-                  }
-                  
-                  if (frameImage) {
-                    // Se trovato in imageAssetMap, usa deleteAssetFromImage
-                    deleted = await deleteAssetFromImage(frameImage);
-                  } else {
-                    // Se non trovato, elimina direttamente usando l'assetId e il subfolder
-                    // Costruisci il fileName dall'assetId (formato: assetId.png)
-                    const fileName = `${assetId}.png`;
-                    console.log(`[Character] Eliminazione frame assetId diretto: ${assetId} (${characterName}/${dir}/${i})`);
-                    
-                    // PRIMA: controlla se è un asset legacy Firebase Storage
-                    let firebaseStoragePath = null;
-                    let isFirebaseLegacy = false;
-                    if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-                      try {
-                        const userId = window.firebaseAuth.currentUser.uid;
-                        const assetRef = window.firebaseDB
-                          .collection('users')
-                          .doc(userId)
-                          .collection('projects')
-                          .doc(projectId)
-                          .collection('assets')
-                          .doc(assetId);
-                        
-                        const doc = await assetRef.get();
-                        if (doc.exists) {
-                          const data = doc.data();
-                          // Controlla se è un asset legacy Firebase Storage
-                          if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
-                            firebaseStoragePath = data.storagePath;
-                            isFirebaseLegacy = true;
-                            console.log(`[Character] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
-                          }
-                        }
-                      } catch (metaErr) {
-                        console.warn(`[Character] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
-                      }
-                    }
-                    
-                    // Elimina da Firebase Storage se è un asset legacy
-                    let firebaseDeleted = true; // Default true se non è un asset legacy
-                    if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
-                      try {
-                        console.log(`[Character] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
-                        const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
-                        await storageRef.delete();
-                        firebaseDeleted = true;
-                        console.log(`[Character] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
-                      } catch (firebaseError) {
-                        console.warn(`[Character] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
-                        // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
-                        firebaseDeleted = false;
-                      }
-                    }
-                    
-                    // POI: elimina da Supabase Storage
-                    if (window.supabaseStorage && window.supabaseStorage.deleteAsset && projectId) {
-                      let userIdOverride = null;
-                      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
-                        userIdOverride = window.firebaseAuth.currentUser.uid;
-                      }
-                      
-                      deleted = await window.supabaseStorage.deleteAsset(
-                        projectId, 
-                        'character', 
-                        fileName, 
-                        userIdOverride, 
-                        characterSubfolder
-                      );
-                      
-                      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
-                      if (!deleted && firebaseDeleted && isFirebaseLegacy) {
-                        deleted = true; // Se è stato eliminato da Firebase Storage, considera riuscita
-                      }
-                      
-                      // Elimina anche metadata da Firestore se disponibile
-                      if ((deleted || firebaseDeleted) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-                        try {
-                          const userId = window.firebaseAuth.currentUser.uid;
-                          const assetRef = window.firebaseDB
-                            .collection('users')
-                            .doc(userId)
-                            .collection('projects')
-                            .doc(projectId)
-                            .collection('assets')
-                            .doc(assetId);
-                          await assetRef.delete();
-                          console.log(`[Character] ✅ Metadata eliminato da Firestore per frame: ${assetId}`);
-                        } catch (firestoreError) {
-                          console.warn(`[Character] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
-                        }
-                      }
-                    }
-                  }
-                }
-                
-                if (deleted) {
-                  deletedCount++;
-                }
-              }
-            }
-          }
-          console.log(`[Character] ✅ Eliminati ${deletedCount} asset frame da Supabase per character "${characterName}"`);
-          
-          // Elimina anche l'intera cartella del character da Supabase (pulizia completa)
-          if (window.supabaseStorage && window.supabaseStorage.deleteCharacterFolder && projectId) {
-            try {
-              const folderDeleted = await window.supabaseStorage.deleteCharacterFolder(projectId, characterName);
-              if (folderDeleted) {
-                console.log(`[Character] ✅ Cartella character eliminata da Supabase: ${characterName}`);
-              }
-            } catch (folderError) {
-              console.warn(`[Character] ⚠️ Errore eliminazione cartella character (non critico):`, folderError);
-            }
-          }
-        } catch (error) {
-          console.error('[Asset] ❌ Errore eliminazione asset character:', error);
-          // Continua comunque con l'eliminazione
-        }
-      }
-      
-      // Secondo: elimina anche dalla imageAssetMap tutti i riferimenti al character eliminato
+
+      // Pulisce i riferimenti in memoria (i file su Supabase restano; eliminabili da Resources)
       // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
       if (charData && charData.directions) {
         try {
@@ -4921,7 +4745,7 @@ window.selectRoom = function(roomId) {
       }
       
       showNotification('Character deleted!', 'info');
-      console.log(`[Character] ✅ Character "${characterName}" eliminato completamente (frame, cartella, mappe)`);
+      console.log(`[Character] ✅ Character "${characterName}" rimosso dall'editor`);
     }
   };
 
@@ -5657,50 +5481,10 @@ window.selectRoom = function(roomId) {
     if (confirm('Clear all animation frames for this character?')) {
       // Ferma la preview se è attiva
       stopCharacterPreview();
-      
-      // Elimina tutti gli asset dei frame da Supabase (solo frame normali, non specchiati)
+
       const charData = characterFrames.get(who);
-      if (charData && charData.directions) {
-        try {
-          for (const [dir, dirData] of Object.entries(charData.directions)) {
-            if (dirData.frames && Array.isArray(dirData.frames)) {
-              for (const frame of dirData.frames) {
-                // Salta i frame specchiati - non hanno asset da eliminare
-                if (frame && typeof frame === 'object' && frame.mirror) {
-                  continue;
-                }
-                
-                // Gestisce diversi formati: { img: Image } oppure Image direttamente
-                let frameImage = null;
-                if (frame && typeof frame === 'object' && frame.img) {
-                  // Formato nuovo: oggetto con proprietà img
-                  frameImage = frame.img;
-                } else if (frame && typeof frame === 'object' && frame.src) {
-                  // Formato salvato: oggetto Image direttamente
-                  frameImage = frame;
-                }
-                
-                if (frameImage) {
-                  await deleteAssetFromImage(frameImage);
-                } else if (frame && typeof frame === 'string' && frame.startsWith('asset:')) {
-                  // Se è un assetId, cerca l'immagine associata
-                  for (const [img, assetInfo] of imageAssetMap.entries()) {
-                    if (assetInfo.assetId === frame.replace('asset:', '') && assetInfo.type === 'character') {
-                      await deleteAssetFromImage(img);
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error('[Asset] Errore eliminazione asset character frames:', error);
-          // Continua comunque con la cancellazione dei frame
-        }
-      }
-      
-      // Pulisce tutti i frame per tutte le direzioni, ma mantiene il character
+
+      // Pulisce tutti i frame per tutte le direzioni, ma mantiene il character (i file su Supabase restano)
       if (charData && charData.directions) {
         for (const [dir, dirData] of Object.entries(charData.directions)) {
           if (dirData.frames) {
@@ -6141,36 +5925,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Elimina l'asset da Supabase se presente (solo per frame normali)
-      if (frameToDelete) {
-        try {
-          // Gestisce diversi formati: { img: Image } oppure Image direttamente
-          let frameImage = null;
-          if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.img) {
-            // Formato nuovo: oggetto con proprietà img
-            frameImage = frameToDelete.img;
-          } else if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.src) {
-            // Formato salvato: oggetto Image direttamente
-            frameImage = frameToDelete;
-          }
-          
-          if (frameImage) {
-            await deleteAssetFromImage(frameImage);
-          } else if (frameToDelete && typeof frameToDelete === 'string' && frameToDelete.startsWith('asset:')) {
-            // Se è un assetId, cerca l'immagine associata
-            for (const [img, assetInfo] of imageAssetMap.entries()) {
-              if (assetInfo.assetId === frameToDelete.replace('asset:', '') && assetInfo.type === 'character') {
-                await deleteAssetFromImage(img);
-                break;
-              }
-            }
-          }
-        } catch (error) {
-          console.error('[Asset] Errore eliminazione asset frame:', error);
-          // Continua comunque con l'eliminazione del frame
-        }
-      }
-      
+      // Rimuove solo dall'editor; i file su Supabase restano disponibili
       charData.directions[currentDirection].frames.splice(frameIndex, 1);
       
       // Aggiorna i thumbnails e il canvas dopo l'eliminazione
@@ -8808,7 +8563,7 @@ window.selectRoom = function(roomId) {
   // Variabile globale per tracciare lo stato di sincronizzazione
   let isSyncingProjects = false;
 
-  // Function to show loading overlay with coover.png
+  // Function to show loading overlay with mnt.png
   /**
    * Mostra loader globale
    * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
@@ -8842,7 +8597,7 @@ window.selectRoom = function(roomId) {
 
     overlay.innerHTML = `
       <div style="text-align: center; color: #fff;">
-        <img src="img/coover.png" alt="Loading" style="width: 120px; height: 120px; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
+        <img src="img/mnt.png" alt="Loading" style="max-width: 120px; max-height: 120px; width: auto; height: auto; object-fit: contain; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
         <div style="font-size: 18px; margin-bottom: 20px; color: #39ff14;">${message}</div>
         <div class="spinner-border text-success" role="status" style="width: 3rem; height: 3rem;">
           <span class="visually-hidden">Loading...</span>

@@ -2,13 +2,13 @@
   <table>
     <tr>
       <td align="center" width="220">
-        <img src="img/cover.png" alt="Amianto Editor Cover" width="180" />
+        <img src="img/mnt.png" alt="Amianto Editor Cover" width="180" />
       </td>
       <td align="center" width="280" style="vertical-align: middle;">
         <h2 style="font-size: 2.5em; margin: 0; font-weight: bold;">si evolve....</h2>
       </td>
       <td align="center" width="220">
-        <img src="img/coover.png" alt="Amianto Editor" width="180" />
+        <img src="img/mnt.png" alt="Amianto Editor" width="180" />
       </td>
     </tr>
   </table>
@@ -221,7 +221,7 @@ All other APIs listed in the extension roadmap are planned for future implementa
 - `runtime.html` — Standalone runtime player
 - `JS/runtime.js` — Runtime renderer (rooms/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Full list of APIs to implement
-- `img/coover.png` — Project cover (shown above)
+- `img/mnt.png` — Project cover (shown above)
 
 ## Extending
 
@@ -502,7 +502,7 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 - `runtime.html` — Player runtime standalone
 - `JS/runtime.js` — Renderer runtime (stanze/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Lista completa API da implementare
-- `img/coover.png` — Cover (in alto)
+- `img/mnt.png` — Cover (in alto)
 
 ## Estensioni Possibili
 
