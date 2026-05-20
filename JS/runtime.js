@@ -1047,8 +1047,11 @@
               x: Number(objData.x) || 0,
               y: Number(objData.y) || 0,
               img,
-              visible: true,
-              enabled: true
+              visible: typeof objData.visible === 'boolean' ? objData.visible : true,
+              enabled: typeof objData.enabled === 'boolean' ? objData.enabled : true,
+              rotationRad: Number(objData.rotationRad) || 0,
+              scaleX: Number(objData.scaleX) > 0 ? Number(objData.scaleX) : 1,
+              scaleY: Number(objData.scaleY) > 0 ? Number(objData.scaleY) : 1
             });
           } else {
             log(`[Runtime] Immagine oggetto non trovata in registry: ${objData.id} (${objData.image.substring(0, 50)})`, 'warning');
@@ -1843,6 +1846,84 @@
       return true;
     }
     return false;
+  }
+
+  // ============================================
+  // OGGETTI DI SCENA (runtime + Fase B.2)
+  // ============================================
+  function generateRuntimeObjectId() {
+    return `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function createObjectPlaceholderCanvas() {
+    const c = document.createElement('canvas');
+    c.width = 32;
+    c.height = 32;
+    const t = c.getContext('2d');
+    t.fillStyle = '#cc3333';
+    t.fillRect(0, 0, 32, 32);
+    t.fillStyle = '#ffffff';
+    t.fillRect(4, 4, 24, 24);
+    return c;
+  }
+
+  function getSceneObjectImageSize(obj) {
+    if (!obj || !obj.img) return { w: 0, h: 0 };
+    const rawW = obj.img.width || obj.img.naturalWidth || 0;
+    const rawH = obj.img.height || obj.img.naturalHeight || 0;
+    const scaleX = Number(obj.scaleX) > 0 ? Number(obj.scaleX) : 1;
+    const scaleY = Number(obj.scaleY) > 0 ? Number(obj.scaleY) : 1;
+    return { w: rawW * scaleX, h: rawH * scaleY };
+  }
+
+  function findRoomObject(objectIdOrName) {
+    if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.objects)) {
+      return null;
+    }
+    const key = String(objectIdOrName || '').trim();
+    if (!key) return null;
+    return gameState.currentRoom.objects.find(o => String(o.id) === key || String(o.name) === key) || null;
+  }
+
+  function isSceneObjectImageReady(obj) {
+    if (!obj || !obj.img) return false;
+    if (obj.img instanceof HTMLCanvasElement) return obj.img.width > 0 && obj.img.height > 0;
+    return obj.img.complete && obj.img.naturalWidth > 0;
+  }
+
+  function drawSceneObject(ctx, obj) {
+    if (!obj.visible || !isSceneObjectImageReady(obj)) return;
+    const scaleX = Number(obj.scaleX) > 0 ? Number(obj.scaleX) : 1;
+    const scaleY = Number(obj.scaleY) > 0 ? Number(obj.scaleY) : 1;
+    const rawW = obj.img.width || obj.img.naturalWidth;
+    const rawH = obj.img.height || obj.img.naturalHeight;
+    const sw = rawW * scaleX;
+    const sh = rawH * scaleY;
+    const rot = Number(obj.rotationRad) || 0;
+
+    try {
+      if (rot !== 0) {
+        const cx = obj.x + sw / 2;
+        const cy = obj.y + sh / 2;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.drawImage(obj.img, -sw / 2, -sh / 2, sw, sh);
+        ctx.restore();
+      } else if (scaleX !== 1 || scaleY !== 1) {
+        ctx.drawImage(obj.img, obj.x, obj.y, sw, sh);
+      } else {
+        ctx.drawImage(obj.img, obj.x, obj.y);
+      }
+    } catch (error) {
+      log(`[Runtime] Errore rendering oggetto ${obj.id}: ${error.message}`, 'warning');
+    }
+  }
+
+  function isPointOnSceneObject(obj, x, y) {
+    if (!obj.visible || !obj.enabled || !isSceneObjectImageReady(obj)) return false;
+    const size = getSceneObjectImageSize(obj);
+    return x >= obj.x && x <= obj.x + size.w && y >= obj.y && y <= obj.y + size.h;
   }
 
   // ============================================
@@ -3245,6 +3326,123 @@
       return true;
     },
 
+    // Oggetti di scena (Fase B.2)
+    spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
+      if (!gameState.currentRoom) {
+        GameAPI.error('spawn_object: nessuna room corrente');
+        return null;
+      }
+      if (!gameState.currentRoom.objects) {
+        gameState.currentRoom.objects = [];
+      }
+
+      const name = String(objectNameOrId || '').trim() || 'Object';
+      const objX = Number(x) || 0;
+      const objY = Number(y) || 0;
+      const id = generateRuntimeObjectId();
+
+      const newObj = {
+        id,
+        name,
+        type: 'Interactive',
+        x: objX,
+        y: objY,
+        img: createObjectPlaceholderCanvas(),
+        visible: true,
+        enabled: true,
+        rotationRad: 0,
+        scaleX: 1,
+        scaleY: 1
+      };
+      gameState.currentRoom.objects.push(newObj);
+
+      const url = imageUrlOrDataUrl == null ? '' : String(imageUrlOrDataUrl).trim();
+      if (url) {
+        const cached = AssetRegistry.images.get(url);
+        if (cached && cached.complete && cached.naturalWidth > 0) {
+          newObj.img = cached;
+        } else {
+          loadImage(url).then(img => {
+            if (!img) {
+              GameAPI.error(`spawn_object: impossibile caricare immagine per "${name}"`);
+              return;
+            }
+            const obj = findRoomObject(id);
+            if (obj) obj.img = img;
+          }).catch(err => {
+            GameAPI.error(`spawn_object: ${err && err.message ? err.message : err}`);
+          });
+        }
+      }
+
+      log(`[Runtime] spawn_object: "${name}" (${id}) a (${objX}, ${objY})`, 'info');
+      return id;
+    },
+
+    despawn_object: function(objectId) {
+      if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.objects)) {
+        GameAPI.error('despawn_object: nessuna room corrente');
+        return false;
+      }
+      const key = String(objectId || '').trim();
+      if (!key) {
+        GameAPI.error('despawn_object: objectId non valido');
+        return false;
+      }
+      const before = gameState.currentRoom.objects.length;
+      gameState.currentRoom.objects = gameState.currentRoom.objects.filter(
+        o => String(o.id) !== key && String(o.name) !== key
+      );
+      const removed = before !== gameState.currentRoom.objects.length;
+      if (removed) {
+        log(`[Runtime] despawn_object: rimosso "${key}"`, 'info');
+      } else {
+        GameAPI.error(`despawn_object: oggetto "${key}" non trovato`);
+      }
+      return removed;
+    },
+
+    rotate_object: function(objectId, degrees) {
+      const obj = findRoomObject(objectId);
+      if (!obj) {
+        GameAPI.error(`rotate_object: oggetto "${objectId}" non trovato`);
+        return false;
+      }
+      const deg = Number(degrees) || 0;
+      obj.rotationRad = deg * Math.PI / 180;
+      log(`[Runtime] rotate_object: "${obj.id}" → ${deg}°`, 'info');
+      return true;
+    },
+
+    scale_object: function(objectId, sx, sy) {
+      const obj = findRoomObject(objectId);
+      if (!obj) {
+        GameAPI.error(`scale_object: oggetto "${objectId}" non trovato`);
+        return false;
+      }
+      let scaleX = Number(sx);
+      let scaleY = (sy === undefined || sy === null) ? scaleX : Number(sy);
+      if (!isFinite(scaleX)) scaleX = 1;
+      if (!isFinite(scaleY)) scaleY = 1;
+      obj.scaleX = Math.max(0.01, scaleX);
+      obj.scaleY = Math.max(0.01, scaleY);
+      log(`[Runtime] scale_object: "${obj.id}" → (${obj.scaleX}, ${obj.scaleY})`, 'info');
+      return true;
+    },
+
+    set_object_visible: function(objectId, visible) {
+      const obj = findRoomObject(objectId);
+      if (!obj) {
+        GameAPI.error(`set_object_visible: oggetto "${objectId}" non trovato`);
+        return false;
+      }
+      const v = !!visible;
+      obj.visible = v;
+      obj.enabled = v;
+      log(`[Runtime] set_object_visible: "${obj.id}" → ${v}`, 'info');
+      return true;
+    },
+
     // Character API
     spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
       if (!characterName) {
@@ -3660,6 +3858,11 @@
       { name: 'has_item', value: bindGameApiMethod(api, 'has_item') },
       { name: 'get_item_count', value: bindGameApiMethod(api, 'get_item_count') },
       { name: 'clear_inventory', value: bindGameApiMethod(api, 'clear_inventory') },
+      { name: 'spawn_object', value: bindGameApiMethod(api, 'spawn_object') },
+      { name: 'despawn_object', value: bindGameApiMethod(api, 'despawn_object') },
+      { name: 'rotate_object', value: bindGameApiMethod(api, 'rotate_object') },
+      { name: 'scale_object', value: bindGameApiMethod(api, 'scale_object') },
+      { name: 'set_object_visible', value: bindGameApiMethod(api, 'set_object_visible') },
       { name: 'showText', value: bindGameApiMethod(api, 'showText') },
       { name: 'show_message', value: bindGameApiMethod(api, 'show_message') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
@@ -3780,17 +3983,9 @@
         }
       }
 
-      // Oggetti di scena - verifica che le immagini siano caricate e pronte
+      // Oggetti di scena (supporto scale/rotazione)
       if (room.objects && Array.isArray(room.objects)) {
-        room.objects.forEach(obj => {
-          if (obj.visible && obj.img && obj.img.complete && obj.img.naturalWidth > 0) {
-            try {
-              ctx.drawImage(obj.img, obj.x, obj.y);
-            } catch (error) {
-              log(`[Runtime] Errore rendering oggetto ${obj.id}: ${error.message}`, 'warning');
-            }
-          }
-        });
+        room.objects.forEach(obj => drawSceneObject(ctx, obj));
       }
 
       // Foregrounds - verifica che le immagini siano caricate e pronte
@@ -4418,8 +4613,7 @@
           continue;
         }
 
-        const isInside = x >= obj.x && x <= obj.x + obj.img.width &&
-                         y >= obj.y && y <= obj.y + obj.img.height;
+        const isInside = isPointOnSceneObject(obj, x, y);
         log(`[Runtime] handleClick: Oggetto ${obj.id} (${obj.name}): hit-test = ${isInside}`, 'info');
 
         if (isInside) {
