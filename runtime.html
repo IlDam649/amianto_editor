@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -276,13 +276,13 @@
 </head>
 <body>
   <div id="loading-overlay">
-    <h2>Caricamento Runtime...</h2>
-    <p id="loading-message">Inizializzazione...</p>
+    <h2>Loading Runtime...</h2>
+    <p id="loading-message">Initializing...</p>
   </div>
 
   <div id="file-input-container">
-    <button onclick="document.getElementById('file-input').click()">Carica Progetto JSON</button>
-    <button onclick="loadLastSavedProject()">Carica Ultimo Salvataggio</button>
+    <button onclick="document.getElementById('file-input').click()">Load Project JSON</button>
+    <button onclick="loadLastSavedProject()">Load Last Save</button>
     <input type="file" id="file-input" accept=".json" />
   </div>
 
@@ -296,8 +296,8 @@
     <div id="runtime-log-header">
       <h4>Runtime Log</h4>
       <div id="runtime-log-controls">
-        <button onclick="clearRuntimeLog()">Pulisci</button>
-        <button onclick="toggleRuntimeLog()">Nascondi</button>
+        <button onclick="clearRuntimeLog()">Clear</button>
+        <button onclick="toggleRuntimeLog()">Hide</button>
       </div>
     </div>
     <div id="runtime-log-content"></div>
@@ -305,7 +305,7 @@
 
   <!-- Supabase SDK per caricare assets -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
-  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js non trovato')"></script>
+  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found')"></script>
   <script src="JS/supabase.js"></script>
   <script src="JS/runtime.js"></script>
   <script>
@@ -321,12 +321,12 @@
           if (window.initRuntime) {
             window.initRuntime(projectData);
           } else {
-            console.error('Runtime non ancora inizializzato');
-            addRuntimeLog('Errore: Runtime non ancora inizializzato', 'error');
+            console.error('Runtime not initialized yet');
+            addRuntimeLog('Error: Runtime not initialized yet', 'error');
           }
         } catch (error) {
-          console.error('Errore caricamento progetto:', error);
-          addRuntimeLog('Errore caricamento progetto: ' + error.message, 'error');
+          console.error('Error loading project:', error);
+          addRuntimeLog('Error loading project: ' + error.message, 'error');
         }
       };
       reader.readAsText(file);
@@ -341,11 +341,11 @@
           
           // Valida formato progetto
           if (!projectData || typeof projectData !== 'object') {
-            throw new Error('Dati progetto non validi');
+            throw new Error('Invalid project data');
           }
           
           if (projectData.format !== 'amianto-game') {
-            addRuntimeLog('Attenzione: formato progetto non standard, potrebbe non funzionare correttamente', 'warning');
+            addRuntimeLog('Warning: non-standard project format; it may not work correctly', 'warning');
           }
           
           // Usa la funzione con retry
@@ -354,12 +354,12 @@
             return;
           }
         } else {
-          addRuntimeLog('Nessun progetto salvato trovato in localStorage', 'warning');
-          addRuntimeLog('Usa il pulsante "Load JSON" per caricare un progetto', 'info');
+          addRuntimeLog('No saved project found in localStorage', 'warning');
+          addRuntimeLog('Use the "Load Project JSON" button to load a project', 'info');
         }
       } catch (error) {
-        console.error('Errore caricamento ultimo salvataggio:', error);
-        addRuntimeLog('Errore caricamento ultimo salvataggio: ' + error.message, 'error');
+        console.error('Error loading last save:', error);
+        addRuntimeLog('Error loading last save: ' + error.message, 'error');
       }
     }
 
@@ -420,12 +420,12 @@
       if (window.initRuntime) {
         try {
           window.initRuntime(projectData);
-          addRuntimeLog(`Progetto caricato da ${source}`, 'success');
+          addRuntimeLog(`Project loaded from ${source}`, 'success');
           pendingProjectData = null; // Reset
           projectLoadAttempts = 0;
           return true;
         } catch (error) {
-          addRuntimeLog(`Errore caricamento progetto: ${error.message}`, 'error');
+          addRuntimeLog(`Error loading project: ${error.message}`, 'error');
           return false;
         }
       } else {
@@ -434,12 +434,12 @@
         projectLoadAttempts++;
         
         if (projectLoadAttempts < maxProjectLoadAttempts) {
-          addRuntimeLog(`Runtime non ancora pronto, attendo... (tentativo ${projectLoadAttempts}/${maxProjectLoadAttempts})`, 'warning');
+          addRuntimeLog(`Runtime not ready yet, waiting... (attempt ${projectLoadAttempts}/${maxProjectLoadAttempts})`, 'warning');
           setTimeout(() => {
             loadProjectWithRetry(projectData, source);
           }, 100);
         } else {
-          addRuntimeLog('Errore: Runtime non disponibile dopo ' + maxProjectLoadAttempts + ' tentativi', 'error');
+          addRuntimeLog('Error: Runtime unavailable after ' + maxProjectLoadAttempts + ' attempts', 'error');
           pendingProjectData = null;
           projectLoadAttempts = 0;
         }
@@ -451,11 +451,11 @@
     window.addEventListener('message', function(event) {
       // Accetta messaggi da qualsiasi origine (in sviluppo locale)
       if (event.data && event.data.type === 'LOAD_PROJECT' && event.data.projectData) {
-        addRuntimeLog('Ricevuto progetto dall\'editor (postMessage)', 'info');
+        addRuntimeLog('Received project from editor (postMessage)', 'info');
         // Non dare priorità a postMessage se localStorage è disponibile
         const hasLocalStorage = localStorage.getItem('amiantoLastSavedProjectJson');
         if (hasLocalStorage) {
-          addRuntimeLog('Ignoro postMessage, uso localStorage invece', 'info');
+          addRuntimeLog('Ignoring postMessage, using localStorage instead', 'info');
           return;
         }
         loadProjectWithRetry(event.data.projectData, 'postMessage');
@@ -469,7 +469,7 @@
         // PRIORITÀ 1: localStorage (più veloce e affidabile per playtest)
         const jsonString = localStorage.getItem('amiantoLastSavedProjectJson');
         if (jsonString) {
-          addRuntimeLog('Trovato progetto in localStorage, carico...', 'info');
+          addRuntimeLog('Found project in localStorage, loading...', 'info');
           loadLastSavedProject();
           return;
         }
@@ -481,7 +481,7 @@
           const projectKey = `amiantoProject_${activeProjectOwner}:${activeProjectName}`;
           const cachedProject = localStorage.getItem(projectKey);
           if (cachedProject) {
-            addRuntimeLog('Trovato progetto in cache locale, carico...', 'info');
+            addRuntimeLog('Found project in local cache, loading...', 'info');
             try {
               const projectData = JSON.parse(cachedProject);
               if (!loadProjectWithRetry(projectData, 'cache locale')) {
@@ -489,21 +489,21 @@
                 return;
               }
             } catch (error) {
-              addRuntimeLog('Errore parsing cache: ' + error.message, 'error');
+              addRuntimeLog('Cache parse error: ' + error.message, 'error');
             }
           }
         }
         
         // PRIORITÀ 3: OPFS (fallback)
         if (navigator.storage && navigator.storage.getDirectory) {
-          addRuntimeLog('Provo a caricare da OPFS...', 'info');
+          addRuntimeLog('Trying to load from OPFS...', 'info');
           loadProjectFromOPFS().catch((error) => {
-            addRuntimeLog('OPFS fallito: ' + error.message, 'warning');
-            addRuntimeLog('Nessun progetto trovato. Usa "Load JSON" per caricare un progetto.', 'info');
+            addRuntimeLog('OPFS failed: ' + error.message, 'warning');
+            addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
           });
         } else {
-          addRuntimeLog('OPFS non disponibile', 'info');
-          addRuntimeLog('Nessun progetto trovato. Usa "Load JSON" per caricare un progetto.', 'info');
+          addRuntimeLog('OPFS not available', 'info');
+          addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
         }
       }, 200); // Delay aumentato per assicurarsi che runtime.js sia caricato
     });
@@ -511,7 +511,7 @@
     async function loadProjectFromOPFS() {
       try {
         if (!navigator.storage || !navigator.storage.getDirectory) {
-          throw new Error('OPFS non disponibile');
+          throw new Error('OPFS not available');
         }
         
         const root = await navigator.storage.getDirectory();
@@ -538,28 +538,28 @@
             
             if (window.initRuntime) {
               window.initRuntime(projectData);
-              addRuntimeLog('Progetto caricato da OPFS: ' + targetFile.name, 'success');
+              addRuntimeLog('Project loaded from OPFS: ' + targetFile.name, 'success');
               return;
             } else {
-              addRuntimeLog('Runtime non ancora inizializzato, riprovo...', 'warning');
+              addRuntimeLog('Runtime not initialized yet, retrying...', 'warning');
               // Aspetta che il runtime sia pronto
               setTimeout(() => {
                 if (window.initRuntime) {
                   window.initRuntime(projectData);
-                  addRuntimeLog('Progetto caricato da OPFS (retry): ' + targetFile.name, 'success');
+                  addRuntimeLog('Project loaded from OPFS (retry): ' + targetFile.name, 'success');
                 } else {
-                  throw new Error('Runtime non disponibile');
+                  throw new Error('Runtime unavailable');
                 }
               }, 1000);
               return;
             }
           }
         }
-        throw new Error('Nessun file progetto trovato in OPFS');
+        throw new Error('No project file found in OPFS');
       } catch (error) {
         // OPFS non disponibile o errore - fallback a localStorage
-        console.log('OPFS fallito:', error.message);
-        addRuntimeLog('OPFS non disponibile o errore, provo localStorage...', 'info');
+        console.log('OPFS failed:', error.message);
+        addRuntimeLog('OPFS unavailable or error, trying localStorage...', 'info');
         // Non fare throw, così il catch nel DOMContentLoaded può gestire il fallback
         throw error;
       }

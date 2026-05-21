@@ -134,6 +134,112 @@
     if (countEl) countEl.textContent = state.filtered.length + ' / ' + state.entries.length;
   }
 
+  function getInspectorEls() {
+    return {
+      empty: document.getElementById('resources-inspector-empty'),
+      emptyIcon: document.getElementById('resources-inspector-empty-icon'),
+      emptyText: document.getElementById('resources-inspector-empty-text'),
+      imagePanel: document.getElementById('resources-inspector-image'),
+      soundPanel: document.getElementById('resources-inspector-sound'),
+      img: document.getElementById('resources-inspector-img'),
+      name: document.getElementById('resources-inspector-name'),
+      dimensions: document.getElementById('resources-inspector-dimensions'),
+      size: document.getElementById('resources-inspector-size'),
+      id: document.getElementById('resources-inspector-id'),
+      soundName: document.getElementById('resources-inspector-sound-name'),
+      soundSize: document.getElementById('resources-inspector-sound-size'),
+      soundId: document.getElementById('resources-inspector-sound-id'),
+      audio: document.getElementById('resources-inspector-audio'),
+      playBtn: document.getElementById('resources-inspector-play-btn')
+    };
+  }
+
+  function clearResourceInspector() {
+    const els = getInspectorEls();
+    if (!els.empty) return;
+    els.empty.hidden = false;
+    if (els.imagePanel) els.imagePanel.hidden = true;
+    if (els.soundPanel) els.soundPanel.hidden = true;
+    if (els.audio) {
+      els.audio.pause();
+      els.audio.removeAttribute('src');
+    }
+    if (els.img) els.img.removeAttribute('src');
+  }
+
+  function setInspectorEmptyForTab(tab) {
+    const els = getInspectorEls();
+    if (!els.empty) return;
+    const isSound = tab === 'sounds';
+    if (els.emptyIcon) {
+      els.emptyIcon.className = isSound ? 'fas fa-music' : 'fas fa-image';
+    }
+    if (els.emptyText) {
+      els.emptyText.textContent = isSound
+        ? 'Select an audio file in the grid to preview it here.'
+        : 'Select an image in the grid to preview it here.';
+    }
+    clearResourceInspector();
+  }
+
+  function showImageInspector(entry) {
+    const els = getInspectorEls();
+    if (!els.empty || !entry) return;
+
+    els.empty.hidden = true;
+    if (els.soundPanel) els.soundPanel.hidden = true;
+    if (els.imagePanel) els.imagePanel.hidden = false;
+
+    const label = entry.displayName || entry.name || '—';
+    if (els.name) els.name.textContent = label;
+    if (els.size) els.size.textContent = formatBytes(entry.size);
+    if (els.id) els.id.textContent = entry.assetId || '—';
+    if (els.dimensions) els.dimensions.textContent = 'Loading...';
+
+    if (els.img && entry.publicUrl) {
+      els.img.alt = label;
+      els.img.onload = () => {
+        if (els.dimensions && els.img) {
+          els.dimensions.textContent = `${els.img.naturalWidth} × ${els.img.naturalHeight} px`;
+        }
+      };
+      els.img.onerror = () => {
+        if (els.dimensions) els.dimensions.textContent = '—';
+      };
+      els.img.src = entry.publicUrl;
+    }
+  }
+
+  function showSoundInspector(entry) {
+    const els = getInspectorEls();
+    if (!els.empty || !entry) return;
+
+    els.empty.hidden = true;
+    if (els.imagePanel) els.imagePanel.hidden = true;
+    if (els.soundPanel) els.soundPanel.hidden = false;
+
+    const label = entry.displayName || entry.name || '—';
+    if (els.soundName) els.soundName.textContent = label;
+    if (els.soundSize) els.soundSize.textContent = formatBytes(entry.size);
+    if (els.soundId) els.soundId.textContent = entry.assetId || '—';
+    if (els.audio && entry.publicUrl) {
+      els.audio.src = entry.publicUrl;
+      els.audio.load();
+    }
+  }
+
+  function updateResourceInspector(entry, kind) {
+    if (!entry) {
+      setInspectorEmptyForTab(kind === 'sound' ? 'sounds' : 'images');
+      return;
+    }
+    if (kind === 'sound') {
+      showSoundInspector(entry);
+    } else {
+      showImageInspector(entry);
+    }
+  }
+
   function showResourceSubTab(tabId) {
     const tab = tabId === 'sounds' ? 'sounds' : 'images';
     state.activeSubTab = tab;
@@ -153,6 +259,8 @@
       }
     });
 
+    setInspectorEmptyForTab(tab);
+
     if (tab === 'sounds') {
       loadSounds();
     } else {
@@ -168,19 +276,19 @@
     if (!projectId) {
       soundState.entries = [];
       soundState.filtered = [];
-      if (status) status.textContent = 'Apri un progetto per gestire i suoni.';
-      if (grid) grid.innerHTML = '<div class="resources-empty">Nessun progetto aperto</div>';
+      if (status) status.textContent = 'Open a project to manage sounds.';
+      if (grid) grid.innerHTML = '<div class="resources-empty">No project open</div>';
       return [];
     }
 
     if (!window.supabaseStorage?.listProjectAudio) {
-      if (status) status.textContent = 'Supabase Storage non configurato.';
+      if (status) status.textContent = 'Supabase Storage is not configured.';
       return [];
     }
 
     soundState.loading = true;
-    if (status) status.textContent = 'Caricamento audio da Supabase...';
-    if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Caricamento...</div>';
+    if (status) status.textContent = 'Loading audio from Supabase...';
+    if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
 
     try {
       let entries = await window.supabaseStorage.listProjectAudio(projectId);
@@ -190,13 +298,13 @@
       applySoundsFilter();
       if (status) {
         status.textContent = entries.length
-          ? `${entries.length} file audio nel progetto`
-          : 'Nessun suono. Usa Importa per aggiungerne.';
+          ? `${entries.length} audio file(s) in project`
+          : 'No sounds yet. Use Import to add some.';
       }
       return entries;
     } catch (err) {
       console.error('[Resources] Errore caricamento audio:', err);
-      if (status) status.textContent = 'Errore: ' + err.message;
+      if (status) status.textContent = 'Error: ' + err.message;
       return [];
     } finally {
       soundState.loading = false;
@@ -229,7 +337,7 @@
     const audio = new Audio(entry.publicUrl);
     soundState.previewAudio = audio;
     audio.play().catch(() => {
-      deps.showNotification('Impossibile riprodurre il file audio', 'warning');
+      deps.showNotification('Could not play audio file', 'warning');
     });
   }
 
@@ -238,7 +346,7 @@
     if (!grid) return;
 
     if (!entries.length) {
-      grid.innerHTML = '<div class="resources-empty text-muted">Nessun suono trovato</div>';
+      grid.innerHTML = '<div class="resources-empty text-muted">No sounds found</div>';
       return;
     }
 
@@ -248,6 +356,10 @@
       card.className = 'resource-card resource-sound-card';
       card.dataset.assetId = entry.assetId;
       card.title = entry.displayName || entry.name;
+
+      if (soundState.selectedIds.has(entry.assetId)) {
+        card.classList.add('selected');
+      }
 
       const thumb = document.createElement('div');
       thumb.className = 'resource-thumb';
@@ -263,7 +375,7 @@
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.className = 'btn btn-outline-success btn-sm resource-play-btn w-100';
-      playBtn.innerHTML = '<i class="fas fa-play"></i> Ascolta';
+      playBtn.innerHTML = '<i class="fas fa-play"></i> Play';
       playBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         playSoundPreview(entry);
@@ -278,10 +390,17 @@
         soundState.selectedIds.add(entry.assetId);
         grid.querySelectorAll('.resource-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
+        updateResourceInspector(entry, 'sound');
       });
 
       grid.appendChild(card);
     });
+
+    if (soundState.selectedIds.size === 1) {
+      const selectedId = soundState.selectedIds.values().next().value;
+      const selectedEntry = soundState.entries.find(e => e.assetId === selectedId);
+      if (selectedEntry) updateResourceInspector(selectedEntry, 'sound');
+    }
   }
 
   function renderResourcesGrid(entries, containerId, options = {}) {
@@ -303,6 +422,8 @@
       card.title = entry.displayName || entry.name;
 
       if (pickerMode && state.picker && state.picker.selected.has(entry.assetId)) {
+        card.classList.add('selected');
+      } else if (!pickerMode && state.selectedIds.has(entry.assetId)) {
         card.classList.add('selected');
       }
 
@@ -333,11 +454,18 @@
           state.selectedIds.add(entry.assetId);
           grid.querySelectorAll('.resource-card').forEach(c => c.classList.remove('selected'));
           card.classList.add('selected');
+          updateResourceInspector(entry, 'image');
         }
       });
 
       grid.appendChild(card);
     });
+
+    if (!pickerMode && containerId === 'resources-grid' && state.selectedIds.size === 1) {
+      const selectedId = state.selectedIds.values().next().value;
+      const selectedEntry = state.entries.find(e => e.assetId === selectedId);
+      if (selectedEntry) updateResourceInspector(selectedEntry, 'image');
+    }
   }
 
   function escapeHtml(str) {
@@ -373,10 +501,10 @@
     const n = state.picker.selected.size;
     if (state.picker.multiple) {
       label.textContent = n
-        ? `${n} immagin${n === 1 ? 'e' : 'i'} selezionat${n === 1 ? 'a' : 'e'}`
-        : 'Nessuna selezione';
+        ? `${n} image${n === 1 ? '' : 's'} selected`
+        : 'No selection';
     } else {
-      label.textContent = n ? '1 immagine selezionata' : 'Nessuna selezione';
+      label.textContent = n ? '1 image selected' : 'No selection';
     }
   }
 
@@ -509,6 +637,7 @@
     }
 
     state.selectedIds.clear();
+    setInspectorEmptyForTab('images');
     await loadResources();
     deps.showNotification(`Deleted ${deleted} resource(s)`, 'success');
     if (typeof deps.updateProjectSizeIndicator === 'function') {
@@ -543,16 +672,16 @@
   async function uploadSoundFile(file) {
     const projectId = getProjectId();
     if (!projectId) {
-      deps.showNotification('Apri un progetto prima di importare', 'warning');
+      deps.showNotification('Open a project before importing', 'warning');
       return null;
     }
     if (!deps.uploadImage) {
-      deps.showNotification('Upload non disponibile', 'error');
+      deps.showNotification('Upload is not available', 'error');
       return null;
     }
 
     const assetId = deps.generateAssetId();
-    deps.showNotification('Importazione audio...', 'info');
+    deps.showNotification('Importing audio...', 'info');
 
     try {
       await deps.uploadImage(file, projectId, 'audio', {
@@ -561,14 +690,14 @@
         subfolder: null
       });
       await loadSounds();
-      deps.showNotification('Audio importato', 'success');
+      deps.showNotification('Audio imported', 'success');
       if (typeof deps.updateProjectSizeIndicator === 'function') {
         deps.updateProjectSizeIndicator();
       }
       return true;
     } catch (err) {
       console.error('[Resources] Upload audio fallito:', err);
-      deps.showNotification('Importazione fallita: ' + err.message, 'error');
+      deps.showNotification('Import failed: ' + err.message, 'error');
       return null;
     }
   }
@@ -576,11 +705,11 @@
   async function deleteSelectedSounds() {
     const projectId = getProjectId();
     if (!projectId || !soundState.selectedIds.size) {
-      deps.showNotification('Seleziona almeno un suono da eliminare', 'warning');
+      deps.showNotification('Select at least one sound to delete', 'warning');
       return;
     }
 
-    if (!confirm(`Eliminare ${soundState.selectedIds.size} file audio?`)) return;
+    if (!confirm(`Delete ${soundState.selectedIds.size} audio file(s)?`)) return;
 
     let deleted = 0;
     for (const assetId of soundState.selectedIds) {
@@ -599,8 +728,9 @@
 
     soundState.selectedIds.clear();
     stopSoundPreview();
+    setInspectorEmptyForTab('sounds');
     await loadSounds();
-    deps.showNotification(`Eliminati ${deleted} file audio`, 'success');
+    deps.showNotification(`Deleted ${deleted} audio file(s)`, 'success');
     if (typeof deps.updateProjectSizeIndicator === 'function') {
       deps.updateProjectSizeIndicator();
     }
@@ -636,7 +766,7 @@
     if (titleEl) titleEl.textContent = title;
     if (uploadBtn) uploadBtn.style.display = allowUpload ? '' : 'none';
     if (confirmBtn) {
-      confirmBtn.textContent = multiple ? 'Aggiungi selezione' : 'Usa immagine';
+      confirmBtn.textContent = multiple ? 'Add selection' : 'Use image';
     }
     setPickerMultiUi({ multiple, hint });
 
@@ -687,7 +817,7 @@
 
         if (!selected.length) {
           deps.showNotification(
-            multiple ? 'Seleziona almeno un\'immagine' : 'Seleziona un\'immagine',
+            multiple ? 'Select at least one image' : 'Select an image',
             'warning'
           );
           return;
@@ -806,13 +936,35 @@
       });
     });
 
+    const inspectorPlayBtn = document.getElementById('resources-inspector-play-btn');
+    if (inspectorPlayBtn) {
+      inspectorPlayBtn.addEventListener('click', () => {
+        const els = getInspectorEls();
+        if (els.audio?.src) {
+          els.audio.play().catch(() => {
+            deps.showNotification('Could not play audio file', 'warning');
+          });
+          return;
+        }
+        const assetId = soundState.selectedIds.values().next().value;
+        const entry = soundState.entries.find(e => e.assetId === assetId);
+        if (entry) playSoundPreview(entry);
+      });
+    }
+
     document.addEventListener('tabChanged', (e) => {
       if (e.detail?.currentTab === 'resources') {
         showResourceSubTab(state.activeSubTab);
       } else {
         stopSoundPreview();
+        const els = getInspectorEls();
+        if (els.audio) {
+          els.audio.pause();
+        }
       }
     });
+
+    setInspectorEmptyForTab('images');
   }
 
   window.initAmiantoResources = function (dependencies) {

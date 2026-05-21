@@ -2,9 +2,9 @@
 
 **Obiettivo:** una sola superficie API usabile da Play Test (`main.js` → iframe `runtime.js`), `runtime.html` standalone e documentazione (`README.md` / esempi script).
 
-**Problema attuale:** `sandboxApi` in `main.js` (~righe 7133–7499) è **codice morto** (non referenziato). Gli script girano in `runtime.js` tramite `compileScript` / `executeScriptHandler`, che iniettano solo **17 identificatori** nel `new Function(...)`. API come `add_to_inventory`, `spawn_object`, `Game.getVar` non sono in scope → `ReferenceError` negli handler.
+**Stato (maggio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Gli script usano `getScriptApiBindings()` + `buildScriptExecutor()`; gli handler eseguono in `with (scriptScope)` via `buildHandlerExecutionScope()` / `runHandlerWithExecutionScope()`. `sandboxApi` e `gameInventory` editor sono stati rimossi da `main.js`.
 
-**Nota su `window.Game` nel runtime:** oggi `window.Game = GameAPI` (`runtime.js` ~3404), ma `GameAPI` espone `getVariable`/`setVariable`, **non** `getVar`/`setVar`. Gli esempi con `Game.setVar()` falliscono.
+**Residuo:** test manuali Fase E; sync inventario in `UPDATE_CONTEXT`; documentazione allineata ovunque.
 
 ---
 
@@ -195,25 +195,22 @@ Checklist:
 - [ ] Mantenere preprocessing async sugli handler (`supportedHandlers` ~1612)
 - [ ] Mantenere estrazione handler in `handlerContainer` (~1741–1746)
 
-#### 1.8 Handler wrapper — scope API in esecuzione (~1791–1837)
+#### 1.8 Handler wrapper — scope API in esecuzione ✅ (Fase C)
 
-Oggi il wrapper inietta solo **variabili** con `with (executionContext)`.
+- [x] `buildHandlerExecutionScope()` — API da `getScriptApiBindings()` + getter/setter variabili (ricostruito a ogni invocazione)
+- [x] `runHandlerWithExecutionScope()` — `with (scriptScope)` senza `handlerFunc.toString()`
+- [ ] Test manuale: handler con `await walk_character(...)` + `add_to_inventory(...)` nello stesso script
 
-- [ ] Creare `buildHandlerExecutionScope()` che unisce:
-  - getter/setter variabili (come ora)
-  - riferimenti a tutte le funzioni API (da `SCRIPT_API_BINDINGS`)
-- [ ] Nel `wrappedCode`, usare `with (scriptScope)` dove `scriptScope` include API + variabili
-- [ ] Test: handler che chiama `await walk_character(...)` e `add_to_inventory(...)` nello stesso script
+#### 1.9 `executeScriptHandler` / `RUN_SCRIPT`
 
-#### 1.9 `executeScriptHandler` / `RUN_SCRIPT` (~4041–4428)
-
-- [ ] Verificare `message.handlerName` — se null, non chiamare handler inesistente
-- [ ] Passare sempre `scriptName` stabile da editor (`executeScriptInSandbox` in main.js ~8987)
+- [x] `RUN_SCRIPT` ignorato se `handlerName` mancante
+- [x] `executeScriptInSandbox` invia `scriptName` stabile nel postMessage
+- [x] `executeScriptHandler` attende Promise restituite dagli handler
 
 #### 1.10 Reset e load
 
-- [ ] `RESET` handler (~4448): clear `gameState.inventory`, `compiledScripts`
-- [ ] `initRuntime`: opzionale reset inventario a vuoto (o da save slot futuro)
+- [x] `RESET`: clear `gameState.inventory`, `compiledScripts`
+- [ ] `initRuntime`: opzionale reset inventario da save slot futuro
 
 ---
 
@@ -223,17 +220,16 @@ Oggi il wrapper inietta solo **variabili** con `with (executionContext)`.
 
 | Elemento | Righe circa | Azione |
 |----------|-------------|--------|
-| `const sandboxApi = { ... }` | 7133–7499 | [ ] **Eliminare** dopo porting in runtime |
-| `executeScriptHandler` stub editor | 7536–7550 | [ ] Già disabilitato — rimuovere o puntare a iframe |
-| `triggerGameEvent` / `gameEventHandlers` editor | 7501–7534 | [ ] Verificare se ancora usati in canvas editor; se no, rimuovere |
+| `const sandboxApi = { ... }` | — | [x] **Rimosso** |
+| `executeScriptHandler` stub editor | — | [x] Non presente (solo iframe) |
+| `triggerGameEvent` / `gameEventHandlers` editor | — | [ ] Verificare se ancora usati in canvas editor |
 
-#### 2.2 `gameInventory` editor (~5969–6000)
+#### 2.2 `gameInventory` editor ✅
 
 | Azione | Dettaglio |
 |--------|-----------|
-| [ ] Separare concetti | `gameInventory` editor = solo debug UI legacy |
-| [ ] Play Test | Non usare `gameInventory` per gameplay; lo stato vive nel runtime |
-| [ ] `persistInventory` / `amiantoGameInventory` | Deprecare o sincronizzare solo per debug, non per progetto |
+| [x] Rimosso `gameInventory`, `persistInventory`, `amiantoGameInventory` da editor |
+| [x] Play Test: stato inventario solo in `runtime.js` (`gameState.inventory`) |
 
 #### 2.3 `window.Game` editor (~6953–7022)
 
@@ -245,7 +241,7 @@ Oggi il wrapper inietta solo **variabili** con `with (executionContext)`.
 
 - [ ] Inviare `scriptName` stabile (chiave `jsScripts`) nel postMessage, non solo hash temporaneo
 - [ ] Includere in `UPDATE_CONTEXT`: snapshot variabili **e** inventario runtime (dopo implementazione)
-- [ ] Allineare `handlerName` con nomi usati in runtime (`on_hotspot_click`, non `on_room_enter` se diverso — oggi main usa `on_room_enter` ~9068, runtime usa `on_room_change` → **bug da correggere**)
+- [x] `on_room_change` allineato in editor e runtime (non più `on_room_enter`)
 
 #### 2.5 CodeMirror hints (~6040–6047)
 
@@ -285,24 +281,24 @@ Oggi il wrapper inietta solo **variabili** con `with (executionContext)`.
 3. [x] Implementare `exposeScriptGlobals()`
 4. [ ] Smoke `add_to_inventory` — previsto dopo Fase B.1 (API non ancora nel runtime)
 
-### Fase B — Port API mancanti (2–3 giorni)
+### Fase B — Port API mancanti ✅ (maggio 2026)
 
-5. [ ] Inventario su `gameState.inventory`
-6. [ ] Oggetti: spawn/despawn/rotate/scale/visible
-7. [ ] `get_room_objects`, `set_room_background`
-8. [ ] Alias variabili `get_var` / `Game.getVar`
+5. [x] Inventario su `gameState.inventory`
+6. [x] Oggetti: spawn/despawn/rotate/scale/visible
+7. [x] `get_room_objects`, `set_room_background`
+8. [x] Alias variabili `get_var` / `Game.getVar`
 
-### Fase C — Integrazione compile (1 giorno)
+### Fase C — Scope handler ✅ (maggio 2026)
 
-9. [ ] Refactor `compileScript` con builder
-10. [ ] Refactor `executeScript` con builder
-11. [ ] Estendere handler wrapper con `scriptScope` completo
+9. [x] `compileScript` usa `buildScriptExecutor`
+10. [x] `executeScript` usa `buildScriptExecutor`
+11. [x] Handler wrapper: `buildHandlerExecutionScope` + `runHandlerWithExecutionScope`
 
-### Fase D — Pulizia editor (0.5 giorni)
+### Fase D — Pulizia editor ✅ (maggio 2026)
 
-12. [ ] Rimuovere `sandboxApi`
-13. [ ] Fix handler name `on_room_enter` → `on_room_change` in `initializeEmbeddedRuntimeScripts` (main.js ~9068)
-14. [ ] `scriptName` stabile in postMessage
+12. [x] `sandboxApi` rimosso
+13. [x] `on_room_change` in Play Test
+14. [x] `scriptName` stabile in postMessage (`executeScriptInSandbox`)
 
 ### Fase E — Test manuali
 

@@ -198,7 +198,7 @@ async function uploadAsset(file, projectId, category, assetId = null, overwrite 
   try {
     // Verifica disponibilità Supabase
     if (!isSupabaseAvailable()) {
-      throw new Error('Supabase non disponibile. Verifica la configurazione.');
+      throw new Error('Supabase unavailable. Check your configuration.');
     }
 
     // VERIFICA AUTENTICAZIONE FIREBASE - CONTROLLO LATO CLIENT

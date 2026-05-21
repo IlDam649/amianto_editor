@@ -23,6 +23,7 @@
     currentRoomId: null,
     currentRoom: null,
     variables: new Map(),
+    variableDefinitions: new Map(), // name -> { type, initialValue, ... } da projectData.variables
     objects: new Map(), // oggetti caricati con immagini
     guis: new Map(), // GUI caricate
     characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, roomId}>
@@ -117,7 +118,7 @@
     const notification = document.createElement('div');
     notification.className = 'game-notification';
     notification.innerHTML = `
-      <button class="close-btn" onclick="this.parentElement.remove()" title="Chiudi">×</button>
+      <button class="close-btn" onclick="this.parentElement.remove()" title="Close">×</button>
       <div style="padding-right: 24px;">${escapeHtml(text)}</div>
     `;
     
@@ -196,7 +197,7 @@
         await command.execute();
         log(`[Runtime] Comando completato (${commandQueue.length} rimanenti)`, 'info');
       } catch (error) {
-        log(`[Runtime] Errore esecuzione comando: ${error.message}`, 'error');
+        log(`[Runtime] Command execution error: ${error.message}`, 'error');
       }
     }
     
@@ -276,14 +277,14 @@
                 log(`[Runtime] resolveAssetId: Soluzione: ricarica l'asset o verifica che saveAssetMetadata venga chiamato correttamente.`, 'error');
               }
             } else {
-              log(`[Runtime] resolveAssetId: ⚠️ ATTENZIONE - asset non trovato in Firestore (assetId: '${assetId}')`, 'warning');
+              log(`[Runtime] resolveAssetId: ⚠️ WARNING - asset not found in Firestore (assetId: '${assetId}')`, 'warning');
               log(`[Runtime] resolveAssetId: Questo significa che il metadata dell'asset non è stato salvato correttamente.`, 'warning');
               log(`[Runtime] resolveAssetId: Proverò pattern di fallback, ma potrebbero non funzionare se il fileName include un baseName.`, 'warning');
               log(`[Runtime] resolveAssetId: Soluzione: assicurati che saveAssetMetadata venga chiamato dopo ogni upload.`, 'warning');
             }
           }
         } catch (firestoreError) {
-          log(`[Runtime] resolveAssetId: errore Firestore (continuerò con Supabase): ${firestoreError.message}`, 'info');
+          log(`[Runtime] resolveAssetId: Firestore error (continuing with Supabase): ${firestoreError.message}`, 'info');
         }
       }
       
@@ -360,12 +361,12 @@
       // - Supabase.resolveAssetUrl non è riuscito a trovare un file reale.
       // Non proviamo più a "indovinare" l'URL con pattern: falliamo in modo esplicito.
       log(
-        `[Runtime] resolveAssetId: ✗ Nessun URL trovato (Firestore+Supabase), interrompo senza tentare pattern di fallback`,
+        `[Runtime] resolveAssetId: ✗ No URL found (Firestore+Supabase), stopping without fallback patterns`,
         'warning'
       );
       return null;
     } catch (error) {
-      log(`[Runtime] resolveAssetId: errore: ${error.message}`, 'error');
+      log(`[Runtime] resolveAssetId: error: ${error.message}`, 'error');
       console.error('Errore resolveAssetId:', error);
       return null;
     }
@@ -449,7 +450,7 @@
           log(`[Runtime] URL finale per assetId '${assetId}': ${imageUrl.substring(0, 100)}${imageUrl.length > 100 ? '...' : ''}`, 'info');
         } else {
           // Se non riesce a risolvere, logga e restituisci null
-          log(`[Runtime] Impossibile risolvere assetId '${assetId}' in nessuna categoria. Verifica che Supabase sia configurato correttamente.`, 'warning');
+          log(`[Runtime] Could not resolve assetId '${assetId}' in any category. Check that Supabase is configured correctly.`, 'warning');
           resolve(null);
           return;
         }
@@ -457,7 +458,7 @@
 
       // Timeout per evitare che il caricamento si blocchi indefinitamente
       const timeout = setTimeout(() => {
-        log(`Timeout caricamento immagine: ${src}`, 'warning');
+        log(`Image load timeout: ${src}`, 'warning');
         resolve(null);
       }, 10000); // 10 secondi timeout
 
@@ -487,15 +488,15 @@
           loadedImages.set(imageUrl, img);
           log(`[Runtime] Immagine salvata anche con URL risolto come chiave`, 'info');
         }
-        log(`[Runtime] ✓ Immagine caricata con successo: ${src.substring(0, 50)}${src.length > 50 ? '...' : ''} (${img.naturalWidth}x${img.naturalHeight})`, 'success');
+        log(`[Runtime] ✓ Image loaded successfully: ${src.substring(0, 50)}${src.length > 50 ? '...' : ''} (${img.naturalWidth}x${img.naturalHeight})`, 'success');
         resolve(img);
       };
       img.onerror = (error) => {
         clearTimeout(timeout);
-        log(`[Runtime] ✗ Errore caricamento immagine '${src.substring(0, 50)}${src.length > 50 ? '...' : ''}'`, 'error');
+        log(`[Runtime] ✗ Error loading image '${src.substring(0, 50)}${src.length > 50 ? '...' : ''}'`, 'error');
         log(`[Runtime] URL tentato: ${imageUrl}`, 'error');
         log(`[Runtime] Categoria usata: ${resolvedCategory || categoryHint || 'sconosciuta'}`, 'error');
-        log(`[Runtime] Possibili cause: CORS, file inesistente, formato non supportato, path errato`, 'warning');
+        log(`[Runtime] Possible causes: CORS, missing file, unsupported format, wrong path`, 'warning');
         
         // Prova a verificare se l'URL è raggiungibile (solo per debug)
         log(`[Runtime] Tentativo verifica URL...`, 'info');
@@ -508,7 +509,7 @@
           });
         
         // Suggerimento: verifica manualmente l'URL nel browser
-        log(`[Runtime] SUGGERIMENTO: Apri questo URL nel browser per verificare se il file esiste:`, 'info');
+        log(`[Runtime] TIP: Open this URL in the browser to check if the file exists:`, 'info');
         log(`[Runtime] ${imageUrl}`, 'info');
         
         console.error('Errore caricamento immagine:', {
@@ -538,16 +539,16 @@
       
       // Validazione progetto
       if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Dati progetto non validi');
+        throw new Error('Invalid project data');
       }
 
       if (projectData.format !== 'amianto-game') {
-        throw new Error('Formato progetto non supportato. Atteso: amianto-game');
+        throw new Error('Unsupported project format. Expected: amianto-game');
       }
 
       // Se siamo in iframe, modalità playtest (sandboxed)
       if (isInIframe) {
-        log('[Runtime] Modalità iframe (playtest) - inizializzazione sandboxed', 'info');
+        log('[Runtime] iframe mode (playtest) - sandboxed initialization', 'info');
         
         // In modalità iframe, carica solo i dati necessari per gli script
         gameState.projectData = projectData;
@@ -566,22 +567,23 @@
       }
 
       // Modalità standalone - inizializzazione completa con rendering
-      log('[Runtime] Modalità standalone - inizializzazione completa', 'info');
+      log('[Runtime] Standalone mode - full initialization', 'info');
       showLoadingOverlay();
-      updateLoadingMessage('Inizializzazione runtime...');
+      updateLoadingMessage('Initializing runtime...');
 
       // Validazione progetto
       if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Dati progetto non validi');
+        throw new Error('Invalid project data');
       }
 
       if (projectData.format !== 'amianto-game') {
-        throw new Error('Formato progetto non supportato. Atteso: amianto-game');
+        throw new Error('Unsupported project format. Expected: amianto-game');
       }
 
       // Reset stato
       gameState.projectData = projectData;
       gameState.variables.clear();
+      gameState.variableDefinitions = new Map();
       gameState.objects.clear();
       gameState.guis.clear();
       gameState.inventory = createEmptyInventoryState();
@@ -653,12 +655,12 @@
       // Inizializza canvas (solo in modalità standalone)
       canvas = document.getElementById('game-canvas');
       if (!canvas) {
-        throw new Error('Canvas non trovato');
+        throw new Error('Canvas not found');
       }
 
       ctx = canvas.getContext('2d');
       if (!ctx) {
-        throw new Error('Impossibile ottenere contesto canvas');
+        throw new Error('Could not get canvas context');
       }
 
       // Imposta dimensioni canvas
@@ -668,17 +670,17 @@
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
 
-      updateLoadingMessage('Caricamento variabili...');
+      updateLoadingMessage('Loading variables...');
       await initializeVariables(projectData.variables);
 
-      updateLoadingMessage('Caricamento immagini...');
+      updateLoadingMessage('Loading images...');
       let assetStats = { total: 0, loaded: 0, failed: 0 };
       try {
         assetStats = await preloadAssets(projectData);
         log(`[Runtime] Preload completato: ${assetStats.loaded}/${assetStats.total} asset caricati`, 
             assetStats.failed > 0 ? 'warning' : 'success');
       } catch (error) {
-        log(`[Runtime] Errore preload assets: ${error.message}`, 'error');
+        log(`[Runtime] Error preloading assets: ${error.message}`, 'error');
         console.error(error);
         // Continua anche se il preload fallisce parzialmente
       }
@@ -688,15 +690,15 @@
         log('[Runtime] ATTENZIONE: Preload non completato, potrebbe causare problemi di rendering', 'warning');
       }
 
-      updateLoadingMessage('Caricamento character...');
+      updateLoadingMessage('Loading characters...');
       await loadCharacterDefinitions(projectData.characters || []);
 
-      updateLoadingMessage('Caricamento room iniziale...');
+      updateLoadingMessage('Loading initial room...');
       const startRoomId = settings.startRoom || settings.startRoomId || (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
       if (startRoomId) {
         await changeRoom(startRoomId);
       } else {
-        log('[Runtime] Nessuna room iniziale specificata', 'warning');
+        log('[Runtime] No initial room specified', 'warning');
       }
 
       // Spawn automatico player all'avvio se configurato
@@ -711,7 +713,7 @@
         // Verifica che il character esista nelle definizioni
         const charDef = gameState.characterDefinitions.get(playerCharacter.name);
         if (!charDef) {
-          log(`[Runtime] Player "${playerCharacter.name}" non trovato nelle definizioni character`, 'error');
+          log(`[Runtime] Player "${playerCharacter.name}" not found in character definitions`, 'error');
         } else {
           const playerId = GameAPI.spawn_character(
             playerCharacter.name,
@@ -723,14 +725,14 @@
             GameAPI.setVariable('playerId', playerId);
             log(`[Runtime] Player "${playerCharacter.name}" spawnato automaticamente da spawnSettings a (${spawn.x || 0}, ${spawn.y || 0}) in room ${gameState.currentRoomId}`, 'info');
           } else {
-            log(`[Runtime] Errore spawn player "${playerCharacter.name}"`, 'error');
+            log(`[Runtime] Error spawning player "${playerCharacter.name}"`, 'error');
           }
         }
       } else if (settings.startingPlayer && settings.startX !== undefined && settings.startY !== undefined) {
         // PRIORITÀ 2: settings legacy (per retrocompatibilità)
         const charDef = gameState.characterDefinitions.get(settings.startingPlayer);
         if (!charDef) {
-          log(`[Runtime] Player "${settings.startingPlayer}" non trovato nelle definizioni character`, 'error');
+          log(`[Runtime] Player "${settings.startingPlayer}" not found in character definitions`, 'error');
         } else {
           const playerId = GameAPI.spawn_character(
             settings.startingPlayer,
@@ -742,18 +744,18 @@
             GameAPI.setVariable('playerId', playerId);
             log(`[Runtime] Player "${settings.startingPlayer}" spawnato automaticamente da settings legacy a (${settings.startX}, ${settings.startY}) in room ${gameState.currentRoomId}`, 'info');
           } else {
-            log(`[Runtime] Errore spawn player "${settings.startingPlayer}"`, 'error');
+            log(`[Runtime] Error spawning player "${settings.startingPlayer}"`, 'error');
           }
         }
       }
 
-      updateLoadingMessage('Caricamento GUI...');
+      updateLoadingMessage('Loading GUI...');
       await loadGUIs(projectData.guis || []);
 
-      updateLoadingMessage('Caricamento inventario...');
+      updateLoadingMessage('Loading inventory...');
       loadInventory(projectData.inventory);
 
-      updateLoadingMessage('Esecuzione script iniziali...');
+      updateLoadingMessage('Running initial scripts...');
       await executeGameStartScripts();
 
       gameState.initialized = true;
@@ -767,21 +769,21 @@
 
       // Avvia game loop solo se tutto è pronto
       if (gameState.currentRoom && AssetRegistry.loadComplete) {
-        log('[Runtime] Tutti gli asset caricati, avvio rendering...', 'info');
+        log('[Runtime] All assets loaded, starting render...', 'info');
         startGameLoop();
         log('[Runtime] Runtime inizializzato con successo - game loop avviato', 'success');
       } else {
         if (!gameState.currentRoom) {
-          log('[Runtime] Runtime inizializzato ma nessuna stanza disponibile', 'warning');
+          log('[Runtime] Runtime initialized but no room available', 'warning');
         }
         if (!AssetRegistry.loadComplete) {
-          log('[Runtime] Runtime inizializzato ma preload non completato', 'warning');
+          log('[Runtime] Runtime initialized but preload not complete', 'warning');
         }
         // Avvia comunque il game loop, il rendering gestirà le immagini mancanti
         startGameLoop();
       }
     } catch (error) {
-      log(`Errore inizializzazione runtime: ${error.message}`, 'error');
+      log(`Runtime initialization error: ${error.message}`, 'error');
       console.error(error);
       hideLoadingOverlay();
     }
@@ -790,13 +792,43 @@
   // ============================================
   // INIZIALIZZAZIONE VARIABILI
   // ============================================
+  function getVariableDefinition(name) {
+    if (!name) return null;
+    if (gameState.variableDefinitions && gameState.variableDefinitions.has(name)) {
+      return gameState.variableDefinitions.get(name);
+    }
+    const defs = gameState.projectData && gameState.projectData.variables && gameState.projectData.variables.definitions;
+    if (Array.isArray(defs)) {
+      return defs.find(d => d.name === name) || null;
+    }
+    return null;
+  }
+
+  function coerceVariableValue(def, value) {
+    if (!def || !def.type) return value;
+    if (def.type === 'boolean') return !!value;
+    if (def.type === 'number') return Number(value) || 0;
+    if (def.type === 'string') return String(value);
+    return value;
+  }
+
+  function findProjectRoomDefinition(roomId) {
+    const rooms = gameState.projectData && gameState.projectData.rooms;
+    if (!Array.isArray(rooms)) return null;
+    const key = String(roomId || '');
+    return rooms.find(r => String(r.id) === key || String(r.name) === key) || null;
+  }
+
   async function initializeVariables(variablesData) {
     if (!variablesData) return;
+
+    gameState.variableDefinitions = new Map();
 
     // Inizializza variabili dalle definizioni
     if (variablesData.definitions && Array.isArray(variablesData.definitions)) {
       variablesData.definitions.forEach(def => {
         if (def.name) {
+          gameState.variableDefinitions.set(def.name, def);
           let initialValue = def.initialValue;
           // Converti in base al tipo
           if (def.type === 'number') {
@@ -925,10 +957,10 @@
     }
 
     assetStats.total = assetsWithCategory.size;
-    log(`[Runtime] Trovati ${assetStats.total} asset unici da caricare`, 'info');
+    log(`[Runtime] Found ${assetStats.total} unique asset(s) to load`, 'info');
 
     if (assetStats.total === 0) {
-      log('[Runtime] Nessun asset da caricare', 'info');
+      log('[Runtime] No assets to load', 'info');
       AssetRegistry.isLoading = false;
       AssetRegistry.loadComplete = true;
       return assetStats;
@@ -954,7 +986,7 @@
         }
       } catch (error) {
         assetStats.failed++;
-        log(`[Runtime] ✗ Errore caricamento asset ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}: ${error.message}`, 'warning');
+        log(`[Runtime] ✗ Error loading asset ${src.substring(0, 50)}${src.length > 50 ? '...' : ''}: ${error.message}`, 'warning');
         console.error('Errore preload asset:', error, { src });
         return { src, img: null, success: false };
       }
@@ -990,13 +1022,13 @@
    */
   async function changeRoom(roomId) {
     if (!gameState.projectData || !gameState.projectData.rooms) {
-      log('Nessun progetto caricato', 'error');
+      log('No project loaded', 'error');
       return;
     }
 
     const room = gameState.projectData.rooms.find(r => r.id === roomId || r.name === roomId);
     if (!room) {
-      log(`Room non trovata: ${roomId}`, 'error');
+      log(`Room not found: ${roomId}`, 'error');
       return;
     }
 
@@ -1010,7 +1042,7 @@
     if (room.background && typeof room.background === 'string') {
       backgroundImg = AssetRegistry.images.get(room.background);
       if (!backgroundImg || !backgroundImg.complete) {
-        log(`[Runtime] Background non trovato in registry per room ${roomId}, URL: ${room.background.substring(0, 50)}`, 'warning');
+        log(`[Runtime] Background not found in registry for room ${roomId}, URL: ${room.background.substring(0, 50)}`, 'warning');
         backgroundImg = null;
       }
     }
@@ -1027,7 +1059,7 @@
               offsetY: Number(fg.offsetY) || 0
             });
           } else {
-            log(`[Runtime] Foreground non trovato in registry per room ${roomId}, URL: ${fg.image.substring(0, 50)}`, 'warning');
+            log(`[Runtime] Foreground not found in registry for room ${roomId}, URL: ${fg.image.substring(0, 50)}`, 'warning');
           }
         }
       }
@@ -1054,7 +1086,7 @@
               scaleY: Number(objData.scaleY) > 0 ? Number(objData.scaleY) : 1
             });
           } else {
-            log(`[Runtime] Immagine oggetto non trovata in registry: ${objData.id} (${objData.image.substring(0, 50)})`, 'warning');
+            log(`[Runtime] Object image not found in registry: ${objData.id} (${objData.image.substring(0, 50)})`, 'warning');
           }
         }
       }
@@ -1120,7 +1152,7 @@
             
             log(`[Runtime] changeRoom: Hotspot ${hotspot.id} caricato con script onClick (enabled: ${normalizedEnabled}, code length: ${hotspot.scripts.onClick.code.length}, wasUndefined: ${typeof onClickData.enabled !== 'boolean'})`, 'info');
           } else {
-            // Nessuno script associato
+            // No script associato
             hotspot.scripts.onClick = {
               code: '',
               enabled: false
@@ -1220,7 +1252,7 @@
     // Esegui script on_room_change se presente
     await executeRoomChangeScripts(oldRoomId, roomId);
 
-    log(`[Runtime] Room cambiata: ${roomId} (bg: ${backgroundImg ? 'ok' : 'mancante'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length})`, 'info');
+    log(`[Runtime] Room changed: ${roomId} (bg: ${backgroundImg ? 'ok' : 'missing'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length})`, 'info');
   }
 
   // ============================================
@@ -1232,11 +1264,11 @@
    */
   async function loadCharacterDefinitions(charactersData) {
     if (!charactersData || !Array.isArray(charactersData)) {
-      log('[Runtime] Nessun character da caricare', 'info');
+      log('[Runtime] No characters to load', 'info');
       return;
     }
 
-    log(`[Runtime] Caricamento ${charactersData.length} definizioni character...`, 'info');
+      log(`[Runtime] Loading ${charactersData.length} character definition(s)...`, 'info');
     gameState.characterDefinitions.clear();
 
     for (const charData of charactersData) {
@@ -1262,7 +1294,7 @@
                 if (img && img.complete && img.naturalWidth > 0) {
                   frames.push(img);
                 } else {
-                  log(`[Runtime] Frame character non trovato in registry: ${characterName}/${dir} (${frame.substring(0, 50)})`, 'warning');
+                  log(`[Runtime] Frame character not found in registry: ${characterName}/${dir} (${frame.substring(0, 50)})`, 'warning');
                 }
               }
             }
@@ -1295,7 +1327,7 @@
       }
     }
 
-    log(`[Runtime] Caricamento definizioni character completato: ${gameState.characterDefinitions.size} character caricati`, 'success');
+    log(`[Runtime] Character definitions loaded: ${gameState.characterDefinitions.size} character(s)`, 'success');
   }
 
   // Cache per frame specchiati (per evitare di ricrearli ogni frame)
@@ -1345,7 +1377,7 @@
       ctx.restore();
     } catch (error) {
       // Se anche il placeholder fallisce, almeno logga l'errore
-      log(`[Runtime] Errore rendering placeholder per character ${character.id}: ${error.message}`, 'warning');
+      log(`[Runtime] Error rendering placeholder per character ${character.id}: ${error.message}`, 'warning');
     }
   }
 
@@ -1547,11 +1579,11 @@
    */
   async function loadGUIs(guisData) {
     if (!guisData || !Array.isArray(guisData)) {
-      log('[Runtime] Nessuna GUI da caricare', 'info');
+      log('[Runtime] No GUI to load', 'info');
       return;
     }
 
-    log(`[Runtime] Caricamento ${guisData.length} GUI...`, 'info');
+    log(`[Runtime] Loading ${guisData.length} GUI(s)...`, 'info');
 
     for (const guiData of guisData) {
       // Recupera background dalla AssetRegistry
@@ -1559,7 +1591,7 @@
       if (guiData.background && typeof guiData.background === 'string') {
         backgroundImg = AssetRegistry.images.get(guiData.background);
         if (!backgroundImg || !backgroundImg.complete) {
-          log(`[Runtime] Background GUI non trovato in registry: ${guiData.id} (${guiData.background.substring(0, 50)})`, 'warning');
+          log(`[Runtime] Background GUI not found in registry: ${guiData.id} (${guiData.background.substring(0, 50)})`, 'warning');
           backgroundImg = null;
         }
       }
@@ -1571,7 +1603,7 @@
           if (btnData.backgroundImage && typeof btnData.backgroundImage === 'string') {
             btnImg = AssetRegistry.images.get(btnData.backgroundImage);
             if (!btnImg || !btnImg.complete) {
-              log(`[Runtime] Immagine pulsante non trovata in registry: ${btnData.id} (${btnData.backgroundImage.substring(0, 50)})`, 'warning');
+              log(`[Runtime] Immagine pulsante not found in registry: ${btnData.id} (${btnData.backgroundImage.substring(0, 50)})`, 'warning');
               btnImg = null;
             }
           }
@@ -1602,7 +1634,7 @@
       log(`[Runtime] GUI caricata: ${guiData.id} (bg: ${backgroundImg ? 'ok' : 'mancante'}, buttons: ${buttons.length})`, 'info');
     }
 
-    log(`[Runtime] Caricamento GUI completato: ${guisData.length} GUI caricate`, 'success');
+    log(`[Runtime] GUI loading complete: ${guisData.length} GUI(s) loaded`, 'success');
   }
 
   // ============================================
@@ -1728,7 +1760,7 @@
     inv.visible = inv.displayMode === 'always';
     updateInventoryToggleIconRect();
 
-    log(`[Runtime] Inventario caricato (mode: ${inv.displayMode}, slots: ${inv.slots.length}, items: ${inv.itemDefs.size})`, 'info');
+        log(`[Runtime] Inventory loaded (mode: ${inv.displayMode}, slots: ${inv.slots.length}, items: ${inv.itemDefs.size})`, 'info');
   }
 
   function updateInventoryToggleIconRect() {
@@ -1799,7 +1831,7 @@
       try {
         ctx.drawImage(inv.background, panel.x, panel.y, panel.w, panel.h);
       } catch (error) {
-        log(`[Runtime] Errore rendering inventario background: ${error.message}`, 'warning');
+        log(`[Runtime] Error rendering inventario background: ${error.message}`, 'warning');
       }
     }
 
@@ -1812,7 +1844,7 @@
       try {
         ctx.drawImage(img, slot.x, slot.y, slot.w, slot.h);
       } catch (error) {
-        log(`[Runtime] Errore rendering item inventario: ${error.message}`, 'warning');
+        log(`[Runtime] Error rendering item inventario: ${error.message}`, 'warning');
       }
     });
   }
@@ -1827,7 +1859,7 @@
     try {
       ctx.drawImage(inv.toggleIcon, r.x, r.y, r.w, r.h);
     } catch (error) {
-      log(`[Runtime] Errore rendering icona toggle inventario: ${error.message}`, 'warning');
+      log(`[Runtime] Error rendering icona toggle inventario: ${error.message}`, 'warning');
     }
   }
 
@@ -1916,7 +1948,7 @@
         ctx.drawImage(obj.img, obj.x, obj.y);
       }
     } catch (error) {
-      log(`[Runtime] Errore rendering oggetto ${obj.id}: ${error.message}`, 'warning');
+      log(`[Runtime] Error rendering object ${obj.id}: ${error.message}`, 'warning');
     }
   }
 
@@ -1938,6 +1970,63 @@
     'on_hotspot_click',
     'on_gui_click'
   ];
+
+  /**
+   * Scope per esecuzione handler: API (getScriptApiBindings) + variabili di gioco.
+   * Ricostruito a ogni invocazione così le variabili restano aggiornate dopo compile.
+   */
+  function buildHandlerExecutionScope() {
+    const scriptScope = Object.create(null);
+
+    getScriptApiBindings().forEach(binding => {
+      scriptScope[binding.name] = binding.value;
+    });
+
+    Array.from(gameState.variables.keys()).forEach(varName => {
+      const safeVarName = varName.replace(/[^a-zA-Z0-9_$]/g, '_');
+      const attachVariable = key => {
+        if (!key || Object.prototype.hasOwnProperty.call(scriptScope, key)) {
+          return;
+        }
+        Object.defineProperty(scriptScope, key, {
+          get: () => gameState.variables.get(varName),
+          set: value => gameState.variables.set(varName, value),
+          configurable: true,
+          enumerable: true
+        });
+      };
+      attachVariable(varName);
+      if (safeVarName !== varName) {
+        attachVariable(safeVarName);
+      }
+    });
+
+    return scriptScope;
+  }
+
+  /**
+   * Esegue un handler utente con with(scriptScope): API + variabili nello scope lessicale.
+   */
+  async function runHandlerWithExecutionScope(handlerFunc, args) {
+    const scriptScope = buildHandlerExecutionScope();
+    const runner = new Function(
+      'scriptScope',
+      'handlerFunc',
+      'args',
+      `
+      return (async function() {
+        with (scriptScope) {
+          const result = handlerFunc.apply(scriptScope, args);
+          if (result && typeof result.then === 'function') {
+            return await result;
+          }
+          return result;
+        }
+      })();
+      `
+    );
+    return await runner(scriptScope, handlerFunc, args);
+  }
 
   // ⚠️ SISTEMA DI CACHE SCRIPT:
   // Ogni script viene compilato UNA SOLA VOLTA e gli handler vengono estratti e cache-ati.
@@ -1979,7 +2068,7 @@
       // ⚠️ PROTEZIONE: Creiamo wrapper "no-op" per gli handler durante la compilazione
       // per prevenire esecuzione accidentale se lo script chiama direttamente gli handler.
       
-      // Crea un oggetto per catturare gli handler definiti nello script
+      // Crea un object per catturare gli handler definiti nello script
       const handlerContainer = {};
 
       // ⚠️ PRE-PROCESSING: Wrappiamo automaticamente gli handler come async per permettere await
@@ -2057,7 +2146,7 @@
             ${handlerExtractionBlock}
           })();
         } catch (e) {
-          GameAPI.error('Errore compilazione script: ' + (e && e.message ? e.message : String(e)));
+          GameAPI.error('Script compile error: ' + (e && e.message ? e.message : String(e)));
         }
         `;
 
@@ -2070,58 +2159,21 @@
       
       // Gli handler estratti sono ora in handlerContainer
       const extractedHandlers = handlerContainer;
-      
-      // ⚠️ NUOVO: Wrappare gli handler per iniettare le variabili come variabili accessibili direttamente
-      // Ottieni la lista dei nomi delle variabili (per riferimento durante l'esecuzione)
-      const varNames = Array.from(gameState.variables.keys());
-      
-      // Crea handler wrappati che espongono le variabili
-      // ⚠️ IMPORTANTE: Wrappiamo gli handler come async per permettere l'uso di await anche se non dichiarati async
+
+      // Fase C: scope API + variabili (buildHandlerExecutionScope) a ogni invocazione handler
       const wrappedHandlers = {};
       for (const [handlerName, handlerFunc] of Object.entries(extractedHandlers)) {
         if (typeof handlerFunc === 'function') {
           wrappedHandlers[handlerName] = async function(...args) {
-            // Crea un contesto di esecuzione isolato per questo handler
-            const executionContext = {};
-            
-            // Esponi ogni variabile come proprietà del contesto usando getter/setter
-            varNames.forEach(varName => {
-              // Sanitizza il nome per essere valido in JavaScript
-              const safeVarName = varName.replace(/[^a-zA-Z0-9_$]/g, '_');
-              
-              // Crea getter/setter che si collegano direttamente a gameState.variables
-              Object.defineProperty(executionContext, safeVarName, {
-                get: () => gameState.variables.get(varName),
-                set: (value) => gameState.variables.set(varName, value),
-                configurable: true,
-                enumerable: true
-              });
-            });
-            
-            // Usa with statement per esporre le variabili nello scope
-            // Nota: with è deprecato ma è l'unico modo affidabile per esporre variabili nello scope
-            // senza modificare il codice dello script
             try {
-              const handlerCode = handlerFunc.toString();
-              
-              // Crea una funzione wrapper async che usa with per esporre le variabili
-              // ⚠️ IMPORTANTE: Wrappiamo come async per permettere await anche se l'handler originale non lo è
-              const wrappedCode = `
-                return (async function() {
-                  with (executionContext) {
-                    return await (${handlerCode}).apply(this, arguments);
-                  }
-                })();
-              `;
-              
-              const wrappedFunc = new Function('executionContext', 'handlerFunc', 'args', wrappedCode);
-              return await wrappedFunc.call(executionContext, executionContext, handlerFunc, args);
+              return await runHandlerWithExecutionScope(handlerFunc, args);
             } catch (e) {
-              // Fallback: esegui normalmente senza iniezione variabili, ma sempre come async
-              // ⚠️ IMPORTANTE: Usa handlerFunc (non originalHandler) che è disponibile nello scope
-              log(`[Runtime] compileScript: Errore iniezione variabili per ${handlerName}: ${e.message}. Usando fallback.`, 'warning');
-              const result = handlerFunc.apply(executionContext, args);
-              // Se restituisce una Promise, attendila
+              log(
+                `[Runtime] compileScript: Errore scope API/variabili per ${handlerName}: ${e.message}. Fallback globals.`,
+                'warning'
+              );
+              const scriptScope = buildHandlerExecutionScope();
+              const result = handlerFunc.apply(scriptScope, args);
               if (result && typeof result.then === 'function') {
                 return await result;
               }
@@ -2135,7 +2187,7 @@
       gameState.compiledScripts.set(scriptName, wrappedHandlers);
       
       const handlerCount = Object.keys(wrappedHandlers).length;
-      log(`[Runtime] compileScript: Script '${scriptName}' compilato con successo (${handlerCount} handler estratti, variabili iniettate)`, 'success');
+      log(`[Runtime] compileScript: Script '${scriptName}' compilato con successo (${handlerCount} handler, scope API+variabili)`, 'success');
       
       if (handlerCount === 0) {
         log(`[Runtime] compileScript: ATTENZIONE - Script '${scriptName}' non contiene handler definiti`, 'warning');
@@ -2143,7 +2195,7 @@
       
       return wrappedHandlers;
     } catch (error) {
-      log(`[Runtime] compileScript: Errore compilazione script '${scriptName}': ${error.message}`, 'error');
+      log(`[Runtime] compileScript: Error compiling script '${scriptName}': ${error.message}`, 'error');
       console.error(error);
       
       // Salva cache vuota per evitare tentativi ripetuti
@@ -2158,7 +2210,7 @@
    * @param {string} scriptName - Nome dello script
    * @param {string} scriptContent - Contenuto dello script (usato solo se non in cache)
    * @param {string} handlerName - Nome dell'handler da recuperare (es: 'on_hotspot_click')
-   * @returns {Function|null} Funzione handler o null se non trovata
+   * @returns {Function|null} Funzione handler o null se not found
    */
   function getCompiledHandler(scriptName, scriptContent, handlerName) {
     // Compila lo script se non è già in cache
@@ -2264,7 +2316,7 @@
         try {
           ${code}
         } catch (e) {
-          GameAPI.error('Errore script: ' + (e && e.message ? e.message : String(e)));
+          GameAPI.error('Script error: ' + (e && e.message ? e.message : String(e)));
           throw e;
         }
         `,
@@ -2272,7 +2324,7 @@
       );
       scriptFunction(...scriptArgs);
     } catch (error) {
-      log(`Errore esecuzione script ${scriptName}: ${error.message}`, 'error');
+      log(`Error executing script ${scriptName}: ${error.message}`, 'error');
       console.error(error);
     }
   }
@@ -2327,14 +2379,17 @@
         // ⚠️ PROTEZIONE: Verifica che l'handler non sia già stato eseguito in questo contesto
         const handlerId = `${scriptName}_${handlerName}_${Date.now()}`;
         log(`[Runtime] executeScriptHandler: Esecuzione handler ID: ${handlerId}`, 'info');
-        handlerFunction.apply(null, argsArray);
-        
+        const result = handlerFunction.apply(null, argsArray);
+        if (result && typeof result.then === 'function') {
+          await result;
+        }
+
         log(`[Runtime] executeScriptHandler: Handler '${handlerName}' completato (ID: ${handlerId})`, 'info');
       } else {
-        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' non trovato nello script '${scriptName}'`, 'info');
+        log(`[Runtime] executeScriptHandler: Handler '${handlerName}' not found nello script '${scriptName}'`, 'info');
       }
     } catch (error) {
-      log(`[Runtime] executeScriptHandler: Errore esecuzione handler '${handlerName}': ${error.message}`, 'error');
+      log(`[Runtime] executeScriptHandler: Error executing handler '${handlerName}': ${error.message}`, 'error');
       console.error(error);
     }
   }
@@ -2387,7 +2442,7 @@
       try {
         handler();
       } catch (error) {
-        log(`Errore handler on_game_start: ${error.message}`, 'error');
+        log(`Error in on_game_start handler: ${error.message}`, 'error');
       }
     }
   }
@@ -2454,34 +2509,34 @@
       try {
         handler(oldRoomId, newRoomId);
       } catch (error) {
-        log(`Errore handler on_room_change: ${error.message}`, 'error');
+        log(`Error in on_room_change handler: ${error.message}`, 'error');
       }
     }
   }
 
   async function executeObjectClickScripts(objectId, x, y) {
-    // ⚠️ MODIFICATO: Esegui SOLO lo script specifico dell'oggetto cliccato
+    // ⚠️ MODIFICATO: Esegui SOLO lo script specifico dell'object cliccato
     // Non eseguire script generici o script di altri oggetti
     
-    // Esegui SOLO lo script collegato esplicitamente all'oggetto tramite attachments
-    // Questo garantisce che ogni oggetto esegua solo il proprio script, non quello di altri oggetti
+    // Esegui SOLO lo script collegato esplicitamente to object tramite attachments
+    // Questo garantisce che ogni object esegua solo il proprio script, non quello di altri oggetti
     const objectScripts = gameState.attachments.objectScripts || {};
     if (typeof objectScripts === 'object' && objectScripts[objectId]) {
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
         // ⚠️ Passa scriptName per garantire cache corretta
         await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y], scriptName);
-        return; // Esegui SOLO lo script specifico dell'oggetto, poi esci
+        return; // Esegui SOLO lo script specifico dell'object, poi esci
       } else {
-        log(`[executeObjectClickScripts] Script "${scriptName}" associato all'oggetto "${objectId}" non trovato`, 'warning');
+        log(`[executeObjectClickScripts] Script "${scriptName}" associato to object "${objectId}" not found`, 'warning');
       }
     } else {
-      log(`[executeObjectClickScripts] Nessuno script associato all'oggetto "${objectId}"`, 'info');
+      log(`[executeObjectClickScripts] No script associato to object "${objectId}"`, 'info');
     }
     
     // ⚠️ PRIORITÀ 2, 3 e 4 RIMOSSE: Non eseguire più script generici, scansioni o handler dinamici
-    // Questo previene che script di altri oggetti vengano eseguiti quando si clicca su un oggetto specifico
-    // Ogni oggetto deve avere il proprio script associato tramite attachments.objectScripts
+    // Questo previene che script di altri oggetti vengano eseguiti quando si clicca su un object specifico
+    // Ogni object deve avere il proprio script associato tramite attachments.objectScripts
   }
 
   // Verifica se un punto è dentro un poligono (ray casting algorithm)
@@ -3055,7 +3110,7 @@
       
       log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato con successo per hotspot ${hotspotId}`, 'success');
     } catch (error) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Errore esecuzione script per hotspot ${hotspotId}: ${error.message}`, 'error');
+      log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Error executing script per hotspot ${hotspotId}: ${error.message}`, 'error');
       console.error('[Runtime] executeHotspotScript error:', error);
     } finally {
       // Rimuovi dal set dopo un breve delay per permettere eventuali callback asincroni
@@ -3155,7 +3210,14 @@
         GameAPI.error('getVariable: name must be a string');
         return null;
       }
-      return gameState.variables.get(name) || null;
+      if (gameState.variables.has(name)) {
+        return gameState.variables.get(name);
+      }
+      const def = getVariableDefinition(name);
+      if (def && 'initialValue' in def) {
+        return coerceVariableValue(def, def.initialValue);
+      }
+      return null;
     },
 
     setVariable: function(name, value) {
@@ -3163,12 +3225,126 @@
         GameAPI.error('setVariable: name must be a string');
         return;
       }
-      gameState.variables.set(name, value);
+      const def = getVariableDefinition(name);
+      gameState.variables.set(name, coerceVariableValue(def, value));
+    },
+
+    getVar: function(key) {
+      if (!key || typeof key !== 'string') {
+        GameAPI.error('getVar: key must be a string');
+        return undefined;
+      }
+      if (gameState.variables.has(key)) {
+        return gameState.variables.get(key);
+      }
+      const def = getVariableDefinition(key);
+      if (def && 'initialValue' in def) {
+        return coerceVariableValue(def, def.initialValue);
+      }
+      return undefined;
+    },
+
+    setVar: function(key, value) {
+      if (!key || typeof key !== 'string') {
+        GameAPI.error('setVar: key must be a string');
+        return false;
+      }
+      GameAPI.setVariable(key, value);
+      return true;
+    },
+
+    hasVar: function(key) {
+      if (!key || typeof key !== 'string') return false;
+      if (gameState.variables.has(key)) return true;
+      return !!getVariableDefinition(key);
+    },
+
+    toggleVar: function(key) {
+      if (!key || typeof key !== 'string') {
+        GameAPI.error('toggleVar: key must be a string');
+        return false;
+      }
+      const current = GameAPI.getVar(key);
+      if (typeof current === 'boolean') {
+        GameAPI.setVar(key, !current);
+        return true;
+      }
+      GameAPI.setVar(key, true);
+      return true;
     },
 
     // Room
     getCurrentRoom: function() {
       return gameState.currentRoomId;
+    },
+
+    get_current_room: function() {
+      return GameAPI.getCurrentRoom();
+    },
+
+    get_room_objects: function() {
+      if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.objects)) {
+        return [];
+      }
+      return gameState.currentRoom.objects.map(o => ({
+        id: String(o.id || ''),
+        name: String(o.name || ''),
+        type: String(o.type || 'Interactive'),
+        x: Number(o.x) || 0,
+        y: Number(o.y) || 0,
+        rotation: Number(o.rotationRad ? (o.rotationRad * 180 / Math.PI) : 0),
+        scaleX: Number(o.scaleX) > 0 ? Number(o.scaleX) : 1,
+        scaleY: Number(o.scaleY) > 0 ? Number(o.scaleY) : 1,
+        visible: o.visible !== false,
+        enabled: o.enabled !== false
+      }));
+    },
+
+    set_room_background: function(imageUrlOrDataUrl) {
+      if (!gameState.currentRoom) {
+        GameAPI.error('set_room_background: no current room');
+        return false;
+      }
+
+      const applyBackground = (img, srcKey) => {
+        gameState.currentRoom.backgroundImg = img;
+        if (srcKey) {
+          gameState.currentRoom.background = srcKey;
+        }
+        const roomDef = findProjectRoomDefinition(gameState.currentRoomId);
+        if (roomDef && srcKey) {
+          roomDef.background = srcKey;
+        }
+        log('[Runtime] set_room_background: sfondo aggiornato', 'info');
+      };
+
+      const url = imageUrlOrDataUrl == null ? '' : String(imageUrlOrDataUrl).trim();
+      if (!url) {
+        gameState.currentRoom.backgroundImg = null;
+        gameState.currentRoom.background = null;
+        const roomDef = findProjectRoomDefinition(gameState.currentRoomId);
+        if (roomDef) roomDef.background = null;
+        log('[Runtime] set_room_background: sfondo rimosso', 'info');
+        return true;
+      }
+
+      const cached = AssetRegistry.images.get(url);
+      if (cached && cached.complete && cached.naturalWidth > 0) {
+        applyBackground(cached, url);
+        return true;
+      }
+
+      loadImage(url).then(img => {
+        if (!img) {
+          GameAPI.error('set_room_background: image load failed');
+          return;
+        }
+        applyBackground(img, url);
+      }).catch(err => {
+        GameAPI.error(`set_room_background: ${err && err.message ? err.message : err}`);
+      });
+
+      return true;
     },
 
     load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
@@ -3220,7 +3396,7 @@
           
           log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${roomIdOrName}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
         } else {
-          log(`[Runtime] load_room: Player non trovato, impossibile posizionare`, 'warning');
+          log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
         }
       }
       
@@ -3247,16 +3423,16 @@
     },
 
     move_object: function(objectId, x, y) {
-      // Sposta un oggetto nella room corrente (con coda sequenziale)
+      // Sposta un object nella room corrente (con coda sequenziale)
       queueCommand(async () => {
         if (!gameState.currentRoom || !gameState.currentRoom.objects) {
-          GameAPI.error('move_object: Nessuna room corrente o oggetti non disponibili');
+          GameAPI.error('move_object: no current room or objects unavailable');
           return;
         }
         
         const obj = gameState.currentRoom.objects.find(o => o.id === String(objectId) || o.name === String(objectId));
         if (!obj) {
-          GameAPI.error(`move_object: Oggetto ${objectId} non trovato`);
+          GameAPI.error(`move_object: object ${objectId} not found`);
           return;
         }
         
@@ -3264,7 +3440,7 @@
         obj.y = Number(y) || 0;
         
         // Il rendering avviene automaticamente nel game loop
-        log(`[Runtime] Oggetto ${objectId} spostato a (${obj.x}, ${obj.y})`, 'info');
+        log(`[Runtime] Object ${objectId} moved to (${obj.x}, ${obj.y})`, 'info');
       });
     },
 
@@ -3273,7 +3449,7 @@
       const key = resolveInventoryContentKey(itemId);
       const q = Math.max(1, Number(quantity) || 1);
       if (!key) {
-        GameAPI.error('add_to_inventory: itemId non valido');
+        GameAPI.error('add_to_inventory: invalid itemId');
         return 0;
       }
       const inv = ensureInventoryState();
@@ -3288,7 +3464,7 @@
       const key = resolveInventoryContentKey(itemId);
       const q = Math.max(1, Number(quantity) || 1);
       if (!key) {
-        GameAPI.error('remove_from_inventory: itemId non valido');
+        GameAPI.error('remove_from_inventory: invalid itemId');
         return 0;
       }
       const inv = ensureInventoryState();
@@ -3329,7 +3505,7 @@
     // Oggetti di scena (Fase B.2)
     spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
       if (!gameState.currentRoom) {
-        GameAPI.error('spawn_object: nessuna room corrente');
+        GameAPI.error('spawn_object: no current room');
         return null;
       }
       if (!gameState.currentRoom.objects) {
@@ -3364,7 +3540,7 @@
         } else {
           loadImage(url).then(img => {
             if (!img) {
-              GameAPI.error(`spawn_object: impossibile caricare immagine per "${name}"`);
+              GameAPI.error(`spawn_object: could not load image for "${name}"`);
               return;
             }
             const obj = findRoomObject(id);
@@ -3381,12 +3557,12 @@
 
     despawn_object: function(objectId) {
       if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.objects)) {
-        GameAPI.error('despawn_object: nessuna room corrente');
+        GameAPI.error('despawn_object: no current room');
         return false;
       }
       const key = String(objectId || '').trim();
       if (!key) {
-        GameAPI.error('despawn_object: objectId non valido');
+        GameAPI.error('despawn_object: invalid objectId');
         return false;
       }
       const before = gameState.currentRoom.objects.length;
@@ -3397,7 +3573,7 @@
       if (removed) {
         log(`[Runtime] despawn_object: rimosso "${key}"`, 'info');
       } else {
-        GameAPI.error(`despawn_object: oggetto "${key}" non trovato`);
+        GameAPI.error(`despawn_object: object "${key}" not found`);
       }
       return removed;
     },
@@ -3405,7 +3581,7 @@
     rotate_object: function(objectId, degrees) {
       const obj = findRoomObject(objectId);
       if (!obj) {
-        GameAPI.error(`rotate_object: oggetto "${objectId}" non trovato`);
+        GameAPI.error(`rotate_object: object "${objectId}" not found`);
         return false;
       }
       const deg = Number(degrees) || 0;
@@ -3417,7 +3593,7 @@
     scale_object: function(objectId, sx, sy) {
       const obj = findRoomObject(objectId);
       if (!obj) {
-        GameAPI.error(`scale_object: oggetto "${objectId}" non trovato`);
+        GameAPI.error(`scale_object: object "${objectId}" not found`);
         return false;
       }
       let scaleX = Number(sx);
@@ -3433,7 +3609,7 @@
     set_object_visible: function(objectId, visible) {
       const obj = findRoomObject(objectId);
       if (!obj) {
-        GameAPI.error(`set_object_visible: oggetto "${objectId}" non trovato`);
+        GameAPI.error(`set_object_visible: object "${objectId}" not found`);
         return false;
       }
       const v = !!visible;
@@ -3446,13 +3622,13 @@
     // Character API
     spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
       if (!characterName) {
-        GameAPI.error('spawn_character: characterName è richiesto');
+        GameAPI.error('spawn_character: characterName is required');
         return null;
       }
 
       const charDef = gameState.characterDefinitions.get(characterName);
       if (!charDef) {
-        GameAPI.error(`spawn_character: Character "${characterName}" non trovato nelle definizioni`);
+        GameAPI.error(`spawn_character: character "${characterName}" not found in definitions`);
         return null;
       }
 
@@ -3476,7 +3652,7 @@
           log(`[Runtime] Character "${characterName}": moveSpeed non valido (${charDef.spawnSettings.moveSpeed}), uso default: 100`, 'warning');
         }
       } else {
-        log(`[Runtime] Character "${characterName}": moveSpeed non trovato nelle spawnSettings, uso default: 100`, 'info');
+        log(`[Runtime] Character "${characterName}": moveSpeed not found nelle spawnSettings, uso default: 100`, 'info');
       }
 
       const character = {
@@ -3510,7 +3686,7 @@
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
       
-      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -3522,7 +3698,7 @@
       }
       
       if (!character) {
-        GameAPI.error(`move_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
+        GameAPI.error(`move_character: character "${characterIdOrName}" not found (by ID or name in current room)`);
         return;
       }
 
@@ -3533,7 +3709,7 @@
       character.renderY = character.y;
       character.targetY = character.y;
       character.velocityY = 0;
-      log(`[Runtime] Character ${characterId} spostato a (${character.x}, ${character.y})`, 'info');
+      log(`[Runtime] Character ${characterId} moved to (${character.x}, ${character.y})`, 'info');
     },
 
     /**
@@ -3549,7 +3725,7 @@
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
       
-      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -3561,21 +3737,21 @@
       }
       
       if (!character) {
-        GameAPI.error(`walk_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
-        return Promise.reject(new Error(`Character "${characterIdOrName}" non trovato`));
+        GameAPI.error(`walk_character: character "${characterIdOrName}" not found (by ID or name in current room)`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" not found`));
       }
 
       // Verifica che il character sia nella room corrente
       if (character.roomId !== gameState.currentRoomId) {
-        GameAPI.error(`walk_character: Character "${characterIdOrName}" non è nella room corrente`);
+        GameAPI.error(`walk_character: character "${characterIdOrName}" is not in the current room`);
         return Promise.reject(new Error(`Character "${characterIdOrName}" non è nella room corrente`));
       }
 
       // Verifica che ci sia una walkable area
       const walkableArea = gameState.currentRoom?.walkableArea;
       if (!walkableArea || !Array.isArray(walkableArea) || walkableArea.length < 3) {
-        GameAPI.error(`walk_character: Nessuna walkable area definita per questa room`);
-        return Promise.reject(new Error(`Nessuna walkable area definita per questa room`));
+        GameAPI.error(`walk_character: no walkable area defined for this room`);
+        return Promise.reject(new Error(`No walkable area defined for this room`));
       }
 
       // Inizializza proprietà movimento se mancanti
@@ -3596,7 +3772,7 @@
       // Verifica che il character abbia un pivot (necessario per il pathfinding)
       const charDef = gameState.characterDefinitions.get(character.name);
       if (!charDef || charDef.pivotX === undefined || charDef.pivotY === undefined) {
-        GameAPI.error(`walk_character: Character "${characterIdOrName}" non ha un pivot definito`);
+        GameAPI.error(`walk_character: character "${characterIdOrName}" has no pivot defined`);
         return Promise.reject(new Error(`Character "${characterIdOrName}" non ha un pivot definito`));
       }
 
@@ -3606,7 +3782,7 @@
 
       // Verifica se il pivot del character è sulla walkable area
       if (!isPointInPolygon(walkableArea, characterPivotX, characterPivotY)) {
-        GameAPI.error(`walk_character: Character "${characterIdOrName}" non è sulla walkable area`);
+        GameAPI.error(`walk_character: character "${characterIdOrName}" is not on the walkable area`);
         return Promise.reject(new Error(`Character "${characterIdOrName}" non è sulla walkable area`));
       }
 
@@ -3658,8 +3834,8 @@
       }
 
       if (!path || path.length === 0) {
-        GameAPI.error(`walk_character: Impossibile trovare un percorso valido verso (${Math.round(targetX)}, ${Math.round(targetY)})`);
-        return Promise.reject(new Error(`Impossibile trovare un percorso valido`));
+        GameAPI.error(`walk_character: could not find a valid path to (${Math.round(targetX)}, ${Math.round(targetY)})`);
+        return Promise.reject(new Error(`Could not find a valid path`));
       }
 
       // Avvia il movimento del character (interrompe qualsiasi movimento in corso)
@@ -3713,7 +3889,7 @@
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
       
-      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -3725,13 +3901,13 @@
       }
       
       if (!character) {
-        GameAPI.error(`set_character_direction: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
+        GameAPI.error(`set_character_direction: character "${characterIdOrName}" not found (by ID or name in current room)`);
         return;
       }
 
       const charDef = gameState.characterDefinitions.get(character.name);
       if (!charDef || !charDef.directions[direction]) {
-        GameAPI.error(`set_character_direction: Direzione "${direction}" non disponibile per character "${character.name}"`);
+        GameAPI.error(`set_character_direction: direction "${direction}" not available for character "${character.name}"`);
         return;
       }
 
@@ -3746,7 +3922,7 @@
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
       
-      // Se non trovato per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -3758,7 +3934,7 @@
       }
       
       if (!character) {
-        GameAPI.error(`animate_character: Character "${characterIdOrName}" non trovato (né per ID né per nome nella room corrente)`);
+        GameAPI.error(`animate_character: character "${characterIdOrName}" not found (by ID or name in current room)`);
         return;
       }
 
@@ -3848,7 +4024,14 @@
       { name: 'log', value: bindGameApiMethod(api, 'log') },
       { name: 'getVariable', value: bindGameApiMethod(api, 'getVariable') },
       { name: 'setVariable', value: bindGameApiMethod(api, 'setVariable') },
+      { name: 'get_var', value: bindGameApiMethod(api, 'getVar') },
+      { name: 'set_var', value: bindGameApiMethod(api, 'setVar') },
+      { name: 'has_var', value: bindGameApiMethod(api, 'hasVar') },
+      { name: 'toggle_var', value: bindGameApiMethod(api, 'toggleVar') },
       { name: 'getCurrentRoom', value: bindGameApiMethod(api, 'getCurrentRoom') },
+      { name: 'get_current_room', value: bindGameApiMethod(api, 'get_current_room') },
+      { name: 'get_room_objects', value: bindGameApiMethod(api, 'get_room_objects') },
+      { name: 'set_room_background', value: bindGameApiMethod(api, 'set_room_background') },
       { name: 'load_room', value: bindGameApiMethod(api, 'load_room') },
       { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
       { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
@@ -3979,7 +4162,7 @@
         try {
           ctx.drawImage(room.backgroundImg, 0, 0, canvas.width, canvas.height);
         } catch (error) {
-          log(`[Runtime] Errore rendering background: ${error.message}`, 'warning');
+          log(`[Runtime] Error rendering background: ${error.message}`, 'warning');
         }
       }
 
@@ -3995,7 +4178,7 @@
             try {
               ctx.drawImage(fg.img, fg.offsetX, fg.offsetY);
             } catch (error) {
-              log(`[Runtime] Errore rendering foreground: ${error.message}`, 'warning');
+              log(`[Runtime] Error rendering foreground: ${error.message}`, 'warning');
             }
           }
         });
@@ -4054,7 +4237,7 @@
               ctx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
             }
           } catch (error) {
-            log(`[Runtime] Errore rendering character ${character.id}: ${error.message}`, 'warning');
+            log(`[Runtime] Error rendering character ${character.id}: ${error.message}`, 'warning');
             // Se c'è un errore, renderizza comunque un placeholder
             renderCharacterPlaceholder(ctx, character, charDef, scale);
           }
@@ -4072,7 +4255,7 @@
         try {
           ctx.drawImage(gui.background, 0, 0, canvas.width, canvas.height);
         } catch (error) {
-          log(`[Runtime] Errore rendering GUI background ${gui.id}: ${error.message}`, 'warning');
+          log(`[Runtime] Error rendering GUI background ${gui.id}: ${error.message}`, 'warning');
         }
       }
 
@@ -4084,7 +4267,7 @@
               try {
                 ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
               } catch (error) {
-                log(`[Runtime] Errore rendering pulsante ${btn.id}: ${error.message}`, 'warning');
+                log(`[Runtime] Error rendering pulsante ${btn.id}: ${error.message}`, 'warning');
               }
             } else {
               // Fallback: disegna rettangolo se l'immagine non è disponibile
@@ -4605,7 +4788,7 @@
     // Controlla click su oggetti
     if (gameState.currentRoom.objects && Array.isArray(gameState.currentRoom.objects)) {
       const objectCount = gameState.currentRoom.objects.length;
-      log(`[Runtime] handleClick: Verifica ${objectCount} oggetto/i`, 'info');
+      log(`[Runtime] handleClick: Verifica ${objectCount} object/i`, 'info');
       
       for (const obj of gameState.currentRoom.objects) {
         if (!obj.visible || !obj.enabled || !obj.img) {
@@ -4617,15 +4800,15 @@
         log(`[Runtime] handleClick: Oggetto ${obj.id} (${obj.name}): hit-test = ${isInside}`, 'info');
 
         if (isInside) {
-          log(`[Runtime] handleClick: ✓ Click su oggetto: ${obj.name} (${obj.id})`, 'success');
+          log(`[Runtime] handleClick: ✓ Click su object: ${obj.name} (${obj.id})`, 'success');
           await executeObjectClickScripts(obj.id, x, y);
           return;
         }
       }
       
-      log(`[Runtime] handleClick: Nessun oggetto colpito`, 'info');
+      log(`[Runtime] handleClick: Nessun object colpito`, 'info');
     } else {
-      log(`[Runtime] handleClick: Nessun oggetto nella room corrente`, 'info');
+      log(`[Runtime] handleClick: Nessun object nella room corrente`, 'info');
     }
 
     // Controlla click su character
@@ -4717,7 +4900,7 @@
       }
     }
 
-    // Pathfinding: se non c'è stato click su hotspot/oggetto/character/GUI, prova a muovere il player
+    // Pathfinding: se non c'è stato click su hotspot/object/character/GUI, prova a muovere il player
     const playerId = gameState.variables.get('playerId');
     if (playerId) {
       const player = gameState.characters.get(playerId);
@@ -4928,13 +5111,11 @@
 
       case 'RUN_SCRIPT':
         // Esegui script ricevuto dall'editor
-        if (message.code) {
+        if (message.code && message.handlerName) {
           (async () => {
             try {
-              // ⚠️ Per RUN_SCRIPT, usa un nome generato basato su timestamp o hash
-              // Questo garantisce che script diversi vengano compilati separatamente
               const scriptName = message.scriptName || `run_script_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-              await executeScriptHandler(message.code, message.handlerName || null, message.handlerArgs || [], scriptName);
+              await executeScriptHandler(message.code, message.handlerName, message.handlerArgs || [], scriptName);
               sendScriptDone();
             } catch (error) {
               sendToEditor({
@@ -4945,6 +5126,8 @@
               sendScriptDone();
             }
           })();
+        } else if (message.code) {
+          log('[Runtime] RUN_SCRIPT ignorato: handlerName mancante', 'warning');
         }
         break;
 
@@ -4971,6 +5154,7 @@
         gameState.currentRoom = null;
         gameState.objectId = null;
         gameState.variables.clear();
+        gameState.variableDefinitions = new Map();
         gameState.objects.clear();
         gameState.guis.clear();
         gameState.inventory = createEmptyInventoryState();

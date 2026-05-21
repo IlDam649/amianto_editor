@@ -217,7 +217,8 @@
         <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+4)">Characters</button>
         <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+5)">GUI</button>
         <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+6)">Scripts</button>
-        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+7)">PLAY</button>
+        <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+7)">Docs</button>
+        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+8)">PLAY</button>
       </div>
     </nav>
 
@@ -248,55 +249,63 @@
           <textarea id="script-editor-large" style="width: 100%; height: 100%;"></textarea>
         </div>
         
+        <!-- Documentation panel (Docs tab) -->
+        <div id="docsMainPanel" class="docs-main-panel" style="display: none;">
+          <div class="docs-main-header">
+            <h4 class="docs-main-title"><i class="fas fa-book"></i> Amianto Editor — Documentation</h4>
+          </div>
+          <div id="docs-main-content" class="docs-main-content" tabindex="0"></div>
+        </div>
+
         <!-- Resources panel (Resources tab — occupa lo spazio del canvas) -->
         <div id="resourcesMainPanel" class="resources-main-panel" style="display: none;">
           <div class="resources-main-header">
-            <h4 class="resources-main-title"><i class="fas fa-folder-open"></i> Libreria risorse</h4>
+            <h4 class="resources-main-title"><i class="fas fa-folder-open"></i> Resource library</h4>
             <ul class="nav nav-tabs resources-subtabs" id="resources-subtabs" role="tablist">
               <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="resources-tab-images" data-resource-tab="images" type="button" role="tab" aria-selected="true">
-                  <i class="fas fa-image"></i> Immagini
+                  <i class="fas fa-image"></i> Images
                 </button>
               </li>
               <li class="nav-item" role="presentation">
                 <button class="nav-link" id="resources-tab-sounds" data-resource-tab="sounds" type="button" role="tab" aria-selected="false">
-                  <i class="fas fa-music"></i> Suoni
+                  <i class="fas fa-music"></i> Sounds
                 </button>
               </li>
             </ul>
           </div>
           <div id="resources-images-pane" class="resources-pane" role="tabpanel">
             <div class="alert alert-info py-2 mb-2" role="alert">
-              <small><strong>Libreria centralizzata</strong> — importa qui tutte le immagini di gioco (Supabase). Gli altri editor aprono il picker da questa cartella.</small>
+              <small><strong>Centralized library</strong> — import all game images here (Supabase). Other editors open the picker from this folder.</small>
             </div>
             <div class="d-flex flex-wrap gap-1 mb-2">
-              <button class="btn btn-success btn-sm" id="btn-resources-import" type="button"><i class="fas fa-file-import"></i> Importa</button>
-              <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button"><i class="fas fa-sync-alt"></i> Aggiorna</button>
-              <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button"><i class="fas fa-trash"></i> Elimina</button>
+              <button class="btn btn-success btn-sm" id="btn-resources-import" type="button"><i class="fas fa-file-import"></i> Import</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
             </div>
             <div class="mb-2">
-              <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Cerca immagini...">
+              <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Search images...">
             </div>
             <div class="d-flex justify-content-between align-items-center mb-1">
-              <small class="text-muted" id="resources-status">Caricamento...</small>
+              <small class="text-muted" id="resources-status">Loading...</small>
               <small class="text-muted" id="resources-count"></small>
             </div>
             <div id="resources-grid" class="resources-grid resources-grid-main"></div>
           </div>
           <div id="resources-sounds-pane" class="resources-pane" role="tabpanel" style="display: none;">
             <div class="alert alert-info py-2 mb-2" role="alert">
-              <small><strong>Audio</strong> — importa musica ed effetti sonori (cartella <code>audio/</code> su Supabase).</small>
+              <small><strong>Audio</strong> — import music and sound effects (folder <code>audio/</code> on Supabase).</small>
             </div>
             <div class="d-flex flex-wrap gap-1 mb-2">
-              <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button"><i class="fas fa-file-import"></i> Importa</button>
-              <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button"><i class="fas fa-sync-alt"></i> Aggiorna</button>
-              <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button"><i class="fas fa-trash"></i> Elimina</button>
+              <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button"><i class="fas fa-file-import"></i> Import</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
             </div>
             <div class="mb-2">
-              <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Cerca suoni...">
+              <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Search sounds...">
             </div>
             <div class="d-flex justify-content-between align-items-center mb-1">
-              <small class="text-muted" id="sounds-status">Caricamento...</small>
+              <small class="text-muted" id="sounds-status">Loading...</small>
               <small class="text-muted" id="sounds-count"></small>
             </div>
             <div id="sounds-grid" class="resources-grid resources-grid-main sounds-grid"></div>
@@ -315,7 +324,7 @@
         <!-- Script Log e Engine Log Panel - sotto al canvas, sempre visibili -->
         <div class="console-logs-wrapper" style="position: relative;">
           <!-- Toggle button per nascondere/mostrare le console log -->
-          <button id="console-log-toggle" class="btn btn-sm console-log-toggle-btn" title="Nascondi/Mostra console log">
+          <button id="console-log-toggle" class="btn btn-sm console-log-toggle-btn" title="Hide/Show console logs">
             <i class="fas fa-eye" id="console-log-toggle-icon"></i>
           </button>
           <!-- Resize handle per ridimensionare verticalmente le console -->
@@ -408,21 +417,55 @@
         <div id="resources" class="section">
           <h3>Resources</h3>
           <div class="section-content">
-            <div class="alert alert-info py-2 mb-2" role="alert">
-              <small>
-                <strong>Libreria centralizzata</strong> — la griglia è nel pannello principale.
-                Usa le schede <strong>Immagini</strong> e <strong>Suoni</strong>.
-              </small>
-            </div>
             <div class="resources-sidebar-subtabs btn-group btn-group-sm w-100 mb-2" role="group">
               <button type="button" class="btn btn-outline-success active" data-resource-tab="images" id="resources-sidebar-tab-images">
-                <i class="fas fa-image"></i> Immagini
+                <i class="fas fa-image"></i> Images
               </button>
               <button type="button" class="btn btn-outline-success" data-resource-tab="sounds" id="resources-sidebar-tab-sounds">
-                <i class="fas fa-music"></i> Suoni
+                <i class="fas fa-music"></i> Sounds
               </button>
             </div>
-            <p class="text-muted small mb-0" id="resources-sidebar-hint">Importa, cerca ed elimina file dal pannello principale.</p>
+            <div id="resources-inspector" class="resources-inspector">
+              <div id="resources-inspector-empty" class="resources-inspector-empty">
+                <i class="fas fa-image" id="resources-inspector-empty-icon" aria-hidden="true"></i>
+                <p class="text-muted small mb-0" id="resources-inspector-empty-text">Select a resource in the grid to preview it here.</p>
+              </div>
+              <div id="resources-inspector-image" class="resources-inspector-panel" hidden>
+                <h6 class="text-light mb-2">Image preview</h6>
+                <div class="resources-inspector-preview-box">
+                  <img id="resources-inspector-img" alt="" />
+                </div>
+                <dl class="resources-inspector-meta small mb-0">
+                  <dt>Name</dt>
+                  <dd id="resources-inspector-name">—</dd>
+                  <dt>Dimensions</dt>
+                  <dd id="resources-inspector-dimensions">—</dd>
+                  <dt>Size</dt>
+                  <dd id="resources-inspector-size">—</dd>
+                  <dt>ID</dt>
+                  <dd id="resources-inspector-id" class="text-break">—</dd>
+                </dl>
+              </div>
+              <div id="resources-inspector-sound" class="resources-inspector-panel" hidden>
+                <h6 class="text-light mb-2">Audio preview</h6>
+                <div class="resources-inspector-sound-icon" aria-hidden="true">
+                  <i class="fas fa-volume-up"></i>
+                </div>
+                <dl class="resources-inspector-meta small mb-2">
+                  <dt>Name</dt>
+                  <dd id="resources-inspector-sound-name">—</dd>
+                  <dt>Size</dt>
+                  <dd id="resources-inspector-sound-size">—</dd>
+                  <dt>ID</dt>
+                  <dd id="resources-inspector-sound-id" class="text-break">—</dd>
+                </dl>
+                <audio id="resources-inspector-audio" class="resources-inspector-audio w-100" controls preload="metadata"></audio>
+                <button type="button" class="btn btn-outline-success btn-sm w-100 mt-2" id="resources-inspector-play-btn">
+                  <i class="fas fa-play"></i> Play
+                </button>
+              </div>
+            </div>
+            <p class="text-muted small mb-0 mt-2" id="resources-sidebar-hint">Import, search, and delete files from the main panel.</p>
           </div>
         </div>
 
@@ -529,11 +572,11 @@
           </small>
         </div>
         <div class="mb-3">
-          <label class="form-label text-light">Min Scale (background - linea superiore):</label>
+          <label class="form-label text-light">Min Scale (background — top line):</label>
           <input type="number" class="form-control form-control-sm" id="scaling-min-scale" value="0.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
         </div>
         <div class="mb-3">
-          <label class="form-label text-light">Max Scale (foreground - linea inferiore):</label>
+          <label class="form-label text-light">Max Scale (foreground — bottom line):</label>
           <input type="number" class="form-control form-control-sm" id="scaling-max-scale" value="1.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
         </div>
         <div class="btn-group w-100 mb-2" role="group">
@@ -711,7 +754,7 @@
               <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-character-frames-browse">
                 <i class="fas fa-folder-open"></i> Browse Resources (frames)
               </button>
-              <small class="text-muted d-block mt-1">Puoi selezionare più immagini dalla finestra Resources; l’ordine segue i numeri nel nome file.</small>
+              <small class="text-muted d-block mt-1">You can select multiple images from the Resources window; frame order follows numbers in the file name.</small>
             </div>
             
             <!-- Container per specchiare direzione -->
@@ -1004,9 +1047,28 @@
 
             <div class="alert alert-info mt-3" role="alert">
               <small>
-                <strong>Tip:</strong> Editor unico con Ctrl+S per salvare. Autocomplete: Ctrl+Space (API di gioco).
+                <strong>Tip:</strong> Single editor with Ctrl+S to save. Autocomplete: Ctrl+Space (game API).
               </small>
             </div>
+          </div>
+        </div>
+
+        <div id="docs" class="section">
+          <h3>Documentation</h3>
+          <div class="section-content docs-sidebar-toc">
+            <p class="text-muted small mb-2">Quick navigation — full guide in the main panel.</p>
+            <nav class="nav flex-column docs-toc-nav" id="docs-toc-nav">
+              <a class="nav-link docs-toc-link" href="#doc-overview">Overview</a>
+              <a class="nav-link docs-toc-link" href="#doc-quickstart">Quick start</a>
+              <a class="nav-link docs-toc-link" href="#doc-tabs">Editor tabs</a>
+              <a class="nav-link docs-toc-link" href="#doc-workflow">Workflow</a>
+              <a class="nav-link docs-toc-link" href="#doc-scripting">Scripting</a>
+              <a class="nav-link docs-toc-link" href="#doc-events">Events</a>
+              <a class="nav-link docs-toc-link" href="#doc-api">Game API</a>
+              <a class="nav-link docs-toc-link" href="#doc-examples">Examples</a>
+              <a class="nav-link docs-toc-link" href="#doc-playtest">Play test</a>
+              <a class="nav-link docs-toc-link" href="#doc-tips">Tips</a>
+            </nav>
           </div>
         </div>
 
@@ -1034,7 +1096,7 @@
             </div>
 
             <div class="mb-3">
-              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Esegui gli script on_game_start senza aprire il runtime">
+              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Run on_game_start scripts without opening the runtime">
                 <i class="fas fa-rocket"></i> Test Game Start
               </button>
             </div>
@@ -1085,9 +1147,10 @@
   <script src="JS/firebase-verify.js"></script>
   <script src="JS/firebase-usage.js"></script>
   <!-- Supabase Config (opzionale, crea supabase-config.js basandoti su supabase-config-template.js) -->
-  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js non trovato. Configura SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js o crea supabase-config.js')"></script>
+  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found. Set SUPABASE_URL and SUPABASE_ANON_KEY in supabase.js or create supabase-config.js')"></script>
   <script src="JS/supabase.js"></script>
   <script src="JS/resources.js"></script>
+  <script src="JS/docs-panel.js"></script>
   <script src="JS/main.js"></script>
 
   <!-- Resource picker modal (usato da tutti i Browse) -->
@@ -1107,8 +1170,8 @@
           </div>
           <small class="text-muted d-block mb-1" id="resource-picker-hint" style="display: none;"></small>
           <div class="d-flex flex-wrap gap-2 mb-2 align-items-center" id="resource-picker-multi-actions" style="display: none;">
-            <button type="button" class="btn btn-outline-light btn-sm" id="resource-picker-select-all-btn">Seleziona tutto</button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" id="resource-picker-clear-btn">Deseleziona</button>
+            <button type="button" class="btn btn-outline-light btn-sm" id="resource-picker-select-all-btn">Select all</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="resource-picker-clear-btn">Clear selection</button>
           </div>
           <small class="text-muted d-block mb-2" id="resource-picker-selection">No selection</small>
           <div id="resource-picker-grid" class="resources-grid resources-grid-picker"></div>

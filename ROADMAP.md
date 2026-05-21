@@ -12,7 +12,7 @@
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**⚠️ Nota API (maggio 2026):** Le “24 API” documentate in passato non sono tutte disponibili nel **runtime** (`runtime.js`). Parte del codice in `main.js` (`sandboxApi`, ~righe 7133–7499) **non è più collegata** al Play Test. L’unificazione è in corso: **Fase A completata** (infrastruttura binding); **Fase B** (porting inventario, oggetti, variabili alias) — prossimo step.
+**✅ Nota API (maggio 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/variabili, scope handler Fase C). Prossimi step: **Fase E** (test manuali), GUI inventario giocabile, cursori contestuali, dialoghi.
 
 ---
 
@@ -111,16 +111,12 @@
 - **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`
 - Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
 
-#### 🟡 **Solo editor legacy / da portare in runtime (Fase B)**
-- **Inventario (5 API):** definite in `main.js` `sandboxApi` (non usato) — `add_to_inventory`, `remove_from_inventory`, `has_item`, `get_item_count`, `clear_inventory`
-- **Oggetti runtime (5 API):** `spawn_object`, `despawn_object`, `rotate_object`, `scale_object`, `set_object_visible`
-- **Stanze:** `get_room_objects`, `set_room_background`
-- **Variabili alias:** `get_var`, `set_var`, `Game.getVar`, ecc. (editor UI usa `window.Game` separato da `GameAPI`)
-- **Autocomplete:** hints in `main.js` elencano API non ancora tutte nel runtime
+#### ✅ **API runtime (Fase B completata)**
+- Inventario, oggetti dinamici, stanze, alias variabili — tutti in `GameAPI` + `getScriptApiBindings()`
 
 #### 🟡 **Qualità scripting**
 - Error handling: migliorare stack trace negli script utente
-- Handler wrapper: estendere scope API oltre le variabili (Fase C checklist)
+- Test manuali checklist Fase E (`await` + inventario nello stesso handler)
 
 #### ❌ **Mancante (backlog)**
 - Dialoghi: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`
@@ -289,13 +285,13 @@
 - ✅ API base runtime: `print`, `show_message`, `move_object`, `load_room`, variabili (`getVariable`/`setVariable`)
 - ✅ Personaggi: `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`
 
-**🟡 IN CORSO - Unificazione API scripting** (vedi [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
+**✅ COMPLETATO - Unificazione API scripting** (vedi [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
 - ✅ **Fase A:** `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
-- ⏳ **Fase B:** inventario, oggetti spawn, `get_room_objects`, alias `Game.getVar`
-- ⏳ **Fase C:** scope API negli handler wrappati
+- ✅ **Fase B:** inventario, oggetti spawn, stanze, alias `Game.getVar`
+- ✅ **Fase C:** `buildHandlerExecutionScope` + `runHandlerWithExecutionScope` negli handler
+- ✅ **Fase D:** rimossi `sandboxApi` / `gameInventory` editor; `scriptName` stabile in Play Test
 
-**❌ NON nel runtime (documentate ma da portare)**:
-- Inventario (5 API), oggetti dinamici (5 API), `get_room_objects`, `set_room_background`, alias `get_var`/`Game.getVar`
+**⏳ Prossimo:** Fase E test manuali; sync inventario in `UPDATE_CONTEXT`
 
 **✅ COMPLETATO - Sistema Runtime Sandboxed**:
 - ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
@@ -366,16 +362,12 @@
   - `exposeScriptGlobals()` — esposizione globale coerente
   - API personaggio incluse nei parametri di compilazione (prima solo su `window`)
 
-#### 1.6 Sistema Inventario Runtime Completo
-- **Stato**: 🟡 Da fare (Fase B.1)
-- **Problema**: API inventario assenti in `runtime.js`; `sandboxApi` in editor non usato
-- **Soluzione**:
-  - Portare 5 API inventario in `GameAPI` + `gameState.inventory`
-  - Rendering GUI Inventory
-  - Drag&drop, tooltip, combinazioni
-- **Tempo stimato**: 5-6 giorni
+#### 1.6 Sistema Inventario Runtime — API ✅ / GUI 🟡
+- **Stato API**: ✅ 5 API in `GameAPI` + `gameState.inventory`
+- **Stato GUI**: 🟡 rendering parziale; mancano drag&drop, tooltip, combinazioni
+- **Tempo stimato GUI**: 5-6 giorni
 
-**Totale Fase 1**: ~16-21 giorni lavorativi (Fase A chiusa; 1.6 in corso)
+**Totale Fase 1**: runtime scripting unificato; prossimo focus GUI inventario + Fase E test
 
 ---
 

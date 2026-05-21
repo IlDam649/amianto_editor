@@ -20,8 +20,10 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 ## 📚 Documentazione
 
+- 📖 **In-app Docs tab** — full English guide in the editor toolbar (**Docs**, `Ctrl+7`)
 - 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
 - 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
 - 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
@@ -63,10 +65,11 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Upload cursor image, optional action text; list active cursors
 - Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
-  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-  - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
+  - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili — vedi [Current API Status](#current-api-status)
+  - **API unification (Fasi A–B ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` in `runtime.js`; stesse API in iframe e `runtime.html`
   - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
-  - **GameAPI**: Complete API exposed to user scripts (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
+  - **GameAPI / `Game`**: API esposte agli script (`print`, `load_room`, `add_to_inventory`, `spawn_object`, `Game.getVar()`, …)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
   - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
@@ -105,7 +108,11 @@ The runtime system provides a complete game execution environment:
 
 ## Current API Status
 
-The JavaScript scripting system currently provides **24 working APIs** organized in 5 categories:
+Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone. L’editor espone le stesse funzioni tramite `getScriptApiBindings()` (Fasi A–B dell’unificazione API).
+
+**Fasi completate:** A (infrastruttura binding) · B.1 (inventario) · B.2 (oggetti dinamici) · B.3 (stanze + alias variabili)
+
+### API disponibili (per categoria)
 
 ### Basic APIs
 - **`print(...)`** / **`GameAPI.print(...)`** - Outputs messages to the script console (with serialization)
@@ -135,21 +142,28 @@ The JavaScript scripting system currently provides **24 working APIs** organized
 - **`set_object_visible(objectId, visible)`** - Shows or hides an object
 
 ### Room System APIs
-- **`load_room(roomIdOrName)`** - Loads a room by ID or name
-- **`get_current_room()`** - Returns the current room ID
-- **`get_room_objects()`** - Returns array of all objects in current room
-- **`set_room_background(imageUrlOrDataUrl)`** - Sets the room background image
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Loads a room by ID or name; optional player placement
+- **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - Returns the current room ID
+- **`get_room_objects()`** - Returns plain objects `{ id, name, x, y, rotation, scaleX, scaleY, visible, enabled }` for the current room
+- **`set_room_background(imageUrlOrDataUrl)`** - Sets or clears background (`""` / null clears); supports URLs and `asset:...` keys already in `AssetRegistry`
 
 ### Game Variables APIs
-- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Gets a game variable value
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Sets a game variable value
-- **`has_var(key)`** / **`Game.hasVar(key)`** - Checks if a variable exists
-- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggles a boolean variable
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVar(key)`** - Gets a variable (returns `initialValue` from project definitions if not set yet)
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVar(key, value)`** - Sets a variable (type coercion from editor definitions when available)
+- **`has_var(key)`** / **`Game.hasVar(key)`** / **`GameAPI.hasVar(key)`** - Checks if a variable exists or is defined in the project
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** / **`GameAPI.toggleVar(key)`** - Toggles a boolean variable
+- **`GameAPI.getVariable(key)`** / **`GameAPI.setVariable(key, value)`** - camelCase aliases (same storage as `get_var` / `set_var`)
 
-### Runtime Context APIs (GameAPI)
-- **`GameAPI.getCurrentRoom()`** - Returns the current room ID
-- **`GameAPI.getCurrentObject()`** - Returns the current object ID (if any)
-- **`load_room(roomIdOrName)`** - Loads a room by ID or name
+### Character APIs (runtime)
+- **`spawn_character(name, x, y, direction?, id?)`** - Spawns a character; returns id
+- **`move_character(idOrName, x, y)`** - Instant move
+- **`walk_character(idOrName, x, y, wait?)`** - Pathfinding move (returns Promise if waiting)
+- **`set_character_direction(idOrName, direction)`** - Sets 8-direction facing
+- **`animate_character(idOrName, enabled?)`** - Animation control hook
+
+### GUI / display
+- **`show_message(text)`** / **`showText(text)`** - On-screen message overlay
+- **`enableObject(id)`** / **`disableObject(id)`** - Enable/disable scene objects (by id or name)
 
 ### Usage Examples
 ```javascript
@@ -190,9 +204,17 @@ scale_object("treasure", 1.5, 1.5);
 load_room("kitchen");
 const objects = get_room_objects();
 print("Room has " + objects.length + " objects");
+
+// Pickup key (object click + inventory + persistent flag)
+function on_object_click(object_id, x, y) {
+  if (has_item("key")) return;
+  add_to_inventory("key", 1);
+  set_object_visible(object_id, false);
+  set_var("key_collected", true);
+}
 ```
 
-All other APIs listed in the extension roadmap are planned for future implementation.
+**Not yet in runtime (roadmap):** dialogue system, audio, save/load slots, visual transitions (`fade_in`, …). See [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -230,10 +252,12 @@ All other APIs listed in the extension roadmap are planned for future implementa
 ### 🚀 JavaScript API Roadmap
 
 #### **Phase 1 - Core Systems (High Priority)**
-- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETED)**
-- ✅ **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETED)**
-- ✅ **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETED)**
-- ✅ **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETED)**
+- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()` **(runtime)**
+- ✅ **Inventory System** (runtime B.1): `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
+- ✅ **Object System** (runtime B.2): `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
+- ✅ **Room System** (runtime B.3): `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
+- ✅ **Variables** (runtime B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, `GameAPI.getVariable`, …
+- ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
 - **Dialogue System**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
@@ -301,7 +325,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 ## 📚 Documentazione
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
 - 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
 - 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
@@ -386,7 +411,9 @@ Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
 
 ## Stato Corrente delle API
 
-Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** organizzate in 5 categorie:
+Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone.
+
+**Fasi unificazione API completate:** A (binding) · B.1 (inventario) · B.2 (oggetti) · B.3 (stanze + variabili)
 
 ### API Base
 - **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
@@ -416,21 +443,20 @@ Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** o
 - **`set_object_visible(objectId, visible)`** - Mostra o nasconde un oggetto
 
 ### API Sistema Stanze
-- **`load_room(roomIdOrName)`** - Carica una stanza per ID o nome
-- **`get_current_room()`** - Restituisce l'ID della stanza corrente
-- **`get_room_objects()`** - Restituisce array di tutti gli oggetti nella stanza corrente
-- **`set_room_background(imageUrlOrDataUrl)`** - Imposta l'immagine di sfondo della stanza
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Carica stanza; posizionamento opzionale del player
+- **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - ID stanza corrente
+- **`get_room_objects()`** - Oggetti stanza corrente come dati plain (`id`, `name`, `x`, `y`, `rotation`, …)
+- **`set_room_background(imageUrlOrDataUrl)`** - Imposta o rimuove lo sfondo (URL o `asset:...`)
 
 ### API Variabili di Gioco
-- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Ottiene il valore di una variabile di gioco
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Imposta il valore di una variabile di gioco
-- **`has_var(key)`** / **`Game.hasVar(key)`** - Verifica se una variabile esiste
-- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Inverte il valore di una variabile booleana
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVar(key)`** - Legge variabile (anche `initialValue` dalle definizioni progetto)
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Scrive variabile (coercizione tipo se definita in editor)
+- **`has_var(key)`** / **`Game.hasVar(key)`** - Variabile impostata o definita nel progetto
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggle booleano
+- **`GameAPI.getVariable` / `setVariable`** - Alias camelCase
 
-### API Contesto Runtime (GameAPI)
-- **`GameAPI.getCurrentRoom()`** - Restituisce l'ID della stanza corrente
-- **`GameAPI.getCurrentObject()`** - Restituisce l'ID dell'oggetto corrente (se presente)
-- **`load_room(roomIdOrName)`** - Carica una stanza per ID o nome
+### API Personaggi (runtime)
+- **`spawn_character`**, **`move_character`**, **`walk_character`**, **`set_character_direction`**, **`animate_character`**
 
 ### Esempi di Utilizzo
 ```javascript
@@ -473,7 +499,7 @@ const oggetti = get_room_objects();
 print("La stanza ha " + oggetti.length + " oggetti");
 ```
 
-Tutte le altre API elencate nella roadmap sono pianificate per implementazioni future.
+**Non ancora nel runtime:** dialoghi, audio, salvataggi, transizioni visive. Vedi [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -511,10 +537,12 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 ### 🚀 Roadmap JavaScript API
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
-- ✅ **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETATO)**
-- ✅ **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETATO)**
-- ✅ **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETATO)**
-- ✅ **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETATO)**
+- ✅ **Sistema Eventi** (runtime): `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
+- ✅ **Inventario** (B.1): `add_to_inventory`, `remove_from_inventory`, `has_item`, `get_item_count`, `clear_inventory`
+- ✅ **Oggetti** (B.2): `spawn_object`, `despawn_object`, `rotate_object`, `scale_object`, `set_object_visible`
+- ✅ **Stanze** (B.3): `load_room`, `get_current_room`, `get_room_objects`, `set_room_background`
+- ✅ **Variabili** (B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, …
+- ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
 - **Sistema Dialoghi**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`

@@ -196,8 +196,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function showSectionById(id, addToHistory = true) {
     if (!id || tabState.currentTab === id) return;
     
-    // Blocca cambio tab se non c'è progetto aperto (tranne Projects)
-    if (id !== 'projects') {
+    // Blocca cambio tab se non c'è progetto aperto (tranne Projects e Docs)
+    if (id !== 'projects' && id !== 'docs') {
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (!activeProjectName) {
         showNotification('Please select or create a project first', 'warning');
@@ -1461,7 +1461,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.font = 'bold 12px Arial';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Background (Min: ' + scalingMinScale + ') - Linea Superiore', 10, scalingBackgroundY - 13);
+        ctx.fillText('Background (Min: ' + scalingMinScale + ') - Top line', 10, scalingBackgroundY - 13);
         ctx.restore();
       }
       // Draw foreground line (first plane - max scale) - blue/cyan color - LOWER line
@@ -1481,7 +1481,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.font = 'bold 12px Arial';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Foreground (Max: ' + scalingMaxScale + ') - Linea Inferiore', 10, scalingForegroundY + 13);
+        ctx.fillText('Foreground (Max: ' + scalingMaxScale + ') - Bottom line', 10, scalingForegroundY + 13);
         ctx.restore();
       }
       ctx.restore();
@@ -3439,7 +3439,7 @@ window.selectRoom = function(roomId) {
           const finalHeight = img.naturalHeight || img.height;
           
           if (!finalWidth || !finalHeight) {
-            throw new Error(`Immagine caricata ma senza dimensioni valide: ${finalWidth}×${finalHeight}`);
+            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}×${finalHeight}`);
           }
           
           console.log('[Background] Immagine caricata con successo:', {
@@ -5224,9 +5224,9 @@ window.selectRoom = function(roomId) {
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     const resources = await pickResourceImage({
-      title: `Frame animazione — ${who}`,
+      title: `Animation frames — ${who}`,
       multiple: true,
-      hint: 'Clicca più immagini per selezionarle. Conferma con «Aggiungi selezione». L’ordine dei frame segue i numeri nel nome file.'
+      hint: 'Click multiple images to select them. Confirm with «Add selection». Frame order follows numbers in the file name.'
     });
     if (!resources || !resources.length) return;
 
@@ -6002,9 +6002,7 @@ window.selectRoom = function(roomId) {
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
-  // Runtime game inventory store: itemId (string) -> count (integer >= 0)
-  const gameInventory = new Map();
-  
+
   // Event conditions storage
   const objectEventConditions = new Map(); // sceneObjectId -> { onClick: [conditions], onUse: [conditions], ... }
   const hotspotEventConditions = new Map(); // hotspotId -> { onClick: [conditions], onUse: [conditions], ... }
@@ -6012,30 +6010,7 @@ window.selectRoom = function(roomId) {
   const guiButtonEventConditions = new Map(); // buttonId -> { onClick: [conditions], ... }
   const inventoryEventConditions = new Map(); // itemName -> { onClick: [conditions], onUse: [conditions], ... }
 
-  // Inventory persistence helpers
-  function persistInventory() {
-    try {
-      const obj = {};
-      for (const [k, v] of gameInventory.entries()) obj[String(k)] = Number(v) || 0;
-      localStorage.setItem('amiantoGameInventory', JSON.stringify(obj));
-    } catch (_) {}
-  }
-  function loadInventoryFromStorage() {
-    try {
-      const raw = localStorage.getItem('amiantoGameInventory');
-      if (!raw) return;
-      const obj = JSON.parse(raw);
-      gameInventory.clear();
-      if (obj && typeof obj === 'object') {
-        for (const key of Object.keys(obj)) {
-          const count = Math.max(0, Number(obj[key]) || 0);
-          if (count > 0) gameInventory.set(String(key), count);
-        }
-      }
-    } catch (_) {}
-  }
-  loadInventoryFromStorage();
-  // activePlugin rimosso - ora usiamo solo iframe sandboxed
+  // Inventario gameplay: solo in runtime (gameState.inventory via iframe Play Test)
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -6616,7 +6591,7 @@ window.selectRoom = function(roomId) {
     roomsWithScripts.sort((a, b) => {
       const nameA = a.roomName.toLowerCase();
       const nameB = b.roomName.toLowerCase();
-      return nameA.localeCompare(nameB, 'it', { numeric: true, sensitivity: 'base' });
+      return nameA.localeCompare(nameB, 'en', { numeric: true, sensitivity: 'base' });
     });
     
     // Crea gruppo per ogni stanza
@@ -7149,8 +7124,7 @@ window.selectRoom = function(roomId) {
     return conditions.every(cond => Condition.evaluate(cond));
   };
 
-// API esposte al sandbox
-  // Funzione helper standalone per serializzare valori in modo leggibile
+  // Helper per serializzare valori nello Script Log (ScriptLogService)
   // Deve essere standalone perché viene usata in contesti diversi (sandbox)
   function serializeValue(value) {
     if (value === null) return 'null';
@@ -7166,374 +7140,6 @@ window.selectRoom = function(roomId) {
     }
     return String(value);
   }
-
-  const sandboxApi = {
-    // Funzione print() globale per gli script utente
-    // Accetta qualsiasi numero di argomenti e li serializza correttamente
-    // Centralizza tutto l'output degli script nello Script LogService
-    print: function() {
-      try {
-        const args = Array.from(arguments);
-        if (args.length === 0) {
-          ScriptLogService.print('', 'editor-sandbox');
-          return;
-        }
-        
-        // Opzione speciale: ultimo argomento come { showInGame: true }
-        let showInGame = false;
-        const last = args[args.length - 1];
-        if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
-          if (last.showInGame === true) {
-            showInGame = true;
-          }
-          args.pop();
-        }
-
-        // Serializza ogni argomento e uniscili con spazi
-        const messages = args.map(arg => serializeValue(arg));
-        const msg = messages.join(' ');
-        
-        // Log nello Script LogService (non usa console.log come output principale)
-        ScriptLogService.print(msg, 'editor-sandbox');
-
-        // Integrazione opzionale con il gameplay tramite Game.showText()
-        if (showInGame && window.Game && typeof window.Game.showText === 'function') {
-          try {
-            window.Game.showText(msg);
-          } catch (_) {}
-        }
-      } catch (e) {
-        // Fallback in caso di errore nella serializzazione
-        addScriptLogMessage(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
-      }
-    },
-    
-    // Funzione error() per log di errori nello Script Log
-    // Supporta livelli di log separati (error vs info)
-    error: function() {
-      try {
-        const args = Array.from(arguments);
-        if (args.length === 0) {
-          addScriptLogMessage('', 'error');
-          return;
-        }
-        
-        const messages = args.map(arg => serializeValue(arg));
-        const msg = messages.join(' ');
-        
-        addScriptLogMessage(msg, 'error');
-      } catch (e) {
-        addScriptLogMessage(`[Error Log Error] ${e && e.message ? e.message : String(e)}`, 'error');
-      }
-    },
-    show_message: function(text){
-      showNotification(String(text), 'info');
-    },
-    move_object: function(id, x, y){
-      const obj = sceneObjects.find(o => o.id === String(id));
-      if (!obj) { addDebugMessage(`Object ${id} not found`, 'warning'); return; }
-      obj.x = Number(x)||0; obj.y = Number(y)||0; redraw();
-    },
-    // Event System APIs
-    on_game_start: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.game_start = handler;
-        addDebugMessage('Game start handler registered', 'info');
-      }
-    },
-    on_room_change: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.room_change = handler;
-        addDebugMessage('Room change handler registered', 'info');
-      }
-    },
-    on_object_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.object_click = handler;
-        addDebugMessage('Object click handler registered', 'info');
-      }
-    },
-    on_character_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.character_click = handler;
-        addDebugMessage('Character click handler registered', 'info');
-      }
-    },
-    on_hotspot_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.hotspot_click = handler;
-        addDebugMessage('Hotspot click handler registered', 'info');
-      }
-    },
-    // Inventory APIs
-    add_to_inventory: function(itemId, quantity) {
-      const id = String(itemId || '').trim();
-      const q = Math.max(1, Number(quantity) || 1);
-      if (!id) { addDebugMessage('add_to_inventory: invalid itemId', 'warning'); return 0; }
-      const current = Number(gameInventory.get(id) || 0);
-      const next = current + q;
-      gameInventory.set(id, next);
-      persistInventory();
-      showNotification(`Added ${q} × "${id}" to inventory (total: ${next})`, 'success');
-      return next;
-    },
-    remove_from_inventory: function(itemId, quantity) {
-      const id = String(itemId || '').trim();
-      const q = Math.max(1, Number(quantity) || 1);
-      if (!id) { addDebugMessage('remove_from_inventory: invalid itemId', 'warning'); return 0; }
-      const current = Number(gameInventory.get(id) || 0);
-      const next = Math.max(0, current - q);
-      if (next <= 0) gameInventory.delete(id); else gameInventory.set(id, next);
-      persistInventory();
-      showNotification(`Removed ${q} × "${id}" from inventory (total: ${next})`, 'info');
-      return next;
-    },
-    has_item: function(itemId) {
-      const id = String(itemId || '').trim();
-      if (!id) return false;
-      return (Number(gameInventory.get(id) || 0) > 0);
-    },
-    get_item_count: function(itemId) {
-      const id = String(itemId || '').trim();
-      if (!id) return 0;
-      return Number(gameInventory.get(id) || 0);
-    },
-    clear_inventory: function() {
-      gameInventory.clear();
-      persistInventory();
-      showNotification('Inventory cleared', 'warning');
-      return true;
-    },
-
-    // Room System APIs
-    load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
-      const key = String(roomIdOrName || '').trim();
-      if (!key) { addDebugMessage('load_room: missing room id/name', 'warning'); return false; }
-      let targetId = null;
-      if (rooms.has(key)) {
-        targetId = key;
-      } else {
-        rooms.forEach((r) => { if (!targetId && (r.name === key)) targetId = r.id; });
-      }
-      if (!targetId) { addDebugMessage(`load_room: room "${key}" not found`, 'warning'); return false; }
-      try {
-        window.selectRoom(targetId);
-        // Nota: i parametri playerX, playerY, playerDirection sono accettati per compatibilità API
-        // ma non vengono utilizzati nell'editor (solo nel runtime)
-        return true;
-      } catch (e) {
-        addDebugMessage(`load_room error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-    get_current_room: function() {
-      return currentRoomId || null;
-    },
-    get_room_objects: function() {
-      const r = rooms.get(currentRoomId);
-      if (!r || !Array.isArray(r.sceneObjects)) return [];
-      return r.sceneObjects.map(o => ({
-        id: String(o.id || ''),
-        name: String(o.name || ''),
-        type: String(o.type || 'Interactive'),
-        x: Number(o.x) || 0,
-        y: Number(o.y) || 0,
-        rotation: Number(o.rotationRad ? (o.rotationRad * 180 / Math.PI) : 0),
-        scaleX: Number((typeof o.scaleX === 'number') ? o.scaleX : 1),
-        scaleY: Number((typeof o.scaleY === 'number') ? o.scaleY : 1),
-        visible: (o.visible !== false)
-      }));
-    },
-    set_room_background: function(imageUrlOrDataUrl) {
-      const r = rooms.get(currentRoomId);
-      if (!r) { addDebugMessage('set_room_background: no current room', 'warning'); return false; }
-      const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
-      if (!url) {
-        r.background = null;
-        background = null;
-        redraw();
-        showNotification('Room background cleared', 'info');
-        return true;
-      }
-      try {
-        const img = new Image();
-        img.crossOrigin = 'anonymous'; // Permette CORS per Firebase Storage
-        img.onload = () => {
-          // Verifica che l'immagine sia completamente caricata
-          const width = img.naturalWidth || img.width;
-          const height = img.naturalHeight || img.height;
-          
-          if (!width || !height) {
-            console.warn('[set_room_background] Immagine caricata ma senza dimensioni valide:', {
-              complete: img.complete,
-              naturalWidth: img.naturalWidth,
-              naturalHeight: img.naturalHeight,
-              width: img.width,
-              height: img.height
-            });
-            addDebugMessage('set_room_background: image loaded but has no dimensions', 'warning');
-            return;
-          }
-          
-          r.background = img;
-          background = img;
-          redraw();
-          showNotification(`Room background set (${width}×${height})`, 'success');
-        };
-        img.onerror = (error) => {
-          console.error('[set_room_background] Errore caricamento immagine:', url, error);
-          addDebugMessage('set_room_background: failed to load image', 'error');
-          showNotification('Failed to load background image', 'danger');
-        };
-        img.src = url;
-        return true;
-      } catch (e) {
-        addDebugMessage(`set_room_background error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-
-    // Object System APIs
-    spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
-      const name = String(objectNameOrId || '').trim() || 'Object';
-      const objX = Number(x) || 0;
-      const objY = Number(y) || 0;
-
-      function addObjectWithImage(img) {
-        const newObj = {
-          id: uid('scene'),
-          name,
-          img,
-          x: objX,
-          y: objY,
-          type: 'Interactive',
-          rotationRad: 0,
-          scaleX: 1,
-          scaleY: 1,
-          visible: true
-        };
-        sceneObjects.push(newObj);
-        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-        selectedSceneObjectId = newObj.id;
-
-        // Add to UI list
-        try {
-          refreshSceneObjectsListUI();
-        } catch (_) {}
-
-        redraw();
-        showNotification(`Spawned object "${newObj.name}"`, 'success');
-        return newObj.id;
-      }
-
-      try {
-        const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
-        if (!url) {
-          // Create a simple placeholder image (32x32)
-          const c = document.createElement('canvas');
-          c.width = 32; c.height = 32;
-          const t = c.getContext('2d');
-          t.fillStyle = '#cc3333'; t.fillRect(0, 0, 32, 32);
-          t.fillStyle = '#ffffff'; t.fillRect(4, 4, 24, 24);
-          const img = new Image();
-          img.onload = () => { addObjectWithImage(img); };
-          img.src = c.toDataURL('image/png');
-          return true;
-        } else {
-          const img = new Image();
-          img.onload = () => { addObjectWithImage(img); };
-          img.onerror = () => {
-            addDebugMessage('spawn_object: failed to load image', 'error');
-            showNotification('Failed to load object image', 'danger');
-          };
-          img.src = url;
-          return true;
-        }
-      } catch (e) {
-        addDebugMessage(`spawn_object error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-    despawn_object: function(objectId) {
-      const id = String(objectId || '').trim();
-      if (!id) { addDebugMessage('despawn_object: invalid id', 'warning'); return false; }
-      const before = sceneObjects.length;
-      sceneObjects = sceneObjects.filter(o => String(o.id) !== id);
-      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-      // Remove from UI
-      try {
-        const el = document.querySelector(`[data-object-id="${id}"]`);
-        if (el) el.remove();
-      } catch (_) {}
-      const removed = (before !== sceneObjects.length);
-      if (removed) {
-        redraw();
-        showNotification(`Despawned object "${id}"`, 'info');
-      } else {
-        addDebugMessage(`despawn_object: object "${id}" not found`, 'warning');
-      }
-      return removed;
-    },
-    rotate_object: function(objectId, degrees) {
-      const id = String(objectId || '').trim();
-      const deg = Number(degrees) || 0;
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`rotate_object: object "${id}" not found`, 'warning'); return false; }
-      const rad = deg * Math.PI / 180;
-      obj.rotationRad = rad;
-      redraw();
-      return true;
-    },
-    scale_object: function(objectId, sx, sy) {
-      const id = String(objectId || '').trim();
-      let scaleX = Number(sx);
-      let scaleY = (typeof sy === 'undefined' || sy === null) ? scaleX : Number(sy);
-      if (!isFinite(scaleX)) scaleX = 1;
-      if (!isFinite(scaleY)) scaleY = 1;
-      scaleX = Math.max(0.01, scaleX);
-      scaleY = Math.max(0.01, scaleY);
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`scale_object: object "${id}" not found`, 'warning'); return false; }
-      obj.scaleX = scaleX;
-      obj.scaleY = scaleY;
-      redraw();
-      return true;
-    },
-    set_object_visible: function(objectId, visible) {
-      const id = String(objectId || '').trim();
-      const v = !!visible;
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`set_object_visible: object "${id}" not found`, 'warning'); return false; }
-      obj.visible = v;
-      redraw();
-      return true;
-    },
-    // Game State API
-    get_var: function(key) {
-      return window.Game.getVar(key);
-    },
-    set_var: function(key, value) {
-      return window.Game.setVar(key, value);
-    },
-    has_var: function(key) {
-      return window.Game.hasVar(key);
-    },
-    toggle_var: function(key) {
-      return window.Game.toggleVar(key);
-    },
-    // Condition API (per uso interno, non esposto direttamente agli script)
-    evaluate_condition: function(conditionObject) {
-      return window.Condition.evaluate(conditionObject);
-    },
-    evaluate_all_conditions: function(conditions) {
-      return window.Condition.evaluateAll(conditions);
-    }
-};
 
   // Event System: Global trigger functions
   window.gameEventHandlers = window.gameEventHandlers || {};
@@ -8508,16 +8114,19 @@ window.selectRoom = function(roomId) {
     const canvasContainer = document.getElementById('canvasContainer');
     const codeEditorContainer = document.getElementById('codeEditorContainer');
     const resourcesMainPanel = document.getElementById('resourcesMainPanel');
+    const docsMainPanel = document.getElementById('docsMainPanel');
 
     const showCanvas = mode === 'canvas';
     const showScripts = mode === 'scripts';
     const showResources = mode === 'resources';
+    const showDocs = mode === 'docs';
 
     if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
     if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
     if (canvasContainer) canvasContainer.style.display = showCanvas ? 'block' : 'none';
     if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
     if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'flex' : 'none';
+    if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
   }
 
   document.addEventListener('tabChanged', function(e){
@@ -8548,6 +8157,14 @@ window.selectRoom = function(roomId) {
       }, 100);
     } else if (e.detail.currentTab === 'resources') {
       setMainWorkspaceMode('resources');
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
+    } else if (e.detail.currentTab === 'docs') {
+      setMainWorkspaceMode('docs');
+      if (window.amiantoDocs && typeof window.amiantoDocs.init === 'function') {
+        window.amiantoDocs.init();
+      }
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
@@ -9050,6 +8667,7 @@ window.selectRoom = function(roomId) {
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'RUN_SCRIPT',
+        scriptName: scriptName,
         code: scriptContent,
         context: executionContext,
         handlerName: handlerName,
@@ -9129,8 +8747,9 @@ window.selectRoom = function(roomId) {
       const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
       if (scripts[roomScriptName]) {
         sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
-        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_enter', [], {
-          roomId: embeddedRuntime.gameState.currentRoomId
+        const newRoomId = embeddedRuntime.gameState.currentRoomId;
+        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
+          roomId: newRoomId
         });
       }
     }
@@ -9320,9 +8939,9 @@ window.selectRoom = function(roomId) {
     // Renderizza la stanza iniziale
     if (embeddedRuntime.canvas && embeddedRuntime.ctx) {
       renderRuntimeRoom(embeddedRuntime.currentRoomIndex).then(() => {
-        sendRuntimeLogToEditor('Stanza iniziale renderizzata', 'info');
+        sendRuntimeLogToEditor('Initial room rendered', 'info');
       }).catch(err => {
-        sendRuntimeLogToEditor('Errore rendering stanza iniziale: ' + err.message, 'error');
+        sendRuntimeLogToEditor('Error rendering initial room: ' + err.message, 'error');
       });
       
       // Avvia il loop di rendering continuo
@@ -9518,7 +9137,7 @@ window.selectRoom = function(roomId) {
             projectObj._meta.projectId = projectInfo.id;
             
             jsonString = JSON.stringify(projectObj, null, 2);
-            addDebugMessage('Progetto caricato da Firebase per playtest', 'success');
+            addDebugMessage('Project loaded from Firebase for playtest', 'success');
           }
         }
       } catch (error) {
@@ -9537,7 +9156,7 @@ window.selectRoom = function(roomId) {
     // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
     try {
       localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-      addDebugMessage('Progetto salvato in localStorage per runtime', 'success');
+      addDebugMessage('Project saved to localStorage for runtime', 'success');
     } catch (error) {
       console.error('[PlayTest] Errore salvataggio localStorage:', error);
       addDebugMessage('localStorage save error: ' + error.message, 'error');
@@ -9552,7 +9171,7 @@ window.selectRoom = function(roomId) {
         localStorage.setItem(projectKey, jsonString);
         localStorage.setItem('amiantoActiveProjectName', projectName);
         localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-        addDebugMessage('Progetto salvato in cache locale', 'info');
+        addDebugMessage('Project saved to local cache', 'info');
       }
     } catch (error) {
       console.error('[PlayTest] Errore salvataggio cache:', error);
@@ -9595,7 +9214,7 @@ window.selectRoom = function(roomId) {
     // Non inviare postMessage se localStorage è disponibile (priorità a localStorage)
     // Il runtime caricherà automaticamente da localStorage all'avvio
     // PostMessage è solo un fallback se localStorage non funziona
-    addDebugMessage('Progetto salvato in localStorage, il runtime lo caricherà automaticamente', 'info');
+    addDebugMessage('Project saved to localStorage; the runtime will load it automatically', 'info');
 
     // Monitora se la finestra viene chiusa
     const checkWindowClosed = setInterval(() => {
@@ -9655,12 +9274,12 @@ window.selectRoom = function(roomId) {
     });
     
     if (globalScripts.length === 0) {
-      addScriptLogMessage('Nessuno script globale trovato. Crea uno script con Scope=Global, Target=main, Event=onGameStart', 'warning');
+      addScriptLogMessage('No global script found. Create a script with Scope=Global, Target=main, Event=onGameStart', 'warning');
       showNotification('No global script found', 'warning');
       return;
     }
     
-    addScriptLogMessage(`Trovati ${globalScripts.length} script globale/i`, 'info');
+    addScriptLogMessage(`Found ${globalScripts.length} global script(s)`, 'info');
     
     // Esegui tutti gli script globali che potrebbero avere on_game_start
     globalScripts.forEach(([scriptName, content]) => {
@@ -11445,7 +11064,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       localStorage.removeItem('amiantoCurrentUser');
       localStorage.removeItem('amiantoRememberUser');
       showLoginPage();
-      showNotification('Hai lasciato la Demo Mode', 'info');
+      showNotification('You left Demo Mode', 'info');
       return;
     }
 
@@ -11478,7 +11097,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       uid: 'demo'
     };
     showDashboard();
-    showNotification('Demo Mode attiva: stai usando l’editor senza account', 'info');
+    showNotification('Demo Mode active: you are using the editor without an account', 'info');
   };
 
   // Show user profile (placeholder)
@@ -12194,7 +11813,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Verifica che Firestore sia disponibile
       if (!window.firebaseDB) {
         console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
-        addDebugMessage('[Firestore] Firestore non disponibile, uso fallback cache', 'warning');
+        addDebugMessage('[Firestore] Firestore unavailable, using cache fallback', 'warning');
         return false;
       }
       console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
@@ -12218,12 +11837,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Verifica se ci sono ancora dataURL nel progetto (dovrebbero essere stati convertiti in assetId)
         const dataURLCount = (jsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
         if (dataURLCount > 0) {
-          const errorMsg = `Il progetto è troppo grande (${dataSizeMB} MB) e contiene ancora ${dataURLCount} immagini non convertite. Assicurati che tutti i frame siano stati salvati come asset prima di salvare il progetto.`;
+          const errorMsg = `Project is too large (${dataSizeMB} MB) and still contains ${dataURLCount} unconverted image(s). Make sure all frames are saved as assets before saving the project.`;
           console.error('[Firestore] ❌', errorMsg);
           addDebugMessage(errorMsg, 'error');
           throw new Error(errorMsg);
         } else {
-          const errorMsg = `Il progetto è troppo grande (${dataSizeMB} MB) per essere salvato su Firestore (limite: 1MB). Considera di ridurre il numero di frame o dividere il progetto.`;
+          const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
           console.error('[Firestore] ❌', errorMsg);
           addDebugMessage(errorMsg, 'error');
           throw new Error(errorMsg);
@@ -12270,7 +11889,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         dataSize: `${dataSizeMB} MB`,
         documentExists: documentExists ? 'aggiornato' : 'creato'
       });
-      addDebugMessage(`[Firestore] Progetto salvato: ${projectName}`, 'success');
+      addDebugMessage(`[Firestore] Project saved: ${projectName}`, 'success');
       
       // Aggiorna i counter dopo salvataggio progetto
       if (typeof updateProjectSizeIndicator === 'function') {
@@ -12285,7 +11904,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         message: error.message,
         stack: error.stack
       });
-      addDebugMessage(`[Firestore] Errore salvataggio: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      addDebugMessage(`[Firestore] Save error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
       return false;
     }
   }
@@ -12355,7 +11974,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Parse del JSON salvato
       const projectObj = JSON.parse(data.projectData);
       console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
-      addDebugMessage(`[Firestore] Progetto caricato: ${data.name || projectId}`, 'success');
+      addDebugMessage(`[Firestore] Project loaded: ${data.name || projectId}`, 'success');
       return projectObj;
     } catch (error) {
       console.error('[Firestore] ❌ Errore durante il caricamento:', error);
@@ -12364,7 +11983,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         message: error.message,
         stack: error.stack
       });
-      addDebugMessage(`[Firestore] Errore caricamento: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      addDebugMessage(`[Firestore] Load error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
       return null;
     }
   }
@@ -12379,7 +11998,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // 1. Verifica Firestore disponibile
     if (!window.firebaseDB) {
       console.error('❌ window.firebaseDB non disponibile');
-      addDebugMessage('❌ Firestore non disponibile', 'error');
+      addDebugMessage('❌ Firestore unavailable', 'error');
       return false;
     }
     console.log('✅ window.firebaseDB disponibile');
@@ -12387,7 +12006,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // 2. Verifica utente autenticato
     if (!currentUser || !currentUser.uid) {
       console.error('❌ Utente non autenticato o uid mancante');
-      addDebugMessage('❌ Utente non autenticato', 'error');
+      addDebugMessage('❌ User not authenticated', 'error');
       return false;
     }
     console.log('✅ Utente autenticato:', currentUser.uid);
@@ -12432,7 +12051,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         code: error.code,
         message: error.message
       });
-      addDebugMessage(`❌ Test Firestore fallito: ${error.message} (${error.code})`, 'error');
+      addDebugMessage(`❌ Firestore test failed: ${error.message} (${error.code})`, 'error');
       return false;
     }
   };
@@ -12863,7 +12482,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const normalized = normalizeProject(p);
         const name = normalized.settings.name;
         const updated = normalized.updatedAt || normalized.createdAt || '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('it-IT', {
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
           year: 'numeric',
           month: 'short',
           day: 'numeric',
@@ -13732,7 +13351,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const userId = currentUser.uid;
     if (!userId) {
       console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
-      addDebugMessage('[Firestore] Utente non autenticato correttamente', 'error');
+      addDebugMessage('[Firestore] User not authenticated correctly', 'error');
       // Continua con cache locale come fallback
     }
 
@@ -15768,7 +15387,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       if (verifyDoc.exists) {
         console.error(`[Firestore] ⚠️ ATTENZIONE: Il progetto ${projectId} esiste ancora dopo l'eliminazione!`);
-        addDebugMessage(`[Firestore] ⚠️ Il progetto potrebbe non essere stato eliminato permanentemente`, 'warning');
+        addDebugMessage(`[Firestore] ⚠️ Project may not have been permanently deleted`, 'warning');
         return false;
       }
       
@@ -15776,7 +15395,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return true;
     } catch (error) {
       console.error('[Firestore] Errore eliminazione completa progetto:', error);
-      addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+      addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
       return false;
     }
   }
@@ -15798,15 +15417,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const deleted = await deleteProjectFromFirestoreCompletely(userId, projectId);
         if (deleted) {
           console.log(`[Firestore] Progetto eliminato permanentemente: ${projectName}`);
-          addDebugMessage(`[Firestore] Progetto eliminato permanentemente: ${projectName}`, 'success');
+          addDebugMessage(`[Firestore] Project permanently deleted: ${projectName}`, 'success');
         } else {
           console.error(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`);
-          addDebugMessage(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`, 'error');
+          addDebugMessage(`[Firestore] Could not permanently delete project: ${projectName}`, 'error');
           // Continua comunque con l'eliminazione locale
         }
       } catch (error) {
         console.error('[Firestore] Errore eliminazione:', error);
-        addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+        addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
         // Continua comunque con l'eliminazione locale
       }
     }
@@ -15817,7 +15436,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const deleted = await window.supabaseStorage.deleteProjectFolder(projectId);
         if (deleted) {
           console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
-          addDebugMessage(`[Supabase] Cartella progetto eliminata: ${projectName}`, 'success');
+          addDebugMessage(`[Supabase] Project folder deleted: ${projectName}`, 'success');
           
           // Aggiorna i counter dopo eliminazione cartella progetto
           if (typeof updateProjectSizeIndicator === 'function') {
@@ -15825,11 +15444,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
         } else {
           console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
-          addDebugMessage(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`, 'warning');
+          addDebugMessage(`[Supabase] Could not delete project folder: ${projectName}`, 'warning');
         }
       } catch (error) {
         console.error('[Supabase] Errore eliminazione cartella progetto:', error);
-        addDebugMessage(`[Supabase] Errore eliminazione cartella: ${error.message || error}`, 'error');
+        addDebugMessage(`[Supabase] Folder delete error: ${error.message || error}`, 'error');
       }
     }
     
@@ -16164,7 +15783,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
     modal.querySelector('#btn-import-json')?.addEventListener('click', async () => {
       try {
-        if (!window.showOpenFilePicker) { showNotification('Import non supportato su questo browser', 'warning'); return; }
+        if (!window.showOpenFilePicker) { showNotification('Import not supported in this browser', 'warning'); return; }
         const [handle] = await window.showOpenFilePicker({
           types: [{ description: 'Amianto Project JSON', accept: { 'application/json': ['.json'] } }],
           multiple: false
@@ -16188,10 +15807,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         const inst = bootstrap.Modal.getInstance(modal);
         if (inst) inst.hide();
-        showNotification('Progetto importato', 'success');
+        showNotification('Project imported', 'success');
       } catch (err) {
         addDebugMessage('Import failed: ' + (err && err.message ? err.message : err), 'error');
-        showNotification('Import fallito', 'danger');
+        showNotification('Import failed', 'danger');
       }
     });
   };
@@ -16610,7 +16229,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       refreshCursorsList();
     } catch (error) {
       console.error('[Asset] Errore cursore da Resources:', error);
-      showNotification(`Errore: ${error.message}`, 'error');
+      showNotification(`Error: ${error.message}`, 'error');
     }
   };
 
