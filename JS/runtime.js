@@ -151,6 +151,27 @@
   const commandQueue = [];
   let isProcessingQueue = false;
 
+  // Blocco input durante comandi await (es. walk_character con wait)
+  let inputLockDepth = 0;
+
+  function acquireInputLock(reason) {
+    inputLockDepth++;
+    log(`[Runtime] Input lock acquisito (${reason}, depth=${inputLockDepth})`, 'info');
+  }
+
+  function releaseInputLock(reason) {
+    inputLockDepth = Math.max(0, inputLockDepth - 1);
+    log(`[Runtime] Input lock rilasciato (${reason}, depth=${inputLockDepth})`, 'info');
+  }
+
+  function isInputLocked() {
+    return inputLockDepth > 0;
+  }
+
+  function resetInputLock() {
+    inputLockDepth = 0;
+  }
+
   /**
    * Aggiunge un comando alla coda e avvia il processing se necessario
    * @param {Function} commandFn - Funzione async che esegue il comando
@@ -595,6 +616,7 @@
       // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati quando viene caricato un nuovo progetto
       // Questo garantisce che gli script vengano ricompilati con il nuovo contenuto
       gameState.compiledScripts.clear();
+      resetInputLock();
       log('[Runtime] Cache script compilati resettata', 'info');
       
       // ⚠️ RESET FLAG EVENTI: Quando viene caricato un nuovo progetto, reset flag eventi
@@ -3876,12 +3898,14 @@
       }
 
       // Se waitForCompletion è true, attende il completamento del movimento
-      // Usa characterId (l'ID reale) per waitForCharacterMovement
+      // e blocca nuovi click fino al termine (per await walk_character negli script)
       if (waitForCompletion) {
-        return waitForCharacterMovement(characterId);
-      } else {
-        return Promise.resolve();
+        acquireInputLock('walk_character');
+        return waitForCharacterMovement(characterId).finally(() => {
+          releaseInputLock('walk_character');
+        });
       }
+      return Promise.resolve();
     },
 
     set_character_direction: function(characterIdOrName, direction) {
@@ -4738,6 +4762,11 @@
   }
 
   async function handleClick(x, y) {
+    if (isInputLocked()) {
+      log(`[Runtime] handleClick: Click ignorato (input bloccato durante comando await)`, 'info');
+      return;
+    }
+
     if (!gameState.currentRoom) {
       log(`[Runtime] handleClick: Nessuna room corrente`, 'warning');
       return;
@@ -5161,6 +5190,7 @@
         gameState.scripts = {};
         gameState.attachments = {};
         gameState.initialized = false;
+        resetInputLock();
         
         // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati durante il reset
         gameState.compiledScripts.clear();
