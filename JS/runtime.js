@@ -959,21 +959,22 @@
     if (projectData.characters && Array.isArray(projectData.characters)) {
       projectData.characters.forEach(char => {
         const characterName = char.name || char.id;
-        if (char.directions) {
-          Object.values(char.directions).forEach(dirData => {
+        const collectCharacterFrameAssets = (directionsMap) => {
+          if (!directionsMap) return;
+          Object.values(directionsMap).forEach(dirData => {
             if (dirData.frames && Array.isArray(dirData.frames)) {
               dirData.frames.forEach(frame => {
-                // Salta i frame specchiati - non sono asset separati
-                if (frame && typeof frame === 'object' && frame.mirror) {
-                  // Frame specchiato, non caricare come asset
-                  return;
-                }
+                if (frame && typeof frame === 'object' && frame.mirror) return;
                 if (frame && typeof frame === 'string') {
                   assetsWithCategory.set(frame, { category: 'character', roomName: null, characterName });
                 }
               });
             }
           });
+        };
+        collectCharacterFrameAssets(char.directions);
+        if (char.animations) {
+          Object.values(char.animations).forEach(anim => collectCharacterFrameAssets(anim.directions));
         }
       });
     }
@@ -1300,18 +1301,16 @@
         continue;
       }
 
-      const directions = {};
-      if (charData.directions) {
-        for (const [dir, dirData] of Object.entries(charData.directions)) {
+      const loadDirectionsMap = (sourceDirections) => {
+        const directions = {};
+        if (!sourceDirections) return directions;
+        for (const [dir, dirData] of Object.entries(sourceDirections)) {
           if (dirData && dirData.frames && Array.isArray(dirData.frames)) {
             const frames = [];
             for (const frame of dirData.frames) {
-              // Gestisci frame specchiati
               if (frame && typeof frame === 'object' && frame.mirror) {
-                // Frame specchiato: salva riferimento
                 frames.push({ mirror: frame.mirror });
               } else if (frame && typeof frame === 'string') {
-                // Frame normale: recupera immagine da AssetRegistry
                 const img = AssetRegistry.images.get(frame);
                 if (img && img.complete && img.naturalWidth > 0) {
                   frames.push(img);
@@ -1320,7 +1319,6 @@
                 }
               }
             }
-            
             if (frames.length > 0) {
               directions[dir] = {
                 fps: Number(dirData.fps) || 8,
@@ -1329,10 +1327,26 @@
             }
           }
         }
+        return directions;
+      };
+
+      const directions = loadDirectionsMap(charData.directions);
+      const animations = {};
+      if (charData.animations && typeof charData.animations === 'object') {
+        for (const [animName, animData] of Object.entries(charData.animations)) {
+          if (!animName || !animData) continue;
+          const animDirections = loadDirectionsMap(animData.directions);
+          if (Object.keys(animDirections).length > 0) {
+            animations[animName] = { directions: animDirections };
+          }
+        }
       }
 
-      if (Object.keys(directions).length > 0) {
+      if (Object.keys(directions).length > 0 || Object.keys(animations).length > 0) {
         const charDef = { directions };
+        if (Object.keys(animations).length > 0) {
+          charDef.animations = animations;
+        }
         // Load pivot if it exists
         if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
           charDef.pivotX = Number(charData.pivotX) || 0;
@@ -1343,7 +1357,8 @@
           charDef.spawnSettings = charData.spawnSettings;
         }
         gameState.characterDefinitions.set(characterName, charDef);
-        log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} direzioni)`, 'info');
+        const animCount = Object.keys(animations).length;
+        log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} walk dir${animCount ? `, ${animCount} custom anim` : ''})`, 'info');
       } else {
         log(`[Runtime] Character ignorato: ${characterName} (nessuna direzione valida)`, 'warning');
       }
@@ -1403,6 +1418,14 @@
     }
   }
 
+  function getCharacterDirectionsStore(charDef, animationName) {
+    if (!charDef) return null;
+    if (animationName && charDef.animations && charDef.animations[animationName]) {
+      return charDef.animations[animationName].directions;
+    }
+    return charDef.directions;
+  }
+
   // Mappa delle direzioni vicine per il fallback
   const directionFallbackMap = {
     'north': ['northeast', 'northwest', 'east', 'west', 'south', 'southeast', 'southwest'],
@@ -1419,10 +1442,13 @@
    * Trova una direzione alternativa disponibile quando la direzione richiesta non ha frame
    * Restituisce la direzione originale se disponibile, altrimenti una direzione alternativa
    */
-  function findAvailableDirection(charDef, preferredDirection) {
+  function findAvailableDirection(charDef, preferredDirection, animationName = null) {
+    const directionsStore = getCharacterDirectionsStore(charDef, animationName);
+    if (!directionsStore) return preferredDirection;
+
     // Se la direzione preferita è disponibile, usala
-    if (charDef.directions[preferredDirection]) {
-      const dirData = charDef.directions[preferredDirection];
+    if (directionsStore[preferredDirection]) {
+      const dirData = directionsStore[preferredDirection];
       if (dirData.frames && dirData.frames.length > 0) {
         return preferredDirection;
       }
@@ -1431,8 +1457,8 @@
     // Cerca tra le direzioni alternative (fallback)
     const fallbackDirections = directionFallbackMap[preferredDirection] || ['south', 'north', 'east', 'west'];
     for (const fallbackDir of fallbackDirections) {
-      if (charDef.directions[fallbackDir]) {
-        const dirData = charDef.directions[fallbackDir];
+      if (directionsStore[fallbackDir]) {
+        const dirData = directionsStore[fallbackDir];
         if (dirData.frames && dirData.frames.length > 0) {
           return fallbackDir;
         }
@@ -1440,7 +1466,7 @@
     }
     
     // Se non troviamo nulla tra le direzioni simili, prova tutte le direzioni disponibili
-    const allDirections = Object.keys(charDef.directions);
+    const allDirections = Object.keys(directionsStore);
     if (allDirections.length > 0) {
       // Ordina per priorità: prima quelle cardinali, poi quelle diagonali
       const priorityOrder = ['south', 'north', 'east', 'west', 'southeast', 'southwest', 'northeast', 'northwest'];
@@ -1454,7 +1480,7 @@
       });
       
       for (const dir of sortedDirections) {
-        const dirData = charDef.directions[dir];
+        const dirData = directionsStore[dir];
         if (dirData.frames && dirData.frames.length > 0) {
           return dir;
         }
@@ -1468,9 +1494,12 @@
   /**
    * Cerca un frame valido tra le direzioni alternative (fallback)
    */
-  function findFallbackFrame(charDef, preferredDirection, frameIndex, fallbackDirections) {
+  function findFallbackFrame(charDef, preferredDirection, frameIndex, fallbackDirections, animationName = null) {
+    const directionsStore = getCharacterDirectionsStore(charDef, animationName);
+    if (!directionsStore) return null;
+
     for (const fallbackDir of fallbackDirections) {
-      const dirData = charDef.directions[fallbackDir];
+      const dirData = directionsStore[fallbackDir];
       if (!dirData || !dirData.frames || dirData.frames.length === 0) {
         continue;
       }
@@ -1481,7 +1510,7 @@
       // Se è un frame specchiato, prova a ottenerlo
       if (frame && typeof frame === 'object' && frame.mirror) {
         const sourceDir = frame.mirror;
-        const sourceDirData = charDef.directions[sourceDir];
+        const sourceDirData = directionsStore[sourceDir];
         if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
           const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
           if (sourceFrame && sourceFrame.complete && sourceFrame.naturalWidth > 0) {
@@ -1510,16 +1539,22 @@
   /**
    * Ottiene il frame corrente di un character, gestendo anche frame specchiati
    * Se il frame richiesto non è disponibile, cerca frame di direzioni vicine (fallback)
+   * @param {string|null} animationName - Nome animazione custom (da charDef.animations); null = walking
    */
-  function getCharacterFrame(characterName, direction, frameIndex) {
+  function getCharacterFrame(characterName, direction, frameIndex, animationName = null) {
     const charDef = gameState.characterDefinitions.get(characterName);
     if (!charDef) {
       return null;
     }
 
+    const directionsStore = getCharacterDirectionsStore(charDef, animationName);
+    if (!directionsStore) return null;
+
+    const cachePrefix = animationName || 'walk';
+
     // Prova prima con la direzione richiesta
-    if (charDef.directions[direction]) {
-      const dirData = charDef.directions[direction];
+    if (directionsStore[direction]) {
+      const dirData = directionsStore[direction];
       if (dirData.frames && dirData.frames.length > 0) {
         const actualFrameIndex = frameIndex % dirData.frames.length;
         const frame = dirData.frames[actualFrameIndex];
@@ -1527,18 +1562,16 @@
         // Se è un frame specchiato, ottieni il frame originale e specchialo
         if (frame && typeof frame === 'object' && frame.mirror) {
           const sourceDir = frame.mirror;
-          const cacheKey = `${characterName}_${direction}_${actualFrameIndex}`;
+          const cacheKey = `${cachePrefix}_${characterName}_${direction}_${actualFrameIndex}`;
           
-          // Controlla se è già in cache
           if (mirroredFrameCache.has(cacheKey)) {
             return mirroredFrameCache.get(cacheKey);
           }
 
-          const sourceDirData = charDef.directions[sourceDir];
+          const sourceDirData = directionsStore[sourceDir];
           if (sourceDirData && sourceDirData.frames && sourceDirData.frames.length > 0) {
             const sourceFrame = sourceDirData.frames[actualFrameIndex % sourceDirData.frames.length];
             if (sourceFrame && sourceFrame.complete && sourceFrame.naturalWidth > 0) {
-              // Crea un canvas per specchiare l'immagine e mettilo in cache
               const canvas = document.createElement('canvas');
               canvas.width = sourceFrame.width || sourceFrame.naturalWidth;
               canvas.height = sourceFrame.height || sourceFrame.naturalHeight;
@@ -1550,29 +1583,18 @@
               return canvas;
             }
           }
-        } else {
-          // Frame normale
-          if (frame && frame.complete && frame.naturalWidth > 0) {
-            return frame;
-          }
+        } else if (frame && frame.complete && frame.naturalWidth > 0) {
+          return frame;
         }
       }
     }
 
-    // Se non abbiamo trovato un frame valido, cerca tra le direzioni alternative
     const fallbackDirections = directionFallbackMap[direction] || ['south', 'north', 'east', 'west'];
-    const fallbackFrame = findFallbackFrame(charDef, direction, frameIndex, fallbackDirections);
-    
-    if (fallbackFrame) {
-      // Log solo una volta per evitare spam (opzionale, può essere rimosso)
-      // log(`[Runtime] Frame fallback usato per ${characterName}: ${direction} -> direzione alternativa`, 'info');
-      return fallbackFrame;
-    }
+    const fallbackFrame = findFallbackFrame(charDef, direction, frameIndex, fallbackDirections, animationName);
+    if (fallbackFrame) return fallbackFrame;
 
-    // Se ancora non abbiamo trovato nulla, prova tutte le direzioni disponibili
-    const allDirections = Object.keys(charDef.directions);
+    const allDirections = Object.keys(directionsStore);
     if (allDirections.length > 0) {
-      // Ordina per priorità: prima quelle cardinali, poi quelle diagonali
       const priorityOrder = ['south', 'north', 'east', 'west', 'southeast', 'southwest', 'northeast', 'northwest'];
       const sortedDirections = allDirections.sort((a, b) => {
         const aIndex = priorityOrder.indexOf(a);
@@ -1583,10 +1605,8 @@
         return aIndex - bIndex;
       });
 
-      const anyFrame = findFallbackFrame(charDef, direction, frameIndex, sortedDirections);
-      if (anyFrame) {
-        return anyFrame;
-      }
+      const anyFrame = findFallbackFrame(charDef, direction, frameIndex, sortedDirections, animationName);
+      if (anyFrame) return anyFrame;
     }
 
     return null;
@@ -2705,6 +2725,89 @@
         resolve();
       }, 30000);
     });
+  }
+
+  function findCharacterInCurrentRoom(characterIdOrName) {
+    let character = gameState.characters.get(characterIdOrName);
+    let characterId = characterIdOrName;
+    if (!character) {
+      for (const [id, char] of gameState.characters.entries()) {
+        if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+          character = char;
+          characterId = id;
+          break;
+        }
+      }
+    }
+    if (!character) return null;
+    return { character, characterId };
+  }
+
+  function waitForCharacterAnimation(characterId) {
+    return new Promise((resolve) => {
+      const character = gameState.characters.get(characterId);
+      if (!character || !character.playingAnimation) {
+        resolve();
+        return;
+      }
+
+      const checkInterval = setInterval(() => {
+        const currentCharacter = gameState.characters.get(characterId);
+        if (!currentCharacter || !currentCharacter.playingAnimation) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 50);
+
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        log(`[Runtime] waitForCharacterAnimation: Timeout per character ${characterId}`, 'warning');
+        resolve();
+      }, 30000);
+    });
+  }
+
+  function updateCharacterCustomAnimation(character, charDef, deltaTime) {
+    const playing = character.playingAnimation;
+    if (!playing || !playing.name) return;
+
+    const animDef = charDef.animations && charDef.animations[playing.name];
+    if (!animDef || !animDef.directions) {
+      character.playingAnimation = null;
+      character.currentFrame = 0;
+      character.frameTime = 0;
+      return;
+    }
+
+    const animDirection = findAvailableDirection(charDef, character.direction, playing.name);
+    const animationDirData = animDef.directions[animDirection];
+    if (!animationDirData || !animationDirData.frames || animationDirData.frames.length === 0) {
+      character.playingAnimation = null;
+      character.currentFrame = 0;
+      character.frameTime = 0;
+      return;
+    }
+
+    if (animationDirData.frames.length === 1) {
+      character.currentFrame = 0;
+      character.playingAnimation = null;
+      character.frameTime = 0;
+      return;
+    }
+
+    character.frameTime += deltaTime;
+    const frameDuration = 1000 / (Number(animationDirData.fps) || 8);
+
+    if (character.frameTime >= frameDuration) {
+      character.currentFrame++;
+      if (character.currentFrame >= animationDirData.frames.length) {
+        character.playingAnimation = null;
+        character.currentFrame = 0;
+        character.frameTime = 0;
+      } else {
+        character.frameTime = 0;
+      }
+    }
   }
 
   // Trova il punto più vicino sul bordo del poligono walkable
@@ -3860,7 +3963,8 @@
         return Promise.reject(new Error(`Could not find a valid path`));
       }
 
-      // Avvia il movimento del character (interrompe qualsiasi movimento in corso)
+      // Avvia il movimento del character (interrompe animazione custom e movimento precedente)
+      character.playingAnimation = null;
       const wasMoving = character.isMoving;
       character.isMoving = true;
       character.path = path;
@@ -3942,29 +4046,77 @@
     },
 
     animate_character: function(characterIdOrName, enabled = true) {
-      // Prova prima a cercare per ID
-      let character = gameState.characters.get(characterIdOrName);
-      let characterId = characterIdOrName;
-      
-      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
-      if (!character) {
-        for (const [id, char] of gameState.characters.entries()) {
-          if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
-            character = char;
-            characterId = id;
-            break;
-          }
-        }
-      }
-      
-      if (!character) {
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (!found) {
         GameAPI.error(`animate_character: character "${characterIdOrName}" not found (by ID or name in current room)`);
         return;
       }
+      log(`[Runtime] Character ${found.characterId} animazione ${enabled ? 'abilitata' : 'disabilitata'}`, 'info');
+    },
 
-      // L'animazione è sempre abilitata se il character ha frame
-      // Questa funzione può essere usata per controlli futuri
-      log(`[Runtime] Character ${characterId} animazione ${enabled ? 'abilitata' : 'disabilitata'}`, 'info');
+    /**
+     * Riproduce un'animazione custom definita in characterDefinitions.animations.
+     * @param {string} characterIdOrName - ID o nome del personaggio nella room corrente
+     * @param {string} animationName - Nome animazione (es. "wave")
+     * @param {string} direction - Direzione (north, south, east, ...)
+     * @param {boolean} waitForCompletion - Se true, attende la fine del ciclo (default true)
+     */
+    play_character_animation: function(characterIdOrName, animationName, direction, waitForCompletion = true) {
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (!found) {
+        GameAPI.error(`play_character_animation: character "${characterIdOrName}" not found (by ID or name in current room)`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" not found`));
+      }
+
+      const { character, characterId } = found;
+      const animKey = String(animationName || '').trim();
+      const dirKey = String(direction || '').trim().toLowerCase();
+
+      if (!animKey) {
+        GameAPI.error('play_character_animation: animation name is required');
+        return Promise.reject(new Error('Animation name is required'));
+      }
+      if (!dirKey) {
+        GameAPI.error('play_character_animation: direction is required');
+        return Promise.reject(new Error('Direction is required'));
+      }
+
+      if (character.roomId !== gameState.currentRoomId) {
+        GameAPI.error(`play_character_animation: character "${characterIdOrName}" is not in the current room`);
+        return Promise.reject(new Error(`Character "${characterIdOrName}" is not in the current room`));
+      }
+
+      const charDef = gameState.characterDefinitions.get(character.name);
+      if (!charDef || !charDef.animations || !charDef.animations[animKey]) {
+        GameAPI.error(`play_character_animation: animation "${animKey}" not found for character "${character.name}"`);
+        return Promise.reject(new Error(`Animation "${animKey}" not found`));
+      }
+
+      const animDef = charDef.animations[animKey];
+      const resolvedDirection = findAvailableDirection(charDef, dirKey, animKey);
+      const dirData = animDef.directions[resolvedDirection];
+      if (!dirData || !dirData.frames || dirData.frames.length === 0) {
+        GameAPI.error(`play_character_animation: direction "${dirKey}" has no frames for animation "${animKey}"`);
+        return Promise.reject(new Error(`Direction "${dirKey}" has no frames`));
+      }
+
+      character.isMoving = false;
+      character.path = null;
+      character.pathIndex = 0;
+      character.direction = resolvedDirection;
+      character.playingAnimation = { name: animKey };
+      character.currentFrame = 0;
+      character.frameTime = 0;
+
+      log(`[Runtime] play_character_animation: "${character.name}" plays "${animKey}" (${resolvedDirection}, ${dirData.frames.length} frame(s))`, 'info');
+
+      if (waitForCompletion) {
+        acquireInputLock('play_character_animation');
+        return waitForCharacterAnimation(characterId).finally(() => {
+          releaseInputLock('play_character_animation');
+        });
+      }
+      return Promise.resolve();
     },
 
     // UI
@@ -4076,7 +4228,8 @@
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
       { name: 'set_character_direction', value: bindGameApiMethod(api, 'set_character_direction') },
-      { name: 'animate_character', value: bindGameApiMethod(api, 'animate_character') }
+      { name: 'animate_character', value: bindGameApiMethod(api, 'animate_character') },
+      { name: 'play_character_animation', value: bindGameApiMethod(api, 'play_character_animation') }
     ];
   }
 
@@ -4144,6 +4297,16 @@
         });
       }
       return api.walk_character(characterId, x, y, false);
+    };
+
+    window.play_character_animation = function(characterId, animationName, direction, waitForCompletion) {
+      const wait = waitForCompletion !== false;
+      if (wait) {
+        return queueCommand(async () => {
+          await api.play_character_animation(characterId, animationName, direction, true);
+        });
+      }
+      return api.play_character_animation(characterId, animationName, direction, false);
     };
 
     SUPPORTED_SCRIPT_HANDLERS.forEach(handlerName => {
@@ -4221,7 +4384,8 @@
         // Usa renderY invece di y per uno scaling più fluido durante il movimento
         const scale = calculateCharacterScale(character.renderY, room);
         
-        const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
+        const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
+        const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
         
         if (frame) {
           try {
@@ -4344,6 +4508,11 @@
 
       const charDef = gameState.characterDefinitions.get(character.name);
       if (!charDef) {
+        return;
+      }
+
+      if (character.playingAnimation) {
+        updateCharacterCustomAnimation(character, charDef, deltaTime);
         return;
       }
       
@@ -4847,7 +5016,8 @@
         continue;
       }
 
-      const frame = getCharacterFrame(character.name, character.direction, character.currentFrame);
+      const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
+      const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
       if (!frame) {
         continue;
       }

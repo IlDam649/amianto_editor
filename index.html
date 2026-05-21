@@ -723,7 +723,18 @@
               <select class="form-select form-select-sm" id="character-selector" onchange="loadCharacterDirections()"></select>
             </div>
             <div class="mb-3">
-              <label class="form-label text-light">Select direction (8 directions):</label>
+              <label class="form-label text-light">Animation:</label>
+              <div class="input-group input-group-sm mb-2">
+                <select class="form-select form-select-sm" id="character-animation-selector" onchange="onCharacterAnimationChange()">
+                  <option value="walking">Walking (standard)</option>
+                </select>
+                <button class="btn btn-outline-success btn-sm" type="button" onclick="addCharacterAnimation()" title="Add custom animation">+</button>
+                <button class="btn btn-outline-danger btn-sm" type="button" onclick="removeCharacterAnimation()" title="Remove selected custom animation" id="btn-remove-character-animation">−</button>
+              </div>
+              <small class="text-muted d-block">Walking is the default walk cycle. Custom animations can be assigned a name and played later via script.</small>
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-light" id="character-animation-direction-label">Select direction (8 directions):</label>
               <select class="form-select form-select-sm" id="direction-selector" onchange="changeCharacterDirection()">
                 <option value="north">North (↑)</option>
                 <option value="northeast">Northeast (↗)</option>

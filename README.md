@@ -52,7 +52,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Multiple image layers; list and ordering controls
 - Characters
   - Create characters; 8-direction setup
-  - Upload multiple animation frames per direction; FPS control; preview
+  - **Walking** animation: upload frames per direction; FPS control; preview
+  - **Custom animations**: named animations (e.g. `wave`, `talk`) with their own 8-direction frames; playable via `play_character_animation()` in scripts
   - Game start configuration: choose starting player, room and position
 - Inventory Objects
   - Manage items (upload, filter, edit, delete)
@@ -103,7 +104,7 @@ The runtime system provides a complete game execution environment:
 - **✅ Click Interactions**: Full hit detection system for hotspots (polygon), objects (bounding box), characters, and GUI buttons with script execution
 - **✅ Pathfinding & Movement**: Click-to-move player with intelligent pathfinding on walkable areas, smooth character movement with direction-based animations
 - **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
-- **✅ Character System**: Character rendering with pivot support, dynamic scaling based on Y position, sub-pixel smooth movement
+- **✅ Character System**: Character rendering with pivot support, dynamic scaling, walking + custom named animations (`play_character_animation`)
 - **✅ GUI System**: GUI rendering with background images and clickable buttons, script execution on button clicks
 
 ## Current API Status
@@ -157,9 +158,27 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 ### Character APIs (runtime)
 - **`spawn_character(name, x, y, direction?, id?)`** - Spawns a character; returns id
 - **`move_character(idOrName, x, y)`** - Instant move
-- **`walk_character(idOrName, x, y, wait?)`** - Pathfinding move (returns Promise if waiting)
-- **`set_character_direction(idOrName, direction)`** - Sets 8-direction facing
-- **`animate_character(idOrName, enabled?)`** - Animation control hook
+- **`walk_character(idOrName, x, y, wait?)`** - Pathfinding move on walkable area (returns Promise if `wait` is true; default). Stops any custom animation in progress.
+- **`set_character_direction(idOrName, direction)`** - Sets 8-direction facing (walking sprites)
+- **`animate_character(idOrName, enabled?)`** - Animation control hook (reserved for future use)
+- **`play_character_animation(idOrName, animationName, direction, wait?)`** - Plays one full cycle of a **custom** animation defined in the editor (Characters tab → **+** → name, e.g. `wave`). Uses `characterDefinitions.animations[animationName].directions[direction]`. Stops movement; on completion returns to walking idle (frame 0). Directions: `north`, `northeast`, `east`, `southeast`, `south`, `southwest`, `west`, `northwest`. With `await` (default) blocks input until the cycle ends (same pattern as `walk_character`).
+
+**Editor setup (custom animation):** Characters → select character → Animation dropdown → **+** → enter name → assign frames per direction (same workflow as walking).
+
+**Project JSON (excerpt):**
+```json
+{
+  "name": "Hero",
+  "directions": { "south": { "fps": 8, "frames": ["asset:..."] } },
+  "animations": {
+    "wave": {
+      "directions": {
+        "south": { "fps": 10, "frames": ["asset:..."] }
+      }
+    }
+  }
+}
+```
 
 ### GUI / display
 - **`show_message(text)`** / **`showText(text)`** - On-screen message overlay
@@ -212,6 +231,12 @@ function on_object_click(object_id, x, y) {
   set_object_visible(object_id, false);
   set_var("key_collected", true);
 }
+
+// Custom character animation (requires "wave" defined in Characters tab)
+on_hotspot_click(async function() {
+  await play_character_animation("Hero", "wave", "south");
+  show_message("Hello!");
+});
 ```
 
 **Not yet in runtime (roadmap):** dialogue system, audio, save/load slots, visual transitions (`fade_in`, …). See [ROADMAP.md](ROADMAP.md).
@@ -225,7 +250,7 @@ function on_object_click(object_id, x, y) {
 3. Add a Background and optional Foreground Layers.
 4. Scene Objects → add images; edit positions as needed.
 5. Walkable Area → Start Drawing → click to add vertices → Finish.
-6. Characters → select a character → upload animation frames → Start Preview.
+6. Characters → select a character → upload walking frames (or add a custom animation with **+**) → Start Preview.
 7. Scripts → write JavaScript and Run; use the provided APIs.
 8. Play → Start Test to see runtime logs and basic flow.
 
@@ -262,7 +287,7 @@ function on_object_click(object_id, x, y) {
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
 - **Dialogue System**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Audio System**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-- **Character System**: `spawn_character()`, `move_character()`, `animate_character()`, `set_character_ai()`
+- **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Phase 3 - Advanced Features (Low Priority)**
@@ -356,7 +381,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Più livelli immagine con ordinamento
 - Personaggi
   - Creazione personaggi; setup 8 direzioni
-  - Upload multiplo frame per direzione; controllo FPS; anteprima
+  - Animazione **Walking**: frame per direzione; FPS; anteprima
+  - **Animazioni custom** con nome (es. `wave`, `idle`) e frame per direzione; riproducibili in script con `play_character_animation()`
   - Configurazione avvio gioco: personaggio/room/posizione iniziali
 - Oggetti di Inventario
   - Gestione item inventario (upload, filtro, modifica, elimina)
@@ -456,7 +482,14 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`GameAPI.getVariable` / `setVariable`** - Alias camelCase
 
 ### API Personaggi (runtime)
-- **`spawn_character`**, **`move_character`**, **`walk_character`**, **`set_character_direction`**, **`animate_character`**
+- **`spawn_character(name, x, y, direction?, id?)`** — Spawna un personaggio; restituisce l’id
+- **`move_character(idOrName, x, y)`** — Spostamento istantaneo
+- **`walk_character(idOrName, x, y, wait?)`** — Movimento con pathfinding sulla walkable area (Promise se `wait` è true). Interrompe un’animazione custom in corso.
+- **`set_character_direction(idOrName, direction)`** — Imposta la direzione (8 direzioni, sprite walking)
+- **`animate_character(idOrName, enabled?)`** — Hook controllo animazione (uso futuro)
+- **`play_character_animation(idOrName, animationName, direction, wait?)`** — Riproduce un ciclo completo di un’animazione **custom** definita nell’editor (tab Characters → **+** → nome, es. `wave`). Usa `characterDefinitions.animations[nome].directions[direzione]`. Ferma il movimento; al termine torna alla posa idle del walking. Con `await` (default) blocca l’input fino alla fine (come `walk_character`).
+
+**Setup editor:** Characters → personaggio → menu Animation → **+** → nome → frame per direzione.
 
 ### Esempi di Utilizzo
 ```javascript
@@ -497,6 +530,12 @@ scale_object("tesoro", 1.5, 1.5);
 load_room("cucina");
 const oggetti = get_room_objects();
 print("La stanza ha " + oggetti.length + " oggetti");
+
+// Animazione custom (richiede "wave" definita in Characters)
+on_hotspot_click(async function() {
+  await play_character_animation("Eroe", "wave", "south");
+  show_message("Ciao!");
+});
 ```
 
 **Non ancora nel runtime:** dialoghi, audio, salvataggi, transizioni visive. Vedi [ROADMAP.md](ROADMAP.md).
@@ -510,7 +549,7 @@ print("La stanza ha " + oggetti.length + " oggetti");
 3. Aggiungi un Background e, se vuoi, livelli di Foreground.
 4. Scene Objects → aggiungi immagini; modifica le posizioni.
 5. Walkable Area → Start Drawing → clic per i vertici → Finish.
-6. Characters → seleziona un personaggio → carica i frame → Start Preview.
+6. Characters → seleziona un personaggio → carica frame walking (o animazione custom con **+**) → Start Preview.
 7. Scripts → scrivi JavaScript e premi Run; usa le API fornite.
 8. Play → Start Test per vedere i log e provare il flusso.
 
@@ -547,7 +586,7 @@ print("La stanza ha " + oggetti.length + " oggetti");
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
 - **Sistema Dialoghi**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Sistema Audio**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-- **Sistema Personaggi**: `spawn_character()`, `move_character()`, `animate_character()`, `set_character_ai()`
+- **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Fase 3 - Funzionalità Avanzate (Priorità Bassa)**
@@ -615,7 +654,7 @@ Vedi `# 🎮 Funzioni da Implementare - Amianto editor.md` per la lista completa
 - Sistema dialoghi ramificati con scelte e condizioni
 - Audio: musica di fondo, SFX, suoni ambientali con mixer/volumi
 - Inventario avanzato con combinazioni, uso su hotspot/oggetti
-- Sistema personaggi: movimento, animazioni per stato, AI semplice (patrol/follow)
+- Sistema personaggi: movimento, animazioni custom (`play_character_animation`), AI semplice (patrol/follow)
 - Effetti visivi: fade/transition, particellari, cutscene
 
 ### Fase 3 — Scripting & Tools

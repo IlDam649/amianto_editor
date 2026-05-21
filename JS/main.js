@@ -948,8 +948,9 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
       // Verifica che ci siano dati validi prima di procedere
-      if (!charData || !charData.directions || !charData.directions[currentDirection]) {
+      if (!charData || !activeDirections || !activeDirections[currentDirection]) {
         // Nessun character selezionato o direzione non valida
         ctx.save();
         ctx.resetTransform();
@@ -963,7 +964,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return; // skip rooms rendering
       }
 
-      const dirData = charData.directions[currentDirection];
+      const dirData = activeDirections[currentDirection];
       
       // Verifica che ci siano frame
       if (!dirData.frames || dirData.frames.length === 0) {
@@ -990,7 +991,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Draw current frame at original size, positioned at top-left corner (0,0)
       // Usa getFrameImage per gestire sia frame normali che frame specchiati
-      const frameResult = getFrameImage(frame, charData, frameIndex, currentDirection);
+      const frameResult = getFrameImage(frame, activeDirections, frameIndex, currentDirection);
       
       if (frameResult && frameResult.img) {
         const frameImg = frameResult.img;
@@ -1053,13 +1054,15 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.save();
             ctx.resetTransform(); // Reset per testo senza zoom/pan
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(10, 10, 300, 60);
+            ctx.fillRect(10, 10, 300, 80);
             ctx.fillStyle = '#39ff14';
             ctx.font = '12px monospace';
             const currentFrameNum = frameIndex + 1;
-            ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 28);
-            ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 45);
-            ctx.fillText(`Direction: ${currentDirection}`, 15, 62);
+            const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'Walking' : getSelectedCharacterAnimationKey();
+            ctx.fillText(`Animation: ${animLabel}`, 15, 28);
+            ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 45);
+            ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 62);
+            ctx.fillText(`Direction: ${currentDirection}`, 15, 79);
             ctx.restore();
           }
         } else {
@@ -1584,9 +1587,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
             const charData = characterFrames.get(who);
             if (charData) {
-              const dirData = charData.directions[currentDirection];
+              const activeDirections = getCharacterDirectionsStore(charData);
+              const dirData = activeDirections ? activeDirections[currentDirection] : null;
               if (dirData && dirData.frames && dirData.frames.length > 0) {
-                const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
+                const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, currentDirection);
                 if (frameResult && frameResult.img) {
                   const frameImg = frameResult.img;
                   // Frame position in viewport coordinates (now at 0,0)
@@ -2129,9 +2133,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
         const charData = characterFrames.get(who);
         if (charData) {
-          const dirData = charData.directions[currentDirection];
+          const activeDirections = getCharacterDirectionsStore(charData);
+          const dirData = activeDirections ? activeDirections[currentDirection] : null;
           if (dirData && dirData.frames && dirData.frames.length > 0) {
-            const frameResult = getFrameImage(dirData.frames[0], charData, 0, currentDirection);
+            const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, currentDirection);
             if (frameResult && frameResult.img) {
               const frameImg = frameResult.img;
               // Frame position in viewport coordinates (now at 0,0)
@@ -4680,26 +4685,32 @@ window.selectRoom = function(roomId) {
 
       // Pulisce i riferimenti in memoria (i file su Supabase restano; eliminabili da Resources)
       // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
-      if (charData && charData.directions) {
-        try {
-          for (const [dir, dirData] of Object.entries(charData.directions)) {
-            if (dirData.frames && Array.isArray(dirData.frames)) {
-              for (const frame of dirData.frames) {
-                let frameImage = null;
-                if (frame && typeof frame === 'object' && frame.img) {
-                  frameImage = frame.img;
-                } else if (frame && typeof frame === 'object' && frame.src) {
-                  frameImage = frame;
-                }
-                // Rimuovi dalla imageAssetMap se presente
-                if (frameImage && imageAssetMap.has(frameImage)) {
-                  const assetInfo = imageAssetMap.get(frameImage);
-                  if (assetInfo && assetInfo.type === 'character') {
-                    imageAssetMap.delete(frameImage);
-                  }
+      const clearDirectionFramesFromMap = (directionsMap) => {
+        if (!directionsMap) return;
+        for (const dirData of Object.values(directionsMap)) {
+          if (dirData.frames && Array.isArray(dirData.frames)) {
+            for (const frame of dirData.frames) {
+              let frameImage = null;
+              if (frame && typeof frame === 'object' && frame.img) {
+                frameImage = frame.img;
+              } else if (frame && typeof frame === 'object' && frame.src) {
+                frameImage = frame;
+              }
+              if (frameImage && imageAssetMap.has(frameImage)) {
+                const assetInfo = imageAssetMap.get(frameImage);
+                if (assetInfo && assetInfo.type === 'character') {
+                  imageAssetMap.delete(frameImage);
                 }
               }
             }
+          }
+        }
+      };
+      if (charData) {
+        try {
+          clearDirectionFramesFromMap(charData.directions);
+          if (charData.animations) {
+            Object.values(charData.animations).forEach(anim => clearDirectionFramesFromMap(anim.directions));
           }
         } catch (mapError) {
           console.warn('[Character] Errore pulizia imageAssetMap (non critico):', mapError);
@@ -4792,10 +4803,209 @@ window.selectRoom = function(roomId) {
 
   // Functions for Scripts tab
   // Character animation frames state and preview
-  const characterFrames = new Map(); // characterName -> { directions: {north: {frames: [], fps: 8}, northeast: {...}, ...}, currentFrame: 0 }
+  const characterFrames = new Map(); // characterName -> { directions: {...}, animations: { name: { directions: {...} } }, currentFrame: 0 }
   let characterPreviewTimer = null;
   let characterPreviewIndex = 0;
   let currentDirection = 'south'; // Default direction
+
+  const DIRECTION_LABELS = {
+    north: 'North (↑)',
+    northeast: 'Northeast (↗)',
+    east: 'East (→)',
+    southeast: 'Southeast (↘)',
+    south: 'South (↓)',
+    southwest: 'Southwest (↙)',
+    west: 'West (←)',
+    northwest: 'Northwest (↖)'
+  };
+
+  function getSelectedCharacterAnimationKey() {
+    const animSel = document.getElementById('character-animation-selector');
+    const val = animSel ? animSel.value : 'walking';
+    return val || 'walking';
+  }
+
+  function getCharacterDirectionsStore(charData) {
+    if (!charData) return null;
+    const animKey = getSelectedCharacterAnimationKey();
+    if (animKey === 'walking') {
+      if (!charData.directions) charData.directions = {};
+      return charData.directions;
+    }
+    if (!charData.animations) charData.animations = {};
+    if (!charData.animations[animKey]) charData.animations[animKey] = { directions: {} };
+    if (!charData.animations[animKey].directions) charData.animations[animKey].directions = {};
+    return charData.animations[animKey].directions;
+  }
+
+  function resetDirectionSelectorLabels() {
+    const dirSel = document.getElementById('direction-selector');
+    if (!dirSel) return;
+    dirSel.querySelectorAll('option').forEach(opt => {
+      if (DIRECTION_LABELS[opt.value]) opt.textContent = DIRECTION_LABELS[opt.value];
+    });
+  }
+
+  function refreshCharacterAnimationSelector(characterName) {
+    const sel = document.getElementById('character-animation-selector');
+    const removeBtn = document.getElementById('btn-remove-character-animation');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '';
+    const walkOpt = document.createElement('option');
+    walkOpt.value = 'walking';
+    walkOpt.textContent = 'Walking (standard)';
+    sel.appendChild(walkOpt);
+    const charData = characterName ? characterFrames.get(characterName) : null;
+    if (charData && charData.animations) {
+      Object.keys(charData.animations).sort((a, b) => a.localeCompare(b)).forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        sel.appendChild(o);
+      });
+    }
+    if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+      sel.value = prev;
+    } else {
+      sel.value = 'walking';
+    }
+    if (removeBtn) {
+      removeBtn.disabled = sel.value === 'walking';
+    }
+    updateCharacterAnimationUILabel();
+  }
+
+  function updateCharacterAnimationUILabel() {
+    const label = document.getElementById('character-animation-direction-label');
+    const isWalking = getSelectedCharacterAnimationKey() === 'walking';
+    if (label) {
+      label.textContent = isWalking
+        ? 'Select direction (8 directions):'
+        : 'Select direction for this animation (8 directions):';
+    }
+    const removeBtn = document.getElementById('btn-remove-character-animation');
+    if (removeBtn) {
+      removeBtn.disabled = getSelectedCharacterAnimationKey() === 'walking';
+    }
+  }
+
+  window.onCharacterAnimationChange = function() {
+    stopCharacterPreview();
+    resetDirectionSelectorLabels();
+    updateCharacterAnimationUILabel();
+    updateDirectionInfo();
+    redraw();
+  };
+
+  window.addCharacterAnimation = function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) {
+      showNotification('Select a character first', 'warning');
+      return;
+    }
+    const name = prompt('Animation name (e.g. idle, talk, pick_up):');
+    if (!name || !name.trim()) return;
+    const animName = name.trim();
+    if (animName.toLowerCase() === 'walking') {
+      showNotification('"walking" is reserved for the standard walk cycle', 'warning');
+      return;
+    }
+    let charData = characterFrames.get(who);
+    if (!charData) {
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      characterFrames.set(who, charData);
+    }
+    if (!charData.animations) charData.animations = {};
+    if (charData.animations[animName]) {
+      showNotification(`Animation "${animName}" already exists`, 'warning');
+      return;
+    }
+    charData.animations[animName] = { directions: {} };
+    characterFrames.set(who, charData);
+    refreshCharacterAnimationSelector(who);
+    const animSel = document.getElementById('character-animation-selector');
+    if (animSel) animSel.value = animName;
+    onCharacterAnimationChange();
+    showNotification(`Animation "${animName}" added`, 'success');
+  };
+
+  window.removeCharacterAnimation = function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) {
+      showNotification('Select a character first', 'warning');
+      return;
+    }
+    const animKey = getSelectedCharacterAnimationKey();
+    if (animKey === 'walking') {
+      showNotification('Cannot remove the standard walking animation', 'warning');
+      return;
+    }
+    if (!confirm(`Remove animation "${animKey}" and all its frames?`)) return;
+    const charData = characterFrames.get(who);
+    if (charData && charData.animations) {
+      delete charData.animations[animKey];
+      characterFrames.set(who, charData);
+    }
+    refreshCharacterAnimationSelector(who);
+    onCharacterAnimationChange();
+    showNotification(`Animation "${animKey}" removed`, 'info');
+  };
+
+  async function loadCharacterDirectionsFromData(directionsSource, projectId, characterName) {
+    const directions = {};
+    if (directionsSource) {
+      for (const [dir, data] of Object.entries(directionsSource)) {
+        const frames = [];
+        if (Array.isArray(data.frames)) {
+          for (const f of data.frames) {
+            if (f && typeof f === 'object' && f.mirror && typeof f.mirror === 'string') {
+              frames.push({ mirror: f.mirror });
+            } else {
+              const img = await createImageFromDataUrl(f, projectId);
+              if (img) {
+                frames.push(img);
+                if (f && typeof f === 'string' && f.startsWith('asset:')) {
+                  const assetId = f.replace('asset:', '');
+                  imageAssetMap.set(img, {
+                    assetId,
+                    type: 'character',
+                    projectId,
+                    subfolder: `characters/${characterName}`
+                  });
+                }
+              }
+            }
+          }
+        }
+        directions[dir] = { fps: Number(data.fps) || 8, frames };
+      }
+    }
+    return directions;
+  }
+
+  function serializeDirectionsMap(directionsMap) {
+    const out = {};
+    if (!directionsMap) return out;
+    const directionsList = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+    directionsList.forEach(dir => {
+      const d = directionsMap[dir];
+      if (d) {
+        const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
+          if (!fr) return null;
+          if (fr.mirror && typeof fr.mirror === 'string') return { mirror: fr.mirror };
+          if (fr.img && typeof fr.img === 'object') return serializeImage(fr.img);
+          if (typeof fr === 'object' && (fr.src || (fr.width && fr.height))) return serializeImage(fr);
+          if (typeof fr === 'string') return fr;
+          return null;
+        }).filter(Boolean) : [];
+        out[dir] = { fps: Number(d.fps) || 8, frames };
+      }
+    });
+    return out;
+  }
   
   // Traccia i frame caricati durante la sessione corrente che non sono stati ancora salvati nel progetto
   // Questo permette di eliminarli da Supabase se si chiude il browser o si fa logout senza salvare
@@ -4932,9 +5142,12 @@ window.selectRoom = function(roomId) {
     const dirSel = document.getElementById('direction-selector');
     if (!dirSel) return;
 
+    refreshCharacterAnimationSelector(who);
+    resetDirectionSelectorLabels();
     const charData = characterFrames.get(who);
-    if (charData && charData.directions) {
-      const directions = Object.keys(charData.directions);
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (activeDirections) {
+      const directions = Object.keys(activeDirections);
       if (directions.length > 0) {
         dirSel.value = directions[0];
         currentDirection = directions[0];
@@ -5223,8 +5436,9 @@ window.selectRoom = function(roomId) {
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
     const resources = await pickResourceImage({
-      title: `Animation frames — ${who}`,
+      title: `Animation frames — ${who} [${animLabel}]`,
       multiple: true,
       hint: 'Click multiple images to select them. Confirm with «Add selection». Frame order follows numbers in the file name.'
     });
@@ -5246,15 +5460,16 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, currentFrame: 0 };
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
       characterFrames.set(who, charData);
     }
 
-    if (!charData.directions[direction]) {
-      charData.directions[direction] = { frames: [], fps: 8 };
+    const activeDirections = getCharacterDirectionsStore(charData);
+    if (!activeDirections[direction]) {
+      activeDirections[direction] = { frames: [], fps: 8 };
     }
 
-    const dirData = charData.directions[direction];
+    const dirData = activeDirections[direction];
     
     // Calcola l'indice di partenza per i nuovi frame (aggiungi alla fine invece di sovrascrivere)
     const existingFrameCount = dirData.frames ? dirData.frames.length : 0;
@@ -5415,7 +5630,8 @@ window.selectRoom = function(roomId) {
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection] || !charData.directions[currentDirection].frames.length) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection] || !activeDirections[currentDirection].frames.length) {
       showNotification('No frames loaded for this character and direction', 'warning');
       return;
     }
@@ -5426,7 +5642,7 @@ window.selectRoom = function(roomId) {
       characterPreviewTimer = null;
     }
 
-    const dirData = charData.directions[currentDirection];
+    const dirData = activeDirections[currentDirection];
     const totalFrames = dirData.frames.length;
     const fps = Number(dirData.fps) || 8;
     
@@ -5452,8 +5668,9 @@ window.selectRoom = function(roomId) {
       
       // Verifica che ci siano ancora frame (potrebbero essere stati eliminati)
       const currentCharData = characterFrames.get(who);
-      if (!currentCharData || !currentCharData.directions[currentDirection] || 
-          !currentCharData.directions[currentDirection].frames.length) {
+      const currentDirs = currentCharData ? getCharacterDirectionsStore(currentCharData) : null;
+      if (!currentCharData || !currentDirs || !currentDirs[currentDirection] ||
+          !currentDirs[currentDirection].frames.length) {
         stopCharacterPreview();
         return;
       }
@@ -5462,7 +5679,8 @@ window.selectRoom = function(roomId) {
       redraw();
     }, interval);
     
-    showNotification(`Preview started: ${who} (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
+    showNotification(`Preview started: ${who} [${animLabel}] (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
   };
 
   window.stopCharacterPreview = function() {
@@ -5478,24 +5696,22 @@ window.selectRoom = function(roomId) {
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
-    if (confirm('Clear all animation frames for this character?')) {
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
+    if (confirm(`Clear all frames for animation "${animLabel}"?`)) {
       // Ferma la preview se è attiva
       stopCharacterPreview();
 
       const charData = characterFrames.get(who);
+      const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
 
-      // Pulisce tutti i frame per tutte le direzioni, ma mantiene il character (i file su Supabase restano)
-      if (charData && charData.directions) {
-        for (const [dir, dirData] of Object.entries(charData.directions)) {
-          if (dirData.frames) {
-            dirData.frames = [];
-          }
+      // Pulisce tutti i frame per tutte le direzioni dell'animazione corrente
+      if (activeDirections) {
+        for (const dirData of Object.values(activeDirections)) {
+          if (dirData.frames) dirData.frames = [];
         }
-        // Mantiene il character con direzioni vuote
-        characterFrames.set(who, charData);
+        if (charData) characterFrames.set(who, charData);
       } else {
-        // Se non esiste charData, crea uno vuoto
-        characterFrames.set(who, { directions: {}, currentFrame: 0 });
+        characterFrames.set(who, { directions: {}, animations: {}, currentFrame: 0 });
       }
       
       // Reset dell'indice della preview
@@ -5505,18 +5721,19 @@ window.selectRoom = function(roomId) {
       updateDirectionInfo();
       refreshFramesPreview();
       // Initialize pivot if frames exist
-      if (charData && charData.directions && charData.directions[currentDirection]) {
+      if (charData) {
         initializePivotForCharacter(charData, currentDirection);
       }
       redraw();
       
-      showNotification('Frames cleared for ' + who, 'success');
+      showNotification(`Frames cleared for ${who} (${animLabel})`, 'success');
     }
   };
 
   // Character Pivot Management - Automatic initialization
   function initializePivotForCharacter(charData, direction) {
-    if (!charData || !charData.directions || !charData.directions[direction]) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[direction]) {
       return;
     }
     
@@ -5525,9 +5742,9 @@ window.selectRoom = function(roomId) {
       return;
     }
     
-    const dirData = charData.directions[direction];
+    const dirData = activeDirections[direction];
     if (dirData && dirData.frames && dirData.frames.length > 0) {
-      const frameResult = getFrameImage(dirData.frames[0], charData, 0, direction);
+      const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, direction);
       if (frameResult && frameResult.img) {
         const frameImg = frameResult.img;
         // Set pivot at center bottom of frame
@@ -5596,20 +5813,20 @@ window.selectRoom = function(roomId) {
 
   // Helper function per ottenere l'immagine di un frame e se deve essere specchiata
   // Gestisce sia frame normali che frame specchiati (con proprietà mirror)
-  function getFrameImage(frame, charData, frameIndex, direction) {
-    if (!frame || !charData) {
+  function getFrameImage(frame, directionsStore, frameIndex, direction) {
+    if (!frame || !directionsStore) {
       return { img: null, mirrored: false };
     }
 
     // Se il frame è un riferimento specchiato
     if (frame.mirror && typeof frame.mirror === 'string') {
       const sourceDirection = frame.mirror;
-      const sourceDirData = charData.directions[sourceDirection];
+      const sourceDirData = directionsStore[sourceDirection];
       
       if (sourceDirData && sourceDirData.frames && sourceDirData.frames[frameIndex]) {
         // Recursivamente ottieni l'immagine dalla direzione sorgente
         // (potrebbe essere un'altra direzione specchiata, ma alla fine arriveremo a un frame reale)
-        const sourceResult = getFrameImage(sourceDirData.frames[frameIndex], charData, frameIndex, sourceDirection);
+        const sourceResult = getFrameImage(sourceDirData.frames[frameIndex], directionsStore, frameIndex, sourceDirection);
         
         // Se abbiamo trovato un'immagine, restituiscila con flag mirrored = true
         if (sourceResult.img) {
@@ -5656,49 +5873,40 @@ window.selectRoom = function(roomId) {
       return;
     }
 
+    const activeDirections = getCharacterDirectionsStore(charData);
+
     // Verifica che la direzione sorgente abbia frame
-    if (!charData.directions[sourceDirection] || !charData.directions[sourceDirection].frames.length) {
+    if (!activeDirections[sourceDirection] || !activeDirections[sourceDirection].frames.length) {
       showNotification(`No frames found in ${sourceDirection} direction`, 'warning');
       return;
     }
 
-    const sourceFrames = charData.directions[sourceDirection].frames;
-    const sourceFPS = charData.directions[sourceDirection].fps || 8;
+    const sourceFrames = activeDirections[sourceDirection].frames;
+    const sourceFPS = activeDirections[sourceDirection].fps || 8;
 
     // Inizializza la direzione corrente se non esiste
-    if (!charData.directions[currentDirection]) {
-      charData.directions[currentDirection] = { frames: [], fps: sourceFPS };
+    if (!activeDirections[currentDirection]) {
+      activeDirections[currentDirection] = { frames: [], fps: sourceFPS };
     }
 
     // Pulisce i frame esistenti per la direzione corrente
-    charData.directions[currentDirection].frames = [];
-    charData.directions[currentDirection].fps = sourceFPS;
+    activeDirections[currentDirection].frames = [];
+    activeDirections[currentDirection].fps = sourceFPS;
 
     // Crea riferimenti specchiati invece di copiare le immagini
-    // Ogni frame sarà un oggetto { mirror: sourceDirection }
-    // L'indice del frame corrisponde allo stesso indice nella direzione sorgente
     for (let i = 0; i < sourceFrames.length; i++) {
-      // Crea un riferimento specchiato - il rendering lo gestirà al volo
-      const mirroredFrame = {
-        mirror: sourceDirection
-      };
-      charData.directions[currentDirection].frames.push(mirroredFrame);
+      activeDirections[currentDirection].frames.push({ mirror: sourceDirection });
     }
 
-    // Aggiorna la Map
     characterFrames.set(who, charData);
 
-    // Aggiorna l'FPS input
     const fpsInput = document.getElementById('character-fps');
-    if (fpsInput) {
-      fpsInput.value = sourceFPS;
-    }
+    if (fpsInput) fpsInput.value = sourceFPS;
 
-    // Aggiorna le informazioni
     updateDirectionInfo();
     redraw();
 
-    showNotification(`Mirrored ${charData.directions[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection} (referenced, not duplicated)`, 'success');
+    showNotification(`Mirrored ${activeDirections[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection} (referenced, not duplicated)`, 'success');
   };
 
   // Function to update direction info display
@@ -5708,9 +5916,10 @@ window.selectRoom = function(roomId) {
     if (!who) return;
 
     const charData = characterFrames.get(who);
-    if (charData && charData.directions[currentDirection]) {
-      const frameCount = charData.directions[currentDirection].frames.length;
-      const fps = charData.directions[currentDirection].fps;
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (charData && activeDirections && activeDirections[currentDirection]) {
+      const frameCount = activeDirections[currentDirection].frames.length;
+      const fps = activeDirections[currentDirection].fps;
       
       // Update direction selector with frame count
       const dirSel = document.getElementById('direction-selector');
@@ -5752,15 +5961,16 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, currentFrame: 0 };
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
       characterFrames.set(who, charData);
     }
 
-    if (!charData.directions[currentDirection]) {
-      charData.directions[currentDirection] = { frames: [], fps: 8 };
+    const activeDirections = getCharacterDirectionsStore(charData);
+    if (!activeDirections[currentDirection]) {
+      activeDirections[currentDirection] = { frames: [], fps: 8 };
     }
 
-    charData.directions[currentDirection].fps = newFPS;
+    activeDirections[currentDirection].fps = newFPS;
     updateDirectionInfo();
     showNotification(`FPS updated to ${newFPS} for ${who} (${currentDirection})`, 'success');
   };
@@ -5785,12 +5995,13 @@ window.selectRoom = function(roomId) {
     }
 
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection]) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection]) {
       container.innerHTML = '<div class="text-muted">No frames loaded for this direction</div>';
       return;
     }
 
-    const frames = charData.directions[currentDirection].frames;
+    const frames = activeDirections[currentDirection].frames;
     if (frames.length === 0) {
       container.innerHTML = '<div class="text-muted">No frames loaded</div>';
       return;
@@ -5808,7 +6019,7 @@ window.selectRoom = function(roomId) {
       let isMirrored = false;
       
       // Usa getFrameImage per gestire sia frame normali che specchiati
-      const frameResult = getFrameImage(frameData, charData, index, currentDirection);
+      const frameResult = getFrameImage(frameData, activeDirections, index, currentDirection);
       
       if (frameResult.img) {
         // Frame valido trovato
@@ -5908,15 +6119,15 @@ window.selectRoom = function(roomId) {
     if (!who) return;
 
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection]) return;
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection]) return;
 
     if (confirm(`Delete frame ${frameIndex + 1}?`)) {
-      const frameToDelete = charData.directions[currentDirection].frames[frameIndex];
+      const frameToDelete = activeDirections[currentDirection].frames[frameIndex];
       
       // Se è un frame specchiato, non eliminare asset (non ne ha uno)
       if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.mirror) {
-        // Frame specchiato, rimuovi solo dall'array
-        charData.directions[currentDirection].frames.splice(frameIndex, 1);
+        activeDirections[currentDirection].frames.splice(frameIndex, 1);
         characterFrames.set(who, charData);
         updateDirectionInfo();
         refreshFramesPreview();
@@ -5925,8 +6136,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Rimuove solo dall'editor; i file su Supabase restano disponibili
-      charData.directions[currentDirection].frames.splice(frameIndex, 1);
+      activeDirections[currentDirection].frames.splice(frameIndex, 1);
       
       // Aggiorna i thumbnails e il canvas dopo l'eliminazione
       updateDirectionInfo();
@@ -5977,8 +6187,9 @@ window.selectRoom = function(roomId) {
           const who = sel ? sel.value : '';
           if (who) {
             const charData = characterFrames.get(who);
-            if (charData && charData.directions[currentDirection]) {
-              const frames = charData.directions[currentDirection].frames;
+            const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+            if (charData && activeDirections && activeDirections[currentDirection]) {
+              const frames = activeDirections[currentDirection].frames;
               const draggedFrame = frames.splice(draggedIndex, 1)[0];
               frames.splice(targetIndex, 0, draggedFrame);
               
@@ -6055,7 +6266,8 @@ window.selectRoom = function(roomId) {
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
     'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
-    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character'
+    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character',
+    'play_character_animation'
   ];
 
   function cmGameApiHint(cm) {
@@ -11374,7 +11586,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Ignora errori (potrebbe non esserci un character selezionato)
     }
     
-    const directionsList = ['north','northeast','east','southeast','south','southwest','west','northwest'];
     const result = [];
     const names = collectCharacterNames();
     names.forEach(name => {
@@ -11399,45 +11610,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         };
         console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
       }
-      directionsList.forEach(dir => {
-        const d = charData && charData.directions ? charData.directions[dir] : null;
-        if (d) {
-          // Serializza i frame:
-          // - Se è un frame specchiato (ha proprietà mirror), serializza solo { mirror: sourceDirection }
-          // - Altrimenti serializza l'immagine normalmente
-          const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
-            if (!fr) return null;
-            
-            // Se è un frame specchiato, serializza solo il riferimento
-            if (fr.mirror && typeof fr.mirror === 'string') {
-              return { mirror: fr.mirror };
-            }
-            
-            // Frame normale: serializza l'immagine
-            // Se è un oggetto con proprietà img (formato standard quando caricato)
-            if (fr.img && typeof fr.img === 'object') {
-              // Serializza l'immagine esattamente come per i foreground
-              return serializeImage(fr.img);
-            }
-            // Se è direttamente un Image (quando caricato da progetto salvato)
-            else if (typeof fr === 'object' && (fr.src || (fr.width && fr.height))) {
-              // Serializza direttamente come per i background
-              return serializeImage(fr);
-            }
-            // Se è già una stringa (dataURL o assetId), restituiscila così com'è
-            else if (typeof fr === 'string') {
-              return fr;
-            }
-            
-            return null;
-          }).filter(Boolean) : [];
-          
-          out.directions[dir] = {
-            fps: Number(d.fps) || 8,
-            frames: frames
-          };
-        }
-      });
+      out.directions = serializeDirectionsMap(charData ? charData.directions : null);
+      if (charData && charData.animations && Object.keys(charData.animations).length > 0) {
+        out.animations = {};
+        Object.entries(charData.animations).forEach(([animName, animData]) => {
+          if (animName && animData) {
+            out.animations[animName] = {
+              directions: serializeDirectionsMap(animData.directions)
+            };
+          }
+        });
+      }
       result.push(out);
     });
     return result;
@@ -12948,10 +13131,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Funzione helper per generare un assetId determinista per i frame dei character
     // Basato su character/direction/index per garantire che lo stesso frame abbia sempre lo stesso ID
-    const generateFrameAssetId = (characterName, direction, index) => {
+    const generateFrameAssetId = (characterName, direction, index, animationName = null) => {
       const safeCharName = (characterName || 'char').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      const safeAnim = animationName
+        ? `_${String(animationName).replace(/[^a-z0-9]/gi, '_').toLowerCase()}`
+        : '';
       const safeDir = (direction || 'unknown').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      return `frame_${safeCharName}_${safeDir}_${index}`;
+      return `frame_${safeCharName}${safeAnim}_${safeDir}_${index}`;
     };
 
     // Funzione helper per processare un asset
@@ -13112,114 +13298,107 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Se non esiste, significa che è stato eliminato e non dovremmo processare i suoi frame
         if (!characterFrames.has(characterName)) {
           console.warn(`[Asset] ⚠️ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
-          // Rimuovi i frame dal progetto per evitare che vengano salvati
-          if (char.directions) {
-            for (const dirData of Object.values(char.directions)) {
-              if (dirData.frames) {
-                dirData.frames = [];
-              }
+          const clearDirs = (dirs) => {
+            if (!dirs) return;
+            for (const dirData of Object.values(dirs)) {
+              if (dirData.frames) dirData.frames = [];
             }
+          };
+          clearDirs(char.directions);
+          if (char.animations) {
+            Object.values(char.animations).forEach(anim => clearDirs(anim.directions));
           }
           continue;
         }
         
         const characterSubfolder = `characters/${characterName}`;
-        
-        if (char.directions) {
-          for (const [dir, dirData] of Object.entries(char.directions)) {
-            if (dirData.frames && Array.isArray(dirData.frames)) {
-              for (let i = 0; i < dirData.frames.length; i++) {
-                if (dirData.frames[i]) {
-                  const originalFrame = dirData.frames[i];
-                  
-                  // SALTA i frame specchiati - non devono essere salvati come assets separati
-                  if (originalFrame && typeof originalFrame === 'object' && originalFrame.mirror) {
-                    console.log(`[Asset] Frame specchiato saltato per ${characterName}/${dir}/${i} (riferimento a ${originalFrame.mirror})`);
-                    continue;
+        const originalChar = projectObj.characters?.find(c => (c.name || c.id) === characterName);
+
+        const processCharacterDirectionsFrames = async (directionsMap, animationName = null) => {
+          if (!directionsMap) return;
+          const originalDirs = animationName
+            ? originalChar?.animations?.[animationName]?.directions
+            : originalChar?.directions;
+          const memDirs = animationName
+            ? characterFrames.get(characterName)?.animations?.[animationName]?.directions
+            : characterFrames.get(characterName)?.directions;
+
+          for (const [dir, dirData] of Object.entries(directionsMap)) {
+            if (!dirData.frames || !Array.isArray(dirData.frames)) continue;
+            for (let i = 0; i < dirData.frames.length; i++) {
+              if (!dirData.frames[i]) continue;
+              const originalFrame = dirData.frames[i];
+              const frameLabel = animationName ? `${characterName}/${animationName}/${dir}/${i}` : `${characterName}/${dir}/${i}`;
+
+              if (originalFrame && typeof originalFrame === 'object' && originalFrame.mirror) {
+                console.log(`[Asset] Frame specchiato saltato per ${frameLabel}`);
+                continue;
+              }
+
+              let frameToCheck = originalFrame;
+              let frameToProcess = originalFrame;
+              if (originalFrame && typeof originalFrame === 'object' && originalFrame.img) {
+                frameToCheck = originalFrame.img;
+                frameToProcess = originalFrame.img;
+              } else if (typeof originalFrame === 'string') {
+                frameToCheck = originalFrame;
+                frameToProcess = originalFrame;
+              }
+
+              let existingAssetId = null;
+              const isAlreadyAssetId = typeof frameToCheck === 'string' && frameToCheck.startsWith('asset:');
+              const isDataURL = typeof frameToCheck === 'string' && frameToCheck.startsWith('data:image/');
+              const isImageObject = frameToCheck && typeof frameToCheck === 'object' && (frameToCheck.src || (frameToCheck.width && frameToCheck.height));
+
+              if (isAlreadyAssetId) {
+                existingAssetId = frameToCheck.replace('asset:', '');
+              } else if (isDataURL || isImageObject) {
+                if (originalDirs?.[dir]?.frames?.[i]) {
+                  let originalFrameValue = originalDirs[dir].frames[i];
+                  if (originalFrameValue && typeof originalFrameValue === 'object' && originalFrameValue.img) {
+                    originalFrameValue = originalFrameValue.img;
                   }
-                  
-                  // Se il frame è un oggetto con proprietà img, estrai l'immagine prima di verificare
-                  let frameToCheck = originalFrame;
-                  let frameToProcess = originalFrame;
-                  
-                  // IMPORTANTE: Il progetto potrebbe essere già serializzato, quindi originalFrame potrebbe essere una stringa
-                  if (originalFrame && typeof originalFrame === 'object' && originalFrame.img) {
-                    // È un oggetto frame con proprietà img, usa l'immagine direttamente
-                    frameToCheck = originalFrame.img;
-                    frameToProcess = originalFrame.img;
-                    console.log(`[Asset] Frame object con proprietà img trovato per ${characterName}/${dir}/${i}`);
-                  }
-                  // Se è già una stringa (dataURL o assetId), processala direttamente
-                  else if (typeof originalFrame === 'string') {
-                    frameToCheck = originalFrame;
-                    frameToProcess = originalFrame;
-                  }
-                  
-                  // Verifica se esiste già un assetId per questo frame nel progetto originale
-                  let existingAssetId = null;
-                  const isAlreadyAssetId = typeof frameToCheck === 'string' && frameToCheck.startsWith('asset:');
-                  const isDataURL = typeof frameToCheck === 'string' && frameToCheck.startsWith('data:image/');
-                  const isImageObject = frameToCheck && typeof frameToCheck === 'object' && (frameToCheck.src || (frameToCheck.width && frameToCheck.height));
-                  
-                  if (isAlreadyAssetId) {
-                    // Se il frame è già un assetId, estrailo e mantienilo (non ricaricare)
-                    existingAssetId = frameToCheck.replace('asset:', '');
-                    console.log(`[Asset] Frame già salvato come asset:${existingAssetId}, mantengo (${characterName}/${dir}/${i})`);
-                  } else if (isDataURL || isImageObject) {
-                    // Se è un dataURL o un oggetto Image (nuovo o modificato), verifica se esiste già un assetId nel progetto originale
-                    const originalChar = projectObj.characters?.find(c => (c.name || c.id) === characterName);
-                    if (originalChar?.directions?.[dir]?.frames?.[i]) {
-                      let originalFrameValue = originalChar.directions[dir].frames[i];
-                      // Se anche l'originale è un oggetto con img, estrai l'immagine
-                      if (originalFrameValue && typeof originalFrameValue === 'object' && originalFrameValue.img) {
-                        originalFrameValue = originalFrameValue.img;
-                      }
-                      if (typeof originalFrameValue === 'string' && originalFrameValue.startsWith('asset:')) {
-                        existingAssetId = originalFrameValue.replace('asset:', '');
-                        console.log(`[Asset] Frame modificato, riutilizzo assetId esistente: asset:${existingAssetId} (${characterName}/${dir}/${i})`);
-                      }
-                    }
-                    
-                    // Se non esiste un assetId nel progetto originale, genera uno determinista
-                    if (!existingAssetId) {
-                      existingAssetId = generateFrameAssetId(characterName, dir, i);
-                      console.log(`[Asset] Nuovo frame, genero assetId determinista: ${existingAssetId} (${characterName}/${dir}/${i})`);
-                    }
-                  }
-                  
-                  // Processa il frame, usando l'assetId esistente o quello determinista e sovrascrivendo se è un dataURL o Image
-                  dirData.frames[i] = await processAsset(
-                    frameToProcess, 
-                    'character', 
-                    `char_${char.name}_${dir}_${i}`, 
-                    characterSubfolder,
-                    existingAssetId,
-                    isDataURL || isImageObject // Sovrascrivi se è un dataURL o un oggetto Image
-                  );
-                  
-                  // Se il frame è stato convertito da dataURL o Image a assetId (caricato su Supabase),
-                  // trova l'immagine corrispondente e rimuovila dal set dei frame non salvati
-                  if ((isDataURL || isImageObject) && 
-                      typeof dirData.frames[i] === 'string' && dirData.frames[i].startsWith('asset:')) {
-                    // Cerca l'immagine corrispondente nella characterFrames map
-                    const charData = characterFrames.get(characterName);
-                    if (charData && charData.directions && charData.directions[dir] && 
-                        charData.directions[dir].frames && charData.directions[dir].frames[i]) {
-                      const frameObj = charData.directions[dir].frames[i];
-                      let frameImg = null;
-                      if (frameObj && typeof frameObj === 'object' && frameObj.img) {
-                        frameImg = frameObj.img;
-                      } else if (frameObj && typeof frameObj === 'object' && frameObj.src) {
-                        frameImg = frameObj;
-                      }
-                      if (frameImg && unsavedCharacterFrames.has(frameImg)) {
-                        unsavedCharacterFrames.delete(frameImg);
-                        console.log(`[Save] Frame rimosso dal set non salvati: ${characterName}/${dir}/${i}`);
-                      }
-                    }
+                  if (typeof originalFrameValue === 'string' && originalFrameValue.startsWith('asset:')) {
+                    existingAssetId = originalFrameValue.replace('asset:', '');
                   }
                 }
+                if (!existingAssetId) {
+                  existingAssetId = generateFrameAssetId(characterName, dir, i, animationName);
+                }
               }
+
+              const assetName = animationName
+                ? `char_${char.name}_${animationName}_${dir}_${i}`
+                : `char_${char.name}_${dir}_${i}`;
+
+              dirData.frames[i] = await processAsset(
+                frameToProcess,
+                'character',
+                assetName,
+                characterSubfolder,
+                existingAssetId,
+                isDataURL || isImageObject
+              );
+
+              if ((isDataURL || isImageObject) &&
+                  typeof dirData.frames[i] === 'string' && dirData.frames[i].startsWith('asset:')) {
+                const frameObj = memDirs?.[dir]?.frames?.[i];
+                let frameImg = null;
+                if (frameObj && typeof frameObj === 'object' && frameObj.img) frameImg = frameObj.img;
+                else if (frameObj && typeof frameObj === 'object' && frameObj.src) frameImg = frameObj;
+                if (frameImg && unsavedCharacterFrames.has(frameImg)) {
+                  unsavedCharacterFrames.delete(frameImg);
+                }
+              }
+            }
+          }
+        };
+
+        await processCharacterDirectionsFrames(char.directions, null);
+        if (char.animations) {
+          for (const [animName, animData] of Object.entries(char.animations)) {
+            if (animName && animData) {
+              await processCharacterDirectionsFrames(animData.directions, animName);
             }
           }
         }
@@ -14624,34 +14803,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (Array.isArray(projectObj.characters)) {
           for (const ch of projectObj.characters) {
             const characterName = ch.name || ch.id || uid('char');
-            const directions = {};
-            if (ch && ch.directions) {
-              for (const [dir, data] of Object.entries(ch.directions)) {
-                const frames = [];
-                if (Array.isArray(data.frames)) {
-                  for (const f of data.frames) {
-                    // Se è un frame specchiato (ha proprietà mirror), salva solo il riferimento
-                    if (f && typeof f === 'object' && f.mirror && typeof f.mirror === 'string') {
-                      frames.push({ mirror: f.mirror });
-                    } else {
-                      // Frame normale: carica l'immagine
-                      const img = await createImageFromDataUrl(f, projectId);
-                      if (img) {
-                        frames.push(img);
-                        // Se è un assetId, registra nella mappa con subfolder
-                        if (f && typeof f === 'string' && f.startsWith('asset:')) {
-                          const assetId = f.replace('asset:', '');
-                          const characterSubfolder = `characters/${characterName}`;
-                          imageAssetMap.set(img, { assetId, type: 'character', projectId, subfolder: characterSubfolder });
-                        }
-                      }
-                    }
-                  }
+            const directions = await loadCharacterDirectionsFromData(ch.directions, projectId, characterName);
+            const animations = {};
+            if (ch.animations && typeof ch.animations === 'object') {
+              for (const [animName, animData] of Object.entries(ch.animations)) {
+                if (animName && animData) {
+                  animations[animName] = {
+                    directions: await loadCharacterDirectionsFromData(animData.directions, projectId, characterName)
+                  };
                 }
-                directions[dir] = { fps: Number(data.fps) || 8, frames: frames };
               }
             }
-            const charData = { directions, currentFrame: 0 };
+            const charData = { directions, animations, currentFrame: 0 };
             // Load pivot if it exists
             if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
               charData.pivotX = Number(ch.pivotX) || 0;
@@ -14676,11 +14839,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               const characterElement = document.createElement('div');
               characterElement.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
               
-              // Conta i frame totali per questo character
+              // Conta i frame totali per questo character (walking + animazioni custom)
               let totalFrames = 0;
-              if (directions && Object.keys(directions).length > 0) {
-                totalFrames = Object.values(directions).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
-              }
+              const countDirFrames = (dirs) => {
+                if (!dirs) return 0;
+                return Object.values(dirs).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
+              };
+              totalFrames = countDirFrames(directions);
+              Object.values(animations).forEach(anim => {
+                totalFrames += countDirFrames(anim.directions);
+              });
               
               characterElement.innerHTML = `
                 <div>

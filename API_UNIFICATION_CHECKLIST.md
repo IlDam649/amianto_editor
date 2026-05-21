@@ -4,7 +4,7 @@
 
 **Stato (maggio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Gli script usano `getScriptApiBindings()` + `buildScriptExecutor()`; gli handler eseguono in `with (scriptScope)` via `buildHandlerExecutionScope()` / `runHandlerWithExecutionScope()`. `sandboxApi` e `gameInventory` editor sono stati rimossi da `main.js`.
 
-**Residuo:** test manuali Fase E; sync inventario in `UPDATE_CONTEXT`; documentazione allineata ovunque.
+**Residuo:** test manuali Fase E (incluso Script 4b `play_character_animation`); sync inventario in `UPDATE_CONTEXT`.
 
 ---
 
@@ -86,7 +86,35 @@ Legenda azione:
 | `walk_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
 | `set_character_direction` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
 | `animate_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
+| `play_character_animation` | ❌ (hints ✅) | ✅ | ✅ | ❌ | **Implementato** — `GameAPI.play_character_animation`; coda comandi su `window` come `walk_character` |
 | `enableObject` / `disableObject` | ❌ | ✅ | ❌ | ✅ | Documentare o unificare con `set_object_visible` |
+
+---
+
+## Animazioni personaggi — editor ↔ runtime
+
+### Editor (`index.html` + `main.js`)
+- **Walking (standard):** `character.directions` — 8 direzioni, frame, FPS, mirror.
+- **Custom:** `character.animations[nome].directions` — stessa struttura; nome scelto dall’utente (non usare `walking`).
+- UI: selettore Animation, pulsanti **+** / **−**, serializzazione in `serializeCharacters()`.
+
+### Runtime (`runtime.js`)
+- Caricamento: `loadCharacterDefinitions()` → `charDef.directions` + `charDef.animations`.
+- Preload asset: frame in `directions` e in ogni `animations[*].directions`.
+- Game loop: se `character.playingAnimation`, avanza frame da `animations[nome]`; al termine torna idle walking.
+- Script: `play_character_animation(idOrName, animationName, direction, waitForCompletion?)`.
+
+### Esempio script (Fase E)
+
+```javascript
+async function on_object_click(objectId, x, y) {
+  await play_character_animation("Hero", "wave", "south");
+  show_message("Done!");
+}
+```
+
+- [ ] Animazione visibile; messaggio dopo il ciclo
+- [ ] `walk_character` interrompe animazione custom in corso
 
 ---
 
@@ -169,6 +197,7 @@ const SCRIPT_API_BINDINGS = [
   // ... tutte le API pubbliche ...
   { name: 'add_to_inventory', fn: () => GameAPI.add_to_inventory.bind(GameAPI) },
   { name: 'spawn_character', fn: () => GameAPI.spawn_character.bind(GameAPI) },
+  { name: 'play_character_animation', fn: () => GameAPI.play_character_animation.bind(GameAPI) },
   // handler names NON vanno qui — gestiti a parte come ora
 ];
 
@@ -424,6 +453,20 @@ async function on_game_start() {
 ```
 
 - [ ] Movimento visibile; messaggio dopo walk
+
+### Script 4b — Animazione custom
+
+Prerequisito: in editor, character `Eroe` (o `Hero`) con animazione custom `wave` e frame per `south`.
+
+```javascript
+async function on_hotspot_click(hotspotId) {
+  await play_character_animation("Eroe", "wave", "south");
+  show_message("Animazione finita");
+}
+```
+
+- [ ] Ciclo `wave` visibile; posa idle walking dopo
+- [ ] Con `await`, `show_message` solo a fine animazione
 
 ### Script 5 — Stanza
 

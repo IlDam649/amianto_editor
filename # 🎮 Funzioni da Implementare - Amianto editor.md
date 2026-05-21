@@ -219,14 +219,19 @@ get_connected_rooms(roomId)          // Ottieni stanze collegate
 // ✅ Runtime
 spawn_character(characterName, x, y, direction, characterId)
 move_character(characterIdOrName, x, y)
-walk_character(characterIdOrName, x, y)  // Pathfinding; coda comandi su window
+walk_character(characterIdOrName, x, y)  // Pathfinding; coda comandi su window; wait opzionale
 set_character_direction(characterIdOrName, direction)
-animate_character(characterIdOrName, enabled)
+animate_character(characterIdOrName, enabled)  // Hook (uso futuro)
+play_character_animation(characterIdOrName, animationName, direction, wait?)  // Animazione custom (editor → animations.{nome}); un ciclo; Promise se wait
+
+// ✅ Editor (non è API script, ma dati per play_character_animation)
+// Tab Characters → Animation → "+" → nome (es. "wave") → frame per 8 direzioni
+// Salvato in progetto: characters[].animations.wave.directions
 
 // ❌ Backlog
 despawn_character(characterId)       // Rimuovi personaggio
 get_character_position(characterId)  // Ottieni posizione personaggio
-get_character_animation(characterId) // Ottieni animazione personaggio
+get_character_animation(characterId) // Ottieni nome animazione in corso (stato runtime)
 set_character_visible(characterId, visible) // Mostra/nascondi personaggio
 get_character_health(characterId)    // Ottieni salute personaggio
 set_character_health(characterId, health) // Imposta salute personaggio

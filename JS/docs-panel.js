@@ -21,7 +21,7 @@
     <ol>
       <li>Log in and open <strong>Projects</strong> → create or select a project.</li>
       <li><strong>Rooms</strong> — create a room, add background, scene objects, walkable polygon, hotspots.</li>
-      <li><strong>Characters</strong> — create the player, upload 8-direction animation frames, set start room/position in game settings.</li>
+      <li><strong>Characters</strong> — create the player, upload <strong>walking</strong> frames (8 directions), add optional <strong>custom animations</strong> (e.g. <code>wave</code>), set start room/position.</li>
       <li><strong>Inventory</strong> — define items (keys, tools, etc.).</li>
       <li><strong>Scripts</strong> — write <code>on_game_start</code>, attach scripts to objects/hotspots/GUI.</li>
       <li><strong>PLAY</strong> — Start Test to run the game in the embedded runtime.</li>
@@ -42,7 +42,7 @@ function on_game_start() {
         <tr><td><strong>Resources</strong></td><td>Central image/sound library (Supabase). Import once, pick assets everywhere.</td></tr>
         <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, scene objects, walkable area, hotspots.</td></tr>
         <tr><td><strong>Inventory</strong></td><td>Inventory items and slot grid for the player UI.</td></tr>
-        <tr><td><strong>Characters</strong></td><td>Characters, animations (8 directions), preview on canvas.</td></tr>
+        <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
         <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), buttons with optional scripts.</td></tr>
         <tr><td><strong>Scripts</strong></td><td>CodeMirror editor, script tree, game variables, Run/Stop sandbox.</td></tr>
         <tr><td><strong>Docs</strong></td><td>This guide.</td></tr>
@@ -70,7 +70,9 @@ function on_game_start() {
     <h3>Resources</h3>
     <p>Import images to the shared library, then use the resource picker in Rooms, GUI, Characters, etc. Keeps paths consistent and reduces duplicate uploads.</p>
     <h3>Characters</h3>
-    <p>Upload frame sequences per direction (N, NE, E, SE, S, SW, W, NW). Set FPS for preview. Configure <strong>game start</strong>: starting character, room, and coordinates.</p>
+    <p><strong>Walking (standard):</strong> select animation <em>Walking</em>, upload frame sequences per direction (north, northeast, east, southeast, south, southwest, west, northwest). Frame 0 is the idle pose when the character is not moving; frames 1+ play during <code>walk_character</code>.</p>
+    <p><strong>Custom animations:</strong> in the <strong>Animation</strong> dropdown choose <strong>+</strong> and enter a name (e.g. <code>wave</code>, <code>talk</code> — do not use <code>walking</code>, it is reserved). Assign frames per direction the same way as walking. Play them in scripts with <code>play_character_animation</code>.</p>
+    <p>Set FPS for preview. Configure <strong>game start</strong>: starting character, room, and coordinates.</p>
     <h3>GUI &amp; cursors</h3>
     <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Contextual cursors change when hovering hotspots, objects, or characters.</p>
   </section>
@@ -172,12 +174,14 @@ if (Game.getVar("door_open")) {
 
     <h3>Characters</h3>
     <ul>
-      <li><code>spawn_character(name, x, y, direction?, id?)</code></li>
-      <li><code>move_character(idOrName, x, y)</code> — instant</li>
-      <li><code>walk_character(idOrName, x, y, wait?)</code> — pathfinding; returns Promise if <code>wait</code> is true</li>
-      <li><code>set_character_direction(idOrName, direction)</code> — 0–7 (8 directions)</li>
-      <li><code>animate_character(idOrName, enabled?)</code></li>
+      <li><code>spawn_character(name, x, y, direction?, id?)</code> — spawns in current room; returns character id</li>
+      <li><code>move_character(idOrName, x, y)</code> — instant teleport</li>
+      <li><code>walk_character(idOrName, x, y, wait?)</code> — pathfinding on walkable area; <code>wait</code> default true → Promise; stops custom animation if playing</li>
+      <li><code>set_character_direction(idOrName, direction)</code> — facing: <code>north</code>, <code>northeast</code>, <code>east</code>, <code>southeast</code>, <code>south</code>, <code>southwest</code>, <code>west</code>, <code>northwest</code></li>
+      <li><code>play_character_animation(idOrName, animationName, direction, wait?)</code> — plays one full cycle of a <strong>custom</strong> animation defined in the editor (<strong>Characters</strong> → Animation → <strong>+</strong>). Uses <code>characterDefinitions.animations[animationName]</code>. Stops movement; when finished returns to walking idle. <code>wait</code> default true → blocks input until done (like <code>walk_character</code>).</li>
+      <li><code>animate_character(idOrName, enabled?)</code> — reserved hook</li>
     </ul>
+    <p><strong>Directions</strong> are string names, not numbers. <strong>Custom animation names</strong> must match the label you created in the Characters tab (case-sensitive).</p>
 
     <h3>Variables</h3>
     <ul>
@@ -233,6 +237,14 @@ function on_object_click(object_id, x, y) {
   walk_character(playerId, 320, 240, true).then(function() {
     show_message("Hello, traveler!");
   });
+}</code></pre>
+
+    <h3>5b — Custom animation (e.g. wave)</h3>
+    <p>Requires a custom animation named <code>wave</code> with frames for the chosen direction, created under <strong>Characters</strong> → Animation → <strong>+</strong>.</p>
+    <pre class="docs-code"><code>async function on_hotspot_click(hotspot_id) {
+  if (hotspot_id !== "npc_greet") return;
+  await play_character_animation("Hero", "wave", "south");
+  show_message("The hero waves hello!");
 }</code></pre>
 
     <h3>6 — Spawn temporary object</h3>
@@ -293,6 +305,7 @@ function on_gui_click(button_id, x, y) {
       <li>If a tab is disabled, open or create a project from <strong>Projects</strong> first (Docs is always open).</li>
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
+      <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
       <li>Features on roadmap (not in runtime yet): dialogue system, audio API, save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
     </ul>
   </section>

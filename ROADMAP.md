@@ -108,7 +108,7 @@
 - **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
 - **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
 - **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
-- **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`
+- **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (animazioni custom da editor)
 - Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
 
 #### ✅ **API runtime (Fase B completata)**
@@ -283,7 +283,7 @@
 **✅ COMPLETATO - Runtime core (rendering, click, stanze, personaggi)**:
 - ✅ Eventi (6): incluso `on_gui_click`
 - ✅ API base runtime: `print`, `show_message`, `move_object`, `load_room`, variabili (`getVariable`/`setVariable`)
-- ✅ Personaggi: `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`
+- ✅ Personaggi: `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation`
 
 **✅ COMPLETATO - Unificazione API scripting** (vedi [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
 - ✅ **Fase A:** `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
@@ -348,6 +348,7 @@
   - ✅ Character scaling dinamico basato su posizione Y (`calculateCharacterScale`)
   - ✅ Sub-pixel rendering per movimento fluido (renderX, renderY)
   - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
+  - ✅ Animazioni custom nominate in editor (`animations.{nome}`) + API `play_character_animation`
   - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
   - ✅ Gestione frame specchiati (Canvas) e frame normali (Image)
   - ✅ Placeholder rendering quando frame non disponibili
@@ -453,8 +454,9 @@
 
 #### 3.3 Sistema Personaggi Avanzato
 - **Stato**: 🟡 Parzialmente implementato
-- **✅ Già in runtime:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character` (+ pathfinding player)
-- **❌ Mancante:** AI (patrol, follow), animazioni per stato talk, NPC scheduling
+- **✅ Già in runtime:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (+ pathfinding player; animazioni custom nominate in editor)
+- **✅ Editor:** animazioni custom con nome (`animations.wave`, ecc.) e 8 direzioni
+- **❌ Mancante:** AI (patrol, follow), loop/repeat animazione da script, NPC scheduling
 - **Tempo stimato**: 5-7 giorni (solo parti AI/stato)
 
 #### 3.4 Sistema Salvataggi Gioco
