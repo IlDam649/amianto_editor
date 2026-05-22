@@ -6214,6 +6214,54 @@ window.selectRoom = function(roomId) {
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
 
+  /** Chiave canonica script da scope + target (dropdown / albero). */
+  function normalizeScriptKey(scope, target) {
+    const s = String(scope || '');
+    let t = String(target == null ? '' : target).trim();
+    if (s === 'Global') return 'Global:main';
+    if (s === 'Hotspot') {
+      if (t.startsWith('hotspot:')) t = t.slice('hotspot:'.length);
+      return `Hotspot:${t}`;
+    }
+    return `${s}:${t}`;
+  }
+
+  /** Risolve la chiave effettiva (attachment custom o chiave standard). */
+  function resolveScriptKey(scope, target) {
+    const defaultKey = normalizeScriptKey(scope, target);
+    if (scope === 'Room' && roomScripts.has(target)) return roomScripts.get(target);
+    if (scope === 'Object' && objectScripts.has(target)) return objectScripts.get(target);
+    if (scope === 'Character' && characterScripts.has(target)) return characterScripts.get(target);
+    if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
+      return guiScripts.get(target);
+    }
+    return defaultKey;
+  }
+
+  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id → Hotspot:id). */
+  function migrateLegacyScriptKey(key) {
+    const k = String(key || '');
+    const m = k.match(/^Hotspot:hotspot:(.+)$/);
+    if (!m) return k;
+    const canonical = `Hotspot:${m[1]}`;
+    const legacyContent = jsScripts.get(k);
+    const legacyLs = (() => { try { return localStorage.getItem(`script-${k}`); } catch (_) { return null; } })();
+    const content = legacyContent !== undefined ? legacyContent : legacyLs;
+    if (content !== null && content !== undefined) {
+      if (!jsScripts.has(canonical)) jsScripts.set(canonical, content);
+      try { localStorage.setItem(`script-${canonical}`, content); } catch (_) {}
+      jsScripts.delete(k);
+      try { localStorage.removeItem(`script-${k}`); } catch (_) {}
+    }
+    return canonical;
+  }
+
+  function getScriptContent(scriptKey) {
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!key) return '';
+    return jsScripts.get(key) || (() => { try { return localStorage.getItem(`script-${key}`); } catch (_) { return ''; } })() || '';
+  }
+
   // Event conditions storage
   const objectEventConditions = new Map(); // sceneObjectId -> { onClick: [conditions], onUse: [conditions], ... }
   const hotspotEventConditions = new Map(); // hotspotId -> { onClick: [conditions], onUse: [conditions], ... }
@@ -6478,51 +6526,10 @@ window.selectRoom = function(roomId) {
     return handlers;
   }
 
-  // Helper function per salvare il contenuto dello script corrente
-  function saveCurrentScriptIfNeeded() {
-    if (!currentScriptName) return;
-    
-    ensureLargeScriptEditor();
-    ensureScriptEditor();
-    let currentContent = '';
-    if (largeCodeMirrorEditor) {
-      currentContent = largeCodeMirrorEditor.getValue();
-    } else if (codeMirrorEditor) {
-      currentContent = codeMirrorEditor.getValue();
-    } else {
-      const taLarge = document.getElementById('script-editor-large');
-      const taSmall = document.getElementById('script-editor');
-      currentContent = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
-    }
-    
-    // Salva il contenuto corrente
-    const currentKey = String(currentScriptName);
-    if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
-      jsScripts.set(currentKey, currentContent);
-      try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
-      
-      // Se è uno script hotspot, salva anche nell'hotspot
-      if (currentKey.startsWith('Hotspot:')) {
-        const hotspotId = currentKey.replace('Hotspot:', '');
-        rooms.forEach((room, roomId) => {
-          if (room.hotspots && Array.isArray(room.hotspots)) {
-            const hotspot = room.hotspots.find(h => h.id === hotspotId);
-            if (hotspot) {
-              if (!hotspot.scripts) hotspot.scripts = {};
-              hotspot.scripts.onClick = {
-                code: String(currentContent),
-                enabled: true
-              };
-            }
-          }
-        });
-      }
-    }
-  }
-
   function rebuildScriptsTree() {
     const tree = document.getElementById('scripts-tree');
     if (!tree) return;
+    Array.from(jsScripts.keys()).forEach(k => migrateLegacyScriptKey(k));
     tree.innerHTML = '';
 
     const container = document.createElement('div');
@@ -6603,7 +6610,7 @@ window.selectRoom = function(roomId) {
       
       if (!hotspot) {
         // Anche se l'hotspot non viene trovato, carica lo script se esiste
-        const content = jsScripts.get(hotspotKey) || localStorage.getItem(`script-${hotspotKey}`) || '';
+        const content = getScriptContent(hotspotKey);
         if (content) {
           ensureLargeScriptEditor();
           ensureScriptEditor();
@@ -6640,10 +6647,10 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Carica il contenuto dall'hotspot (sempre la fonte più aggiornata)
-      const content = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code) 
-        ? String(hotspot.scripts.onClick.code) 
-        : '';
+      const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
+        ? String(hotspot.scripts.onClick.code) : '';
+      const fromStore = getScriptContent(hotspotKey);
+      const content = fromHotspot.trim() ? fromHotspot : fromStore;
       
       ensureLargeScriptEditor();
       ensureScriptEditor();
@@ -6687,7 +6694,7 @@ window.selectRoom = function(roomId) {
 
     // Global (single)
     const globalKey = 'Global:main';
-    let globalContent = jsScripts.get(globalKey) || localStorage.getItem(`script-${globalKey}`) || '';
+    let globalContent = getScriptContent(globalKey);
     const globalHandlers = extractHandlersFromScript(globalContent);
     const globalHandlerNames = Array.from(globalHandlers).sort();
 
@@ -6725,14 +6732,10 @@ window.selectRoom = function(roomId) {
       const scriptsInRoom = [];
       
       // Script della stanza
-      const roomKey = `Room:${roomId}`;
-      const roomScriptName = roomScripts.get(roomId);
-      // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
-      // Altrimenti usa la chiave standard Room:${roomId}
-      const scriptKeyToUse = roomScriptName || roomKey;
-      const roomContent = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
+      const scriptKeyToUse = resolveScriptKey('Room', roomId);
+      const roomContent = getScriptContent(scriptKeyToUse);
       // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
-      if (roomScriptName || roomContent.trim().length > 0) {
+      if (roomScripts.has(roomId) || roomContent.trim().length > 0) {
         const handlers = extractHandlersFromScript(roomContent);
         const handlerNames = Array.from(handlers).sort();
         scriptsInRoom.push({
@@ -6748,14 +6751,9 @@ window.selectRoom = function(roomId) {
       // Oggetti nella stanza con script
       if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
         room.sceneObjects.forEach(obj => {
-          const objKey = `Object:${obj.id}`;
-          const objScriptName = objectScripts.get(obj.id);
-          // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
-          // Altrimenti usa la chiave standard Object:${obj.id}
-          const scriptKeyToUse = objScriptName || objKey;
-          const objContent = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
-          // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
-          if (objScriptName || objContent.trim().length > 0) {
+          const scriptKeyToUse = resolveScriptKey('Object', obj.id);
+          const objContent = getScriptContent(scriptKeyToUse);
+          if (objectScripts.has(obj.id) || objContent.trim().length > 0) {
             const handlers = extractHandlersFromScript(objContent);
             const handlerNames = Array.from(handlers).sort();
             scriptsInRoom.push({
@@ -6773,20 +6771,24 @@ window.selectRoom = function(roomId) {
       // Hotspot nella stanza con script
       if (room.hotspots && Array.isArray(room.hotspots)) {
         room.hotspots.forEach(hotspot => {
-          if (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code) {
-            const hotspotCode = hotspot.scripts.onClick.code;
-            const handlers = extractHandlersFromScript(hotspotCode);
-            const handlerNames = Array.from(handlers).sort();
-            scriptsInRoom.push({
-              type: 'hotspot',
-              scope: 'Hotspot',
-              target: hotspot.id,
-              roomId: roomId,
-              label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
-              handlers: handlerNames,
-              hasContent: hotspotCode.trim().length > 0
-            });
-          }
+          const hotspotKey = normalizeScriptKey('Hotspot', hotspot.id);
+          const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
+            ? String(hotspot.scripts.onClick.code) : '';
+          const fromStore = getScriptContent(hotspotKey);
+          const hotspotCode = fromHotspot.trim() ? fromHotspot : fromStore;
+          const linkedName = hotspot._meta && hotspot._meta.linkedScriptName;
+          if (!hotspotCode.trim() && !linkedName) return;
+          const handlers = extractHandlersFromScript(hotspotCode);
+          const handlerNames = Array.from(handlers).sort();
+          scriptsInRoom.push({
+            type: 'hotspot',
+            scope: 'Hotspot',
+            target: hotspot.id,
+            roomId: roomId,
+            label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
+            handlers: handlerNames,
+            hasContent: hotspotCode.trim().length > 0
+          });
         });
       }
       
@@ -6846,14 +6848,9 @@ window.selectRoom = function(roomId) {
     // GUI attached
     const guiItems = [];
     (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
-      const guiScriptName = (typeof guiScripts !== 'undefined' && guiScripts.get) ? guiScripts.get(b.id) : null;
-      const defaultKey = `GUI:${b.id}`;
-      // Se c'è un'associazione tramite attachments, usa il nome dello script dalla mappa
-      // Altrimenti usa la chiave standard GUI:${b.id}
-      const key = guiScriptName || defaultKey;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
-      if (!guiScriptName && !content.trim()) return;
+      const key = resolveScriptKey('GUI', b.id);
+      const content = getScriptContent(key);
+      if (!guiScripts.has(b.id) && !content.trim()) return;
       const handlers = extractHandlersFromScript(content);
       const handlerNames = Array.from(handlers).sort();
       guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
@@ -6906,14 +6903,14 @@ window.selectRoom = function(roomId) {
     }
     
     // Salva il contenuto corrente
-    const currentKey = String(currentScriptName);
+    const currentKey = migrateLegacyScriptKey(String(currentScriptName));
+    if (currentKey !== currentScriptName) currentScriptName = currentKey;
     if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
       jsScripts.set(currentKey, currentContent);
       try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
       
-      // Se è uno script hotspot, salva anche nell'hotspot
       if (currentKey.startsWith('Hotspot:')) {
-        const hotspotId = currentKey.replace('Hotspot:', '');
+        const hotspotId = currentKey.slice('Hotspot:'.length);
         rooms.forEach((room, roomId) => {
           if (room.hotspots && Array.isArray(room.hotspots)) {
             const hotspot = room.hotspots.find(h => h.id === hotspotId);
@@ -6953,19 +6950,8 @@ window.selectRoom = function(roomId) {
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
-    const key = `${scope}:${target}`;
-    // Verifica se c'è un'associazione tramite attachments e usa il nome dello script dalla mappa
-    let scriptKeyToUse = key;
-    if (scope === 'Room' && roomScripts.has(target)) {
-      scriptKeyToUse = roomScripts.get(target);
-    } else if (scope === 'Object' && objectScripts.has(target)) {
-      scriptKeyToUse = objectScripts.get(target);
-    } else if (scope === 'Character' && characterScripts.has(target)) {
-      scriptKeyToUse = characterScripts.get(target);
-    } else if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
-      scriptKeyToUse = guiScripts.get(target);
-    }
-    let content = jsScripts.get(scriptKeyToUse) || localStorage.getItem(`script-${scriptKeyToUse}`) || '';
+    const scriptKeyToUse = migrateLegacyScriptKey(resolveScriptKey(scope, target));
+    let content = getScriptContent(scriptKeyToUse);
     // Permetti di aprire script vuoti (potrebbero essere appena creati)
     // Se lo script non esiste affatto, crealo vuoto
     if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
@@ -7059,8 +7045,8 @@ window.selectRoom = function(roomId) {
     const handlerId = eventSel.value || 'on_game_start';
     const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
 
-    const key = `${scope}:${target}`;
-    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+    const key = migrateLegacyScriptKey(normalizeScriptKey(scope, target));
+    let content = getScriptContent(key);
 
     // Ensure header
     if (!content) {
@@ -7103,8 +7089,7 @@ window.selectRoom = function(roomId) {
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
     } else if (scope === 'Hotspot') {
-      // Per hotspot, estrai l'ID dall'opzione (formato: "hotspot:${hotspotId}")
-      const hotspotId = target.startsWith('hotspot:') ? target.replace('hotspot:', '') : target;
+      const hotspotId = key.slice('Hotspot:'.length);
       // Salva direttamente nell'hotspot
       let hotspotFound = false;
       rooms.forEach((room, roomId) => {
@@ -7434,15 +7419,14 @@ window.selectRoom = function(roomId) {
       const taSmall = document.getElementById('script-editor');
       content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
     }
-    // Determine current key (scope/target) or fallback to legacy selector
-    let key = currentScriptName && String(currentScriptName);
+    let key = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!key) {
       const selector = document.getElementById('script-selector');
-      key = (selector && selector.value) || 'new-script';
+      key = migrateLegacyScriptKey((selector && selector.value) || 'new-script');
     }
+    if (key !== currentScriptName) currentScriptName = key;
 
-    // ⚠️ SINCRONIZZAZIONE AGGRESSIVA: Recupera il vecchio contenuto dello script
-    const oldContent = jsScripts.get(key) || '';
+    const oldContent = getScriptContent(key);
     
     // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
     if (key.startsWith('Hotspot:')) {
@@ -7506,100 +7490,39 @@ window.selectRoom = function(roomId) {
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
     
-    // ⚠️ SINCRONIZZAZIONE AGGRESSIVA: Se il contenuto è cambiato e non è vuoto, sincronizza tutti gli hotspot
-    // Questo garantisce che gli hotspot siano sempre aggiornati quando uno script viene modificato
+    // Sincronizza solo hotspot collegati esplicitamente a questo script (mai per confronto sul codice)
     if (content.trim() !== '') {
-      let syncedCount = 0;
-      const syncedHotspotIds = new Set(); // Traccia hotspot già sincronizzati per evitare duplicati
-      const contentNormalized = content.trim();
-      const oldContentNormalized = oldContent.trim();
-      
-      // Funzione helper per aggiornare un hotspot
-      const updateHotspotCode = (hotspot, hotspotId, source) => {
-        if (syncedHotspotIds.has(hotspotId)) return false; // Già sincronizzato
-        
+      const hotspotIdFromKey = key.startsWith('Hotspot:') ? key.slice('Hotspot:'.length) : null;
+      const syncedHotspotIds = new Set();
+
+      const syncHotspotIfLinked = (hotspot, source) => {
+        if (!hotspot || syncedHotspotIds.has(hotspot.id)) return false;
+        const linkedRaw = hotspot._meta && hotspot._meta.linkedScriptName;
+        const linked = linkedRaw ? migrateLegacyScriptKey(String(linkedRaw)) : '';
+        const isDirect = hotspotIdFromKey && hotspot.id === hotspotIdFromKey;
+        const isLinked = linked === key;
+        if (!isDirect && !isLinked) return false;
+
         if (!hotspot.scripts) hotspot.scripts = {};
-        if (!hotspot.scripts.onClick) {
-          hotspot.scripts.onClick = { code: '', enabled: false };
-        }
-        
-        const hotspotCode = String(hotspot.scripts.onClick.code || '');
-        const hotspotCodeNormalized = hotspotCode.trim();
-        
-        // ⚠️ SINCRONIZZAZIONE INTELLIGENTE: Usa _meta.linkedScriptName se disponibile, altrimenti confronta codice
-        // 1. PRIORITÀ: Se l'hotspot ha _meta.linkedScriptName che corrisponde a key, aggiorna sempre
-        // 2. FALLBACK: Se il codice dell'hotspot corrisponde al vecchio contenuto dello script (match esatto)
-        // 3. FALLBACK: Se il vecchio contenuto è vuoto e l'hotspot ha codice (caso edge: script appena creato)
-        // 4. FALLBACK: Se il codice dell'hotspot è vuoto (hotspot senza script, potrebbe essere un nuovo collegamento)
-        const hasLinkedScriptName = hotspot._meta && hotspot._meta.linkedScriptName === key;
-        const shouldUpdate = 
-          hasLinkedScriptName || // Match per nome script collegato (più affidabile)
-          hotspotCodeNormalized === oldContentNormalized || // Match esatto con vecchio contenuto
-          (oldContentNormalized === '' && hotspotCodeNormalized !== '') || // Script appena creato
-          hotspotCodeNormalized === ''; // Hotspot senza codice (nuovo collegamento)
-        
-        if (shouldUpdate) {
-          hotspot.scripts.onClick = {
-            code: String(content),
-            enabled: true // Auto-enable se c'è codice
-          };
-          
-          // Aggiorna anche il riferimento allo script se non presente
-          if (!hotspot._meta) hotspot._meta = {};
-          hotspot._meta.linkedScriptName = key;
-          
-          syncedHotspotIds.add(hotspotId);
-          const syncReason = hasLinkedScriptName ? 'linked-script-name' : 
-                            (hotspotCodeNormalized === oldContentNormalized ? 'code-match' : 
-                            (oldContentNormalized === '' ? 'new-script' : 'empty-hotspot'));
-          console.log(`[saveScript] [SYNC] Hotspot ${hotspotId} (${hotspot.name || 'unnamed'}) sincronizzato con script "${key}" [${source}] reason:${syncReason}`);
-          return true;
-        }
-        
-        return false;
+        hotspot.scripts.onClick = { code: String(content), enabled: true };
+        if (!hotspot._meta) hotspot._meta = {};
+        hotspot._meta.linkedScriptName = key;
+        syncedHotspotIds.add(hotspot.id);
+        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} ← "${key}" [${source}]`);
+        return true;
       };
-      
-      // Scansiona tutti gli hotspot in tutte le room
+
       rooms.forEach((room, roomId) => {
-        if (room.hotspots && Array.isArray(room.hotspots)) {
-          room.hotspots.forEach(hotspot => {
-            if (updateHotspotCode(hotspot, hotspot.id, `room:${roomId}`)) {
-              syncedCount++;
-              
-              // Aggiorna anche l'hotspot globale (se esiste)
-              const globalHotspot = hotspots.find(h => h.id === hotspot.id);
-              if (globalHotspot) {
-                updateHotspotCode(globalHotspot, hotspot.id, 'global');
-              }
-            }
-          });
-        }
-      });
-      
-      // Scansiona anche gli hotspot globali (hotspots array) per sicurezza
-      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
-        hotspots.forEach(hotspot => {
-          if (updateHotspotCode(hotspot, hotspot.id, 'global-only')) {
-            syncedCount++;
-            
-            // Aggiorna anche nella room corrispondente (se esiste)
-            rooms.forEach((room) => {
-              if (room.hotspots && Array.isArray(room.hotspots)) {
-                const roomHotspot = room.hotspots.find(h => h.id === hotspot.id);
-                if (roomHotspot) {
-                  updateHotspotCode(roomHotspot, hotspot.id, `room:${room.id}`);
-                }
-              }
-            });
+        if (!room.hotspots) return;
+        room.hotspots.forEach(hotspot => {
+          if (syncHotspotIfLinked(hotspot, `room:${roomId}`)) {
+            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspot.id) : null;
+            if (globalHotspot) syncHotspotIfLinked(globalHotspot, 'global');
           }
         });
-      }
-      
-      if (syncedCount > 0) {
-        console.log(`[saveScript] [SYNC] ✅ ${syncedCount} hotspot sincronizzati con script "${key}"`);
-      } else if (oldContentNormalized !== contentNormalized) {
-        // Se il contenuto è cambiato ma nessun hotspot è stato sincronizzato, potrebbe essere un problema
-        console.log(`[saveScript] [SYNC] ⚠️ Script "${key}" modificato ma nessun hotspot sincronizzato (potrebbe essere normale se non ci sono hotspot collegati)`);
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, 'global-only'));
       }
     }
     
@@ -7645,11 +7568,10 @@ window.selectRoom = function(roomId) {
   };
 
   window.deleteScript = function() {
-    // Determina lo script corrente
-    let scriptName = currentScriptName && String(currentScriptName);
+    let scriptName = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!scriptName) {
       const selector = document.getElementById('script-selector');
-      scriptName = (selector && selector.value) || '';
+      scriptName = migrateLegacyScriptKey((selector && selector.value) || '');
     }
     
     if (!scriptName || !scriptName.trim()) {
@@ -7826,14 +7748,17 @@ window.selectRoom = function(roomId) {
   window.loadScript = function(scriptName) {
     if (!scriptName) return;
     
-    // Salva il contenuto dello script corrente prima di caricare un nuovo script
     saveCurrentScriptIfNeeded();
     
-    const savedScript = jsScripts.get(scriptName) || localStorage.getItem(`script-${scriptName}`);
-    if (savedScript) {
+    const canonicalName = migrateLegacyScriptKey(String(scriptName));
+    const scriptExists = jsScripts.has(canonicalName) || (() => {
+      try { return localStorage.getItem(`script-${canonicalName}`) != null; } catch (_) { return false; }
+    })();
+    if (scriptExists) {
+      const savedScript = getScriptContent(canonicalName);
       ensureLargeScriptEditor();
       ensureScriptEditor();
-      currentScriptName = scriptName;
+      currentScriptName = canonicalName;
       if (largeCodeMirrorEditor) {
         largeCodeMirrorEditor.setValue(savedScript);
         // Refresh per assicurarsi che l'editor si aggiorni visivamente
@@ -8235,7 +8160,7 @@ window.selectRoom = function(roomId) {
 
   window.attachScriptToHotspot = function() {
     const selector = document.getElementById('script-selector');
-    const scriptName = selector.value;
+    const scriptName = migrateLegacyScriptKey(selector.value);
     const targetSel = document.getElementById('script-target');
     const targetValue = targetSel.value;
     
@@ -8258,7 +8183,7 @@ window.selectRoom = function(roomId) {
       return;
     }
     
-    const scriptContent = jsScripts.get(scriptName) || '';
+    const scriptContent = getScriptContent(migrateLegacyScriptKey(scriptName));
     
     // DEBUG: Verifica che il contenuto dello script sia disponibile
     if (!scriptContent || scriptContent.trim() === '') {
@@ -15060,11 +14985,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (projectObj.scripts && typeof projectObj.scripts === 'object') {
           Object.entries(projectObj.scripts).forEach(([name, content]) => {
             if (!name) return;
-            jsScripts.set(String(name), String(content || ''));
-            localStorage.setItem(`script-${name}`, String(content || ''));
+            const canonical = migrateLegacyScriptKey(String(name));
+            jsScripts.set(canonical, String(content || ''));
+            localStorage.setItem(`script-${canonical}`, String(content || ''));
             if (selector) {
               const o = document.createElement('option');
-              o.value = name; o.textContent = name;
+              o.value = canonical; o.textContent = canonical;
               selector.appendChild(o);
             }
           });

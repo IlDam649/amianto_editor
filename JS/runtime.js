@@ -1864,6 +1864,19 @@
     return list;
   }
 
+  /** Disegna l'immagine nello slot mantenendo le proporzioni (fit contain, centrata). */
+  function drawImageContainedInRect(ctx, img, x, y, maxW, maxH) {
+    const imgW = img.naturalWidth || img.width;
+    const imgH = img.naturalHeight || img.height;
+    if (imgW <= 0 || imgH <= 0) return;
+    const scale = Math.min(maxW / imgW, maxH / imgH);
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+    const drawX = x + (maxW - drawW) / 2;
+    const drawY = y + (maxH - drawH) / 2;
+    ctx.drawImage(img, drawX, drawY, drawW, drawH);
+  }
+
   function renderInventoryPanel(ctx) {
     const inv = gameState.inventory;
     if (!inv || !inv.enabled || !inv.visible) return;
@@ -1884,7 +1897,7 @@
       const img = entry.def.image;
       if (!img.complete || img.naturalWidth <= 0) return;
       try {
-        ctx.drawImage(img, slot.x, slot.y, slot.w, slot.h);
+        drawImageContainedInRect(ctx, img, slot.x, slot.y, slot.w, slot.h);
       } catch (error) {
         log(`[Runtime] Error rendering item inventario: ${error.message}`, 'warning');
       }
