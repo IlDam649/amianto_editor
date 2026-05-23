@@ -1097,18 +1097,18 @@ async function listImagesInFolder(folderPath, displayPrefix = '') {
  * @param {string} projectId
  * @returns {Promise<Array>}
  */
-async function listProjectResources(projectId) {
+async function listProjectResources(projectId, userIdOverride = null) {
   try {
     if (!isSupabaseAvailable()) {
       return [];
     }
 
-    let userId = null;
-    if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+    let userId = userIdOverride || null;
+    if (!userId && window.firebaseAuth && window.firebaseAuth.currentUser) {
       userId = window.firebaseAuth.currentUser.uid;
     }
     if (!userId) {
-      console.warn('[Supabase] Utente non autenticato, impossibile elencare resources');
+      console.warn('[Supabase] userId mancante, impossibile elencare resources');
       return [];
     }
 

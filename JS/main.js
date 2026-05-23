@@ -544,7 +544,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedWalkableVertexIndex = -1;
 
   // Hotspots (multiple polygons per room)
-  // Each hotspot: { id, name, points: [{x,y}], visible: true, script: string }
+  // Each hotspot: { id, name, points: [{x,y}], visible (active/clickable), scripts }
   let hotspots = [];
   let activeHotspotId = null;
   let isDrawingHotspot = false;
@@ -593,6 +593,58 @@ document.addEventListener("DOMContentLoaded", () => {
     lastPanY: 0
   };
 
+  // Letterbox offset to center game viewport in the CSS-sized canvas (rooms / inventory / characters)
+  function getCanvasCenterOffset() {
+    const rect = canvas.getBoundingClientRect();
+    let centerOffsetX = 0;
+    let centerOffsetY = 0;
+    if (rect.width > 0 && rect.height > 0 && canvas.width > 0 && canvas.height > 0) {
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
+      centerOffsetX = cssOffsetX * scaleX;
+      centerOffsetY = cssOffsetY * scaleY;
+    }
+    return { x: centerOffsetX, y: centerOffsetY };
+  }
+
+  function resetEditorViewCentered(options = {}) {
+    const fit = options.fit === true;
+    if (fit) {
+      const container = document.getElementById('canvasContainer');
+      if (container) {
+        const containerWidth = container.clientWidth - 20;
+        const containerHeight = container.clientHeight - 20;
+        const zoomX = containerWidth / gameViewport.width;
+        const zoomY = containerHeight / gameViewport.height;
+        editorState.zoom = Math.min(zoomX, zoomY, 1.0);
+      } else {
+        editorState.zoom = 1.0;
+      }
+    } else if (typeof options.zoom === 'number') {
+      editorState.zoom = options.zoom;
+    } else {
+      editorState.zoom = 1.0;
+    }
+    editorState.panX = 0;
+    editorState.panY = 0;
+    updateEditorDisplay();
+    redraw();
+  }
+
+  // Allinea l'angolo (0,0) del viewport all'angolo visibile in alto a sinistra del canvas
+  function alignEditorViewTopLeft() {
+    editorState.zoom = 1.0;
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+    editorState.panX = -centerOffsetX;
+    editorState.panY = -centerOffsetY;
+    updateEditorDisplay();
+    redraw();
+  }
+
   // Initialize canvas with game viewport size
   function initializeCanvas() {
     canvas.width = gameViewport.width;
@@ -606,7 +658,7 @@ document.addEventListener("DOMContentLoaded", () => {
       bindRoomRefs();
       refreshRoomsSelector();
     }
-    redraw();
+    requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
   }
 
   // ===== Character scaling controls & UI =====
@@ -762,44 +814,21 @@ document.addEventListener("DOMContentLoaded", () => {
     ctx.drawImage(img, offsetX, offsetY, width, height);
   }
 
-  // Convert screen coordinates to world coordinates
+  // Convert screen coordinates to world coordinates (all editor tabs)
   function screenToWorld(screenX, screenY) {
     const rect = canvas.getBoundingClientRect();
     const canvasX = screenX - rect.left;
     const canvasY = screenY - rect.top;
     
-    // Calculate scaling factor between CSS dimensions and internal canvas dimensions
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
-    // Convert CSS coordinates to internal canvas coordinates
     const internalX = canvasX * scaleX;
     const internalY = canvasY * scaleY;
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
     
-    // Calcola l'offset di centratura (stesso calcolo usato in redraw)
-    // Questo offset viene applicato per centrare il contenuto nel canvas visualizzato
-    let centerOffsetX = 0;
-    let centerOffsetY = 0;
-    if (rect.width > 0 && rect.height > 0) {
-      // Calcola le dimensioni del contenuto scalato dopo lo zoom
-      const scaledContentWidth = gameViewport.width * editorState.zoom;
-      const scaledContentHeight = gameViewport.height * editorState.zoom;
-      
-      // Calcola l'offset CSS necessario per centrare il contenuto nel canvas visualizzato
-      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
-      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
-      
-      // Converti l'offset da coordinate CSS a coordinate canvas interne
-      centerOffsetX = cssOffsetX * scaleX;
-      centerOffsetY = cssOffsetY * scaleY;
-    }
-    
-    // Apply inverse transformations (considerando anche l'offset di centratura)
-    // L'ordine inverso delle trasformazioni: prima rimuoviamo lo zoom, poi il pan, poi l'offset di centratura
     const worldX = (internalX - centerOffsetX - editorState.panX) / editorState.zoom;
     const worldY = (internalY - centerOffsetY - editorState.panY) / editorState.zoom;
     
-    // Debug logging (can be removed in production)
     if (window.debugCoordinates) {
       console.log('Coordinate conversion:', {
         screen: { x: screenX, y: screenY },
@@ -817,47 +846,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return { x: worldX, y: worldY };
   }
 
-  // Convert screen coordinates to world coordinates for characters tab (no centering)
-  function screenToWorldCharacters(screenX, screenY) {
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = screenX - rect.left;
-    const canvasY = screenY - rect.top;
-    
-    // Calculate scaling factor between CSS dimensions and internal canvas dimensions
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    
-    // Convert CSS coordinates to internal canvas coordinates
-    const internalX = canvasX * scaleX;
-    const internalY = canvasY * scaleY;
-    
-    // Apply inverse transformations (no centering offset for characters tab)
-    // L'ordine inverso delle trasformazioni: prima rimuoviamo lo zoom, poi il pan
-    const worldX = (internalX - editorState.panX) / editorState.zoom;
-    const worldY = (internalY - editorState.panY) / editorState.zoom;
-    
-    return { x: worldX, y: worldY };
-  }
-
   // Convert world coordinates to screen coordinates
   function worldToScreen(worldX, worldY) {
     const rect = canvas.getBoundingClientRect();
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
     
-    // Apply transformations (same order as in redraw)
-    let centerOffsetX = 0;
-    let centerOffsetY = 0;
-    if (rect.width > 0 && rect.height > 0) {
-      const scaledContentWidth = gameViewport.width * editorState.zoom;
-      const scaledContentHeight = gameViewport.height * editorState.zoom;
-      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
-      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      centerOffsetX = cssOffsetX * scaleX;
-      centerOffsetY = cssOffsetY * scaleY;
-    }
-    
-    // Apply transformations: zoom, then pan, then center offset
     const internalX = worldX * editorState.zoom + editorState.panX + centerOffsetX;
     const internalY = worldY * editorState.zoom + editorState.panY + centerOffsetY;
     
@@ -895,6 +888,28 @@ document.addEventListener("DOMContentLoaded", () => {
     return `${px}, ${py}`;
   }
 
+  /** Visibilità/interattività a runtime (playtest); in editor si disegna sempre. */
+  function isSceneObjectRuntimeVisible(obj) {
+    return obj && obj.visible !== false;
+  }
+
+  function setSceneObjectRuntimeVisible(obj, visible) {
+    if (!obj) return;
+    const v = !!visible;
+    obj.visible = v;
+    obj.enabled = v;
+  }
+
+  /** Hotspot cliccabile a runtime; in editor il poligono resta sempre visibile. */
+  function isHotspotRuntimeActive(hs) {
+    return hs && hs.visible !== false;
+  }
+
+  function setHotspotRuntimeActive(hs, active) {
+    if (!hs) return;
+    hs.visible = !!active;
+  }
+
   // Check if a point is inside a scene object
   function getObjectAtPoint(worldX, worldY) {
     // Check objects in reverse order (top to bottom)
@@ -902,8 +917,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const obj = sceneObjects[i];
       if (!obj.img) continue;
       
-      const objX = (obj.x || 0) + (editorState.offsetX || 0);
-      const objY = (obj.y || 0) + (editorState.offsetY || 0);
+      const objX = obj.x || 0;
+      const objY = obj.y || 0;
       
       if (worldX >= objX && worldX <= objX + obj.img.width &&
           worldY >= objY && worldY <= objY + obj.img.height) {
@@ -984,9 +999,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const frameIndex = characterPreviewIndex % dirData.frames.length;
       const frame = dirData.frames[frameIndex];
 
-      // Apply zoom/pan transforms like rooms
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
       ctx.save();
-      ctx.translate(editorState.panX, editorState.panY);
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
       ctx.scale(editorState.zoom, editorState.zoom);
 
       // Draw current frame at original size, positioned at top-left corner (0,0)
@@ -1090,6 +1105,9 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.restore();
       }
 
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
       ctx.restore();
       return; // skip rooms rendering
     }
@@ -1100,20 +1118,7 @@ document.addEventListener("DOMContentLoaded", () => {
         canvas.height = gameViewport.height;
       }
 
-      const canvasRect = canvas.getBoundingClientRect();
-      let centerOffsetX = 0;
-      let centerOffsetY = 0;
-      if (canvasRect.width > 0 && canvasRect.height > 0) {
-        const scaleX = canvas.width / canvasRect.width;
-        const scaleY = canvas.height / canvasRect.height;
-        const scaledContentWidth = gameViewport.width * editorState.zoom;
-        const scaledContentHeight = gameViewport.height * editorState.zoom;
-        const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
-        const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
-        centerOffsetX = cssOffsetX * scaleX;
-        centerOffsetY = cssOffsetY * scaleY;
-      }
-
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
       ctx.save();
       ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
       ctx.scale(editorState.zoom, editorState.zoom);
@@ -1184,35 +1189,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Calcola l'offset per centrare il contenuto nel canvas visualizzato
-    // Il contenuto ha dimensioni gameViewport.width x gameViewport.height
-    // Il canvas viene ridimensionato via CSS, quindi dobbiamo calcolare l'offset
-    // considerando le dimensioni CSS del canvas
-    const canvasRect = canvas.getBoundingClientRect();
-    let centerOffsetX = 0;
-    let centerOffsetY = 0;
-    
-    if (canvasRect.width > 0 && canvasRect.height > 0) {
-      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
-      const scaleX = canvas.width / canvasRect.width;
-      const scaleY = canvas.height / canvasRect.height;
-      
-      // Calcola l'offset necessario per centrare il contenuto nel canvas CSS
-      // Il contenuto ha dimensioni gameViewport.width x gameViewport.height
-      // Dopo lo zoom, le dimensioni diventano gameViewport.width * zoom x gameViewport.height * zoom
-      const scaledContentWidth = gameViewport.width * editorState.zoom;
-      const scaledContentHeight = gameViewport.height * editorState.zoom;
-      
-      // Calcola l'offset per centrare il contenuto nel canvas CSS (in coordinate CSS)
-      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
-      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
-      
-      // Converti l'offset da coordinate CSS a coordinate canvas interne
-      centerOffsetX = cssOffsetX * scaleX;
-      centerOffsetY = cssOffsetY * scaleY;
-    }
-
-    // Apply transformations: prima centra, poi pan, poi zoom
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
     ctx.save();
     ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
     ctx.scale(editorState.zoom, editorState.zoom);
@@ -1229,34 +1206,42 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
     }
 
-    // Draw scene objects at their positions
+    // Draw scene objects at their positions (sempre in editor; attenuati se off a runtime)
     for (let obj of sceneObjects) {
       if (obj && obj.img) {
-        if (obj.visible === false) continue;
+        const runtimeVisible = isSceneObjectRuntimeVisible(obj);
         const objX = (obj.x || 0);
         const objY = (obj.y || 0);
         const rot = Number(obj.rotationRad || 0);
         const sx = (typeof obj.scaleX === 'number') ? obj.scaleX : 1;
         const sy = (typeof obj.scaleY === 'number') ? obj.scaleY : 1;
 
+        ctx.save();
+        if (!runtimeVisible) ctx.globalAlpha = 0.42;
         if (rot !== 0 || sx !== 1 || sy !== 1) {
-          ctx.save();
           ctx.translate(objX, objY);
           if (rot !== 0) ctx.rotate(rot);
           if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
-          // draw image at origin with its natural size
           ctx.drawImage(obj.img, 0, 0, obj.img.width, obj.img.height);
-          ctx.restore();
         } else {
-          // Draw object without transforms
           drawImageAtOriginalSize(obj.img, objX, objY);
         }
-        
+        ctx.restore();
+
+        if (!runtimeVisible) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(160,160,160,0.85)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
+          ctx.restore();
+        }
+
         // Draw selection outline if this is the dragged object
         // Only draw outline if no hotspot is selected (scene objects are locked)
         if (!activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(57,255,20,0.8)';
+          ctx.strokeStyle = runtimeVisible ? 'rgba(57,255,20,0.8)' : 'rgba(160,160,160,0.9)';
           ctx.lineWidth = 3;
           ctx.setLineDash([5, 5]);
           ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
@@ -1412,32 +1397,41 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.restore();
     }
 
-    // Hotspots overlay (draw after walkable, before UI)
+    // Hotspots overlay (sempre visibili in editor; grigi tratteggiati se inattivi a runtime)
     if (showHotspots && hotspots.length > 0) {
       ctx.save();
       for (const hs of hotspots) {
-        if (!hs || hs.visible === false) continue;
+        if (!hs) continue;
         const pts = Array.isArray(hs.points) ? hs.points : [];
         if (pts.length <= 1) continue;
-        // color: orange, active highlighted
-        const isActive = hs.id === activeHotspotId;
-        ctx.strokeStyle = isActive ? 'rgba(255,165,0,1.0)' : 'rgba(255,165,0,0.9)';
-        ctx.fillStyle = isActive ? 'rgba(255,165,0,0.18)' : 'rgba(255,165,0,0.12)';
-        ctx.lineWidth = isActive ? 3 : 2;
+        const isSelected = hs.id === activeHotspotId;
+        const runtimeActive = isHotspotRuntimeActive(hs);
+        if (runtimeActive) {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = isSelected ? 'rgba(255,165,0,1.0)' : 'rgba(255,165,0,0.9)';
+          ctx.fillStyle = isSelected ? 'rgba(255,165,0,0.18)' : 'rgba(255,165,0,0.12)';
+        } else {
+          ctx.setLineDash([6, 4]);
+          ctx.strokeStyle = isSelected ? 'rgba(180,180,180,1.0)' : 'rgba(140,140,140,0.85)';
+          ctx.fillStyle = isSelected ? 'rgba(140,140,140,0.14)' : 'rgba(120,120,120,0.08)';
+        }
+        ctx.lineWidth = isSelected ? 3 : 2;
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
         for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
         if (!isDrawingHotspot && pts.length > 2) ctx.closePath();
         ctx.fill();
         ctx.stroke();
-        // vertices
+        ctx.setLineDash([]);
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
           ctx.beginPath();
-          const isSelectedVertex = isActive && i === selectedHotspotVertexIndex;
+          const isSelectedVertex = isSelected && i === selectedHotspotVertexIndex;
           const radius = isSelectedVertex ? 5 : 3;
           ctx.arc(p.x, p.y, radius, 0, Math.PI*2);
-          ctx.fillStyle = isSelectedVertex ? 'rgba(255,215,0,1.0)' : 'rgba(255,165,0,0.95)';
+          ctx.fillStyle = isSelectedVertex
+            ? (runtimeActive ? 'rgba(255,215,0,1.0)' : 'rgba(200,200,200,1.0)')
+            : (runtimeActive ? 'rgba(255,165,0,0.95)' : 'rgba(150,150,150,0.9)');
           ctx.fill();
         }
       }
@@ -1583,8 +1577,7 @@ document.addEventListener("DOMContentLoaded", () => {
           const sel = document.getElementById('character-selector');
           const who = sel ? sel.value : '';
           if (who) {
-            // Use screenToWorldCharacters for characters tab (no centering offset)
-            const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
+            const worldPos = screenToWorld(e.clientX, e.clientY);
             const charData = characterFrames.get(who);
             if (charData) {
               const activeDirections = getCharacterDirectionsStore(charData);
@@ -2129,8 +2122,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
       if (who) {
-        // Use screenToWorldCharacters for characters tab (no centering offset)
-        const worldPos = screenToWorldCharacters(e.clientX, e.clientY);
+        const worldPos = screenToWorld(e.clientX, e.clientY);
         const charData = characterFrames.get(who);
         if (charData) {
           const activeDirections = getCharacterDirectionsStore(charData);
@@ -2440,6 +2432,33 @@ document.addEventListener("DOMContentLoaded", () => {
       const name = document.createElement('div');
       name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>`;
 
+      const activeWrap = document.createElement('div');
+      activeWrap.className = 'form-check form-check-inline small mt-1';
+      const activeChk = document.createElement('input');
+      activeChk.type = 'checkbox';
+      activeChk.className = 'form-check-input';
+      activeChk.id = `hotspot-active-${hs.id}`;
+      activeChk.checked = isHotspotRuntimeActive(hs);
+      const activeLbl = document.createElement('label');
+      activeLbl.className = 'form-check-label text-light';
+      activeLbl.htmlFor = activeChk.id;
+      activeLbl.textContent = 'Is active?';
+      activeLbl.title = 'Active (clickable) in playtest; always visible in editor';
+      activeChk.title = activeLbl.title;
+      activeChk.addEventListener('change', () => {
+        setHotspotRuntimeActive(hs, activeChk.checked);
+        const r = rooms.get(currentRoomId);
+        if (r) r.hotspots = hotspots;
+        item.style.opacity = activeChk.checked ? '1' : '0.55';
+        redraw();
+      });
+      activeWrap.appendChild(activeChk);
+      activeWrap.appendChild(activeLbl);
+      name.appendChild(activeWrap);
+      if (!isHotspotRuntimeActive(hs)) {
+        item.style.opacity = '0.55';
+      }
+
       const controls = document.createElement('div');
 
       const btnSelect = document.createElement('button');
@@ -2474,22 +2493,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
 
-
-      const btnToggle = document.createElement('button');
-      btnToggle.className = 'btn btn-sm btn-outline-warning me-1';
-      btnToggle.title = isSelected ? 'Show/Hide' : 'Select before editing';
-      btnToggle.textContent = '👁️';
-      btnToggle.disabled = !isSelected;
-      btnToggle.addEventListener('click', () => {
-        if (!isSelected) {
-          showNotification('Select the hotspot before editing it', 'warning');
-          return;
-        }
-        hs.visible = hs.visible === false ? true : false;
-        const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
-        refreshHotspotsListUI();
-        redraw();
-      });
 
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
@@ -2531,7 +2534,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       controls.appendChild(btnSelect);
       controls.appendChild(btnEdit);
-      controls.appendChild(btnToggle);
       controls.appendChild(btnClear);
       controls.appendChild(btnDelete);
 
@@ -2876,100 +2878,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Fit canvas to screen (for editor view)
+  // Fit canvas to screen (centered, like inventory preview)
   window.fitToScreen = function() {
-    const container = document.getElementById('canvasContainer');
-    const containerWidth = container.clientWidth - 20; // padding
-    const containerHeight = container.clientHeight - 20; // padding
-    
-    // Calculate zoom to fit
-    const zoomX = containerWidth / gameViewport.width;
-    const zoomY = containerHeight / gameViewport.height;
-    const zoom = Math.min(zoomX, zoomY, 1.0); // Don't zoom in beyond 100%
-    
-    // Imposta lo zoom
-    editorState.zoom = zoom;
-    
-    // Calcola il pan necessario per posizionare l'angolo in alto a sinistra del viewport in (0, 0) del canvas
-    // Dobbiamo compensare l'offset di centratura che viene applicato in redraw()
-    const canvasRect = canvas.getBoundingClientRect();
-    let panX = 0;
-    let panY = 0;
-    
-    if (canvasRect.width > 0 && canvasRect.height > 0) {
-      // Calcola lo scaling tra canvas interno e canvas visualizzato (CSS)
-      const scaleX = canvas.width / canvasRect.width;
-      const scaleY = canvas.height / canvasRect.height;
-      
-      // Calcola l'offset che verrebbe applicato per centrare il contenuto
-      const scaledContentWidth = gameViewport.width * zoom;
-      const scaledContentHeight = gameViewport.height * zoom;
-      const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
-      const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
-      
-      // Converti l'offset da coordinate CSS a coordinate canvas interne
-      const centerOffsetX = cssOffsetX * scaleX;
-      const centerOffsetY = cssOffsetY * scaleY;
-      
-      // Imposta il pan per compensare l'offset di centratura, così l'angolo (0,0) del viewport
-      // sarà posizionato in (0,0) del canvas
-      panX = -centerOffsetX;
-      panY = -centerOffsetY;
-    }
-    
-    editorState.panX = panX;
-    editorState.panY = panY;
-    
-    updateEditorDisplay();
-    redraw();
-    
-    showNotification(`Canvas fitted to screen (${Math.round(zoom * 100)}%)`, 'info');
+    resetEditorViewCentered({ fit: true });
+    showNotification(`Canvas fitted to screen (${Math.round(editorState.zoom * 100)}%)`, 'info');
   };
 
-  // Reset editor zoom and pan
+  // Reset editor zoom and pan — 100% con (0,0) in alto a sinistra
   window.resetEditorZoom = function() {
-    editorState.zoom = 1.0;
-    
-    // Check if we're in the characters tab
-    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
-    
-    if (activeTab === 'characters') {
-      // In characters tab, always position image at 0,0 (top-left corner)
-      editorState.panX = 0;
-      editorState.panY = 0;
-    } else {
-      // Position top-left corner of viewport at top-left corner of canvas
-      const canvasRect = canvas.getBoundingClientRect();
-      let panX = 0;
-      let panY = 0;
-      
-      if (canvasRect.width > 0 && canvasRect.height > 0) {
-        // Calculate scaling between internal canvas and displayed canvas (CSS)
-        const scaleX = canvas.width / canvasRect.width;
-        const scaleY = canvas.height / canvasRect.height;
-        
-        // Calculate the offset that would be applied to center the content
-        const scaledContentWidth = gameViewport.width * editorState.zoom;
-        const scaledContentHeight = gameViewport.height * editorState.zoom;
-        const cssOffsetX = (canvasRect.width - scaledContentWidth) / 2;
-        const cssOffsetY = (canvasRect.height - scaledContentHeight) / 2;
-        
-        // Convert offset from CSS coordinates to internal canvas coordinates
-        const centerOffsetX = cssOffsetX * scaleX;
-        const centerOffsetY = cssOffsetY * scaleY;
-        
-        // Set pan to compensate for centering offset, so top-left corner (0,0) of viewport
-        // will be positioned at top-left corner (0,0) of the displayed canvas
-        panX = -centerOffsetX;
-        panY = -centerOffsetY;
-      }
-      
-      editorState.panX = panX;
-      editorState.panY = panY;
-    }
-    
-    updateEditorDisplay();
-    redraw();
+    alignEditorViewTopLeft();
     showNotification('Viewport at 100% with top-left corner aligned', 'info');
   };
 
@@ -2997,13 +2914,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Center view function
   window.centerView = function() {
-    // Resetta il pan (il centraggio è automatico in redraw)
-    editorState.panX = 0;
-    editorState.panY = 0;
-    
-    updateEditorDisplay();
-    redraw();
-    
+    resetEditorViewCentered({ zoom: editorState.zoom });
     showNotification('View centered', 'info');
   };
 
@@ -3859,9 +3770,10 @@ window.selectRoom = function(roomId) {
   setupMouseWheelZoom();
   setupMousePanning();
 
-  // Handle window resize
+  // Handle window resize — ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
   window.addEventListener("resize", () => {
     updateEditorDisplay();
+    redraw();
   });
 
   // Keyboard controls for panning
@@ -4381,6 +4293,33 @@ window.selectRoom = function(roomId) {
     const info = document.createElement('div');
     info.innerHTML = `<strong>${sceneObject.name}</strong>`;
 
+    const visibleWrap = document.createElement('div');
+    visibleWrap.className = 'form-check form-check-inline small mt-1';
+    const visibleChk = document.createElement('input');
+    visibleChk.type = 'checkbox';
+    visibleChk.className = 'form-check-input';
+    visibleChk.id = `scene-visible-${sceneObject.id}`;
+    visibleChk.checked = isSceneObjectRuntimeVisible(sceneObject);
+    const visibleLbl = document.createElement('label');
+    visibleLbl.className = 'form-check-label text-light';
+    visibleLbl.htmlFor = visibleChk.id;
+    visibleLbl.textContent = 'Is visible?';
+    visibleLbl.title = 'Visible and interactive in playtest; always shown in editor when off';
+    visibleChk.title = visibleLbl.title;
+    visibleChk.addEventListener('change', () => {
+      setSceneObjectRuntimeVisible(sceneObject, visibleChk.checked);
+      const r = rooms.get(currentRoomId);
+      if (r) r.sceneObjects = sceneObjects;
+      item.style.opacity = visibleChk.checked ? '1' : '0.55';
+      redraw();
+    });
+    visibleWrap.appendChild(visibleChk);
+    visibleWrap.appendChild(visibleLbl);
+    info.appendChild(visibleWrap);
+    if (!isSceneObjectRuntimeVisible(sceneObject)) {
+      item.style.opacity = '0.55';
+    }
+
     const controls = document.createElement('div');
 
     const selectBtn = document.createElement('button');
@@ -4467,7 +4406,8 @@ window.selectRoom = function(roomId) {
         rotationRad: 0,
         scaleX: 1,
         scaleY: 1,
-        visible: true
+        visible: true,
+        enabled: true
       };
 
       sceneObjects.push(sceneObject);
@@ -4601,6 +4541,81 @@ window.selectRoom = function(roomId) {
   };
 
   // Functions for Characters tab
+  function getCharacterFrameCount(charData) {
+    if (!charData) return 0;
+    const countDirFrames = (dirs) => {
+      if (!dirs) return 0;
+      return Object.values(dirs).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
+    };
+    let total = countDirFrames(charData.directions);
+    if (charData.animations) {
+      Object.values(charData.animations).forEach((anim) => {
+        total += countDirFrames(anim.directions);
+      });
+    }
+    return total;
+  }
+
+  function selectCharacterFromList(characterName) {
+    const characterSelector = document.getElementById('character-selector');
+    if (characterSelector) {
+      characterSelector.value = characterName;
+      loadCharacterDirections();
+    }
+    refreshCharactersListUI();
+    redraw();
+  }
+
+  function refreshCharactersListUI() {
+    const charactersList = document.getElementById('characters-list');
+    if (!charactersList) return;
+    const sel = document.getElementById('character-selector');
+    const selectedName = sel ? sel.value : '';
+    const names = [];
+    characterFrames.forEach((_, name) => names.push(name));
+    names.sort((a, b) => a.localeCompare(b));
+    charactersList.innerHTML = '';
+    names.forEach((characterName) => {
+      const charData = characterFrames.get(characterName);
+      const totalFrames = getCharacterFrameCount(charData);
+      const isSelected = characterName === selectedName;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      el.dataset.characterName = characterName;
+      const info = document.createElement('div');
+      const scriptLabel = characterScripts.has(characterName) ? characterName : '(no script)';
+      info.innerHTML = '<strong>' + characterName + '</strong><br><small class="text-muted">' + totalFrames + ' frame' + (totalFrames !== 1 ? 's' : '') + '</small><br><small class="character-script-name text-info">Script: ' + scriptLabel + '</small>';
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectCharacterFromList(characterName));
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-sm btn-outline-light me-1';
+      editBtn.textContent = 'Rename';
+      editBtn.addEventListener('click', () => window.editCharacter(editBtn));
+      const dialogBtn = document.createElement('button');
+      dialogBtn.className = 'btn btn-sm btn-outline-warning me-1';
+      dialogBtn.textContent = 'Dialog';
+      dialogBtn.addEventListener('click', () => window.editCharacterDialogs(dialogBtn));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => window.removeCharacter(delBtn));
+      controls.appendChild(selectBtn);
+      controls.appendChild(editBtn);
+      controls.appendChild(dialogBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      charactersList.appendChild(el);
+    });
+    refreshCharacterSelector();
+    refreshStartingPlayerUI();
+    refreshCharacterScriptTargets();
+  }
+
   // Helper function per aggiornare la visualizzazione del nome del character per gli script
   function updateCharacterScriptDisplay(characterName) {
     const charactersList = document.getElementById('characters-list');
@@ -4630,42 +4645,14 @@ window.selectRoom = function(roomId) {
   }
 
   window.addCharacter = function() {
-    const name = prompt('Character name:');
+    const name = (prompt('Character name:') || '').trim();
     if (!name) return;
-    
-    const charactersList = document.getElementById('characters-list');
-    
-    const newCharacter = document.createElement('div');
-    newCharacter.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-    
-    newCharacter.innerHTML = `
-      <div>
-        <strong>${name}</strong>
-        <br><small>New character</small>
-        <br><small class="character-script-name text-info">Script name: "${name}"</small>
-        <span class="badge bg-success ms-2">Active</span>
-      </div>
-      <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Edit">✏️</button>
-        <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs">💬</button>
-        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
-      </div>
-    `;
-    
-    charactersList.appendChild(newCharacter);
-    
-    // Aggiorna il dropdown del selettore personaggi
-    refreshCharacterSelector();
-    // Aggiorna la UI del giocatore iniziale
-    refreshStartingPlayerUI();
-    
-    // Automatically select the new character
-    const characterSelector = document.getElementById('character-selector');
-    if (characterSelector) {
-      characterSelector.value = name;
-      loadCharacterDirections();
+    if (characterFrames.has(name)) {
+      showNotification('Character name already in use', 'warning');
+      return;
     }
-    
+    characterFrames.set(name, { directions: {}, animations: {}, currentFrame: 0 });
+    selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
   };
 
@@ -4741,19 +4728,12 @@ window.selectRoom = function(roomId) {
         }
       }
       
-      characterElement.remove();
-      
-      // Aggiorna il dropdown del selettore personaggi
-      refreshCharacterSelector();
-      // Aggiorna la UI del giocatore iniziale
-      refreshStartingPlayerUI();
-      
-    // If the deleted character was selected, deselect
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === characterName) {
         characterSelector.value = '';
         loadCharacterDirections();
       }
+      refreshCharactersListUI();
       
       showNotification('Character deleted!', 'info');
       console.log(`[Character] ✅ Character "${characterName}" rimosso dall'editor`);
@@ -4763,27 +4743,33 @@ window.selectRoom = function(roomId) {
   window.editCharacter = function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
-    const currentName = nameElement.textContent;
+    const currentName = nameElement.textContent.trim();
     
     const newName = prompt('Edit character name:', currentName);
     if (newName && newName.trim() !== '') {
       const oldName = currentName;
       const trimmedNewName = newName.trim();
-      
-      nameElement.textContent = trimmedNewName;
-      
-      // Aggiorna il dropdown del selettore personaggi
-      refreshCharacterSelector();
-      // Aggiorna la UI del giocatore iniziale
-      refreshStartingPlayerUI();
-      
-    // If the edited character was selected, update selection
+      if (trimmedNewName === oldName) return;
+      if (characterFrames.has(trimmedNewName)) {
+        showNotification('Character name already in use', 'warning');
+        return;
+      }
+      if (characterFrames.has(oldName)) {
+        const data = characterFrames.get(oldName);
+        characterFrames.delete(oldName);
+        characterFrames.set(trimmedNewName, data);
+      }
+      if (characterScripts.has(oldName)) {
+        const script = characterScripts.get(oldName);
+        characterScripts.delete(oldName);
+        characterScripts.set(trimmedNewName, script);
+      }
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
         loadCharacterDirections();
       }
-      
+      refreshCharactersListUI();
       showNotification(`Character renamed to "${trimmedNewName}"`, 'success');
     }
   };
@@ -5015,17 +5001,24 @@ window.selectRoom = function(roomId) {
   function refreshCharacterSelector() {
     const sel = document.getElementById('character-selector');
     if (!sel) return;
+    const previous = sel.value;
     sel.innerHTML = '';
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = 'Select character...';
     sel.appendChild(opt);
-    // read from UI list
-    document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-      const name = s.textContent.trim();
+    const names = [];
+    characterFrames.forEach((_, name) => names.push(name));
+    names.sort((a, b) => a.localeCompare(b));
+    names.forEach((name) => {
       const o = document.createElement('option');
-      o.value = name; o.textContent = name; sel.appendChild(o);
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
     });
+    if (previous && names.includes(previous)) {
+      sel.value = previous;
+    }
   }
 
   // Persist a subset of start settings into localStorage
@@ -5122,8 +5115,7 @@ window.selectRoom = function(roomId) {
 
   document.addEventListener('tabChanged', (e) => {
     if (e.detail.currentTab === 'characters') {
-      refreshCharacterSelector();
-      refreshStartingPlayerUI();
+      refreshCharactersListUI();
       refreshStartRoomSelector();
     }
   });
@@ -5160,7 +5152,9 @@ window.selectRoom = function(roomId) {
     }
     // Assicura che il toggle sia inizializzato
     toggleFrameSource();
+    refreshCharactersListUI();
     redraw(); // Redraw to show pivot if it exists
+    refreshFramesPreview();
     
     // Carica spawn settings per questo character
     loadCharacterSpawnSettings(who);
@@ -6110,6 +6104,7 @@ window.selectRoom = function(roomId) {
 
     // Initialize drag and drop
     initializeFrameDragDrop();
+    refreshCharactersListUI();
   }
 
   // Function to delete a frame
@@ -6314,6 +6309,7 @@ window.selectRoom = function(roomId) {
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
     'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
+    'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
     'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character',
     'play_character_animation'
   ];
@@ -9285,9 +9281,24 @@ window.selectRoom = function(roomId) {
 
     // Fallback: serializza il progetto corrente
     if (!projectObj || !jsonString) {
+      if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
+        try {
+          await window.amiantoResources.refresh();
+        } catch (e) {
+          console.warn('[PlayTest] Resources refresh before serialize:', e);
+        }
+      }
       jsonString = window.serializeProjectToJsonString(true);
       projectObj = window.serializeProject();
       addDebugMessage('Using serialized current project', 'info');
+    } else if (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function') {
+      try {
+        await window.amiantoResources.refresh();
+        projectObj.resourcesCatalog = window.amiantoResources.getCatalog();
+        jsonString = JSON.stringify(projectObj, null, 2);
+      } catch (e) {
+        console.warn('[PlayTest] Resources catalog merge:', e);
+      }
     }
 
     // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
@@ -11369,14 +11380,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             visible: (typeof f.visible === 'boolean') ? f.visible : true
           };
         }) : [],
-        sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
-          id: o.id,
-          name: o.name,
-          type: o.type || 'Interactive',
-          x: Number(o.x) || 0,
-          y: Number(o.y) || 0,
-          image: serializeImage(o.img)
-        })) : [],
+        sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => {
+          const visible = (typeof o.visible === 'boolean') ? o.visible : true;
+          const enabled = (typeof o.enabled === 'boolean') ? o.enabled : visible;
+          return {
+            id: o.id,
+            name: o.name,
+            type: o.type || 'Interactive',
+            x: Number(o.x) || 0,
+            y: Number(o.y) || 0,
+            image: serializeImage(o.img),
+            rotationRad: Number(o.rotationRad) || 0,
+            scaleX: (typeof o.scaleX === 'number') ? Number(o.scaleX) : 1,
+            scaleY: (typeof o.scaleY === 'number') ? Number(o.scaleY) : 1,
+            visible,
+            enabled
+          };
+        }) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
         hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
           // ⚠️ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
@@ -11717,7 +11737,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
       variables: serializeVariables(),
-      eventConditions: serializeEventConditions()
+      eventConditions: serializeEventConditions(),
+      resourcesCatalog: (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function')
+        ? window.amiantoResources.getCatalog()
+        : []
     };
     
     // Aggiungi _meta con userId e projectId per il runtime (per risolvere assetId)
@@ -13650,6 +13673,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         definitions: [],
         state: {}
       },
+      resourcesCatalog: [],
       eventConditions: {
         objects: {},
         hotspots: {},
@@ -14444,6 +14468,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           gameViewport.height = Number(s.canvasHeight) || gameViewport.height;
           canvas.width = gameViewport.width;
           canvas.height = gameViewport.height;
+          editorState.panX = 0;
+          editorState.panY = 0;
           updateEditorDisplay();
         }
         // persisti impostazioni progetto
@@ -14463,14 +14489,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             name: r.name || roomId,
             background: null,
             foregrounds: [],
-            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
-              id: o.id || uid('scene'),
-              name: o.name || 'Object',
-              type: o.type || 'Interactive',
-              x: Number(o.x) || 0,
-              y: Number(o.y) || 0,
-              img: null
-            })) : [],
+            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => {
+              const visible = (typeof o.visible === 'boolean') ? o.visible : true;
+              const enabled = (typeof o.enabled === 'boolean') ? o.enabled : visible;
+              return {
+                id: o.id || uid('scene'),
+                name: o.name || 'Object',
+                type: o.type || 'Interactive',
+                x: Number(o.x) || 0,
+                y: Number(o.y) || 0,
+                img: null,
+                rotationRad: Number(o.rotationRad) || 0,
+                scaleX: (typeof o.scaleX === 'number') ? Number(o.scaleX) : 1,
+                scaleY: (typeof o.scaleY === 'number') ? Number(o.scaleY) : 1,
+                visible,
+                enabled
+              };
+            }) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
             hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
               const hotspotObj = {
@@ -14758,50 +14793,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               };
             }
             characterFrames.set(characterName, charData);
-            
-            // Crea l'elemento DOM nella lista character (come fa addCharacter)
-            if (charactersList) {
-              const characterElement = document.createElement('div');
-              characterElement.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-              
-              // Conta i frame totali per questo character (walking + animazioni custom)
-              let totalFrames = 0;
-              const countDirFrames = (dirs) => {
-                if (!dirs) return 0;
-                return Object.values(dirs).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
-              };
-              totalFrames = countDirFrames(directions);
-              Object.values(animations).forEach(anim => {
-                totalFrames += countDirFrames(anim.directions);
-              });
-              
-              characterElement.innerHTML = `
-                <div>
-                  <strong>${characterName}</strong>
-                  <br><small>${totalFrames} frame${totalFrames !== 1 ? 's' : ''} total</small>
-                  <br><small class="character-script-name text-info">Script name: "${characterName}"</small>
-                  <span class="badge bg-success ms-2">Active</span>
-                </div>
-                <div>
-                  <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editCharacter(this)">✏️</button>
-                  <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs" onclick="editCharacterDialogs(this)">💬</button>
-                  <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
-                </div>
-              `;
-              charactersList.appendChild(characterElement);
-            }
           }
         }
-        // Aggiorna la visualizzazione dei nomi script per tutti i characters dopo il caricamento
-        const charactersListAfter = document.getElementById('characters-list');
-        if (charactersListAfter) {
-          charactersListAfter.querySelectorAll('.list-group-item strong').forEach(nameElement => {
-            const characterName = nameElement.textContent.trim();
-            updateCharacterScriptDisplay(characterName);
-          });
-        }
-        refreshCharacterSelector();
-        refreshStartingPlayerUI();
+        refreshCharactersListUI();
       } catch(error) {
         console.error('[Load] Errore caricamento character:', error);
       }
@@ -15174,7 +15168,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         refreshCursorsList();
       } catch(_) {}
 
-      redraw();
+      // Centra la preview rooms/inventory dopo il caricamento (evita pan obsoleto fuori schermo)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+      });
       
       // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
       rebuildScriptsTree();

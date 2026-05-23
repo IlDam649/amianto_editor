@@ -38,7 +38,9 @@
     // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
     // Questo previene riesecuzione di codice JS a ogni evento
     compiledScripts: new Map(),
-    inventory: null // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible }
+    inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible }
+    resourceFileIndex: null, // Map<filenameLower, "asset:assetId"> — cache Resources per spawn_object
+    resourceFileIndexKey: null
   };
 
   // ⚠️ FLAG PROTEZIONE DOPPI EVENTI
@@ -234,6 +236,188 @@
     userId: null,
     projectId: null
   };
+
+  const RESOURCE_IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+  function getActualProjectId() {
+    let id = projectInfo.projectId;
+    if (id && String(id).includes(':')) {
+      id = String(id).split(':')[1];
+    }
+    return id ? String(id) : null;
+  }
+
+  function invalidateResourceFileIndex() {
+    gameState.resourceFileIndex = null;
+    gameState.resourceFileIndexKey = null;
+  }
+
+  function normalizeResourceFileKey(fileRef) {
+    const s = String(fileRef || '').trim();
+    if (!s) return '';
+    return s.split(/[/\\]/).pop().toLowerCase();
+  }
+
+  function makeResourceIndexEntry(assetId, publicUrl) {
+    const id = String(assetId || '').trim();
+    if (!id) return null;
+    return {
+      assetRef: id.startsWith('asset:') ? id : `asset:${id}`,
+      publicUrl: publicUrl && String(publicUrl).trim() ? String(publicUrl).trim() : null
+    };
+  }
+
+  function registerResourceFileAlias(index, fileName, assetId, publicUrl) {
+    if (!index || !fileName || !assetId) return;
+    const entry = makeResourceIndexEntry(assetId, publicUrl);
+    if (!entry) return;
+    const key = normalizeResourceFileKey(fileName);
+    if (!key) return;
+    index.set(key, entry);
+    const withoutExt = key.replace(/\.[^.]+$/, '');
+    if (withoutExt && withoutExt !== key) {
+      index.set(withoutExt, entry);
+    }
+  }
+
+  function loadResourcesCatalogIntoIndex(index, catalog) {
+    if (!index || !Array.isArray(catalog)) return;
+    for (const row of catalog) {
+      if (!row || !row.assetId) continue;
+      const url = row.publicUrl || null;
+      registerResourceFileAlias(index, row.name, row.assetId, url);
+      if (row.displayName) registerResourceFileAlias(index, row.displayName, row.assetId, url);
+      if (row.fileName) registerResourceFileAlias(index, row.fileName, row.assetId, url);
+    }
+  }
+
+  /**
+   * Indice nome file Resources (es. "chiave.png") → "asset:assetId".
+   * Usa Supabase listProjectResources + metadata Firestore (displayName originale).
+   */
+  async function refreshResourceFileIndex() {
+    const projectId = getActualProjectId();
+    if (!projectId) {
+      return new Map();
+    }
+
+    const userId = projectInfo.userId || (window.firebaseAuth && window.firebaseAuth.currentUser
+      ? window.firebaseAuth.currentUser.uid
+      : null);
+    const cacheKey = `${userId || ''}|${projectId}`;
+    if (gameState.resourceFileIndex && gameState.resourceFileIndexKey === cacheKey) {
+      return gameState.resourceFileIndex;
+    }
+
+    const index = new Map();
+
+    if (gameState.projectData && Array.isArray(gameState.projectData.resourcesCatalog)) {
+      loadResourcesCatalogIntoIndex(index, gameState.projectData.resourcesCatalog);
+    }
+
+    if (window.supabaseStorage && typeof window.supabaseStorage.listProjectResources === 'function') {
+      try {
+        const entries = await window.supabaseStorage.listProjectResources(projectId, userId);
+        for (const entry of entries || []) {
+          const aid = entry.assetId || normalizeResourceFileKey(entry.name).replace(/\.[^.]+$/, '');
+          const url = entry.publicUrl || null;
+          registerResourceFileAlias(index, entry.name, aid, url);
+          if (entry.displayName) {
+            registerResourceFileAlias(index, entry.displayName, aid, url);
+          }
+        }
+      } catch (err) {
+        log(`[Runtime] refreshResourceFileIndex Supabase: ${err.message}`, 'warning');
+      }
+    }
+
+    if (userId && window.firebaseDB) {
+      try {
+        const snap = await window.firebaseDB
+          .collection('users').doc(userId)
+          .collection('projects').doc(projectId)
+          .collection('assets')
+          .where('type', '==', 'resource')
+          .get();
+        snap.forEach(doc => {
+          const d = doc.data();
+          const aid = d.assetId || doc.id;
+          const url = d.publicUrl || null;
+          if (d.name) registerResourceFileAlias(index, d.name, aid, url);
+          if (d.fileName) registerResourceFileAlias(index, d.fileName, aid, url);
+        });
+      } catch (err) {
+        log(`[Runtime] refreshResourceFileIndex Firestore: ${err.message}`, 'warning');
+      }
+    }
+
+    gameState.resourceFileIndex = index;
+    gameState.resourceFileIndexKey = cacheKey;
+    log(`[Runtime] Resource file index: ${index.size} alias`, 'info');
+    return index;
+  }
+
+  /**
+   * Risolve il 4° parametro di spawn_object: asset:, URL, data: o nome file Resources ("sprite.png").
+   */
+  async function resolveSpawnObjectImageRef(imageRef) {
+    const trimmed = String(imageRef == null ? '' : imageRef).trim();
+    if (!trimmed) return '';
+
+    if (
+      trimmed.startsWith('asset:') ||
+      trimmed.startsWith('data:') ||
+      /^https?:\/\//i.test(trimmed)
+    ) {
+      return trimmed;
+    }
+
+    const key = normalizeResourceFileKey(trimmed);
+    const index = await refreshResourceFileIndex();
+    const fromIndex = index.get(key);
+    if (fromIndex) {
+      const resolved = fromIndex.publicUrl || fromIndex.assetRef;
+      log(`[Runtime] spawn_object: "${trimmed}" → ${resolved}`, 'info');
+      return resolved;
+    }
+
+    const assetFileMatch = key.match(/^(asset_[\w-]+)\.(png|jpe?g|gif|webp|bmp|svg)$/);
+    if (assetFileMatch) {
+      return `asset:${assetFileMatch[1]}`;
+    }
+
+    if (RESOURCE_IMAGE_FILE_EXT.test(key)) {
+      GameAPI.error(
+        `spawn_object: immagine Resources "${trimmed}" non trovata. Controlla il nome in tab Resources (con estensione).`
+      );
+    }
+
+    return trimmed;
+  }
+
+  function attachImageToRoomObject(objectId, imageSrc) {
+    const url = imageSrc == null ? '' : String(imageSrc).trim();
+    if (!url) return;
+
+    const cached = AssetRegistry.images.get(url);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      const obj = findRoomObject(objectId);
+      if (obj) obj.img = cached;
+      return;
+    }
+
+    const categoryHint = url.startsWith('asset:') ? 'resource' : null;
+    loadImage(url, categoryHint).then(img => {
+      if (!img) {
+        GameAPI.error(`spawn_object: impossibile caricare immagine (${url})`);
+        return;
+      }
+      const obj = findRoomObject(objectId);
+      if (obj) obj.img = img;
+    }).catch(err => {
+      GameAPI.error(`spawn_object: ${err && err.message ? err.message : err}`);
+    });
+  }
 
   // Risolve un assetId in URL Supabase
   async function resolveAssetId(assetId, category, roomName = null, characterName = null) {
@@ -575,6 +759,7 @@
         gameState.projectData = projectData;
         gameState.scripts = projectData.scripts || {};
         gameState.attachments = projectData.attachments || {};
+        invalidateResourceFileIndex();
         await initializeVariables(projectData.variables);
         
         // Invia conferma all'editor
@@ -616,6 +801,7 @@
       // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati quando viene caricato un nuovo progetto
       // Questo garantisce che gli script vengano ricompilati con il nuovo contenuto
       gameState.compiledScripts.clear();
+      invalidateResourceFileIndex();
       resetInputLock();
       log('[Runtime] Cache script compilati resettata', 'info');
       
@@ -782,6 +968,10 @@
 
       gameState.initialized = true;
       hideLoadingOverlay();
+
+      refreshResourceFileIndex().catch(err => {
+        log(`[Runtime] Resource index preload: ${err.message}`, 'warning');
+      });
 
       // ⚠️ SETUP INTERAZIONE: Configura listener click centralizzato
       // IMPORTANTE: setupInteraction() viene chiamato QUI, dopo che il canvas è pronto
@@ -1940,18 +2130,6 @@
   // ============================================
   function generateRuntimeObjectId() {
     return `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-  }
-
-  function createObjectPlaceholderCanvas() {
-    const c = document.createElement('canvas');
-    c.width = 32;
-    c.height = 32;
-    const t = c.getContext('2d');
-    t.fillStyle = '#cc3333';
-    t.fillRect(0, 0, 32, 32);
-    t.fillStyle = '#ffffff';
-    t.fillRect(4, 4, 24, 24);
-    return c;
   }
 
   function getSceneObjectImageSize(obj) {
@@ -3560,6 +3738,32 @@
       }
     },
 
+    enableHotspot: function(hotspotId) {
+      if (!gameState.currentRoom || !gameState.currentRoom.hotspots) return false;
+      const key = String(hotspotId);
+      const hs = gameState.currentRoom.hotspots.find(h => h.id === key || h.name === key);
+      if (!hs) {
+        GameAPI.error(`enableHotspot: hotspot "${hotspotId}" not found in current room`);
+        return false;
+      }
+      hs.visible = true;
+      log(`[Runtime] enableHotspot: "${hs.id}" active`, 'info');
+      return true;
+    },
+
+    disableHotspot: function(hotspotId) {
+      if (!gameState.currentRoom || !gameState.currentRoom.hotspots) return false;
+      const key = String(hotspotId);
+      const hs = gameState.currentRoom.hotspots.find(h => h.id === key || h.name === key);
+      if (!hs) {
+        GameAPI.error(`disableHotspot: hotspot "${hotspotId}" not found in current room`);
+        return false;
+      }
+      hs.visible = false;
+      log(`[Runtime] disableHotspot: "${hs.id}" inactive`, 'info');
+      return true;
+    },
+
     move_object: function(objectId, x, y) {
       // Sposta un object nella room corrente (con coda sequenziale)
       queueCommand(async () => {
@@ -3661,7 +3865,7 @@
         type: 'Interactive',
         x: objX,
         y: objY,
-        img: createObjectPlaceholderCanvas(),
+        img: null,
         visible: true,
         enabled: true,
         rotationRad: 0,
@@ -3670,23 +3874,13 @@
       };
       gameState.currentRoom.objects.push(newObj);
 
-      const url = imageUrlOrDataUrl == null ? '' : String(imageUrlOrDataUrl).trim();
-      if (url) {
-        const cached = AssetRegistry.images.get(url);
-        if (cached && cached.complete && cached.naturalWidth > 0) {
-          newObj.img = cached;
-        } else {
-          loadImage(url).then(img => {
-            if (!img) {
-              GameAPI.error(`spawn_object: could not load image for "${name}"`);
-              return;
-            }
-            const obj = findRoomObject(id);
-            if (obj) obj.img = img;
-          }).catch(err => {
-            GameAPI.error(`spawn_object: ${err && err.message ? err.message : err}`);
-          });
-        }
+      const imageRef = imageUrlOrDataUrl == null ? '' : String(imageUrlOrDataUrl).trim();
+      if (imageRef) {
+        resolveSpawnObjectImageRef(imageRef).then(resolvedUrl => {
+          if (resolvedUrl) {
+            attachImageToRoomObject(id, resolvedUrl);
+          }
+        });
       }
 
       log(`[Runtime] spawn_object: "${name}" (${id}) a (${objX}, ${objY})`, 'info');
@@ -4224,6 +4418,8 @@
       { name: 'load_room', value: bindGameApiMethod(api, 'load_room') },
       { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
       { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
+      { name: 'enableHotspot', value: bindGameApiMethod(api, 'enableHotspot') },
+      { name: 'disableHotspot', value: bindGameApiMethod(api, 'disableHotspot') },
       { name: 'move_object', value: bindGameApiMethod(api, 'move_object') },
       { name: 'add_to_inventory', value: bindGameApiMethod(api, 'add_to_inventory') },
       { name: 'remove_from_inventory', value: bindGameApiMethod(api, 'remove_from_inventory') },
@@ -5377,6 +5573,7 @@
         
         // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati durante il reset
         gameState.compiledScripts.clear();
+        invalidateResourceFileIndex();
         
         // Reset AssetRegistry
         AssetRegistry.images.clear();

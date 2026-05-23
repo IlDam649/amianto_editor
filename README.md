@@ -45,6 +45,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Hotspots
   - Create polygonal hotspots; add/finish/clear points; show/hide all
   - Select/move/delete vertices; list and manage hotspots
+  - Per-hotspot **Is active?** (clickable in playtest); script API `enableHotspot` / `disableHotspot`
 - Scene Objects (Rooms)
   - Add image-based objects; edit name and position; delete
   - List with filtering and type badges
@@ -179,6 +180,11 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
   }
 }
 ```
+
+### Hotspot APIs
+- **`enableHotspot(idOrName)`** — Activates a hotspot in the current room (clickable; sets `visible` to true). Returns `true` on success.
+- **`disableHotspot(idOrName)`** — Deactivates a hotspot (no clicks; sets `visible` to false). Returns `true` on success.
+- Initial state comes from the **Is active?** checkbox in the Rooms tab (saved as `visible` in project JSON).
 
 ### GUI / display
 - **`show_message(text)`** / **`showText(text)`** - On-screen message overlay
@@ -373,6 +379,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Hotspot
   - Crea hotspot poligonali; aggiungi/termina/svuota punti; mostra/nascondi tutti
   - Selezione/spostamento/eliminazione vertici; lista hotspot
+  - Checkbox **Is active?** per stato iniziale; API script `enableHotspot` / `disableHotspot`
 - Oggetti di Scena
   - Aggiunta immagini; modifica nome/posizione; rimozione
   - Supporto per più oggetti con stessa immagine (nomi unici)
@@ -467,6 +474,12 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`rotate_object(objectId, degrees)`** - Ruota un oggetto di gradi specificati
 - **`scale_object(objectId, scaleX, scaleY)`** - Scala un oggetto
 - **`set_object_visible(objectId, visible)`** - Mostra o nasconde un oggetto
+- **`enableObject(id)`** / **`disableObject(id)`** - Abilita/disabilita oggetti di scena (per id o nome)
+
+### API Hotspot
+- **`enableHotspot(idOrName)`** — Attiva un hotspot nella stanza corrente (cliccabile; `visible=true`). Restituisce `true` se trovato.
+- **`disableHotspot(idOrName)`** — Disattiva i click sull'hotspot (`visible=false`). Restituisce `true` se trovato.
+- Stato iniziale: checkbox **Is active?** nel tab Rooms (salvato come `visible` nel JSON progetto).
 
 ### API Sistema Stanze
 - **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Carica stanza; posizionamento opzionale del player

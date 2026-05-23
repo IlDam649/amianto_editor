@@ -64,7 +64,7 @@ function on_game_start() {
     <ul>
       <li>Each <strong>room</strong> has its own background, foreground layers, objects, walkable polygon, and hotspots.</li>
       <li><strong>Walkable area</strong>: Start Drawing → click vertices → Finish. Players pathfind only inside this polygon.</li>
-      <li><strong>Hotspots</strong>: invisible (or debug-visible) click regions for doors, items, NPCs.</li>
+      <li><strong>Hotspots</strong>: polygon click regions for doors, items, NPCs. Use <strong>Is active?</strong> for the default state; toggle at runtime with <code>enableHotspot</code> / <code>disableHotspot</code>.</li>
       <li><strong>Scene objects</strong>: draggable images; position on canvas or via inspector.</li>
     </ul>
     <h3>Resources</h3>
@@ -155,7 +155,7 @@ if (Game.getVar("door_open")) {
 
     <h3>Scene objects</h3>
     <ul>
-      <li><code>spawn_object(nameOrId, x, y, imageUrlOrDataUrl?)</code></li>
+      <li><code>spawn_object(nameOrId, x, y, imageUrlOrDataUrl?)</code> — 4th arg: <code>asset:…</code>, URL, or Resources file name (e.g. <code>chiave.png</code>)</li>
       <li><code>despawn_object(objectId)</code></li>
       <li><code>move_object(objectId, x, y)</code></li>
       <li><code>rotate_object(objectId, degrees)</code></li>
@@ -163,6 +163,13 @@ if (Game.getVar("door_open")) {
       <li><code>set_object_visible(objectId, visible)</code></li>
       <li><code>enableObject(id)</code> / <code>disableObject(id)</code></li>
     </ul>
+
+    <h3>Hotspots</h3>
+    <ul>
+      <li><code>enableHotspot(idOrName)</code> — makes a hotspot clickable in the current room (sets <code>visible</code> to true)</li>
+      <li><code>disableHotspot(idOrName)</code> — disables clicks on that hotspot (sets <code>visible</code> to false)</li>
+    </ul>
+    <p>In the <strong>Rooms</strong> tab, the <strong>Is active?</strong> checkbox on each hotspot sets the initial state saved in the project. Scripts can change it at runtime. Hotspots are always drawn in the editor; only playtest/runtime respect active state.</p>
 
     <h3>Rooms</h3>
     <ul>
@@ -222,6 +229,18 @@ function on_object_click(object_id, x, y) {
   load_room("garden", 400, 300, 2);
 }</code></pre>
 
+    <h3>3b — Enable a hotspot after a puzzle</h3>
+    <pre class="docs-code"><code>// Room scope: lever object — on_object_click
+function on_object_click(object_id) {
+  if (object_id !== "lever") return;
+  if (Game.getVar("bridge_lowered")) return;
+  Game.setVar("bridge_lowered", true);
+  enableHotspot("bridge_crossing");
+  show_message("The bridge lowers.");
+}
+
+// Hotspot "bridge_crossing" starts inactive (Is active? unchecked in Rooms tab)</code></pre>
+
     <h3>4 — Room entry cutscene flag</h3>
     <pre class="docs-code"><code>on_room_change(function(oldRoom, newRoom) {
   if (newRoom === "cellar" && !Game.getVar("cellar_visited")) {
@@ -250,7 +269,8 @@ function on_object_click(object_id, x, y) {
     <h3>6 — Spawn temporary object</h3>
     <pre class="docs-code"><code>function on_hotspot_click(hotspot_id) {
   if (hotspot_id === "sparkle") {
-    spawn_object("glint", 150, 200, "asset:fx_sparkle");
+    spawn_object("glint", 150, 200, "sparkle.png");
+    // or: spawn_object("glint", 150, 200, "asset:asset_…");
     setTimeout(function() {
       despawn_object("glint");
     }, 2000);

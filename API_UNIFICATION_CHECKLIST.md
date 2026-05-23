@@ -88,6 +88,7 @@ Legenda azione:
 | `animate_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
 | `play_character_animation` | ❌ (hints ✅) | ✅ | ✅ | ❌ | **Implementato** — `GameAPI.play_character_animation`; coda comandi su `window` come `walk_character` |
 | `enableObject` / `disableObject` | ❌ | ✅ | ❌ | ✅ | Documentare o unificare con `set_object_visible` |
+| `enableHotspot` / `disableHotspot` | ❌ | ✅ | ❌ | ✅ | Campo `visible` hotspot; checkbox editor **Is active?** |
 
 ---
 

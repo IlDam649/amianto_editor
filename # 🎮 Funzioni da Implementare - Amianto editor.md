@@ -185,6 +185,18 @@ get_interaction_range(objectId)      // Ottieni raggio di interazione
 set_object_interactive(objectId, interactive) // Imposta interattività
 ```
 
+### 📍 **Sistema Hotspot**
+
+#### Gestione Hotspot
+```javascript
+// ✅ Runtime (maggio 2026)
+enableHotspot(hotspotIdOrName)      // Rende hotspot cliccabile (visible=true)
+disableHotspot(hotspotIdOrName)     // Disattiva click (visible=false)
+
+// Editor: checkbox "Is active?" in tab Rooms → stato iniziale nel JSON
+// Evento: on_hotspot_click(hotspotId, x?, y?)
+```
+
 ### 🚪 **Sistema Stanze**
 
 #### Gestione Stanze

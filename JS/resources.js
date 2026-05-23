@@ -972,9 +972,21 @@
     setupResourcesTabUI();
   };
 
+  /** Snapshot per Play Test / runtime (nomi file → assetId + publicUrl). */
+  function getResourcesCatalog() {
+    return state.entries.map(entry => ({
+      assetId: entry.assetId,
+      name: entry.name || '',
+      displayName: entry.displayName || entry.name || '',
+      fileName: entry.fileName || entry.name || '',
+      publicUrl: entry.publicUrl || null
+    }));
+  }
+
   window.amiantoResources = {
     refresh: loadResources,
     refreshSounds: loadSounds,
+    getCatalog: getResourcesCatalog,
     showSubTab: showResourceSubTab,
     pick: openPicker,
     upload: uploadResourceFile,
