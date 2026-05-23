@@ -1892,7 +1892,9 @@
       carriedItem: null,
       pointerX: 0,
       pointerY: 0,
-      suppressPanelUntilDrop: false
+      suppressPanelUntilDrop: false,
+      /** Popup: true dopo hover sul bordo inferiore, finché il puntatore non esce dal panel. */
+      popupPanelEngaged: false
     };
   }
 
@@ -2031,7 +2033,18 @@
       const panel = getInventoryPanelRect();
       const inBottomEdge = inCanvas && canvasY >= canvas.height - edge;
       const inPanel = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
-      inv.visible = inBottomEdge || inPanel;
+
+      if (inBottomEdge) {
+        inv.popupPanelEngaged = true;
+        inv.visible = true;
+      } else if (inPanel && inv.popupPanelEngaged) {
+        inv.visible = true;
+      } else {
+        if (!inPanel) {
+          inv.popupPanelEngaged = false;
+        }
+        inv.visible = false;
+      }
     }
   }
 
@@ -5250,6 +5263,7 @@
       const inv = gameState.inventory;
       if (!inv || !inv.enabled || inv.displayMode !== 'popup') return;
       inv.visible = false;
+      inv.popupPanelEngaged = false;
     };
     canvas.addEventListener('mousemove', inventoryPointerHandler, { passive: true });
     canvas.addEventListener('mouseleave', inventoryLeaveHandler, { passive: true });
@@ -5284,6 +5298,7 @@
     if (inv) {
       inv.carriedItem = null;
       inv.suppressPanelUntilDrop = false;
+      inv.popupPanelEngaged = false;
       updateInventoryCursorStyle();
     }
   }
