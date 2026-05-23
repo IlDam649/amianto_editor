@@ -1,4 +1,182 @@
 // main.js
+
+/* ============================
+   APP STATE - UNICA FONTE DI VERITÀ
+   ============================ */
+
+/**
+ * Stato globale dell'applicazione
+ * Questa è l'UNICA fonte di verità per:
+ * - utente loggato
+ * - lista progetti
+ * - stato di caricamento
+ * - errori
+ */
+const AppState = {
+  initialized: false,
+  loading: false,
+  user: null,
+  projects: [],
+  error: null
+};
+
+/**
+ * Aggiorna lo stato dell'app e notifica eventuali listener
+ * @param {Object} updates - Oggetto con le proprietà da aggiornare
+ */
+function updateAppState(updates) {
+  Object.assign(AppState, updates);
+  
+  // Log per debug
+  if (updates.loading !== undefined) {
+    console.log(`[AppState] Loading: ${updates.loading}`);
+  }
+  if (updates.user !== undefined) {
+    console.log(`[AppState] User: ${updates.user ? updates.user.username : 'null'}`);
+  }
+  if (updates.projects !== undefined) {
+    console.log(`[AppState] Projects: ${updates.projects.length}`);
+  }
+  if (updates.initialized !== undefined) {
+    console.log(`[AppState] Initialized: ${updates.initialized}`);
+  }
+  if (updates.error !== undefined && updates.error !== null) {
+    console.error(`[AppState] Error:`, updates.error);
+  }
+}
+
+/**
+ * Bootstrap globale dell'applicazione
+ * 
+ * Responsabilità:
+ * - attendere autenticazione Firebase
+ * - caricare SEMPRE i progetti da Firestore (non dalla cache)
+ * - popolare AppState.projects
+ * - aggiornare localStorage solo come cache secondaria
+ * - impostare AppState.initialized = true
+ * 
+ * La UI NON deve essere utilizzabile prima che bootstrapApp sia completata.
+ * 
+ * @returns {Promise<void>}
+ */
+async function bootstrapApp() {
+  console.log('========================================');
+  console.log('🚀 BOOTSTRAP START');
+  console.log('========================================');
+  
+  updateAppState({ loading: true, error: null });
+  
+  // Mostra loading overlay visivamente
+  showLoadingOverlay('Loading application...');
+  
+  try {
+    // STEP 1: Attendi che Firebase sia disponibile
+    console.log('[BOOTSTRAP] Attesa Firebase...');
+    
+    let firebaseReady = false;
+    let attempts = 0;
+    const maxAttempts = 50; // 5 secondi max
+    
+    while (!firebaseReady && attempts < maxAttempts) {
+      if (window.firebaseAuth && window.firebaseDB) {
+        firebaseReady = true;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
+    
+    if (!firebaseReady) {
+      throw new Error('Firebase non disponibile dopo 5 secondi');
+    }
+    
+    console.log('[BOOTSTRAP] ✅ Firebase disponibile');
+    
+    // STEP 2: Attendi autenticazione utente
+    console.log('[BOOTSTRAP] Attesa autenticazione...');
+    
+    const currentUser = window.firebaseAuth.currentUser;
+    
+    if (!currentUser) {
+      console.log('[BOOTSTRAP] ⚠️ Nessun utente autenticato - app in modalità login');
+      updateAppState({ 
+        loading: false, 
+        initialized: true,
+        user: null,
+        projects: []
+      });
+      console.log('========================================');
+      console.log('✅ BOOTSTRAP COMPLETE (no user)');
+      console.log('========================================');
+      return;
+    }
+    
+    // STEP 3: Mappa utente
+    const mappedUser = {
+      username: (currentUser.email || '').split('@')[0] || (currentUser.uid ? `user_${currentUser.uid.substring(0, 6)}` : 'User'),
+      email: currentUser.email || '',
+      uid: currentUser.uid
+    };
+    
+    updateAppState({ user: mappedUser });
+    console.log('[BOOTSTRAP] ✅ USER AUTHENTICATED:', mappedUser.username);
+    
+    // STEP 4: Carica progetti SEMPRE da Firestore (non dalla cache)
+    console.log('[BOOTSTRAP] Caricamento progetti da Firestore...');
+    
+    let projects = [];
+    
+    try {
+      // Usa loadProjectsDirectlyFromFirestore per ottenere dati sempre aggiornati
+      projects = await loadProjectsDirectlyFromFirestore(currentUser.uid);
+      console.log(`[BOOTSTRAP] ✅ PROJECTS LOADED: ${projects.length}`);
+      
+      // Aggiorna localStorage solo come cache secondaria
+      if (mappedUser.username) {
+        saveProjectsToCache(mappedUser.username, projects);
+        console.log('[BOOTSTRAP] Cache localStorage aggiornata');
+      }
+    } catch (error) {
+      console.error('[BOOTSTRAP] ❌ Errore caricamento progetti:', error);
+      
+      // In caso di errore, prova a caricare dalla cache come fallback
+      if (mappedUser.username) {
+        console.log('[BOOTSTRAP] Fallback a cache localStorage...');
+        projects = loadProjectsFromCache(mappedUser.username);
+        console.log(`[BOOTSTRAP] Progetti da cache: ${projects.length}`);
+      }
+      
+      // Se anche la cache è vuota, continua comunque (utente nuovo)
+      updateAppState({ error: error.message || 'Error loading projects' });
+    }
+    
+    // STEP 5: Popola AppState
+    updateAppState({ 
+      projects: projects,
+      loading: false,
+      initialized: true
+    });
+    
+    console.log('========================================');
+    console.log('✅ BOOTSTRAP COMPLETE');
+    console.log(`   User: ${mappedUser.username}`);
+    console.log(`   Projects: ${projects.length}`);
+    console.log('========================================');
+    
+  } catch (error) {
+    console.error('[BOOTSTRAP] ❌ Errore critico:', error);
+    updateAppState({ 
+      loading: false,
+      initialized: true, // Inizializzato anche in caso di errore per permettere login
+      error: error.message || 'Error during bootstrap'
+    });
+    
+    console.log('========================================');
+    console.log('⚠️ BOOTSTRAP COMPLETE (con errori)');
+    console.log('========================================');
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
 
   /* ============================
@@ -18,11 +196,30 @@ document.addEventListener("DOMContentLoaded", () => {
   function showSectionById(id, addToHistory = true) {
     if (!id || tabState.currentTab === id) return;
     
+    // Blocca cambio tab se non c'è progetto aperto (tranne Projects e Docs)
+    if (id !== 'projects' && id !== 'docs') {
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        showNotification('Please select or create a project first', 'warning');
+        // Torna alla tab Projects
+        const projectsButton = document.querySelector(`[data-section="projects"]`);
+        if (projectsButton && !projectsButton.disabled) {
+          projectsButton.click();
+        }
+        return;
+      }
+    }
+    
     const targetSection = document.getElementById(id);
     const targetButton = document.querySelector(`[data-section="${id}"]`);
     
     if (!targetSection || !targetButton) {
       console.warn(`Section "${id}" not found`);
+      return;
+    }
+    
+    // Blocca cambio se il bottone è disabilitato
+    if (targetButton.disabled) {
       return;
     }
 
@@ -135,6 +332,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Improved initialization
   function initializeTabs() {
+    // Controlla se c'è un progetto aperto e abilita/disabilita tab di conseguenza
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    enableOtherTabs(!!activeProjectName);
+    
     // Find initial active tab
     const initiallyActiveBtn = document.querySelector(".section-btn.active-btn") || sectionButtons[0];
     if (initiallyActiveBtn) {
@@ -180,6 +381,57 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize tab system
   initializeTabs();
 
+  // Listener per tabChanged - carica progetti quando si entra nella tab Projects
+  document.addEventListener('tabChanged', async (e) => {
+    const currentTab = e.detail?.currentTab;
+    if (currentTab === 'projects') {
+      await loadAndRenderProjectsTab();
+    }
+  });
+
+  // Event listeners per pulsanti nella tab Projects
+  // Usa un listener che si attiva dopo che il DOM è caricato e le funzioni sono disponibili
+  setTimeout(() => {
+    // Pulsante Create Project
+    const btnCreateProject = document.getElementById('btn-create-project-in-tab');
+    if (btnCreateProject && !btnCreateProject.hasAttribute('data-listener-attached')) {
+      btnCreateProject.setAttribute('data-listener-attached', 'true');
+      btnCreateProject.addEventListener('click', async () => {
+        const projectName = prompt('Enter project name:');
+        if (!projectName || !projectName.trim()) return;
+        
+        try {
+          await window.createNewProject(projectName.trim(), true);
+          // Ricarica la lista progetti
+          await loadAndRenderProjectsTab();
+        } catch (error) {
+          console.error('[ProjectsTab] Errore creazione progetto:', error);
+          showNotification('Error creating project', 'error');
+        }
+      });
+    }
+    
+    // Pulsante Refresh
+    const btnRefreshProjects = document.getElementById('btn-refresh-projects');
+    if (btnRefreshProjects && !btnRefreshProjects.hasAttribute('data-listener-attached')) {
+      btnRefreshProjects.setAttribute('data-listener-attached', 'true');
+      btnRefreshProjects.addEventListener('click', async () => {
+        btnRefreshProjects.disabled = true;
+        btnRefreshProjects.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+        try {
+          await loadAndRenderProjectsTab();
+          showNotification('Projects list refreshed', 'success');
+        } catch (error) {
+          console.error('[ProjectsTab] Errore refresh progetti:', error);
+          showNotification('Error refreshing projects', 'error');
+        } finally {
+          btnRefreshProjects.disabled = false;
+          btnRefreshProjects.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh List';
+        }
+      });
+    }
+  }, 1000);
+
   // Expose global functions for external use
   window.__amiantoTabs = {
     showSection: showSectionById,
@@ -211,6 +463,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let background = null;
   let foregrounds = [];
   let sceneObjects = [];
+  let selectedForegroundId = null;
+  let selectedSceneObjectId = null;
   // GUI overlay: background image and button rectangles
   let guiBackground = null;
   let guiButtons = []; // { id, name, x, y, w, h, backgroundImage: Image|null, text: string }
@@ -221,10 +475,61 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedGuiButton = null;
   let guiButtonDragOffset = { x: 0, y: 0 };
   let isResizingGuiButton = false;
+
+  // Inventory editor (layout + items)
+  let inventoryDefinition = {
+    background: null,
+    slots: [],
+    displayMode: 'popup',
+    popupEdgeHeight: 48,
+    panel: null,
+    toggleIcon: null,
+    toggleIconBounds: null
+  };
+  let inventoryItems = []; // { id, name, scriptName, image: Image|null }
+  let selectedInventorySlotId = null;
+  let selectedInventoryItemId = null;
+  let isDrawingInventorySlot = false;
+  let inventorySlotDrawStart = null;
+  let isDraggingInventorySlot = false;
+  let isResizingInventorySlot = false;
+  let draggedInventorySlot = null;
+  let inventorySlotDragOffset = { x: 0, y: 0 };
+  let resizeInventoryHandle = null;
+  let pendingInventoryItemImage = null;
+
+  function getEditorActiveTab() {
+    return window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+  }
+
+  function isRoomCanvasActive() {
+    return getEditorActiveTab() === 'rooms';
+  }
+
+  function disableRoomCanvasEditing() {
+    isDrawingWalkable = false;
+    isDrawingHotspot = false;
+    isDraggingWalkableVertex = false;
+    isDraggingHotspotVertex = false;
+    draggedWalkableVertexIndex = -1;
+    draggedHotspotVertexIndex = -1;
+    selectedWalkableVertexIndex = -1;
+    selectedHotspotVertexIndex = -1;
+    isDraggingObject = false;
+    draggedObject = null;
+    isDraggingScalingLine = false;
+    draggedScalingLineType = null;
+  }
   
   // Multiple GUI management
   let guis = []; // Array of GUI objects: { id, name, background, buttons }
   let currentGuiId = null;
+
+  // Asset management: mappa per tracciare assetId associati alle immagini
+  // Struttura: Map<Image, {assetId, type, projectId}>
+  // Usata per serializzare assetId invece di dataURL
+  const imageAssetMap = new Map();
+  window.amiantoImageAssetMap = imageAssetMap;
   
   // Contextual cursors management
   let contextualCursors = []; // Array of cursor objects: { id, targetType, targetId, cursorImage, actionText, scriptName }
@@ -239,7 +544,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedWalkableVertexIndex = -1;
 
   // Hotspots (multiple polygons per room)
-  // Each hotspot: { id, name, points: [{x,y}], visible: true, script: string }
+  // Each hotspot: { id, name, points: [{x,y}], visible (active/clickable), scripts }
   let hotspots = [];
   let activeHotspotId = null;
   let isDrawingHotspot = false;
@@ -248,10 +553,21 @@ document.addEventListener("DOMContentLoaded", () => {
   let draggedHotspotVertexIndex = -1;
   let selectedHotspotVertexIndex = -1;
 
+  // Character scaling system
+  let scalingForegroundY = null; // Y coordinate for foreground (first plane) - max scale - must be BELOW background
+  let scalingBackgroundY = null; // Y coordinate for background (second plane) - min scale - must be ABOVE foreground
+  let isDraggingScalingLine = false;
+  let draggedScalingLineType = null; // 'foreground' or 'background'
+  let showScalingLines = true;
+  let scalingMinScale = 0.5;
+  let scalingMaxScale = 1.5;
+
   // Scene object drag & drop state
   let isDraggingObject = false;
   let draggedObject = null;
   let dragOffset = { x: 0, y: 0 };
+  
+  // Character pivot management
 
   // Container for foreground layers list (in rooms tab)
   const fgListContainer = document.getElementById("foreground-list-container");
@@ -277,6 +593,58 @@ document.addEventListener("DOMContentLoaded", () => {
     lastPanY: 0
   };
 
+  // Letterbox offset to center game viewport in the CSS-sized canvas (rooms / inventory / characters)
+  function getCanvasCenterOffset() {
+    const rect = canvas.getBoundingClientRect();
+    let centerOffsetX = 0;
+    let centerOffsetY = 0;
+    if (rect.width > 0 && rect.height > 0 && canvas.width > 0 && canvas.height > 0) {
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const scaledContentWidth = gameViewport.width * editorState.zoom;
+      const scaledContentHeight = gameViewport.height * editorState.zoom;
+      const cssOffsetX = (rect.width - scaledContentWidth) / 2;
+      const cssOffsetY = (rect.height - scaledContentHeight) / 2;
+      centerOffsetX = cssOffsetX * scaleX;
+      centerOffsetY = cssOffsetY * scaleY;
+    }
+    return { x: centerOffsetX, y: centerOffsetY };
+  }
+
+  function resetEditorViewCentered(options = {}) {
+    const fit = options.fit === true;
+    if (fit) {
+      const container = document.getElementById('canvasContainer');
+      if (container) {
+        const containerWidth = container.clientWidth - 20;
+        const containerHeight = container.clientHeight - 20;
+        const zoomX = containerWidth / gameViewport.width;
+        const zoomY = containerHeight / gameViewport.height;
+        editorState.zoom = Math.min(zoomX, zoomY, 1.0);
+      } else {
+        editorState.zoom = 1.0;
+      }
+    } else if (typeof options.zoom === 'number') {
+      editorState.zoom = options.zoom;
+    } else {
+      editorState.zoom = 1.0;
+    }
+    editorState.panX = 0;
+    editorState.panY = 0;
+    updateEditorDisplay();
+    redraw();
+  }
+
+  // Allinea l'angolo (0,0) del viewport all'angolo visibile in alto a sinistra del canvas
+  function alignEditorViewTopLeft() {
+    editorState.zoom = 1.0;
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+    editorState.panX = -centerOffsetX;
+    editorState.panY = -centerOffsetY;
+    updateEditorDisplay();
+    redraw();
+  }
+
   // Initialize canvas with game viewport size
   function initializeCanvas() {
     canvas.width = gameViewport.width;
@@ -285,26 +653,105 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
     }
-    redraw();
+    requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+  }
+
+  // ===== Character scaling controls & UI =====
+  // Define these functions early so they're available when bindRoomRefs is called
+  function updateScalingUI() {
+    try {
+      const minInput = document.getElementById('scaling-min-scale');
+      const maxInput = document.getElementById('scaling-max-scale');
+      if (minInput) minInput.value = scalingMinScale;
+      if (maxInput) maxInput.value = scalingMaxScale;
+    } catch (error) {
+      // Silently fail if elements don't exist yet (e.g., during initial load)
+      console.debug('[Scaling] UI elements not available yet:', error);
+    }
   }
 
   function bindRoomRefs() {
-    const r = rooms.get(currentRoomId);
-    if (!r) return;
-    background = r.background;
-    foregrounds = r.foregrounds;
+    try {
+      // Safety check: ensure rooms Map is initialized
+      if (!rooms || typeof rooms.get !== 'function') {
+        console.debug('[bindRoomRefs] Rooms not initialized yet');
+        return;
+      }
+      if (!currentRoomId) {
+        console.debug('[bindRoomRefs] No current room selected');
+        return;
+      }
+      const r = rooms.get(currentRoomId);
+      if (!r) {
+        console.warn(`[bindRoomRefs] Room ${currentRoomId} non trovata`);
+        return;
+      }
+      
+      background = r.background;
+    
+    // IMPORTANTE: Non sovrascrivere foregrounds se sono già caricati e la room ha foregrounds
+    // Questo previene la perdita di foreground durante il reload
+    if (Array.isArray(r.foregrounds) && r.foregrounds.length > 0) {
+      foregrounds = r.foregrounds;
+      console.log(`[bindRoomRefs] ✓ Foreground ripristinati da room: ${foregrounds.length} layer`);
+    } else if (!Array.isArray(foregrounds) || foregrounds.length === 0) {
+      // Solo se non ci sono foreground nello stato globale, inizializza array vuoto
+      foregrounds = [];
+      console.log(`[bindRoomRefs] Nessun foreground nella room, inizializzato array vuoto`);
+    } else {
+      // Mantieni i foreground esistenti se la room non ne ha
+      console.log(`[bindRoomRefs] Mantenuti foreground esistenti nello stato globale: ${foregrounds.length} layer`);
+    }
+    
     sceneObjects = r.sceneObjects;
+    selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
+    selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
     walkableArea = r.walkableArea;
     // initialize hotspots container if missing for backward compatibility
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
-    // auto select first hotspot if none
-    if (!activeHotspotId && hotspots.length > 0) activeHotspotId = hotspots[0].id;
+    // auto select first hotspot if none or if previous selection non valido
+    if (!activeHotspotId || !hotspots.some(h => h.id === activeHotspotId)) {
+      activeHotspotId = hotspots.length > 0 ? hotspots[0].id : null;
+    }
+    // Load character scaling data
+    try {
+      scalingForegroundY = (typeof r.scalingForegroundY === 'number') ? r.scalingForegroundY : null;
+      scalingBackgroundY = (typeof r.scalingBackgroundY === 'number') ? r.scalingBackgroundY : null;
+      scalingMinScale = (typeof r.scalingMinScale === 'number') ? r.scalingMinScale : 0.5;
+      scalingMaxScale = (typeof r.scalingMaxScale === 'number') ? r.scalingMaxScale : 1.5;
+      // Ensure constraints: foreground must be below background
+      if (scalingBackgroundY !== null && scalingForegroundY !== null && scalingForegroundY <= scalingBackgroundY) {
+        // Fix invalid state: separate them
+        const mid = Math.round((scalingBackgroundY + scalingForegroundY) / 2);
+        scalingBackgroundY = mid - 1;
+        scalingForegroundY = mid + 1;
+        r.scalingBackgroundY = scalingBackgroundY;
+        r.scalingForegroundY = scalingForegroundY;
+      }
+      // Update UI (safely, may not exist during initial load or before login)
+      if (typeof updateScalingUI === 'function') {
+        try {
+          updateScalingUI();
+        } catch (uiError) {
+          // Silently fail if UI elements don't exist yet
+          console.debug('[Scaling] UI update skipped (elements not available)');
+        }
+      }
+    } catch (error) {
+      // Silently fail if there's any error loading scaling data
+      console.debug('[Scaling] Error loading scaling data (non-critical):', error);
+    }
+    } catch (bindError) {
+      // Catch any unexpected errors in bindRoomRefs to prevent blocking execution
+      console.error('[bindRoomRefs] Unexpected error (non-critical):', bindError);
+      // Don't throw - allow execution to continue
+    }
   }
 
   // Update editor display (zoom and info)
@@ -319,31 +766,69 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Draw image at original size with offset
   function drawImageAtOriginalSize(img, offsetX = 0, offsetY = 0) {
-    if (!img || !img.width || !img.height) return;
+    if (!img) {
+      console.warn('[drawImageAtOriginalSize] img is null or undefined');
+      return;
+    }
+    
+    // Controlla se l'immagine è completamente caricata
+    // Usa naturalWidth/naturalHeight per maggiore affidabilità
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    
+    if (!width || !height) {
+      // Se l'immagine non è ancora caricata, aspetta e ridisegna
+      if (!img.complete) {
+        console.warn('[drawImageAtOriginalSize] Image not fully loaded yet, waiting...', {
+          complete: img.complete,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          width: img.width,
+          height: img.height
+        });
+        
+        // Se non c'è già un handler onload, aggiungilo per ridisegnare quando l'immagine è pronta
+        if (!img._onloadHandlerAdded) {
+          img._onloadHandlerAdded = true;
+          const originalOnload = img.onload;
+          img.onload = () => {
+            if (originalOnload) originalOnload.call(img);
+            // Ridisegna quando l'immagine è caricata
+            setTimeout(() => redraw(), 10);
+          };
+        }
+        return;
+      } else {
+        console.warn('[drawImageAtOriginalSize] Image has no dimensions:', {
+          complete: img.complete,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          width: img.width,
+          height: img.height
+        });
+        return;
+      }
+    }
     
     // Draw image at its original size with offset
-    ctx.drawImage(img, offsetX, offsetY, img.width, img.height);
+    ctx.drawImage(img, offsetX, offsetY, width, height);
   }
 
-  // Convert screen coordinates to world coordinates
+  // Convert screen coordinates to world coordinates (all editor tabs)
   function screenToWorld(screenX, screenY) {
     const rect = canvas.getBoundingClientRect();
     const canvasX = screenX - rect.left;
     const canvasY = screenY - rect.top;
     
-    // Calculate scaling factor between CSS dimensions and internal canvas dimensions
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
-    // Convert CSS coordinates to internal canvas coordinates
     const internalX = canvasX * scaleX;
     const internalY = canvasY * scaleY;
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
     
-    // Apply inverse transformations
-    const worldX = (internalX - editorState.panX) / editorState.zoom;
-    const worldY = (internalY - editorState.panY) / editorState.zoom;
+    const worldX = (internalX - centerOffsetX - editorState.panX) / editorState.zoom;
+    const worldY = (internalY - centerOffsetY - editorState.panY) / editorState.zoom;
     
-    // Debug logging (can be removed in production)
     if (window.debugCoordinates) {
       console.log('Coordinate conversion:', {
         screen: { x: screenX, y: screenY },
@@ -351,11 +836,31 @@ document.addEventListener("DOMContentLoaded", () => {
         canvas: { width: canvas.width, height: canvas.height },
         scale: { x: scaleX, y: scaleY },
         internal: { x: internalX, y: internalY },
+        centerOffset: { x: centerOffsetX, y: centerOffsetY },
+        pan: { x: editorState.panX, y: editorState.panY },
+        zoom: editorState.zoom,
         world: { x: worldX, y: worldY }
       });
     }
     
     return { x: worldX, y: worldY };
+  }
+
+  // Convert world coordinates to screen coordinates
+  function worldToScreen(worldX, worldY) {
+    const rect = canvas.getBoundingClientRect();
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+    
+    const internalX = worldX * editorState.zoom + editorState.panX + centerOffsetX;
+    const internalY = worldY * editorState.zoom + editorState.panY + centerOffsetY;
+    
+    // Convert internal canvas coordinates to CSS coordinates
+    const scaleX = rect.width / canvas.width;
+    const scaleY = rect.height / canvas.height;
+    const cssX = internalX * scaleX;
+    const cssY = internalY * scaleY;
+    
+    return { x: cssX, y: cssY };
   }
 
   // Convert mouse event to room-space coordinates (compensates zoom/pan and editor offsets)
@@ -367,6 +872,44 @@ document.addEventListener("DOMContentLoaded", () => {
     return { x, y };
   }
 
+  // Parse position string "x, y" to {x, y} object
+  function parsePositionString(str) {
+    if (!str || typeof str !== 'string') return { x: 0, y: 0 };
+    const parts = str.split(',').map(p => p.trim());
+    const x = parts.length > 0 ? (Number(parts[0]) || 0) : 0;
+    const y = parts.length > 1 ? (Number(parts[1]) || 0) : 0;
+    return { x, y };
+  }
+
+  // Format position object {x, y} to "x, y" string
+  function formatPositionString(x, y) {
+    const px = Math.round(Number(x) || 0);
+    const py = Math.round(Number(y) || 0);
+    return `${px}, ${py}`;
+  }
+
+  /** Visibilità/interattività a runtime (playtest); in editor si disegna sempre. */
+  function isSceneObjectRuntimeVisible(obj) {
+    return obj && obj.visible !== false;
+  }
+
+  function setSceneObjectRuntimeVisible(obj, visible) {
+    if (!obj) return;
+    const v = !!visible;
+    obj.visible = v;
+    obj.enabled = v;
+  }
+
+  /** Hotspot cliccabile a runtime; in editor il poligono resta sempre visibile. */
+  function isHotspotRuntimeActive(hs) {
+    return hs && hs.visible !== false;
+  }
+
+  function setHotspotRuntimeActive(hs, active) {
+    if (!hs) return;
+    hs.visible = !!active;
+  }
+
   // Check if a point is inside a scene object
   function getObjectAtPoint(worldX, worldY) {
     // Check objects in reverse order (top to bottom)
@@ -374,8 +917,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const obj = sceneObjects[i];
       if (!obj.img) continue;
       
-      const objX = (obj.x || 0) + (editorState.offsetX || 0);
-      const objY = (obj.y || 0) + (editorState.offsetY || 0);
+      const objX = obj.x || 0;
+      const objY = obj.y || 0;
       
       if (worldX >= objX && worldX <= objX + obj.img.width &&
           worldY >= objY && worldY <= objY + obj.img.height) {
@@ -409,14 +952,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
       const charData = who ? characterFrames.get(who) : null;
-      // Prepare current frame
-      let frame = null;
-      if (charData && charData.directions[currentDirection] && charData.directions[currentDirection].frames.length > 0) {
-        const dirData = charData.directions[currentDirection];
-        const idx = characterPreviewIndex % dirData.frames.length;
-        frame = dirData.frames[idx];
-      }
-
+      
       // Ensure canvas is set to game viewport (no stretching by CSS)
       if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
         canvas.width = gameViewport.width;
@@ -427,64 +963,285 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Apply zoom/pan transforms like rooms
-      ctx.save();
-      ctx.translate(editorState.panX, editorState.panY);
-      ctx.scale(editorState.zoom, editorState.zoom);
-
-      // Draw current frame at original size, centered in game viewport space
-      if (frame && frame.img) {
-        const dx = (gameViewport.width - frame.img.width) / 2;
-        const dy = (gameViewport.height - frame.img.height) / 2;
-        ctx.drawImage(frame.img, Math.round(dx), Math.round(dy));
+      const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+      // Verifica che ci siano dati validi prima di procedere
+      if (!charData || !activeDirections || !activeDirections[currentDirection]) {
+        // Nessun character selezionato o direzione non valida
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(who ? 'No frames loaded for this direction' : 'Select a character to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return; // skip rooms rendering
       }
 
+      const dirData = activeDirections[currentDirection];
+      
+      // Verifica che ci siano frame
+      if (!dirData.frames || dirData.frames.length === 0) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('No frames loaded for this direction', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return; // skip rooms rendering
+      }
+
+      // Prepare current frame
+      const frameIndex = characterPreviewIndex % dirData.frames.length;
+      const frame = dirData.frames[frameIndex];
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      // Draw current frame at original size, positioned at top-left corner (0,0)
+      // Usa getFrameImage per gestire sia frame normali che frame specchiati
+      const frameResult = getFrameImage(frame, activeDirections, frameIndex, currentDirection);
+      
+      if (frameResult && frameResult.img) {
+        const frameImg = frameResult.img;
+        
+        // Verifica che l'immagine sia caricata
+        if (frameImg.complete && frameImg.naturalWidth > 0 && frameImg.naturalHeight > 0) {
+          // Posiziona l'immagine con l'angolo in alto a sinistra a (0,0)
+          const dx = 0;
+          const dy = 0;
+          
+          // Se il frame deve essere specchiato, applica la trasformazione
+          if (frameResult.mirrored) {
+            ctx.save();
+            // Specchia orizzontalmente: trasla, scala negativo su X, e ri-trasla
+            ctx.translate(dx + frameImg.width, dy);
+            ctx.scale(-1, 1);
+            ctx.drawImage(frameImg, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.drawImage(frameImg, Math.round(dx), Math.round(dy));
+          }
+          
+          // Draw pivot point if it exists (one pivot per character, relative to current frame)
+          if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
+            // Pivot is relative to frame, so draw it at frame position + pivot offset
+            let pivotX = dx + charData.pivotX;
+            let pivotY = dy + charData.pivotY;
+            
+            // If frame is mirrored, adjust pivot X coordinate
+            if (frameResult.mirrored) {
+              pivotX = dx + frameImg.width - charData.pivotX;
+            }
+            
+            // Scale pivot size with zoom for better visibility
+            const pivotRadius = 8 / editorState.zoom;
+            const crosshairSize = 12 / editorState.zoom;
+            const pivotLineWidth = Math.max(1, 2 / editorState.zoom);
+            const crosshairLineWidth = Math.max(0.5, 1.5 / editorState.zoom);
+            
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+            ctx.beginPath();
+            ctx.arc(Math.round(pivotX), Math.round(pivotY), pivotRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = pivotLineWidth;
+            ctx.stroke();
+            // Draw crosshair
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.lineWidth = crosshairLineWidth;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(pivotX - crosshairSize), Math.round(pivotY));
+            ctx.lineTo(Math.round(pivotX + crosshairSize), Math.round(pivotY));
+            ctx.moveTo(Math.round(pivotX), Math.round(pivotY - crosshairSize));
+            ctx.lineTo(Math.round(pivotX), Math.round(pivotY + crosshairSize));
+            ctx.stroke();
+          }
+          
+          // Mostra informazioni sull'animazione (opzionale, per debug)
+          if (characterPreviewTimer) {
+            ctx.save();
+            ctx.resetTransform(); // Reset per testo senza zoom/pan
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(10, 10, 300, 80);
+            ctx.fillStyle = '#39ff14';
+            ctx.font = '12px monospace';
+            const currentFrameNum = frameIndex + 1;
+            const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'Walking' : getSelectedCharacterAnimationKey();
+            ctx.fillText(`Animation: ${animLabel}`, 15, 28);
+            ctx.fillText(`Frame: ${currentFrameNum}/${dirData.frames.length}`, 15, 45);
+            ctx.fillText(`FPS: ${dirData.fps || 8}`, 15, 62);
+            ctx.fillText(`Direction: ${currentDirection}`, 15, 79);
+            ctx.restore();
+          }
+        } else {
+          // Immagine non ancora caricata
+          ctx.save();
+          ctx.resetTransform();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+          ctx.fillStyle = '#ffff00';
+          ctx.font = '16px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('Loading frame...', gameViewport.width / 2, gameViewport.height / 2);
+          ctx.restore();
+        }
+      } else {
+        // Frame non valido
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 150, gameViewport.height / 2 - 20, 300, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Invalid frame', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+      }
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
       ctx.restore();
       return; // skip rooms rendering
     }
 
-    // Apply transformations for zoom and pan
+    if (activeTab === 'inventory') {
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      ensureInventoryRects();
+      const panel = inventoryDefinition.panel;
+      if (inventoryDefinition.background) {
+        ctx.drawImage(inventoryDefinition.background, panel.x, panel.y, panel.w, panel.h);
+      } else {
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+        ctx.fillStyle = '#888';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Load the inventory background from the panel on the right', panel.x + panel.w / 2, panel.y + panel.h / 2);
+      }
+      ctx.strokeStyle = 'rgba(100, 200, 255, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+      ctx.setLineDash([]);
+
+      if (inventoryDefinition.displayMode === 'toggle' && inventoryDefinition.toggleIcon) {
+        const tb = inventoryDefinition.toggleIconBounds;
+        try {
+          ctx.drawImage(inventoryDefinition.toggleIcon, tb.x, tb.y, tb.w, tb.h);
+        } catch (_) {}
+        ctx.strokeStyle = 'rgba(255, 200, 80, 0.7)';
+        ctx.strokeRect(tb.x, tb.y, tb.w, tb.h);
+      }
+
+      for (const slot of inventoryDefinition.slots) {
+        if (!slot || slot.id === '__drawing__') continue;
+        const isSelected = slot.id === selectedInventorySlotId;
+        ctx.strokeStyle = isSelected ? 'rgba(180, 80, 255, 1)' : 'rgba(180, 80, 255, 0.85)';
+        ctx.fillStyle = isSelected ? 'rgba(180, 80, 255, 0.2)' : 'rgba(180, 80, 255, 0.1)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.rect(slot.x, slot.y, slot.w, slot.h);
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ddd';
+        ctx.font = '11px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(slot.name || 'Slot', slot.x + slot.w / 2, slot.y + slot.h / 2);
+
+        if (isSelected) {
+          const handleSize = 8;
+          ctx.fillStyle = 'rgba(180, 80, 255, 0.9)';
+          const handles = [
+            { x: slot.x - handleSize / 2, y: slot.y - handleSize / 2 },
+            { x: slot.x + slot.w - handleSize / 2, y: slot.y - handleSize / 2 },
+            { x: slot.x - handleSize / 2, y: slot.y + slot.h - handleSize / 2 },
+            { x: slot.x + slot.w - handleSize / 2, y: slot.y + slot.h - handleSize / 2 }
+          ];
+          handles.forEach(h => ctx.fillRect(h.x, h.y, handleSize, handleSize));
+        }
+      }
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
+    }
+
+    const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
     ctx.save();
-    ctx.translate(editorState.panX, editorState.panY);
+    ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
     ctx.scale(editorState.zoom, editorState.zoom);
 
     // Default (Rooms tab): draw scene
-    // Draw background at original size
+    // Draw background scaled to viewport size (always matches the green rectangle)
+    // L'origine (0,0) è ora nell'angolo in alto a sinistra del contenuto centrato
     if (background) {
-      drawImageAtOriginalSize(background, 0, 0);
+      // Draw background scaled to viewport dimensions
+      ctx.drawImage(background, 0, 0, gameViewport.width, gameViewport.height);
     } else {
       // Placeholder background
       ctx.fillStyle = "#111";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
     }
 
-    // Draw scene objects at their positions
+    // Draw scene objects at their positions (sempre in editor; attenuati se off a runtime)
     for (let obj of sceneObjects) {
       if (obj && obj.img) {
-        if (obj.visible === false) continue;
+        const runtimeVisible = isSceneObjectRuntimeVisible(obj);
         const objX = (obj.x || 0);
         const objY = (obj.y || 0);
         const rot = Number(obj.rotationRad || 0);
         const sx = (typeof obj.scaleX === 'number') ? obj.scaleX : 1;
         const sy = (typeof obj.scaleY === 'number') ? obj.scaleY : 1;
 
+        ctx.save();
+        if (!runtimeVisible) ctx.globalAlpha = 0.42;
         if (rot !== 0 || sx !== 1 || sy !== 1) {
-          ctx.save();
           ctx.translate(objX, objY);
           if (rot !== 0) ctx.rotate(rot);
           if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
-          // draw image at origin with its natural size
           ctx.drawImage(obj.img, 0, 0, obj.img.width, obj.img.height);
-          ctx.restore();
         } else {
-          // Draw object without transforms
           drawImageAtOriginalSize(obj.img, objX, objY);
         }
-        
-        // Draw selection outline if this is the dragged object
-        if (isDraggingObject && draggedObject && draggedObject.id === obj.id) {
+        ctx.restore();
+
+        if (!runtimeVisible) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(57,255,20,0.8)';
+          ctx.strokeStyle = 'rgba(160,160,160,0.85)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
+          ctx.restore();
+        }
+
+        // Draw selection outline if this is the dragged object
+        // Only draw outline if no hotspot is selected (scene objects are locked)
+        if (!activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id) {
+          ctx.save();
+          ctx.strokeStyle = runtimeVisible ? 'rgba(57,255,20,0.8)' : 'rgba(160,160,160,0.9)';
           ctx.lineWidth = 3;
           ctx.setLineDash([5, 5]);
           ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
@@ -493,10 +1250,40 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // Draw foregrounds at original sizes
+    // Draw foregrounds - after scene objects, before GUI
+    // Support same transforms as scene objects: x, y, rotationRad, scaleX, scaleY, visible
     for (let layer of foregrounds) {
-      if (layer.img) {
-        drawImageAtOriginalSize(layer.img, layer.offsetX || 0, layer.offsetY || 0);
+      if (!layer || !layer.img) continue;
+      if (layer.visible === false) continue;
+      
+      // Support both x/y and offsetX/offsetY for backward compatibility
+      const layerX = (typeof layer.x === 'number') ? layer.x : (layer.offsetX || 0);
+      const layerY = (typeof layer.y === 'number') ? layer.y : (layer.offsetY || 0);
+      const rot = Number(layer.rotationRad || 0);
+      const sx = (typeof layer.scaleX === 'number') ? layer.scaleX : 1;
+      const sy = (typeof layer.scaleY === 'number') ? layer.scaleY : 1;
+
+      if (rot !== 0 || sx !== 1 || sy !== 1) {
+        ctx.save();
+        ctx.translate(layerX, layerY);
+        if (rot !== 0) ctx.rotate(rot);
+        if (sx !== 1 || sy !== 1) ctx.scale(Math.max(0.01, sx), Math.max(0.01, sy));
+        // draw image at origin with its natural size
+        ctx.drawImage(layer.img, 0, 0, layer.img.width, layer.img.height);
+        ctx.restore();
+      } else {
+        // Draw layer without transforms
+        drawImageAtOriginalSize(layer.img, layerX, layerY);
+      }
+      
+      // Draw selection outline if this is the selected foreground layer
+      if (selectedForegroundId === layer.id) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0, 200, 255, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(layerX, layerY, layer.img.width, layer.img.height);
+        ctx.restore();
       }
     }
 
@@ -610,37 +1397,104 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.restore();
     }
 
-    // Hotspots overlay (draw after walkable, before UI)
+    // Hotspots overlay (sempre visibili in editor; grigi tratteggiati se inattivi a runtime)
     if (showHotspots && hotspots.length > 0) {
       ctx.save();
       for (const hs of hotspots) {
-        if (!hs || hs.visible === false) continue;
+        if (!hs) continue;
         const pts = Array.isArray(hs.points) ? hs.points : [];
         if (pts.length <= 1) continue;
-        // color: orange, active highlighted
-        const isActive = hs.id === activeHotspotId;
-        ctx.strokeStyle = isActive ? 'rgba(255,165,0,1.0)' : 'rgba(255,165,0,0.9)';
-        ctx.fillStyle = isActive ? 'rgba(255,165,0,0.18)' : 'rgba(255,165,0,0.12)';
-        ctx.lineWidth = isActive ? 3 : 2;
+        const isSelected = hs.id === activeHotspotId;
+        const runtimeActive = isHotspotRuntimeActive(hs);
+        if (runtimeActive) {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = isSelected ? 'rgba(255,165,0,1.0)' : 'rgba(255,165,0,0.9)';
+          ctx.fillStyle = isSelected ? 'rgba(255,165,0,0.18)' : 'rgba(255,165,0,0.12)';
+        } else {
+          ctx.setLineDash([6, 4]);
+          ctx.strokeStyle = isSelected ? 'rgba(180,180,180,1.0)' : 'rgba(140,140,140,0.85)';
+          ctx.fillStyle = isSelected ? 'rgba(140,140,140,0.14)' : 'rgba(120,120,120,0.08)';
+        }
+        ctx.lineWidth = isSelected ? 3 : 2;
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
         for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
         if (!isDrawingHotspot && pts.length > 2) ctx.closePath();
         ctx.fill();
         ctx.stroke();
-        // vertices
+        ctx.setLineDash([]);
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
           ctx.beginPath();
-          const isSelectedVertex = isActive && i === selectedHotspotVertexIndex;
+          const isSelectedVertex = isSelected && i === selectedHotspotVertexIndex;
           const radius = isSelectedVertex ? 5 : 3;
           ctx.arc(p.x, p.y, radius, 0, Math.PI*2);
-          ctx.fillStyle = isSelectedVertex ? 'rgba(255,215,0,1.0)' : 'rgba(255,165,0,0.95)';
+          ctx.fillStyle = isSelectedVertex
+            ? (runtimeActive ? 'rgba(255,215,0,1.0)' : 'rgba(200,200,200,1.0)')
+            : (runtimeActive ? 'rgba(255,165,0,0.95)' : 'rgba(150,150,150,0.9)');
           ctx.fill();
         }
       }
       ctx.restore();
     }
+
+    // Character scaling lines overlay
+    if (showScalingLines) {
+      ctx.save();
+      // Draw background line (second plane - min scale) - red/orange color - UPPER line
+      if (scalingBackgroundY !== null) {
+        ctx.strokeStyle = 'rgba(255, 100, 0, 1.0)';
+        ctx.lineWidth = 4 / editorState.zoom;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, scalingBackgroundY);
+        ctx.lineTo(gameViewport.width, scalingBackgroundY);
+        ctx.stroke();
+        // Draw label with background
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(5, scalingBackgroundY - 22, 280, 18);
+        ctx.fillStyle = 'rgba(255, 100, 0, 1.0)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Background (Min: ' + scalingMinScale + ') - Top line', 10, scalingBackgroundY - 13);
+        ctx.restore();
+      }
+      // Draw foreground line (first plane - max scale) - blue/cyan color - LOWER line
+      if (scalingForegroundY !== null) {
+        ctx.strokeStyle = 'rgba(0, 200, 255, 1.0)';
+        ctx.lineWidth = 4 / editorState.zoom;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, scalingForegroundY);
+        ctx.lineTo(gameViewport.width, scalingForegroundY);
+        ctx.stroke();
+        // Draw label with background
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(5, scalingForegroundY + 4, 280, 18);
+        ctx.fillStyle = 'rgba(0, 200, 255, 1.0)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Foreground (Max: ' + scalingMaxScale + ') - Bottom line', 10, scalingForegroundY + 13);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    // Draw green rectangle representing the current viewport resolution
+    // This rectangle is drawn in the same transformed context as the background image
+    // so it will always align perfectly with the background (both at position 0,0 with viewport dimensions)
+    ctx.save();
+    ctx.strokeStyle = '#39ff14'; // Green color
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    // Draw the rectangle at the same position and size as the background image
+    // Both are at (0,0) with gameViewport dimensions, so they will perfectly overlap
+    ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+    ctx.restore();
 
     // Restore transformations
     ctx.restore();
@@ -708,9 +1562,61 @@ document.addEventListener("DOMContentLoaded", () => {
           guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: Math.round(worldPos.x), y: Math.round(worldPos.y), w: 0, h: 0, backgroundImage: null });
         }
         canvas.style.cursor = 'crosshair';
-      } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton) { // Left click without Ctrl
-        // Check for GUI button interaction
+      } else if (e.button === 0 && isDrawingInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        inventorySlotDrawStart = { x: worldPos.x, y: worldPos.y };
+        if (!(inventoryDefinition.slots.length && inventoryDefinition.slots[inventoryDefinition.slots.length - 1].id === '__drawing__')) {
+          inventoryDefinition.slots.push({ id: '__drawing__', name: 'Drawing...', x: Math.round(worldPos.x), y: Math.round(worldPos.y), w: 0, h: 0 });
+        }
+        canvas.style.cursor = 'crosshair';
+      } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton && !isDrawingInventorySlot) { // Left click without Ctrl
+        // Check for character pivot interaction (only in characters tab)
         const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+        if (activeTab === 'characters') {
+          const sel = document.getElementById('character-selector');
+          const who = sel ? sel.value : '';
+          if (who) {
+            const worldPos = screenToWorld(e.clientX, e.clientY);
+            const charData = characterFrames.get(who);
+            if (charData) {
+              const activeDirections = getCharacterDirectionsStore(charData);
+              const dirData = activeDirections ? activeDirections[currentDirection] : null;
+              if (dirData && dirData.frames && dirData.frames.length > 0) {
+                const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, currentDirection);
+                if (frameResult && frameResult.img) {
+                  const frameImg = frameResult.img;
+                  // Frame position in viewport coordinates (now at 0,0)
+                  const frameDx = 0;
+                  const frameDy = 0;
+                  
+                  // Initialize pivot if it doesn't exist
+                  if (charData.pivotX === undefined || charData.pivotY === undefined) {
+                    charData.pivotX = Math.round(frameImg.width / 2);
+                    charData.pivotY = Math.round(frameImg.height);
+                    characterFrames.set(who, charData);
+                  }
+                  
+                  // Move pivot to click position (relative to frame top-left)
+                  // Works like polygon points - always moves pivot on click
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // If frame is mirrored, adjust pivot X coordinate to match visual position
+                  if (frameResult.mirrored) {
+                    charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
+                  } else {
+                    charData.pivotX = Math.round(worldPos.x - frameDx);
+                  }
+                  charData.pivotY = Math.round(worldPos.y - frameDy);
+                  characterFrames.set(who, charData);
+                  redraw();
+                  return;
+                }
+              }
+            }
+          }
+        }
+        // Check for GUI button interaction
         if (activeTab === 'gui') {
           const worldPos = screenToWorld(e.clientX, e.clientY);
           const clickedGuiButton = guiButtons.find(btn => 
@@ -754,23 +1660,84 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
         }
-        // Check if clicking on a scene object
-        const worldPos = screenToWorld(e.clientX, e.clientY);
-        const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
-        
-        if (clickedObject) {
-          e.preventDefault();
-          isDraggingObject = true;
-          draggedObject = clickedObject;
+        if (activeTab === 'inventory') {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const slots = inventoryDefinition.slots.filter(s => s.id !== '__drawing__');
+          const clickedSlot = [...slots].reverse().find(slot =>
+            worldPos.x >= slot.x && worldPos.x <= slot.x + slot.w &&
+            worldPos.y >= slot.y && worldPos.y <= slot.y + slot.h
+          );
+          if (clickedSlot) {
+            e.preventDefault();
+            selectedInventorySlotId = clickedSlot.id;
+            const handleSize = 8;
+            const handles = [
+              { x: clickedSlot.x - handleSize / 2, y: clickedSlot.y - handleSize / 2, type: 'nw' },
+              { x: clickedSlot.x + clickedSlot.w - handleSize / 2, y: clickedSlot.y - handleSize / 2, type: 'ne' },
+              { x: clickedSlot.x - handleSize / 2, y: clickedSlot.y + clickedSlot.h - handleSize / 2, type: 'sw' },
+              { x: clickedSlot.x + clickedSlot.w - handleSize / 2, y: clickedSlot.y + clickedSlot.h - handleSize / 2, type: 'se' }
+            ];
+            const clickedHandle = handles.find(h =>
+              worldPos.x >= h.x && worldPos.x <= h.x + handleSize &&
+              worldPos.y >= h.y && worldPos.y <= h.y + handleSize
+            );
+            if (clickedHandle) {
+              isResizingInventorySlot = true;
+              resizeInventoryHandle = clickedHandle.type;
+              draggedInventorySlot = clickedSlot;
+              canvas.style.cursor = getResizeCursor(clickedHandle.type);
+            } else {
+              isDraggingInventorySlot = true;
+              draggedInventorySlot = clickedSlot;
+              inventorySlotDragOffset.x = worldPos.x - clickedSlot.x;
+              inventorySlotDragOffset.y = worldPos.y - clickedSlot.y;
+              canvas.style.cursor = 'grabbing';
+            }
+            refreshInventorySlotsListUI();
+            redraw();
+            return;
+          }
+          if (!isDrawingInventorySlot) {
+            return;
+          }
+        }
+        // Check for scaling line drag (only in rooms tab, before scene objects)
+        // Reuse activeTab already declared above
+        if (activeTab === 'rooms' && showScalingLines && !isDrawingWalkable && !isDrawingHotspot) {
+          const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+          const lineType = findScalingLineNear(x, y);
+          if (lineType) {
+            e.preventDefault();
+            isDraggingScalingLine = true;
+            draggedScalingLineType = lineType;
+            canvas.style.cursor = 'ns-resize';
+            redraw();
+            return; // Exit early to prevent other handlers
+          }
+        }
+        // Check if clicking on a scene object (rooms tab only)
+        if (activeTab === 'rooms') {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
           
-          // Calculate offset from object center
-          const objX = (clickedObject.x || 0);
-          const objY = (clickedObject.y || 0);
-          dragOffset.x = worldPos.x - objX;
-          dragOffset.y = worldPos.y - objY;
-          
-          canvas.style.cursor = 'grabbing';
-          redraw();
+          if (clickedObject) {
+            // Lock scene objects if a hotspot is selected
+            if (activeHotspotId) {
+              return;
+            }
+            e.preventDefault();
+            isDraggingObject = true;
+            draggedObject = clickedObject;
+            
+            // Calculate offset from object center
+            const objX = (clickedObject.x || 0);
+            const objY = (clickedObject.y || 0);
+            dragOffset.x = worldPos.x - objX;
+            dragOffset.y = worldPos.y - objY;
+            
+            canvas.style.cursor = 'grabbing';
+            redraw();
+          }
         }
       }
     });
@@ -779,8 +1746,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // Check for contextual cursor changes
       checkContextualCursor(e);
       
-      // Check for hotspot vertex editing cursor changes
-      updateHotspotCursor(e);
+      // Check for scaling line cursor changes (before hotspot to have priority)
+      const scalingCursorSet = updateScalingCursor(e);
+      
+      // Check for hotspot vertex editing cursor changes (only if scaling didn't set cursor)
+      if (!scalingCursorSet) {
+        updateHotspotCursor(e);
+      }
       
       if (editorState.isPanning) {
         e.preventDefault();
@@ -794,7 +1766,55 @@ document.addEventListener("DOMContentLoaded", () => {
         editorState.lastPanY = e.clientY;
         
         redraw();
+      } else if (isDraggingScalingLine && draggedScalingLineType) {
+        if (!isRoomCanvasActive()) {
+          isDraggingScalingLine = false;
+          draggedScalingLineType = null;
+          return;
+        }
+        // Handle scaling line drag
+        e.preventDefault();
+        const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+        // Clamp Y to viewport bounds
+        const clampedY = Math.max(0, Math.min(gameViewport.height, y));
+        
+        if (draggedScalingLineType === 'background') {
+          // Background line (upper line) - must stay above foreground
+          scalingBackgroundY = clampedY;
+          // Ensure background is above foreground (background Y < foreground Y)
+          if (scalingForegroundY !== null && scalingBackgroundY >= scalingForegroundY) {
+            scalingBackgroundY = scalingForegroundY - 1;
+          }
+        } else if (draggedScalingLineType === 'foreground') {
+          // Foreground line (lower line) - must stay below background
+          scalingForegroundY = clampedY;
+          // Ensure foreground is below background (foreground Y > background Y)
+          if (scalingBackgroundY !== null && scalingForegroundY <= scalingBackgroundY) {
+            scalingForegroundY = scalingBackgroundY + 1;
+          }
+        }
+        // Save to room
+        const r = rooms.get(currentRoomId);
+        if (r) {
+          r.scalingForegroundY = scalingForegroundY;
+          r.scalingBackgroundY = scalingBackgroundY;
+        }
+        canvas.style.cursor = 'ns-resize';
+        redraw();
       } else if (isDraggingObject && draggedObject) {
+        if (!isRoomCanvasActive()) {
+          isDraggingObject = false;
+          draggedObject = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
+        // Lock scene objects if a hotspot is selected
+        if (activeHotspotId) {
+          isDraggingObject = false;
+          draggedObject = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
         e.preventDefault();
         const worldPos = screenToWorld(e.clientX, e.clientY);
         
@@ -870,6 +1890,57 @@ document.addEventListener("DOMContentLoaded", () => {
         
         refreshGuiButtonsList();
         redraw();
+      } else if (isDraggingInventorySlot && draggedInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        draggedInventorySlot.x = Math.round(worldPos.x - inventorySlotDragOffset.x);
+        draggedInventorySlot.y = Math.round(worldPos.y - inventorySlotDragOffset.y);
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isResizingInventorySlot && draggedInventorySlot) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const minSize = 20;
+        const ox = draggedInventorySlot.x;
+        const oy = draggedInventorySlot.y;
+        const ow = draggedInventorySlot.w;
+        const oh = draggedInventorySlot.h;
+        switch (resizeInventoryHandle) {
+          case 'nw':
+            if (ow + (ox - worldPos.x) >= minSize) { draggedInventorySlot.x = worldPos.x; draggedInventorySlot.w = ow + (ox - worldPos.x); }
+            if (oh + (oy - worldPos.y) >= minSize) { draggedInventorySlot.y = worldPos.y; draggedInventorySlot.h = oh + (oy - worldPos.y); }
+            break;
+          case 'ne':
+            draggedInventorySlot.w = Math.max(minSize, worldPos.x - ox);
+            if (oh + (oy - worldPos.y) >= minSize) { draggedInventorySlot.y = worldPos.y; draggedInventorySlot.h = oh + (oy - worldPos.y); }
+            break;
+          case 'sw':
+            if (ow + (ox - worldPos.x) >= minSize) { draggedInventorySlot.x = worldPos.x; draggedInventorySlot.w = ow + (ox - worldPos.x); }
+            draggedInventorySlot.h = Math.max(minSize, worldPos.y - oy);
+            break;
+          case 'se':
+            draggedInventorySlot.w = Math.max(minSize, worldPos.x - ox);
+            draggedInventorySlot.h = Math.max(minSize, worldPos.y - oy);
+            break;
+        }
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isDrawingInventorySlot && inventorySlotDrawStart) {
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const x0 = Math.min(inventorySlotDrawStart.x, worldPos.x);
+        const y0 = Math.min(inventorySlotDrawStart.y, worldPos.y);
+        const w = Math.abs(worldPos.x - inventorySlotDrawStart.x);
+        const h = Math.abs(worldPos.y - inventorySlotDrawStart.y);
+        const slots = inventoryDefinition.slots;
+        if (slots.length && slots[slots.length - 1].id === '__drawing__') {
+          const tmp = slots[slots.length - 1];
+          tmp.x = Math.round(x0);
+          tmp.y = Math.round(y0);
+          tmp.w = Math.round(w);
+          tmp.h = Math.round(h);
+        }
+        redraw();
       } else if (isDrawingGuiButton && guiDrawStart) {
         e.preventDefault();
         const worldPos = screenToWorld(e.clientX, e.clientY);
@@ -877,7 +1948,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const y0 = Math.min(guiDrawStart.y, worldPos.y);
         const w = Math.abs(worldPos.x - guiDrawStart.x);
         const h = Math.abs(worldPos.y - guiDrawStart.y);
-        // temporary preview by updating last placeholder
         if (guiButtons.length && guiButtons[guiButtons.length-1].id === '__drawing__') {
           const tmp = guiButtons[guiButtons.length-1];
           tmp.x = Math.round(x0); tmp.y = Math.round(y0); tmp.w = Math.round(w); tmp.h = Math.round(h);
@@ -890,6 +1960,32 @@ document.addEventListener("DOMContentLoaded", () => {
       if (editorState.isPanning) {
         editorState.isPanning = false;
         canvas.style.cursor = 'default';
+      } else if (isDraggingScalingLine) {
+        // Round final coordinates when drag ends
+        if (draggedScalingLineType === 'foreground' && scalingForegroundY !== null) {
+          scalingForegroundY = Math.round(scalingForegroundY);
+        } else if (draggedScalingLineType === 'background' && scalingBackgroundY !== null) {
+          scalingBackgroundY = Math.round(scalingBackgroundY);
+        }
+        // Ensure constraints are still valid after rounding
+        if (scalingBackgroundY !== null && scalingForegroundY !== null) {
+          if (scalingBackgroundY >= scalingForegroundY) {
+            // If they're too close, separate them
+            const mid = Math.round((scalingBackgroundY + scalingForegroundY) / 2);
+            scalingBackgroundY = mid - 1;
+            scalingForegroundY = mid + 1;
+          }
+        }
+        // Save to room
+        const r = rooms.get(currentRoomId);
+        if (r) {
+          r.scalingForegroundY = scalingForegroundY;
+          r.scalingBackgroundY = scalingBackgroundY;
+        }
+        isDraggingScalingLine = false;
+        draggedScalingLineType = null;
+        canvas.style.cursor = 'default';
+        redraw();
       } else if (isDraggingObject) {
         isDraggingObject = false;
         draggedObject = null;
@@ -907,6 +2003,37 @@ document.addEventListener("DOMContentLoaded", () => {
         draggedGuiButton = null;
         canvas.style.cursor = 'default';
         saveCurrentGUI();
+        redraw();
+      } else if (isDraggingInventorySlot) {
+        isDraggingInventorySlot = false;
+        draggedInventorySlot = null;
+        canvas.style.cursor = 'default';
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isResizingInventorySlot) {
+        isResizingInventorySlot = false;
+        resizeInventoryHandle = null;
+        draggedInventorySlot = null;
+        canvas.style.cursor = 'default';
+        refreshInventorySlotsListUI();
+        redraw();
+      } else if (isDrawingInventorySlot && inventorySlotDrawStart) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const x0 = Math.min(inventorySlotDrawStart.x, worldPos.x);
+        const y0 = Math.min(inventorySlotDrawStart.y, worldPos.y);
+        const w = Math.abs(worldPos.x - inventorySlotDrawStart.x);
+        const h = Math.abs(worldPos.y - inventorySlotDrawStart.y);
+        let slot = inventoryDefinition.slots.pop();
+        const slotNum = inventoryDefinition.slots.filter(s => s.id !== '__drawing__').length + 1;
+        slot = { id: uid('invslot'), name: 'Slot ' + slotNum, x: Math.round(x0), y: Math.round(y0), w: Math.round(w), h: Math.round(h) };
+        if (slot.w >= 8 && slot.h >= 8) {
+          inventoryDefinition.slots.push(slot);
+          selectedInventorySlotId = slot.id;
+          showNotification('Inventory slot created (' + slot.w + 'x' + slot.h + ')', 'success');
+        }
+        isDrawingInventorySlot = false;
+        inventorySlotDrawStart = null;
+        refreshInventorySlotsListUI();
         redraw();
       } else if (isDrawingGuiButton && guiDrawStart) {
         const worldPos = screenToWorld(e.clientX, e.clientY);
@@ -942,14 +2069,115 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    // Prevent context menu on right click
+    // Handle right click: copy coordinates to clipboard when in rooms tab
     canvas.addEventListener('contextmenu', function(e) {
       e.preventDefault();
+      
+      // Check if we're in the rooms tab
+      const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+      if (activeTab === 'rooms') {
+        const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+        const roundedX = Math.round(x);
+        const roundedY = Math.round(y);
+        
+        // Format coordinates as "x, y"
+        const coordString = `${roundedX}, ${roundedY}`;
+        
+        // Copy to clipboard
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(coordString).then(() => {
+            showNotification(`Coordinates copied: ${coordString}`, 'success');
+          }).catch(err => {
+            console.error('Errore copia negli appunti:', err);
+            showNotification('Error while copying', 'error');
+          });
+        } else {
+          // Fallback per browser che non supportano Clipboard API
+          const textArea = document.createElement('textarea');
+          textArea.value = coordString;
+          textArea.style.position = 'fixed';
+          textArea.style.opacity = '0';
+          document.body.appendChild(textArea);
+          textArea.select();
+          try {
+            document.execCommand('copy');
+            showNotification(`Coordinates copied: ${coordString}`, 'success');
+          } catch (err) {
+            console.error('Errore copia negli appunti (fallback):', err);
+            showNotification('Error while copying', 'error');
+          }
+          document.body.removeChild(textArea);
+        }
+      }
     });
   }
 
   // Canvas clicks: add vertices while drawing walkable or hotspot
   canvas.addEventListener('click', (e) => {
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    
+    // Handle character pivot movement first (in characters tab)
+    // Works like polygon points - always moves pivot on click
+    if (activeTab === 'characters' && !e.ctrlKey) {
+      const sel = document.getElementById('character-selector');
+      const who = sel ? sel.value : '';
+      if (who) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const charData = characterFrames.get(who);
+        if (charData) {
+          const activeDirections = getCharacterDirectionsStore(charData);
+          const dirData = activeDirections ? activeDirections[currentDirection] : null;
+          if (dirData && dirData.frames && dirData.frames.length > 0) {
+            const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, currentDirection);
+            if (frameResult && frameResult.img) {
+              const frameImg = frameResult.img;
+              // Frame position in viewport coordinates (now at 0,0)
+              const frameDx = 0;
+              const frameDy = 0;
+              
+              // Initialize pivot if it doesn't exist
+              if (charData.pivotX === undefined || charData.pivotY === undefined) {
+                charData.pivotX = Math.round(frameImg.width / 2);
+                charData.pivotY = Math.round(frameImg.height);
+                characterFrames.set(who, charData);
+              }
+              
+              // Move pivot to click position (relative to frame top-left)
+              // Works like polygon points - always moves pivot on click
+              e.preventDefault();
+              e.stopPropagation();
+              // If frame is mirrored, adjust pivot X coordinate to match visual position
+              if (frameResult.mirrored) {
+                charData.pivotX = Math.round(frameImg.width - (worldPos.x - frameDx));
+              } else {
+                charData.pivotX = Math.round(worldPos.x - frameDx);
+              }
+              charData.pivotY = Math.round(worldPos.y - frameDy);
+              characterFrames.set(who, charData);
+              redraw();
+              showNotification(`Pivot moved to (${charData.pivotX}, ${charData.pivotY})`, 'info');
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    if (activeTab === 'gui') {
+      const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+      const hit = guiButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+      if (hit) {
+        selectedGuiButtonId = hit.id;
+        refreshGuiButtonsList();
+        redraw();
+      }
+      return;
+    }
+
+    if (!isRoomCanvasActive()) {
+      return;
+    }
+    
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     if (isDrawingWalkable) {
       // Round coordinates only when saving to avoid precision issues
@@ -972,56 +2200,27 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // GUI selection when in GUI tab
-    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
-    if (activeTab === 'gui') {
-      const hit = guiButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
-      if (hit) {
-        selectedGuiButtonId = hit.id;
-        refreshGuiButtonsList();
-        redraw();
-      }
-    }
-
-if (playTestState && playTestState.isRunning) {
-      const obj = getObjectAtPoint(x, y);
-      if (obj && !isDraggingObject) {
-        // Trigger global object click event
-        triggerObjectClick(obj.id, Math.round(x), Math.round(y));
-        
-        try {
-          // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-        } catch(_) {}
-        const scriptName = objectScripts.get(obj.id);
-        if (scriptName) {
-          const content = jsScripts.get(scriptName);
-          const eventConditions = objectEventConditions.get(obj.id);
-          const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-          addDebugMessage(`[Object:onClick] ${obj.id}`, 'info');
-          executeScriptHandler(content, 'on_object_click', [obj.id, Math.round(x), Math.round(y)], conditions);
-        }
-        return;
-      }
-for (const hs of hotspots) {
-        if (!hs || hs.visible === false) continue;
-        if (isPointInPolygon(hs.points || [], x, y)) {
-          // Trigger global hotspot click event
-          triggerHotspotClick(hs.id);
-          
-          try {
-            // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-          } catch(_) {}
-          const hScript = hotspotScripts.get(hs.id);
-          if (hScript) {
-            const hContent = jsScripts.get(hScript);
-            const eventConditions = hotspotEventConditions.get(hs.id);
-            const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-            addDebugMessage(`[Hotspot:onClick] ${hs.id}`, 'info');
-            executeScriptHandler(hContent, 'on_hotspot_click', [hs.id], conditions);
-          }
-          break;
-        }
-      }
+    // ⚠️ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
+    // sul canvas dell'EDITOR, causando doppia esecuzione perché:
+    // 1. Il listener in main.js gestiva i click sul canvas dell'editor
+    // 2. Il listener in runtime.js gestiva i click sul canvas del runtime (finestra separata)
+    // 3. Quando il playtest è attivo, il runtime dovrebbe essere l'unico a gestire i click
+    // 
+    // SOLUZIONE: Rimuoviamo completamente la gestione playtest dal listener dell'editor.
+    // Il runtime nella finestra separata gestirà TUTTI i click durante il playtest.
+    // L'editor gestisce solo click per editing (walkable, hotspot drawing, GUI selection).
+    //
+    // NOTA: executeScriptHandler() è vuoto (non esegue nulla), quindi non causava
+    // doppia esecuzione di script, ma triggerObjectClick() e triggerHotspotClick()
+    // potevano comunque causare effetti collaterali indesiderati.
+    //
+    // ORA: Durante il playtest, i click sul canvas dell'editor vengono ignorati
+    // per oggetti/hotspot, e solo il runtime gestisce l'interazione.
+    if (playTestState && playTestState.isRunning) {
+      // Durante il playtest, NON gestiamo click su oggetti/hotspot nel canvas dell'editor.
+      // Il runtime nella finestra separata gestisce TUTTA l'interazione durante il playtest.
+      // Questo previene doppia esecuzione e conflitti tra editor e runtime.
+      return;
     }
   });
 
@@ -1035,9 +2234,21 @@ for (const hs of hotspots) {
     return -1;
   }
 
+  // ===== Character scaling line interactions =====
+  function findScalingLineNear(x, y, tolerance = 10) {
+    if (scalingBackgroundY !== null && Math.abs(y - scalingBackgroundY) <= tolerance) {
+      return 'background';
+    }
+    if (scalingForegroundY !== null && Math.abs(y - scalingForegroundY) <= tolerance) {
+      return 'foreground';
+    }
+    return null;
+  }
+
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     if (editorState.isPanning) return;
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // click aggiunge punti, niente drag mentre disegniamo
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     const idx = findWalkableVertexNear(x, y);
@@ -1052,6 +2263,7 @@ for (const hs of hotspots) {
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDraggingWalkableVertex) return;
+    if (!isRoomCanvasActive()) return;
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     const idx = draggedWalkableVertexIndex;
     if (idx < 0 || idx >= walkableArea.length) return;
@@ -1080,6 +2292,7 @@ for (const hs of hotspots) {
 
   // Click per selezionare un vertice walkable quando non stiamo disegnando
   canvas.addEventListener('click', (e) => {
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // già gestito sopra
     if (isDraggingWalkableVertex) return;
     // evita conflitti con hotspot: se stai disegnando hotspot non selezionare walkable
@@ -1101,10 +2314,94 @@ for (const hs of hotspots) {
   };
 
   // Walkable area controls
-  window.startWalkableDrawing = function() { isDrawingWalkable = true; showWalkable = true; redraw(); };
-  window.finishWalkableDrawing = function() { isDrawingWalkable = false; redraw(); };
-  window.clearWalkableArea = function() { walkableArea = []; redraw(); };
-  window.toggleWalkableVisibility = function() { showWalkable = !showWalkable; redraw(); };
+  window.startWalkableDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    isDrawingWalkable = true; showWalkable = true; redraw();
+  };
+  window.finishWalkableDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    isDrawingWalkable = false; redraw();
+  };
+  window.clearWalkableArea = function() {
+    if (!isRoomCanvasActive()) return;
+    walkableArea = []; redraw();
+  };
+  window.toggleWalkableVisibility = function() {
+    if (!isRoomCanvasActive()) return;
+    showWalkable = !showWalkable; redraw();
+  };
+
+  // ===== Character scaling controls & UI =====
+  // updateScalingUI is defined earlier, before bindRoomRefs
+
+  window.updateScalingValues = function() {
+    const minInput = document.getElementById('scaling-min-scale');
+    const maxInput = document.getElementById('scaling-max-scale');
+    if (minInput) {
+      const val = parseFloat(minInput.value);
+      if (!isNaN(val) && val >= 0.1 && val <= 2.0) {
+        scalingMinScale = val;
+      }
+    }
+    if (maxInput) {
+      const val = parseFloat(maxInput.value);
+      if (!isNaN(val) && val >= 0.1 && val <= 2.0) {
+        scalingMaxScale = val;
+      }
+    }
+    // Save to room
+    const r = rooms.get(currentRoomId);
+    if (r) {
+      r.scalingMinScale = scalingMinScale;
+      r.scalingMaxScale = scalingMaxScale;
+    }
+    redraw();
+  };
+
+  window.toggleScalingVisibility = function() {
+    try {
+      showScalingLines = !showScalingLines;
+      if (typeof redraw === 'function') {
+        redraw();
+      }
+    } catch (error) {
+      console.error('[Scaling] Error toggling visibility:', error);
+    }
+  };
+
+  window.initializeScalingLines = function() {
+    try {
+      // Initialize lines with default positions
+      // Background (upper line) at 25% of viewport height
+      // Foreground (lower line) at 75% of viewport height
+      // Foreground must be BELOW background (foreground Y > background Y)
+      if (typeof gameViewport === 'undefined' || !gameViewport) {
+        console.error('[Scaling] gameViewport not available');
+        return;
+      }
+      scalingBackgroundY = Math.round(gameViewport.height * 0.25);
+      scalingForegroundY = Math.round(gameViewport.height * 0.75);
+      // Ensure foreground is below background
+      if (scalingForegroundY <= scalingBackgroundY) {
+        scalingBackgroundY = Math.round(gameViewport.height * 0.25);
+        scalingForegroundY = Math.round(gameViewport.height * 0.75);
+      }
+      // Save to room
+      const r = rooms.get(currentRoomId);
+      if (r) {
+        r.scalingForegroundY = scalingForegroundY;
+        r.scalingBackgroundY = scalingBackgroundY;
+      }
+      if (typeof redraw === 'function') {
+        redraw();
+      }
+      if (typeof showNotification === 'function') {
+        showNotification('Scaling lines initialized', 'success');
+      }
+    } catch (error) {
+      console.error('[Scaling] Error initializing lines:', error);
+    }
+  };
 
   // ===== Hotspots controls & UI =====
   const hotspotsListContainer = document.getElementById('hotspots-list');
@@ -1130,32 +2427,64 @@ for (const hs of hotspots) {
       const item = document.createElement('div');
       item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
       item.dataset.hotspotId = hs.id;
+      const isSelected = activeHotspotId === hs.id;
 
       const name = document.createElement('div');
-      name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>` +
-        `<br><small>Points: ${(hs.points && hs.points.length) || 0}</small>` +
-        `<br><span class="badge ${hs.visible === false ? 'bg-dark' : 'bg-warning text-dark'}">${hs.visible === false ? 'Hidden' : 'Visible'}</span>` +
-        (activeHotspotId === hs.id ? ' <span class="badge bg-info text-dark">Active</span>' : '');
+      name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>`;
+
+      const activeWrap = document.createElement('div');
+      activeWrap.className = 'form-check form-check-inline small mt-1';
+      const activeChk = document.createElement('input');
+      activeChk.type = 'checkbox';
+      activeChk.className = 'form-check-input';
+      activeChk.id = `hotspot-active-${hs.id}`;
+      activeChk.checked = isHotspotRuntimeActive(hs);
+      const activeLbl = document.createElement('label');
+      activeLbl.className = 'form-check-label text-light';
+      activeLbl.htmlFor = activeChk.id;
+      activeLbl.textContent = 'Is active?';
+      activeLbl.title = 'Active (clickable) in playtest; always visible in editor';
+      activeChk.title = activeLbl.title;
+      activeChk.addEventListener('change', () => {
+        setHotspotRuntimeActive(hs, activeChk.checked);
+        const r = rooms.get(currentRoomId);
+        if (r) r.hotspots = hotspots;
+        item.style.opacity = activeChk.checked ? '1' : '0.55';
+        redraw();
+      });
+      activeWrap.appendChild(activeChk);
+      activeWrap.appendChild(activeLbl);
+      name.appendChild(activeWrap);
+      if (!isHotspotRuntimeActive(hs)) {
+        item.style.opacity = '0.55';
+      }
 
       const controls = document.createElement('div');
 
       const btnSelect = document.createElement('button');
-      btnSelect.className = 'btn btn-sm btn-outline-light me-1';
+      btnSelect.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
       btnSelect.title = 'Select';
-      btnSelect.textContent = '✔';
+      btnSelect.textContent = isSelected ? 'Selected' : 'Select';
       btnSelect.addEventListener('click', () => {
         activeHotspotId = hs.id;
+        selectedSceneObjectId = null; // Lock scene objects when hotspot is selected
         isDrawingHotspot = false; // stop drawing when switching
         selectedHotspotVertexIndex = -1;
         refreshHotspotsListUI();
+        refreshSceneObjectsListUI();
         redraw();
       });
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
-      btnEdit.title = 'Rename';
+      btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
       btnEdit.textContent = '✏️';
+      btnEdit.disabled = !isSelected;
       btnEdit.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
@@ -1165,22 +2494,16 @@ for (const hs of hotspots) {
       });
 
 
-      const btnToggle = document.createElement('button');
-      btnToggle.className = 'btn btn-sm btn-outline-warning me-1';
-      btnToggle.title = 'Show/Hide';
-      btnToggle.textContent = '👁️';
-      btnToggle.addEventListener('click', () => {
-        hs.visible = hs.visible === false ? true : false;
-        const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
-        refreshHotspotsListUI();
-        redraw();
-      });
-
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
-      btnClear.title = 'Svuota punti';
+      btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
       btnClear.textContent = '🧹';
+      btnClear.disabled = !isSelected;
       btnClear.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         hs.points = [];
         if (activeHotspotId === hs.id) selectedHotspotVertexIndex = -1;
         const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
@@ -1190,9 +2513,14 @@ for (const hs of hotspots) {
 
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
-      btnDelete.title = 'Delete';
+      btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
       btnDelete.textContent = '🗑️';
+      btnDelete.disabled = !isSelected;
       btnDelete.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the hotspot before editing it', 'warning');
+          return;
+        }
         if (!confirm('Delete this hotspot?')) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
@@ -1206,7 +2534,6 @@ for (const hs of hotspots) {
 
       controls.appendChild(btnSelect);
       controls.appendChild(btnEdit);
-      controls.appendChild(btnToggle);
       controls.appendChild(btnClear);
       controls.appendChild(btnDelete);
 
@@ -1240,7 +2567,13 @@ for (const hs of hotspots) {
       id: uid('hotspot'),
       name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
       points: [],
-      visible: true
+      visible: true,
+      scripts: {
+        onClick: {
+          code: '',
+          enabled: false
+        }
+      }
     };
     hotspots.push(hs);
     activeHotspotId = hs.id;
@@ -1251,6 +2584,7 @@ for (const hs of hotspots) {
   };
 
   window.startHotspotDrawing = function() {
+    if (!isRoomCanvasActive()) return;
     if (!activeHotspotId) {
       showNotification('No hotspot selected. Create one first.', 'warning');
       return;
@@ -1262,6 +2596,7 @@ for (const hs of hotspots) {
   };
 
   window.finishHotspotDrawing = function() {
+    if (!isRoomCanvasActive()) return;
     isDrawingHotspot = false;
     redraw();
   };
@@ -1289,7 +2624,7 @@ for (const hs of hotspots) {
     
     // Don't allow deletion if it would make the polygon invalid (less than 3 points)
     if (hs.points.length <= 3) {
-      showNotification('Un hotspot deve avere almeno 3 vertici', 'warning');
+      showNotification('A hotspot must have at least 3 vertices', 'warning');
       return;
     }
     
@@ -1298,7 +2633,7 @@ for (const hs of hotspots) {
     const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
     refreshHotspotsListUI();
     redraw();
-    showNotification('Vertice eliminato dall\'hotspot', 'success');
+    showNotification('Vertex removed from hotspot', 'success');
   };
 
   // ===== Hotspot vertex interactions (select, drag, delete) =====
@@ -1328,6 +2663,7 @@ for (const hs of hotspots) {
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return; // only left button for dragging vertices
     if (editorState.isPanning) return; // already handled by panning
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // hotspot vertex editing disabled while drawing walkable
 
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
@@ -1348,6 +2684,7 @@ for (const hs of hotspots) {
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDraggingHotspotVertex) return;
+    if (!isRoomCanvasActive()) return;
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
     if (!hs) return;
     const idx = draggedHotspotVertexIndex;
@@ -1437,6 +2774,7 @@ for (const hs of hotspots) {
 
   // Click to select a vertex when not drawing
   canvas.addEventListener('click', (e) => {
+    if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // handled earlier
     if (isDrawingHotspot) return; // handled earlier for adding points
     if (isDraggingHotspotVertex) return; // avoid double triggering after drag
@@ -1465,7 +2803,7 @@ for (const hs of hotspots) {
       if (r) r.hotspots = hotspots;
       
       redraw();
-      showNotification('Vertex aggiunto all\'hotspot', 'success');
+      showNotification('Vertex added to hotspot', 'success');
     }
   });
 
@@ -1499,6 +2837,23 @@ for (const hs of hotspots) {
     canvas.style.cursor = 'default';
   }
 
+  function updateScalingCursor(e) {
+    // Only update cursor if we're in the rooms tab and not currently dragging
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    if (activeTab !== 'rooms' || isDraggingScalingLine || editorState.isPanning || !showScalingLines) {
+      return false; // Return false to indicate cursor was not set
+    }
+    
+    const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+    const lineType = findScalingLineNear(x, y);
+    if (lineType) {
+      canvas.style.cursor = 'ns-resize';
+      return true; // Return true to indicate cursor was set
+    }
+    
+    return false; // Return false to indicate cursor was not set
+  }
+
   // Keyboard shortcuts for hotspot vertex editing
   document.addEventListener('keydown', (e) => {
     // Only handle if we're in the rooms tab and have an active hotspot
@@ -1523,36 +2878,16 @@ for (const hs of hotspots) {
     }
   });
 
-  // Fit canvas to screen (for editor view)
+  // Fit canvas to screen (centered, like inventory preview)
   window.fitToScreen = function() {
-    const container = document.getElementById('canvasContainer');
-    const containerWidth = container.clientWidth - 20; // padding
-    const containerHeight = container.clientHeight - 20; // padding
-    
-    // Calculate zoom to fit
-    const zoomX = containerWidth / gameViewport.width;
-    const zoomY = containerHeight / gameViewport.height;
-    const zoom = Math.min(zoomX, zoomY, 1.0); // Don't zoom in beyond 100%
-    
-    // Center the view
-    editorState.zoom = zoom;
-    editorState.panX = (containerWidth - gameViewport.width * zoom) / 2;
-    editorState.panY = (containerHeight - gameViewport.height * zoom) / 2;
-    
-    updateEditorDisplay();
-    redraw();
-    
-    showNotification(`Canvas fitted to screen (${Math.round(zoom * 100)}%)`, 'info');
+    resetEditorViewCentered({ fit: true });
+    showNotification(`Canvas fitted to screen (${Math.round(editorState.zoom * 100)}%)`, 'info');
   };
 
-  // Reset editor zoom and pan
+  // Reset editor zoom and pan — 100% con (0,0) in alto a sinistra
   window.resetEditorZoom = function() {
-    editorState.zoom = 1.0;
-    editorState.panX = 0;
-    editorState.panY = 0;
-    updateEditorDisplay();
-    redraw();
-    showNotification('Editor zoom and pan reset', 'info');
+    alignEditorViewTopLeft();
+    showNotification('Viewport at 100% with top-left corner aligned', 'info');
   };
 
   // Zoom in function
@@ -1579,14 +2914,7 @@ for (const hs of hotspots) {
 
   // Center view function
   window.centerView = function() {
-    const container = document.getElementById('canvasContainer');
-    const containerWidth = container.clientWidth - 20;
-    const containerHeight = container.clientHeight - 20;
-    
-    editorState.panX = (containerWidth - gameViewport.width * editorState.zoom) / 2;
-    editorState.panY = (containerHeight - gameViewport.height * editorState.zoom) / 2;
-    
-    redraw();
+    resetEditorViewCentered({ zoom: editorState.zoom });
     showNotification('View centered', 'info');
   };
 
@@ -1604,10 +2932,28 @@ for (const hs of hotspots) {
     ul.className = "list-group";
     ul.style.background = "transparent";
 
+    if (foregrounds.length > 0 && (!selectedForegroundId || !foregrounds.some(f => f.id === selectedForegroundId))) {
+      selectedForegroundId = foregrounds[0].id || uid('fg');
+      foregrounds[0].id = selectedForegroundId;
+    }
+    if (foregrounds.length === 0) {
+      selectedForegroundId = null;
+    }
+    // Assicura che i foreground siano sempre sincronizzati con la room
+    const r = rooms.get(currentRoomId);
+    if (r) r.foregrounds = foregrounds;
+
     foregrounds.forEach((layer, idx) => {
+      const layerId = layer.id || uid("fg");
+      layer.id = layerId;
+      const isSelected = selectedForegroundId === layerId;
+
       const li = document.createElement("li");
       li.className = "list-group-item d-flex justify-content-between align-items-center bg-secondary text-light";
       li.dataset.index = idx;
+      if (isSelected) {
+        li.classList.add('border', 'border-info');
+      }
 
       const label = document.createElement("span");
       label.textContent = layer.name || `Layer ${idx + 1}`;
@@ -1615,13 +2961,46 @@ for (const hs of hotspots) {
 
       const controls = document.createElement("div");
 
+      const selectBtn = document.createElement("button");
+      selectBtn.className = isSelected ? "btn btn-sm btn-success me-1" : "btn btn-sm btn-outline-success me-1";
+      selectBtn.textContent = isSelected ? "Selected" : "Select";
+      selectBtn.title = isSelected ? "Active layer" : "Make this layer editable";
+      selectBtn.addEventListener("click", () => {
+        selectedForegroundId = layerId;
+        refreshForegroundListUI();
+        redraw();
+      });
+
       // delete
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-danger ms-2";
       del.textContent = "✕";
       del.title = "Delete layer";
-      del.addEventListener("click", () => {
+      del.addEventListener("click", async () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
+        
+        // Salva il layer prima di eliminarlo per poter eliminare l'asset
+        const layerToDelete = foregrounds[idx];
+        
+        // Elimina l'asset da Supabase se presente
+        if (layerToDelete && layerToDelete.img) {
+          try {
+            await deleteAssetFromImage(layerToDelete.img);
+          } catch (error) {
+            console.error('[Asset] Errore eliminazione asset foreground:', error);
+            // Continua comunque con l'eliminazione del layer anche se l'asset non viene eliminato
+          }
+        }
+        
         foregrounds.splice(idx, 1);
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
+        if (selectedForegroundId === layerId) {
+          selectedForegroundId = foregrounds[0] ? foregrounds[0].id : null;
+        }
         refreshForegroundListUI();
         redraw();
       });
@@ -1632,8 +3011,14 @@ for (const hs of hotspots) {
       up.textContent = "↑";
       up.title = "Move up";
       up.addEventListener("click", () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
         if (idx <= 0) return;
         [foregrounds[idx - 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx - 1]];
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
         refreshForegroundListUI();
         redraw();
       });
@@ -1643,12 +3028,26 @@ for (const hs of hotspots) {
       down.textContent = "↓";
       down.title = "Move down";
       down.addEventListener("click", () => {
+        if (!isSelected) {
+          showNotification('Select the layer before modifying it', 'warning');
+          return;
+        }
         if (idx >= foregrounds.length - 1) return;
         [foregrounds[idx + 1], foregrounds[idx]] = [foregrounds[idx], foregrounds[idx + 1]];
+        const r = rooms.get(currentRoomId);
+        if (r) r.foregrounds = foregrounds;
         refreshForegroundListUI();
         redraw();
       });
 
+      if (!isSelected) {
+        up.disabled = true;
+        down.disabled = true;
+        del.disabled = true;
+        up.title = down.title = del.title = "Select the layer to modify it";
+      }
+
+      controls.appendChild(selectBtn);
       controls.appendChild(up);
       controls.appendChild(down);
       controls.appendChild(del);
@@ -1671,6 +3070,8 @@ for (const hs of hotspots) {
           if (oldI === newI) return;
           const moved = foregrounds.splice(oldI, 1)[0];
           foregrounds.splice(newI, 0, moved);
+          const r = rooms.get(currentRoomId);
+          if (r) r.foregrounds = foregrounds;
           refreshForegroundListUI();
           redraw();
         }
@@ -1693,17 +3094,53 @@ for (const hs of hotspots) {
       if (room.id === currentRoomId) opt.selected = true;
       sel.appendChild(opt);
     });
+    refreshRoomIdDisplay();
   }
+
+  function refreshRoomIdDisplay() {
+    const roomIdInput = document.getElementById('room-id-display');
+    if (!roomIdInput) return;
+    if (currentRoomId) {
+      roomIdInput.value = currentRoomId;
+    } else {
+      roomIdInput.value = '';
+    }
+  }
+
+  window.copyRoomId = function() {
+    const roomIdInput = document.getElementById('room-id-display');
+    if (!roomIdInput || !roomIdInput.value) {
+      showNotification('No room selected', 'warning');
+      return;
+    }
+    roomIdInput.select();
+    roomIdInput.setSelectionRange(0, 99999); // Per mobile
+    try {
+      document.execCommand('copy');
+      showNotification('Room ID copied to clipboard!', 'success');
+    } catch (err) {
+      // Fallback per browser moderni
+      navigator.clipboard.writeText(roomIdInput.value).then(() => {
+        showNotification('Room ID copied to clipboard!', 'success');
+      }).catch(() => {
+        showNotification('Failed to copy Room ID', 'error');
+      });
+    }
+  };
 
   window.createRoom = function() {
     const name = prompt('Room name:', `Room ${rooms.size + 1}`);
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [] });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
@@ -1723,16 +3160,54 @@ for (const hs of hotspots) {
     refreshRoomsSelector();
   };
 
-  window.deleteRoom = function() {
+  window.deleteRoom = async function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
     if (!confirm('Delete current room?')) return;
+    
     const prevRoomId = currentRoomId;
+    const roomToDelete = rooms.get(currentRoomId);
+    
+    // Elimina tutti gli asset della stanza da Supabase
+    if (roomToDelete) {
+      try {
+        // Elimina background
+        if (roomToDelete.background) {
+          await deleteAssetFromImage(roomToDelete.background);
+        }
+        
+        // Elimina foregrounds
+        if (roomToDelete.foregrounds && Array.isArray(roomToDelete.foregrounds)) {
+          for (const fg of roomToDelete.foregrounds) {
+            if (fg.img) {
+              await deleteAssetFromImage(fg.img);
+            }
+          }
+        }
+        
+        // Elimina scene objects
+        if (roomToDelete.sceneObjects && Array.isArray(roomToDelete.sceneObjects)) {
+          for (const obj of roomToDelete.sceneObjects) {
+            if (obj.img) {
+              await deleteAssetFromImage(obj.img);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[Asset] Errore eliminazione asset stanza:', error);
+        // Continua comunque con l'eliminazione della stanza
+      }
+    }
+    
     rooms.delete(currentRoomId);
     // pick another existing room
     const first = rooms.keys().next().value;
     currentRoomId = first;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
@@ -1749,7 +3224,11 @@ window.selectRoom = function(roomId) {
     const prevRoomId = currentRoomId;
     currentRoomId = roomId;
     bindRoomRefs();
+    refreshForegroundListUI();
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
     refreshRoomsSelector();
+    refreshRoomIdDisplay();
     redraw();
     
     // Trigger global room change event
@@ -1772,61 +3251,179 @@ window.selectRoom = function(roomId) {
     return prefix + "-" + Math.random().toString(36).slice(2, 9);
   }
 
+  function getActiveProjectId() {
+    const projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName) return null;
+    return projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+  }
+
+  async function pickResourceImage(options = {}) {
+    if (!window.amiantoResources || !window.amiantoResources.pick) {
+      showNotification('Resources unavailable. Reload the page.', 'warning');
+      return options.multiple ? [] : null;
+    }
+    return window.amiantoResources.pick(options);
+  }
+
+  async function loadImageFromResourceEntry(resource) {
+    if (!resource) return null;
+    const img = await window.amiantoResources.loadImageFromResource(resource);
+    window.amiantoResources.registerImageAsset(img, resource);
+    return img;
+  }
+
+  async function deleteFirestoreAssetDoc(projectId, assetId) {
+    if (!window.firebaseDB || !window.firebaseAuth?.currentUser || !assetId) return false;
+    try {
+      await window.firebaseDB
+        .collection('users')
+        .doc(window.firebaseAuth.currentUser.uid)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId)
+        .delete();
+      return true;
+    } catch (err) {
+      console.warn('[Asset] Errore eliminazione metadata Firestore:', err);
+      return false;
+    }
+  }
+
   // ==== Handlers for Add Background / Add Foreground buttons ====
   const btnAddBg = document.getElementById("btn-add-bg");
   const btnAddFg = document.getElementById("btn-add-fg");
 
   if (btnAddBg) {
-    btnAddBg.addEventListener("click", () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        const img = new Image();
-        img.onload = () => {
+    btnAddBg.addEventListener("click", async () => {
+        if (!currentUser || !currentUser.uid) {
+          showNotification('Please log in to select images', 'warning');
+          return;
+        }
+        const projectId = getActiveProjectId();
+        if (!projectId) return;
+
+        const resource = await pickResourceImage({ title: 'Select background from Resources' });
+        if (!resource) return;
+        
+        try {
+          showNotification('Loading background...', 'info');
+
+          const room = rooms.get(currentRoomId);
+          if (room && room.background) {
+            imageAssetMap.delete(room.background);
+          }
+          
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) {
+            throw new Error('Failed to load image from Resources');
+          }
+          
+          // Verifica che l'immagine sia completamente caricata
+          if (!img.complete || (img.naturalWidth === 0 && img.width === 0) || (img.naturalHeight === 0 && img.height === 0)) {
+            console.warn('[Background] Immagine non completamente caricata, aspetto...', {
+              complete: img.complete,
+              naturalWidth: img.naturalWidth,
+              naturalHeight: img.naturalHeight,
+              width: img.width,
+              height: img.height
+            });
+            
+            // Aspetta che l'immagine sia caricata
+            await new Promise((resolve, reject) => {
+              if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+                resolve();
+              } else {
+                const timeout = setTimeout(() => {
+                  reject(new Error('Timeout waiting for image to load'));
+                }, 10000);
+                
+                img.onload = () => {
+                  clearTimeout(timeout);
+                  resolve();
+                };
+                img.onerror = (error) => {
+                  clearTimeout(timeout);
+                  reject(new Error('Failed to load image'));
+                };
+              }
+            });
+          }
+          
+          // Verifica le dimensioni finali
+          const finalWidth = img.naturalWidth || img.width;
+          const finalHeight = img.naturalHeight || img.height;
+          
+          if (!finalWidth || !finalHeight) {
+            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}×${finalHeight}`);
+          }
+          
+          console.log('[Background] Immagine caricata con successo:', {
+            complete: img.complete,
+            naturalWidth: img.naturalWidth,
+            naturalHeight: img.naturalHeight,
+            width: img.width,
+            height: img.height,
+            finalWidth,
+            finalHeight
+          });
+          
+          // Imposta come background corrente (riferimento a Resources)
           background = img;
-          const r = rooms.get(currentRoomId); if (r) r.background = img;
+          if (room) room.background = img;
           
-          // Show notification about background size
-          showNotification(`Background loaded: ${img.width}×${img.height}`, 'success');
-          
+          showNotification(`Background set: ${finalWidth}×${finalHeight}`, 'success');
           redraw();
-        };
-        img.src = URL.createObjectURL(file);
-      };
-      input.click();
+        } catch (error) {
+          console.error('[Asset] Errore background da Resources:', error);
+          showNotification(`Background error: ${error.message}`, 'error');
+        }
     });
   } else {
     // console.warn("btn-add-bg not found");
   }
 
   if (btnAddFg) {
-    btnAddFg.addEventListener("click", () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        const img = new Image();
-        img.onload = () => {
-          const layer = {
-            id: uid("fg"),
-            name: file.name || `Layer ${foregrounds.length + 1}`,
-            img: img,
-            offsetX: 0,
-            offsetY: 0
-          };
-          foregrounds.push(layer);
-          const r = rooms.get(currentRoomId); if (r) r.foregrounds = foregrounds;
+    btnAddFg.addEventListener("click", async () => {
+        if (!currentUser || !currentUser.uid) {
+          showNotification('Please log in to select images', 'warning');
+          return;
+        }
+        if (!getActiveProjectId()) return;
+
+        const resource = await pickResourceImage({ title: 'Select foreground from Resources' });
+        if (!resource) return;
+
+        try {
+          showNotification('Loading foreground...', 'info');
+          const selectedLayer = foregrounds.find(fg => fg.id === selectedForegroundId);
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
+
+          const r = rooms.get(currentRoomId);
+          if (selectedLayer) {
+            selectedLayer.img = img;
+            if (r) r.foregrounds = foregrounds;
+          } else {
+            const layer = {
+              id: uid("fg"),
+              name: resource.displayName || `Layer ${foregrounds.length + 1}`,
+              img: img,
+              offsetX: 0,
+              offsetY: 0
+            };
+            foregrounds.push(layer);
+            if (r) r.foregrounds = foregrounds;
+            selectedForegroundId = layer.id;
+          }
+
           refreshForegroundListUI();
+          showNotification(selectedLayer ? 'Foreground replaced' : 'Foreground added', 'success');
           redraw();
-        };
-        img.src = URL.createObjectURL(file);
-      };
-      input.click();
+        } catch (error) {
+          console.error('[Asset] Errore foreground da Resources:', error);
+          showNotification(`Foreground error: ${error.message}`, 'error');
+        }
     });
   } else {
     // console.warn("btn-add-fg not found");
@@ -1853,18 +3450,32 @@ window.selectRoom = function(roomId) {
   const guiSettingsContainer = document.getElementById('gui-settings-container');
 
   if (btnAddGuiBg) {
-    btnAddGuiBg.addEventListener('click', () => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = (e) => {
-        const file = e.target.files ? e.target.files[0] : null;
-        if (!file) return;
-        const img = new Image();
-        img.onload = () => { guiBackground = img; saveCurrentGUI(); showNotification('GUI background loaded', 'success'); redraw(); };
-        img.src = URL.createObjectURL(file);
-      };
-      input.click();
+    btnAddGuiBg.addEventListener('click', async () => {
+        if (!currentUser) {
+          showNotification('Please log in to select images', 'warning');
+          return;
+        }
+        if (!getActiveProjectId()) {
+          showNotification('No project is open', 'warning');
+          return;
+        }
+
+        const resource = await pickResourceImage({ title: 'Select GUI background from Resources' });
+        if (!resource) return;
+
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        try {
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
+          guiBackground = img;
+          if (gui) gui.background = img;
+          saveCurrentGUI();
+          showNotification('GUI background set', 'success');
+          redraw();
+        } catch (error) {
+          console.error('[Asset] Errore GUI background da Resources:', error);
+          showNotification(`GUI background error: ${error.message}`, 'error');
+        }
     });
   }
 
@@ -1977,22 +3588,6 @@ window.selectRoom = function(roomId) {
         ], settings.appear || 'instant'));
         break;
       }
-      case 'Inventory': {
-        frag.appendChild(makeInput('Rows', 'gui-set-rows', 'number', settings.rows ?? 3, { min: 1 }));
-        frag.appendChild(makeInput('Columns', 'gui-set-cols', 'number', settings.cols ?? 5, { min: 1 }));
-        frag.appendChild(makeSelect('Slot style', 'gui-set-slot-style', [
-          {value:'square', label:'Square'},
-          {value:'rounded', label:'Rounded'},
-          {value:'circle', label:'Circle'}
-        ], settings.slotStyle || 'square'));
-        frag.appendChild(makeInput('Background', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.5)'));
-        frag.appendChild(makeSelect('Open animation', 'gui-set-open-anim', [
-          {value:'none', label:'None'},
-          {value:'scale', label:'Scale'},
-          {value:'fade', label:'Fade'}
-        ], settings.openAnim || 'none'));
-        break;
-      }
       case 'VerbGUI': {
         frag.appendChild(makeTextarea('Verb list (one per line)', 'gui-set-verbs', Array.isArray(settings.verbs) ? settings.verbs.join('\n') : 'Look\nUse\nTalk'));
         frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
@@ -2051,14 +3646,6 @@ window.selectRoom = function(roomId) {
           font: get('gui-set-font') || '16px Arial',
           portrait: get('gui-set-portrait') || '',
           appear: get('gui-set-appear') || 'instant'
-        };
-      case 'Inventory':
-        return {
-          rows: get('gui-set-rows') || 3,
-          cols: get('gui-set-cols') || 5,
-          slotStyle: get('gui-set-slot-style') || 'square',
-          background: get('gui-set-bg') || 'rgba(0,0,0,0.5)',
-          openAnim: get('gui-set-open-anim') || 'none'
         };
       case 'VerbGUI': {
         const verbsStr = get('gui-set-verbs') || '';
@@ -2129,23 +3716,30 @@ window.selectRoom = function(roomId) {
         const newName = prompt('GUI button name:', btn.name);
         if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
       });
-      btnImage.addEventListener('click', () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.onchange = (e) => {
-          const file = e.target.files ? e.target.files[0] : null;
-          if (!file) return;
-          const img = new Image();
-          img.onload = () => { 
-            btn.backgroundImage = img; 
+      btnImage.addEventListener('click', async () => {
+          if (!currentUser) {
+            showNotification('Please log in to select images', 'warning');
+            return;
+          }
+          if (!getActiveProjectId()) {
+            showNotification('No project is open', 'warning');
+            return;
+          }
+
+          const resource = await pickResourceImage({ title: `Button image: ${btn.name}` });
+          if (!resource) return;
+
+          try {
+            const img = await loadImageFromResourceEntry(resource);
+            if (!img) throw new Error('Failed to load image from Resources');
+            btn.backgroundImage = img;
             saveCurrentGUI();
-            showNotification(`Background image set for ${btn.name}`, 'success'); 
-            redraw(); 
-          };
-          img.src = URL.createObjectURL(file);
-        };
-        input.click();
+            showNotification(`Image set for ${btn.name}`, 'success');
+            redraw();
+          } catch (error) {
+            console.error('[Asset] Errore immagine pulsante GUI:', error);
+            showNotification(`Error: ${error.message}`, 'error');
+          }
       });
       btnText.addEventListener('click', () => {
         const newText = prompt('Button text:', btn.text || '');
@@ -2176,9 +3770,10 @@ window.selectRoom = function(roomId) {
   setupMouseWheelZoom();
   setupMousePanning();
 
-  // Handle window resize
+  // Handle window resize — ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
   window.addEventListener("resize", () => {
     updateEditorDisplay();
+    redraw();
   });
 
   // Keyboard controls for panning
@@ -2246,138 +3841,587 @@ window.selectRoom = function(roomId) {
      PART 3 - Funzioni per le Tabs
      ============================ */
 
-  // Functions for Inventory Objects tab
-  window.addInventoryObject = function() {
-    document.getElementById('inventory-upload').click();
-  };
+  // ===== Inventory tab =====
+  function syncInventoryItemScript(item) {
+    if (!item) return;
+    const scriptName = (item.scriptName || '').trim();
+    if (scriptName) inventoryScripts.set(item.name, scriptName);
+    else inventoryScripts.delete(item.name);
+  }
 
-  window.uploadInventoryObject = function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    // Generate unique name even for same image
-    const baseName = file.name.replace(/\.[^/.]+$/, "");
-    const timestamp = Date.now();
-    const objectName = `${baseName}_${timestamp}`;
-    const inventoryList = document.getElementById('inventory-list');
-    
-    const newObject = document.createElement('div');
-    newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-    newObject.innerHTML = `
-      <div>
-        <strong>${objectName}</strong>
-        <br><small>Inventory item</small>
-        <br><span class="badge bg-primary">Pickup</span>
-      </div>
-      <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
-        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
-      </div>
-    `;
-    
-    inventoryList.appendChild(newObject);
-    
-    // Reset input to allow same file selection again
-    input.value = '';
-    
-    // Show notification
-    showNotification(`Inventory item "${objectName}" added!`, 'success');
-  };
+  function updateInventoryItemFormImageLabel() {
+    const label = document.getElementById('inventory-item-image-label');
+    if (!label) return;
+    if (pendingInventoryItemImage) {
+      label.textContent = 'Image selected';
+    } else if (selectedInventoryItemId) {
+      const item = inventoryItems.find(i => i.id === selectedInventoryItemId);
+      label.textContent = item && item.image ? 'Current image' : 'No image';
+    } else {
+      label.textContent = 'No image';
+    }
+  }
+
+  function clearInventoryItemForm() {
+    selectedInventoryItemId = null;
+    pendingInventoryItemImage = null;
+    pendingInventoryItemImageResource = null;
+    const nameEl = document.getElementById('inventory-item-name');
+    const scriptEl = document.getElementById('inventory-item-script-name');
+    const updateBtn = document.getElementById('btn-inventory-item-update');
+    if (nameEl) nameEl.value = '';
+    if (scriptEl) scriptEl.value = '';
+    if (updateBtn) updateBtn.disabled = true;
+    updateInventoryItemFormImageLabel();
+    refreshInventoryItemsListUI();
+  }
+
+  function selectInventoryItem(itemId) {
+    selectedInventoryItemId = itemId;
+    const item = inventoryItems.find(i => i.id === itemId);
+    const nameEl = document.getElementById('inventory-item-name');
+    const scriptEl = document.getElementById('inventory-item-script-name');
+    const updateBtn = document.getElementById('btn-inventory-item-update');
+    pendingInventoryItemImage = null;
+    if (item) {
+      if (nameEl) nameEl.value = item.name || '';
+      if (scriptEl) scriptEl.value = item.scriptName || '';
+    }
+    if (updateBtn) updateBtn.disabled = !item;
+    updateInventoryItemFormImageLabel();
+    refreshInventoryItemsListUI();
+  }
+
+  function refreshInventoryItemsListUI() {
+    const list = document.getElementById('inventory-list');
+    if (!list) return;
+    list.innerHTML = '';
+    inventoryItems.forEach((item) => {
+      const isSelected = item.id === selectedInventoryItemId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      el.dataset.itemId = item.id;
+      const info = document.createElement('div');
+      const scriptLabel = item.scriptName ? item.scriptName : '(no script)';
+      const hasImg = item.image ? 'with image' : 'no image';
+      info.innerHTML = '<strong>' + item.name + '</strong><br><small class="text-info">Script: ' + scriptLabel + '</small><br><small class="text-muted">' + hasImg + '</small>';
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectInventoryItem(item.id));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => removeInventoryItemById(item.id));
+      controls.appendChild(selectBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      list.appendChild(el);
+    });
+    refreshInventoryScriptTargets();
+  }
+
+  function refreshInventorySlotsListUI() {
+    const list = document.getElementById('inventory-slots-list');
+    if (!list) return;
+    list.innerHTML = '';
+    inventoryDefinition.slots.filter(s => s.id !== '__drawing__').forEach((slot, index) => {
+      const isSelected = slot.id === selectedInventorySlotId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-warning');
+      el.innerHTML = '<div><strong>' + (slot.name || ('Slot ' + (index + 1))) + '</strong><br><small>' + slot.w + 'x' + slot.h + ' @ ' + slot.x + ', ' + slot.y + '</small></div>';
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-light';
+      btn.textContent = isSelected ? 'Active' : 'Select';
+      btn.addEventListener('click', () => {
+        selectedInventorySlotId = slot.id;
+        refreshInventorySlotsListUI();
+        redraw();
+      });
+      el.appendChild(btn);
+      list.appendChild(el);
+    });
+  }
 
   window.filterInventoryObjects = function(searchTerm) {
     const objects = document.querySelectorAll('#inventory-list .list-group-item');
+    const q = (searchTerm || '').toLowerCase();
     objects.forEach(obj => {
-      const text = obj.textContent.toLowerCase();
-      const matches = text.includes(searchTerm.toLowerCase());
-      obj.style.display = matches ? 'flex' : 'none';
+      obj.style.display = obj.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
     });
   };
 
   window.removeInventoryObject = function(button) {
-    if (confirm('Are you sure you want to delete this inventory item?')) {
-      button.closest('.list-group-item').remove();
-      showNotification('Inventory item deleted!', 'info');
-    }
+    const row = button.closest('.list-group-item');
+    const id = row && row.dataset.itemId;
+    if (id) removeInventoryItemById(id);
   };
 
-  window.editInventoryObject = function(button) {
-    const listItem = button.closest('.list-group-item');
-    const nameElement = listItem.querySelector('strong');
-    const currentName = nameElement.textContent;
-    
-    const newName = prompt('Edit inventory item name:', currentName);
-    if (newName && newName.trim() !== '') {
-      nameElement.textContent = newName.trim();
-      showNotification(`Inventory item renamed to "${newName.trim()}"`, 'success');
-    }
+  function removeInventoryItemById(itemId) {
+    const item = inventoryItems.find(i => i.id === itemId);
+    if (!item) return;
+    if (!confirm('Delete this inventory item?')) return;
+    inventoryScripts.delete(item.name);
+    inventoryItems = inventoryItems.filter(i => i.id !== itemId);
+    if (selectedInventoryItemId === itemId) clearInventoryItemForm();
+    else refreshInventoryItemsListUI();
+    showNotification('Inventory item deleted', 'info');
+  }
+
+  window.createInventoryItemFromForm = function() {
+    const name = (document.getElementById('inventory-item-name')?.value || '').trim();
+    const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
+    if (!name) { showNotification('Enter a name for the item', 'warning'); return; }
+    if (inventoryItems.some(i => i.name === name)) { showNotification('Name already in use', 'warning'); return; }
+    const item = { id: uid('invitem'), name, scriptName: scriptName || name, image: pendingInventoryItemImage || null };
+    syncInventoryItemScript(item);
+    inventoryItems.push(item);
+    pendingInventoryItemImage = null;
+    clearInventoryItemForm();
+    showNotification('Item created: ' + name, 'success');
+    redraw();
   };
 
+  window.updateInventoryItemFromForm = function() {
+    const item = inventoryItems.find(i => i.id === selectedInventoryItemId);
+    if (!item) { showNotification('Select an item to edit', 'warning'); return; }
+    const oldName = item.name;
+    const name = (document.getElementById('inventory-item-name')?.value || '').trim();
+    const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
+    if (!name) { showNotification('Name cannot be empty', 'warning'); return; }
+    if (inventoryItems.some(i => i.id !== item.id && i.name === name)) { showNotification('Name already in use', 'warning'); return; }
+    if (oldName !== name && inventoryScripts.has(oldName)) inventoryScripts.delete(oldName);
+    item.name = name;
+    item.scriptName = scriptName || name;
+    if (pendingInventoryItemImage) item.image = pendingInventoryItemImage;
+    syncInventoryItemScript(item);
+    pendingInventoryItemImage = null;
+    selectInventoryItem(item.id);
+    showNotification('Item updated: ' + name, 'success');
+    redraw();
+  };
+
+  window.browseInventoryItemImage = async function() {
+    const resource = await pickResourceImage({ title: 'Inventory item image' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      pendingInventoryItemImage = img;
+      pendingInventoryItemImageResource = resource;
+      updateInventoryItemFormImageLabel();
+    } catch (err) {
+      showNotification('Error loading image: ' + err.message, 'error');
+    }
+  };
+  let pendingInventoryItemImageResource = null;
+
+  window.clearPendingInventoryItemImage = function() {
+    pendingInventoryItemImage = null;
+    pendingInventoryItemImageResource = null;
+    updateInventoryItemFormImageLabel();
+  };
+
+  const INVENTORY_DISPLAY_MODES = ['popup', 'always', 'toggle'];
+
+  function normalizeInventoryDisplayMode(mode) {
+    const m = String(mode || 'popup').toLowerCase();
+    return INVENTORY_DISPLAY_MODES.includes(m) ? m : 'popup';
+  }
+
+  function defaultInventoryPanel() {
+    return { x: 0, y: 0, w: gameViewport.width, h: gameViewport.height };
+  }
+
+  function defaultInventoryToggleIconBounds() {
+    const size = 48;
+    const margin = 8;
+    return {
+      x: Math.max(0, gameViewport.width - size - margin),
+      y: Math.max(0, gameViewport.height - size - margin),
+      w: size,
+      h: size
+    };
+  }
+
+  function normalizeInventoryRect(rect, fallback) {
+    const fb = fallback || { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      x: Math.round(Number(rect && rect.x != null ? rect.x : fb.x) || 0),
+      y: Math.round(Number(rect && rect.y != null ? rect.y : fb.y) || 0),
+      w: Math.max(1, Math.round(Number(rect && rect.w != null ? rect.w : fb.w) || fb.w)),
+      h: Math.max(1, Math.round(Number(rect && rect.h != null ? rect.h : fb.h) || fb.h))
+    };
+  }
+
+  function ensureInventoryRects() {
+    inventoryDefinition.panel = normalizeInventoryRect(
+      inventoryDefinition.panel,
+      defaultInventoryPanel()
+    );
+    inventoryDefinition.toggleIconBounds = normalizeInventoryRect(
+      inventoryDefinition.toggleIconBounds,
+      defaultInventoryToggleIconBounds()
+    );
+  }
+
+  function readInventoryPanelFromUI() {
+    ensureInventoryRects();
+    const get = (id) => document.getElementById(id);
+    const xEl = get('inventory-panel-x');
+    const yEl = get('inventory-panel-y');
+    const wEl = get('inventory-panel-w');
+    const hEl = get('inventory-panel-h');
+    if (!xEl || !yEl || !wEl || !hEl) return;
+    inventoryDefinition.panel = normalizeInventoryRect({
+      x: xEl.value,
+      y: yEl.value,
+      w: wEl.value,
+      h: hEl.value
+    }, defaultInventoryPanel());
+    redraw();
+  }
+
+  function readInventoryToggleBoundsFromUI() {
+    ensureInventoryRects();
+    const get = (id) => document.getElementById(id);
+    const xEl = get('inventory-toggle-x');
+    const yEl = get('inventory-toggle-y');
+    const wEl = get('inventory-toggle-w');
+    const hEl = get('inventory-toggle-h');
+    if (!xEl || !yEl || !wEl || !hEl) return;
+    inventoryDefinition.toggleIconBounds = normalizeInventoryRect({
+      x: xEl.value,
+      y: yEl.value,
+      w: wEl.value,
+      h: hEl.value
+    }, defaultInventoryToggleIconBounds());
+    redraw();
+  }
+
+  function applyInventoryRectsToUI() {
+    ensureInventoryRects();
+    const panel = inventoryDefinition.panel;
+    const toggle = inventoryDefinition.toggleIconBounds;
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.value = String(val);
+    };
+    set('inventory-panel-x', panel.x);
+    set('inventory-panel-y', panel.y);
+    set('inventory-panel-w', panel.w);
+    set('inventory-panel-h', panel.h);
+    set('inventory-toggle-x', toggle.x);
+    set('inventory-toggle-y', toggle.y);
+    set('inventory-toggle-w', toggle.w);
+    set('inventory-toggle-h', toggle.h);
+  }
+
+  function bindInventoryRectInputs(ids, onChange) {
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', onChange);
+      el.addEventListener('input', onChange);
+    });
+  }
+
+  function updateInventoryToggleIconLabel() {
+    const label = document.getElementById('inventory-toggle-icon-label');
+    if (!label) return;
+    if (inventoryDefinition.toggleIcon) {
+      label.textContent = 'Icon set';
+    } else {
+      label.textContent = 'No icon';
+    }
+  }
+
+  function refreshInventoryDisplayModeUI() {
+    const modeSel = document.getElementById('inventory-display-mode');
+    const toggleWrap = document.getElementById('inventory-toggle-icon-wrap');
+    const popupEdgeWrap = document.getElementById('inventory-popup-edge-wrap');
+    const popupHint = document.getElementById('inventory-popup-hint');
+    const popupEdgeInput = document.getElementById('inventory-popup-edge-height');
+    const mode = normalizeInventoryDisplayMode(inventoryDefinition.displayMode);
+    inventoryDefinition.displayMode = mode;
+    if (modeSel) modeSel.value = mode;
+    if (toggleWrap) toggleWrap.style.display = mode === 'toggle' ? '' : 'none';
+    const isPopup = mode === 'popup';
+    if (popupEdgeWrap) popupEdgeWrap.style.display = isPopup ? '' : 'none';
+    if (popupHint) popupHint.style.display = isPopup ? '' : 'none';
+    const edgeH = Math.max(16, Math.min(200, Number(inventoryDefinition.popupEdgeHeight) || 48));
+    inventoryDefinition.popupEdgeHeight = edgeH;
+    if (popupEdgeInput) popupEdgeInput.value = String(edgeH);
+    applyInventoryRectsToUI();
+    updateInventoryToggleIconLabel();
+  }
+
+  function setInventoryPopupEdgeHeight(px) {
+    inventoryDefinition.popupEdgeHeight = Math.max(16, Math.min(200, Number(px) || 48));
+  }
+
+  function setInventoryDisplayMode(mode) {
+    inventoryDefinition.displayMode = normalizeInventoryDisplayMode(mode);
+    refreshInventoryDisplayModeUI();
+  }
+
+  async function browseInventoryToggleIcon() {
+    const resource = await pickResourceImage({ title: 'Inventory toggle icon from Resources' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      inventoryDefinition.toggleIcon = img;
+      inventoryDefinition._toggleIconResource = resource;
+      updateInventoryToggleIconLabel();
+      showNotification('Toggle icon set', 'success');
+    } catch (err) {
+      showNotification('Error: ' + err.message, 'error');
+    }
+  }
+
+  function clearInventoryToggleIcon() {
+    inventoryDefinition.toggleIcon = null;
+    inventoryDefinition._toggleIconResource = null;
+    updateInventoryToggleIconLabel();
+    showNotification('Toggle icon removed', 'info');
+  }
+
+  function setupInventoryEditorUI() {
+    const btnBg = document.getElementById('btn-inventory-bg');
+    const btnSlot = document.getElementById('btn-inventory-slot');
+    const btnSlotDel = document.getElementById('btn-inventory-slot-delete');
+    const btnCreate = document.getElementById('btn-inventory-item-create');
+    const btnUpdate = document.getElementById('btn-inventory-item-update');
+    const btnBrowseImg = document.getElementById('btn-inventory-item-browse-image');
+    const btnClearImg = document.getElementById('btn-inventory-item-clear-image');
+    const displayModeSel = document.getElementById('inventory-display-mode');
+    const popupEdgeInput = document.getElementById('inventory-popup-edge-height');
+    const btnToggleIconBrowse = document.getElementById('btn-inventory-toggle-icon-browse');
+    const btnToggleIconClear = document.getElementById('btn-inventory-toggle-icon-clear');
+    if (btnBg) btnBg.addEventListener('click', uploadInventoryBackground);
+    if (btnSlot) btnSlot.addEventListener('click', startDrawInventorySlot);
+    if (btnSlotDel) btnSlotDel.addEventListener('click', deleteSelectedInventorySlot);
+    if (btnCreate) btnCreate.addEventListener('click', () => window.createInventoryItemFromForm());
+    if (btnUpdate) btnUpdate.addEventListener('click', () => window.updateInventoryItemFromForm());
+    if (btnBrowseImg) btnBrowseImg.addEventListener('click', () => window.browseInventoryItemImage());
+    if (btnClearImg) btnClearImg.addEventListener('click', () => window.clearPendingInventoryItemImage());
+    if (displayModeSel) {
+      displayModeSel.addEventListener('change', () => setInventoryDisplayMode(displayModeSel.value));
+    }
+    if (popupEdgeInput) {
+      popupEdgeInput.addEventListener('change', () => setInventoryPopupEdgeHeight(popupEdgeInput.value));
+      popupEdgeInput.addEventListener('input', () => setInventoryPopupEdgeHeight(popupEdgeInput.value));
+    }
+    if (btnToggleIconBrowse) btnToggleIconBrowse.addEventListener('click', () => browseInventoryToggleIcon());
+    if (btnToggleIconClear) btnToggleIconClear.addEventListener('click', () => clearInventoryToggleIcon());
+    bindInventoryRectInputs(
+      ['inventory-panel-x', 'inventory-panel-y', 'inventory-panel-w', 'inventory-panel-h'],
+      () => readInventoryPanelFromUI()
+    );
+    bindInventoryRectInputs(
+      ['inventory-toggle-x', 'inventory-toggle-y', 'inventory-toggle-w', 'inventory-toggle-h'],
+      () => readInventoryToggleBoundsFromUI()
+    );
+    refreshInventoryDisplayModeUI();
+  }
+
+  async function uploadInventoryBackground() {
+    const resource = await pickResourceImage({ title: 'Inventory background from Resources' });
+    if (!resource) return;
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      inventoryDefinition.background = img;
+      showNotification('Inventory background set', 'success');
+      redraw();
+    } catch (err) {
+      showNotification('Error: ' + err.message, 'error');
+    }
+  }
+
+  function startDrawInventorySlot() {
+    isDrawingInventorySlot = true;
+    inventorySlotDrawStart = null;
+    inventoryDefinition.slots.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
+    showNotification('Drag on the canvas to draw a slot', 'info');
+  }
+
+  function deleteSelectedInventorySlot() {
+    if (!selectedInventorySlotId) { showNotification('No slot selected', 'warning'); return; }
+    inventoryDefinition.slots = inventoryDefinition.slots.filter(s => s.id !== selectedInventorySlotId);
+    selectedInventorySlotId = null;
+    refreshInventorySlotsListUI();
+    redraw();
+    showNotification('Slot deleted', 'info');
+  }
+
+  setupInventoryEditorUI();
   // Functions for Scene Objects (in Rooms tab)
-  window.addSceneObject = function() {
-    document.getElementById('scene-object-upload').click();
-  };
+  function ensureSceneObjectSelection() {
+    // Don't auto-select scene objects if a hotspot is active
+    if (activeHotspotId) {
+      selectedSceneObjectId = null;
+      return;
+    }
+    if (sceneObjects.length > 0 && (!selectedSceneObjectId || !sceneObjects.some(o => o.id === selectedSceneObjectId))) {
+      selectedSceneObjectId = sceneObjects[0].id;
+    }
+    if (sceneObjects.length === 0) {
+      selectedSceneObjectId = null;
+    }
+  }
 
-  window.uploadSceneObject = function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    // Create image object
-    const img = new Image();
-    img.onload = () => {
-      // Generate unique name even for same image
-      const baseName = file.name.replace(/\.[^/.]+$/, "");
-      const timestamp = Date.now();
-      const objectName = `${baseName}_${timestamp}`;
+  function selectSceneObject(objectId) {
+    selectedSceneObjectId = objectId;
+    activeHotspotId = null; // Lock hotspots when scene object is selected
+    refreshSceneObjectsListUI();
+    refreshHotspotsListUI();
+    redraw();
+  }
+
+  function createSceneObjectListItem(sceneObject) {
+    const isSelected = sceneObject.id === selectedSceneObjectId;
+    const item = document.createElement('div');
+    item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+    if (isSelected) {
+      item.classList.add('border', 'border-info');
+    }
+    item.dataset.objectId = sceneObject.id;
+
+    const info = document.createElement('div');
+    info.innerHTML = `<strong>${sceneObject.name}</strong>`;
+
+    const visibleWrap = document.createElement('div');
+    visibleWrap.className = 'form-check form-check-inline small mt-1';
+    const visibleChk = document.createElement('input');
+    visibleChk.type = 'checkbox';
+    visibleChk.className = 'form-check-input';
+    visibleChk.id = `scene-visible-${sceneObject.id}`;
+    visibleChk.checked = isSceneObjectRuntimeVisible(sceneObject);
+    const visibleLbl = document.createElement('label');
+    visibleLbl.className = 'form-check-label text-light';
+    visibleLbl.htmlFor = visibleChk.id;
+    visibleLbl.textContent = 'Is visible?';
+    visibleLbl.title = 'Visible and interactive in playtest; always shown in editor when off';
+    visibleChk.title = visibleLbl.title;
+    visibleChk.addEventListener('change', () => {
+      setSceneObjectRuntimeVisible(sceneObject, visibleChk.checked);
+      const r = rooms.get(currentRoomId);
+      if (r) r.sceneObjects = sceneObjects;
+      item.style.opacity = visibleChk.checked ? '1' : '0.55';
+      redraw();
+    });
+    visibleWrap.appendChild(visibleChk);
+    visibleWrap.appendChild(visibleLbl);
+    info.appendChild(visibleWrap);
+    if (!isSceneObjectRuntimeVisible(sceneObject)) {
+      item.style.opacity = '0.55';
+    }
+
+    const controls = document.createElement('div');
+
+    const selectBtn = document.createElement('button');
+    selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+    selectBtn.title = isSelected ? 'Active object' : 'Select to edit';
+    selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+    selectBtn.addEventListener('click', () => selectSceneObject(sceneObject.id));
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn btn-sm btn-outline-light me-1';
+    editBtn.title = isSelected ? 'Edit' : 'Select before editing';
+    editBtn.textContent = '✏️';
+    editBtn.disabled = !isSelected;
+    editBtn.addEventListener('click', () => {
+      if (!isSelected) {
+        showNotification('Select the object before editing it', 'warning');
+        return;
+      }
+      editSceneObject(editBtn);
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-sm btn-outline-danger';
+    deleteBtn.title = isSelected ? 'Delete' : 'Select before editing';
+    deleteBtn.textContent = '🗑️';
+    deleteBtn.disabled = !isSelected;
+    deleteBtn.addEventListener('click', () => {
+      if (!isSelected) {
+        showNotification('Select the object before editing it', 'warning');
+        return;
+      }
+      removeSceneObject(deleteBtn);
+    });
+
+    controls.appendChild(selectBtn);
+    controls.appendChild(editBtn);
+    controls.appendChild(deleteBtn);
+
+    item.appendChild(info);
+    item.appendChild(controls);
+    return item;
+  }
+
+  function refreshSceneObjectsListUI() {
+    const sceneObjectsList = document.getElementById('scene-objects-list');
+    if (!sceneObjectsList) return;
+    ensureSceneObjectSelection();
+    sceneObjectsList.innerHTML = '';
+    sceneObjects.forEach((obj) => {
+      if (!obj.id) {
+        obj.id = uid('scene');
+      }
+      sceneObjectsList.appendChild(createSceneObjectListItem(obj));
+    });
+  }
+
+  window.addSceneObject = async function() {
+    if (!currentUser || !currentUser.uid) {
+      showNotification('Please log in to select images', 'warning');
+      return;
+    }
+    if (!getActiveProjectId()) return;
+
+    const resource = await pickResourceImage({ title: 'Scene object from Resources' });
+    if (!resource) return;
+
+    try {
+      showNotification('Adding scene object...', 'info');
       
-      // Create scene object data
+      const objectId = uid("scene");
+      const img = await loadImageFromResourceEntry(resource);
+      if (!img) throw new Error('Failed to load image from Resources');
+
+      const baseName = (resource.displayName || resource.fileName || 'object').replace(/\.[^/.]+$/, '');
+      const objectName = `${baseName}_${Date.now()}`;
+
       const sceneObject = {
-        id: uid("scene"),
+        id: objectId,
         name: objectName,
         img: img,
-        x: 100 + Math.random() * 200, // Random position for demo
+        x: 100 + Math.random() * 200,
         y: 100 + Math.random() * 200,
         type: "Interactive",
         rotationRad: 0,
         scaleX: 1,
         scaleY: 1,
-        visible: true
+        visible: true,
+        enabled: true
       };
-      
-      // Add to scene objects array (room-scoped)
+
       sceneObjects.push(sceneObject);
-      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-      
-      // Add to UI list
-      const sceneObjectsList = document.getElementById('scene-objects-list');
-      const newObject = document.createElement('div');
-      newObject.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-      newObject.dataset.objectId = sceneObject.id;
-      newObject.innerHTML = `
-        <div>
-          <strong>${objectName}</strong>
-          <br><small>Scene object</small>
-          <br><span class="badge bg-warning">Interactive</span>
-          <br><small style="color: #888;">Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}</small>
-        </div>
-        <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-        </div>
-      `;
-      
-      sceneObjectsList.appendChild(newObject);
-      
-      // Redraw canvas to show the new object
+      const r = rooms.get(currentRoomId);
+      if (r) r.sceneObjects = sceneObjects;
+      selectedSceneObjectId = sceneObject.id;
+
+      refreshSceneObjectsListUI();
       redraw();
-      
-      // Show notification
-      showNotification(`Scene object "${objectName}" added to canvas!`, 'success');
-    };
-    
-    img.src = URL.createObjectURL(file);
-    
-    // Reset input to allow same file selection again
-    input.value = '';
+      showNotification(`Scene object "${objectName}" added`, 'success');
+    } catch (error) {
+      console.error('[Asset] Errore scene object da Resources:', error);
+      showNotification(`Scene object error: ${error.message}`, 'error');
+    }
   };
 
   window.filterSceneObjects = function(searchTerm) {
@@ -2389,17 +4433,23 @@ window.selectRoom = function(roomId) {
     });
   };
 
-  window.removeSceneObject = function(button) {
+  window.removeSceneObject = async function(button) {
     if (confirm('Are you sure you want to delete this scene object?')) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
+      if (objectId !== selectedSceneObjectId) {
+        showNotification('Select the object before deleting it', 'warning');
+        return;
+      }
       
+      // Rimuove solo dall'editor; i file su Supabase restano (eliminabili da Resources)
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
+      selectedSceneObjectId = sceneObjects[0] ? sceneObjects[0].id : null;
       
       // Remove from UI
-      listItem.remove();
+      refreshSceneObjectsListUI();
       
       // Redraw canvas
       redraw();
@@ -2408,29 +4458,63 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.editSceneObject = function(button) {
+  window.editSceneObject = async function(button) {
     const listItem = button.closest('.list-group-item');
     const objectId = listItem.dataset.objectId;
     const sceneObject = sceneObjects.find(obj => obj.id === objectId);
+    if (objectId !== selectedSceneObjectId) {
+      showNotification('Select the object before editing it', 'warning');
+      return;
+    }
     
     if (!sceneObject) return;
     
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent;
     
-    // Create edit dialog
-    const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
-    if (newName && newName.trim() !== '') {
-      sceneObject.name = newName.trim();
-      nameElement.textContent = newName.trim();
-      
-      // Update position info in UI
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+    // Semplice menu di scelta: rinomina o cambia immagine
+    const action = window.prompt(
+      `Edit scene object "${currentName}"\n` +
+      `Type:\n` +
+      `- "name" to rename\n` +
+      `- "image" to replace the image`,
+      'name'
+    );
+
+    if (!action) return;
+
+    const normalized = String(action).toLowerCase().trim();
+
+    if (normalized === 'name') {
+      const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
+      if (newName && newName.trim() !== '') {
+        sceneObject.name = newName.trim();
+        nameElement.textContent = newName.trim();
+        
+        // Update position info in UI
+        const positionInfo = listItem.querySelector('small[style*="color: #888"]');
+        if (positionInfo) {
+          positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+        }
+        
+        showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
       }
-      
-      showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
+    } else if (normalized === 'image') {
+      if (!currentUser?.uid) {
+        showNotification('Please log in', 'warning');
+        return;
+      }
+      const resource = await pickResourceImage({ title: 'New scene object image' });
+      if (!resource) return;
+      try {
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) throw new Error('Failed to load image');
+        sceneObject.img = img;
+        redraw();
+        showNotification('Scene object image updated', 'success');
+      } catch (err) {
+        showNotification('Error: ' + err.message, 'error');
+      }
     }
     
     // Ask for position change
@@ -2453,94 +4537,239 @@ window.selectRoom = function(roomId) {
       }
       redraw();
     }
+    refreshSceneObjectsListUI();
   };
 
   // Functions for Characters tab
-  window.addCharacter = function() {
-    const name = prompt('Character name:');
-    if (!name) return;
-    
-    const charactersList = document.getElementById('characters-list');
-    
-    const newCharacter = document.createElement('div');
-    newCharacter.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-    newCharacter.innerHTML = `
-      <div>
-        <strong>${name}</strong>
-        <br><small>New character</small>
-        <span class="badge bg-success ms-2">Active</span>
-      </div>
-      <div>
-        <button class="btn btn-sm btn-outline-light me-1" title="Edit">✏️</button>
-        <button class="btn btn-sm btn-outline-warning me-1" title="Dialogs">💬</button>
-        <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeCharacter(this)">🗑️</button>
-      </div>
-    `;
-    
-    charactersList.appendChild(newCharacter);
-    
-    // Aggiorna il dropdown del selettore personaggi
-    refreshCharacterSelector();
-    // Aggiorna la UI del giocatore iniziale
-    refreshStartingPlayerUI();
-    
-    // Automatically select the new character
+  function getCharacterFrameCount(charData) {
+    if (!charData) return 0;
+    const countDirFrames = (dirs) => {
+      if (!dirs) return 0;
+      return Object.values(dirs).reduce((sum, dir) => sum + (dir.frames ? dir.frames.length : 0), 0);
+    };
+    let total = countDirFrames(charData.directions);
+    if (charData.animations) {
+      Object.values(charData.animations).forEach((anim) => {
+        total += countDirFrames(anim.directions);
+      });
+    }
+    return total;
+  }
+
+  function selectCharacterFromList(characterName) {
     const characterSelector = document.getElementById('character-selector');
     if (characterSelector) {
-      characterSelector.value = name;
+      characterSelector.value = characterName;
       loadCharacterDirections();
     }
+    refreshCharactersListUI();
+    redraw();
+  }
+
+  function refreshCharactersListUI() {
+    const charactersList = document.getElementById('characters-list');
+    if (!charactersList) return;
+    const sel = document.getElementById('character-selector');
+    const selectedName = sel ? sel.value : '';
+    const names = [];
+    characterFrames.forEach((_, name) => names.push(name));
+    names.sort((a, b) => a.localeCompare(b));
+    charactersList.innerHTML = '';
+    names.forEach((characterName) => {
+      const charData = characterFrames.get(characterName);
+      const totalFrames = getCharacterFrameCount(charData);
+      const isSelected = characterName === selectedName;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      el.dataset.characterName = characterName;
+      const info = document.createElement('div');
+      const scriptLabel = characterScripts.has(characterName) ? characterName : '(no script)';
+      info.innerHTML = '<strong>' + characterName + '</strong><br><small class="text-muted">' + totalFrames + ' frame' + (totalFrames !== 1 ? 's' : '') + '</small><br><small class="character-script-name text-info">Script: ' + scriptLabel + '</small>';
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectCharacterFromList(characterName));
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-sm btn-outline-light me-1';
+      editBtn.textContent = 'Rename';
+      editBtn.addEventListener('click', () => window.editCharacter(editBtn));
+      const dialogBtn = document.createElement('button');
+      dialogBtn.className = 'btn btn-sm btn-outline-warning me-1';
+      dialogBtn.textContent = 'Dialog';
+      dialogBtn.addEventListener('click', () => window.editCharacterDialogs(dialogBtn));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => window.removeCharacter(delBtn));
+      controls.appendChild(selectBtn);
+      controls.appendChild(editBtn);
+      controls.appendChild(dialogBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      charactersList.appendChild(el);
+    });
+    refreshCharacterSelector();
+    refreshStartingPlayerUI();
+    refreshCharacterScriptTargets();
+  }
+
+  // Helper function per aggiornare la visualizzazione del nome del character per gli script
+  function updateCharacterScriptDisplay(characterName) {
+    const charactersList = document.getElementById('characters-list');
+    if (!charactersList) return;
     
+    const characterElements = charactersList.querySelectorAll('.list-group-item');
+    characterElements.forEach(element => {
+      const nameElement = element.querySelector('strong');
+      if (nameElement && nameElement.textContent.trim() === characterName) {
+        let scriptNameDisplay = element.querySelector('.character-script-name');
+        
+        if (!scriptNameDisplay) {
+          // Crea l'elemento se non esiste
+          scriptNameDisplay = document.createElement('small');
+          scriptNameDisplay.className = 'character-script-name d-block text-info';
+          const framesInfo = element.querySelector('small:not(.character-script-name)');
+          if (framesInfo) {
+            framesInfo.insertAdjacentElement('afterend', scriptNameDisplay);
+          } else {
+            nameElement.insertAdjacentElement('afterend', scriptNameDisplay);
+          }
+        }
+        scriptNameDisplay.textContent = `Script name: "${characterName}"`;
+        scriptNameDisplay.style.display = 'block';
+      }
+    });
+  }
+
+  window.addCharacter = function() {
+    const name = (prompt('Character name:') || '').trim();
+    if (!name) return;
+    if (characterFrames.has(name)) {
+      showNotification('Character name already in use', 'warning');
+      return;
+    }
+    characterFrames.set(name, { directions: {}, animations: {}, currentFrame: 0 });
+    selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
   };
 
-  window.removeCharacter = function(button) {
+  window.removeCharacter = async function(button) {
     if (confirm('Are you sure you want to delete this character?')) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
       
-      characterElement.remove();
+      // Ferma la preview se è attiva per questo character
+      const sel = document.getElementById('character-selector');
+      const currentCharacter = sel ? sel.value : '';
+      if (currentCharacter === characterName) {
+        stopCharacterPreview();
+      }
       
-      // Aggiorna il dropdown del selettore personaggi
-      refreshCharacterSelector();
-      // Aggiorna la UI del giocatore iniziale
-      refreshStartingPlayerUI();
+      const charData = characterFrames.get(characterName);
+
+      // Pulisce i riferimenti in memoria (i file su Supabase restano; eliminabili da Resources)
+      // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
+      const clearDirectionFramesFromMap = (directionsMap) => {
+        if (!directionsMap) return;
+        for (const dirData of Object.values(directionsMap)) {
+          if (dirData.frames && Array.isArray(dirData.frames)) {
+            for (const frame of dirData.frames) {
+              let frameImage = null;
+              if (frame && typeof frame === 'object' && frame.img) {
+                frameImage = frame.img;
+              } else if (frame && typeof frame === 'object' && frame.src) {
+                frameImage = frame;
+              }
+              if (frameImage && imageAssetMap.has(frameImage)) {
+                const assetInfo = imageAssetMap.get(frameImage);
+                if (assetInfo && assetInfo.type === 'character') {
+                  imageAssetMap.delete(frameImage);
+                }
+              }
+            }
+          }
+        }
+      };
+      if (charData) {
+        try {
+          clearDirectionFramesFromMap(charData.directions);
+          if (charData.animations) {
+            Object.values(charData.animations).forEach(anim => clearDirectionFramesFromMap(anim.directions));
+          }
+        } catch (mapError) {
+          console.warn('[Character] Errore pulizia imageAssetMap (non critico):', mapError);
+        }
+      }
       
-    // If the deleted character was selected, deselect
+      // Terzo: rimuovi il character da characterFrames per evitare che venga ricreato durante il salvataggio
+      if (characterFrames.has(characterName)) {
+        characterFrames.delete(characterName);
+        console.log(`[Character] Character rimosso da characterFrames: ${characterName}`);
+      }
+      
+      // Quarto: rimuovi anche eventuali frame non salvati associati a questo character
+      if (unsavedCharacterFrames.size > 0) {
+        const framesToRemove = [];
+        for (const frameImg of unsavedCharacterFrames) {
+          const assetInfo = imageAssetMap.get(frameImg);
+          if (assetInfo && assetInfo.type === 'character' && assetInfo.subfolder === `characters/${characterName}`) {
+            framesToRemove.push(frameImg);
+          }
+        }
+        framesToRemove.forEach(img => {
+          unsavedCharacterFrames.delete(img);
+          unsavedCharacterAssetIds.delete(imageAssetMap.get(img)?.assetId);
+        });
+        if (framesToRemove.length > 0) {
+          console.log(`[Character] Rimossi ${framesToRemove.length} frame non salvati associati a ${characterName}`);
+        }
+      }
+      
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === characterName) {
         characterSelector.value = '';
         loadCharacterDirections();
       }
+      refreshCharactersListUI();
       
       showNotification('Character deleted!', 'info');
+      console.log(`[Character] ✅ Character "${characterName}" rimosso dall'editor`);
     }
   };
 
   window.editCharacter = function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
-    const currentName = nameElement.textContent;
+    const currentName = nameElement.textContent.trim();
     
     const newName = prompt('Edit character name:', currentName);
     if (newName && newName.trim() !== '') {
       const oldName = currentName;
       const trimmedNewName = newName.trim();
-      
-      nameElement.textContent = trimmedNewName;
-      
-      // Aggiorna il dropdown del selettore personaggi
-      refreshCharacterSelector();
-      // Aggiorna la UI del giocatore iniziale
-      refreshStartingPlayerUI();
-      
-    // If the edited character was selected, update selection
+      if (trimmedNewName === oldName) return;
+      if (characterFrames.has(trimmedNewName)) {
+        showNotification('Character name already in use', 'warning');
+        return;
+      }
+      if (characterFrames.has(oldName)) {
+        const data = characterFrames.get(oldName);
+        characterFrames.delete(oldName);
+        characterFrames.set(trimmedNewName, data);
+      }
+      if (characterScripts.has(oldName)) {
+        const script = characterScripts.get(oldName);
+        characterScripts.delete(oldName);
+        characterScripts.set(trimmedNewName, script);
+      }
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
         loadCharacterDirections();
       }
-      
+      refreshCharactersListUI();
       showNotification(`Character renamed to "${trimmedNewName}"`, 'success');
     }
   };
@@ -2560,25 +4789,236 @@ window.selectRoom = function(roomId) {
 
   // Functions for Scripts tab
   // Character animation frames state and preview
-  const characterFrames = new Map(); // characterName -> { directions: {north: {frames: [], fps: 8}, northeast: {...}, ...}, currentFrame: 0 }
+  const characterFrames = new Map(); // characterName -> { directions: {...}, animations: { name: { directions: {...} } }, currentFrame: 0 }
   let characterPreviewTimer = null;
   let characterPreviewIndex = 0;
   let currentDirection = 'south'; // Default direction
 
+  const DIRECTION_LABELS = {
+    north: 'North (↑)',
+    northeast: 'Northeast (↗)',
+    east: 'East (→)',
+    southeast: 'Southeast (↘)',
+    south: 'South (↓)',
+    southwest: 'Southwest (↙)',
+    west: 'West (←)',
+    northwest: 'Northwest (↖)'
+  };
+
+  function getSelectedCharacterAnimationKey() {
+    const animSel = document.getElementById('character-animation-selector');
+    const val = animSel ? animSel.value : 'walking';
+    return val || 'walking';
+  }
+
+  function getCharacterDirectionsStore(charData) {
+    if (!charData) return null;
+    const animKey = getSelectedCharacterAnimationKey();
+    if (animKey === 'walking') {
+      if (!charData.directions) charData.directions = {};
+      return charData.directions;
+    }
+    if (!charData.animations) charData.animations = {};
+    if (!charData.animations[animKey]) charData.animations[animKey] = { directions: {} };
+    if (!charData.animations[animKey].directions) charData.animations[animKey].directions = {};
+    return charData.animations[animKey].directions;
+  }
+
+  function resetDirectionSelectorLabels() {
+    const dirSel = document.getElementById('direction-selector');
+    if (!dirSel) return;
+    dirSel.querySelectorAll('option').forEach(opt => {
+      if (DIRECTION_LABELS[opt.value]) opt.textContent = DIRECTION_LABELS[opt.value];
+    });
+  }
+
+  function refreshCharacterAnimationSelector(characterName) {
+    const sel = document.getElementById('character-animation-selector');
+    const removeBtn = document.getElementById('btn-remove-character-animation');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '';
+    const walkOpt = document.createElement('option');
+    walkOpt.value = 'walking';
+    walkOpt.textContent = 'Walking (standard)';
+    sel.appendChild(walkOpt);
+    const charData = characterName ? characterFrames.get(characterName) : null;
+    if (charData && charData.animations) {
+      Object.keys(charData.animations).sort((a, b) => a.localeCompare(b)).forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        sel.appendChild(o);
+      });
+    }
+    if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+      sel.value = prev;
+    } else {
+      sel.value = 'walking';
+    }
+    if (removeBtn) {
+      removeBtn.disabled = sel.value === 'walking';
+    }
+    updateCharacterAnimationUILabel();
+  }
+
+  function updateCharacterAnimationUILabel() {
+    const label = document.getElementById('character-animation-direction-label');
+    const isWalking = getSelectedCharacterAnimationKey() === 'walking';
+    if (label) {
+      label.textContent = isWalking
+        ? 'Select direction (8 directions):'
+        : 'Select direction for this animation (8 directions):';
+    }
+    const removeBtn = document.getElementById('btn-remove-character-animation');
+    if (removeBtn) {
+      removeBtn.disabled = getSelectedCharacterAnimationKey() === 'walking';
+    }
+  }
+
+  window.onCharacterAnimationChange = function() {
+    stopCharacterPreview();
+    resetDirectionSelectorLabels();
+    updateCharacterAnimationUILabel();
+    updateDirectionInfo();
+    redraw();
+  };
+
+  window.addCharacterAnimation = function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) {
+      showNotification('Select a character first', 'warning');
+      return;
+    }
+    const name = prompt('Animation name (e.g. idle, talk, pick_up):');
+    if (!name || !name.trim()) return;
+    const animName = name.trim();
+    if (animName.toLowerCase() === 'walking') {
+      showNotification('"walking" is reserved for the standard walk cycle', 'warning');
+      return;
+    }
+    let charData = characterFrames.get(who);
+    if (!charData) {
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      characterFrames.set(who, charData);
+    }
+    if (!charData.animations) charData.animations = {};
+    if (charData.animations[animName]) {
+      showNotification(`Animation "${animName}" already exists`, 'warning');
+      return;
+    }
+    charData.animations[animName] = { directions: {} };
+    characterFrames.set(who, charData);
+    refreshCharacterAnimationSelector(who);
+    const animSel = document.getElementById('character-animation-selector');
+    if (animSel) animSel.value = animName;
+    onCharacterAnimationChange();
+    showNotification(`Animation "${animName}" added`, 'success');
+  };
+
+  window.removeCharacterAnimation = function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) {
+      showNotification('Select a character first', 'warning');
+      return;
+    }
+    const animKey = getSelectedCharacterAnimationKey();
+    if (animKey === 'walking') {
+      showNotification('Cannot remove the standard walking animation', 'warning');
+      return;
+    }
+    if (!confirm(`Remove animation "${animKey}" and all its frames?`)) return;
+    const charData = characterFrames.get(who);
+    if (charData && charData.animations) {
+      delete charData.animations[animKey];
+      characterFrames.set(who, charData);
+    }
+    refreshCharacterAnimationSelector(who);
+    onCharacterAnimationChange();
+    showNotification(`Animation "${animKey}" removed`, 'info');
+  };
+
+  async function loadCharacterDirectionsFromData(directionsSource, projectId, characterName) {
+    const directions = {};
+    if (directionsSource) {
+      for (const [dir, data] of Object.entries(directionsSource)) {
+        const frames = [];
+        if (Array.isArray(data.frames)) {
+          for (const f of data.frames) {
+            if (f && typeof f === 'object' && f.mirror && typeof f.mirror === 'string') {
+              frames.push({ mirror: f.mirror });
+            } else {
+              const img = await createImageFromDataUrl(f, projectId);
+              if (img) {
+                frames.push(img);
+                if (f && typeof f === 'string' && f.startsWith('asset:')) {
+                  const assetId = f.replace('asset:', '');
+                  imageAssetMap.set(img, {
+                    assetId,
+                    type: 'character',
+                    projectId,
+                    subfolder: `characters/${characterName}`
+                  });
+                }
+              }
+            }
+          }
+        }
+        directions[dir] = { fps: Number(data.fps) || 8, frames };
+      }
+    }
+    return directions;
+  }
+
+  function serializeDirectionsMap(directionsMap) {
+    const out = {};
+    if (!directionsMap) return out;
+    const directionsList = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+    directionsList.forEach(dir => {
+      const d = directionsMap[dir];
+      if (d) {
+        const frames = Array.isArray(d.frames) ? d.frames.map(fr => {
+          if (!fr) return null;
+          if (fr.mirror && typeof fr.mirror === 'string') return { mirror: fr.mirror };
+          if (fr.img && typeof fr.img === 'object') return serializeImage(fr.img);
+          if (typeof fr === 'object' && (fr.src || (fr.width && fr.height))) return serializeImage(fr);
+          if (typeof fr === 'string') return fr;
+          return null;
+        }).filter(Boolean) : [];
+        out[dir] = { fps: Number(d.fps) || 8, frames };
+      }
+    });
+    return out;
+  }
+  
+  // Traccia i frame caricati durante la sessione corrente che non sono stati ancora salvati nel progetto
+  // Questo permette di eliminarli da Supabase se si chiude il browser o si fa logout senza salvare
+  const unsavedCharacterFrames = new Set(); // Set di Image objects che sono stati caricati su Supabase ma non salvati
+  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character caricati su Supabase ma non salvati nel progetto
+
   function refreshCharacterSelector() {
     const sel = document.getElementById('character-selector');
     if (!sel) return;
+    const previous = sel.value;
     sel.innerHTML = '';
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = 'Select character...';
     sel.appendChild(opt);
-    // read from UI list
-    document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-      const name = s.textContent.trim();
+    const names = [];
+    characterFrames.forEach((_, name) => names.push(name));
+    names.sort((a, b) => a.localeCompare(b));
+    names.forEach((name) => {
       const o = document.createElement('option');
-      o.value = name; o.textContent = name; sel.appendChild(o);
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
     });
+    if (previous && names.includes(previous)) {
+      sel.value = previous;
+    }
   }
 
   // Persist a subset of start settings into localStorage
@@ -2637,7 +5077,7 @@ window.selectRoom = function(roomId) {
     };
   }
 
-  // Populate start room selector and bind x/y inputs
+  // Populate start room selector and bind position input
   function refreshStartRoomSelector() {
     const sel = document.getElementById('start-room-selector');
     if (!sel) return;
@@ -2657,22 +5097,25 @@ window.selectRoom = function(roomId) {
 
     sel.onchange = function() { persistStartSettings({ startRoomId: sel.value }); };
 
-    const startXInput = document.getElementById('start-x');
-    const startYInput = document.getElementById('start-y');
-    if (startXInput) {
-      if (saved && typeof saved.startX !== 'undefined') startXInput.value = String(Number(saved.startX) || 0);
-      startXInput.oninput = function() { persistStartSettings({ startX: startXInput.value }); };
-    }
-    if (startYInput) {
-      if (saved && typeof saved.startY !== 'undefined') startYInput.value = String(Number(saved.startY) || 0);
-      startYInput.oninput = function() { persistStartSettings({ startY: startYInput.value }); };
+    const startPositionInput = document.getElementById('start-position');
+    if (startPositionInput) {
+      if (saved && (typeof saved.startX !== 'undefined' || typeof saved.startY !== 'undefined')) {
+        const x = Number(saved.startX) || 0;
+        const y = Number(saved.startY) || 0;
+        startPositionInput.value = formatPositionString(x, y);
+      } else {
+        startPositionInput.value = '0, 0';
+      }
+      startPositionInput.oninput = function() {
+        const parsed = parsePositionString(startPositionInput.value);
+        persistStartSettings({ startX: parsed.x, startY: parsed.y });
+      };
     }
   }
 
   document.addEventListener('tabChanged', (e) => {
     if (e.detail.currentTab === 'characters') {
-      refreshCharacterSelector();
-      refreshStartingPlayerUI();
+      refreshCharactersListUI();
       refreshStartRoomSelector();
     }
   });
@@ -2680,21 +5123,212 @@ window.selectRoom = function(roomId) {
   window.loadCharacterDirections = function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
-    if (!who) return;
+    if (!who) {
+      // Reset toggle a "upload" quando non c'è character selezionato
+      const uploadRadio = document.getElementById('frame-source-upload');
+      if (uploadRadio) uploadRadio.checked = true;
+      toggleFrameSource();
+      return;
+    }
 
     const dirSel = document.getElementById('direction-selector');
     if (!dirSel) return;
 
+    refreshCharacterAnimationSelector(who);
+    resetDirectionSelectorLabels();
     const charData = characterFrames.get(who);
-    if (charData && charData.directions) {
-      const directions = Object.keys(charData.directions);
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (activeDirections) {
+      const directions = Object.keys(activeDirections);
       if (directions.length > 0) {
         dirSel.value = directions[0];
         currentDirection = directions[0];
       }
     }
     updateDirectionInfo(); // Update direction info display
+    // Initialize pivot if needed
+    if (charData) {
+      initializePivotForCharacter(charData, currentDirection);
+    }
+    // Assicura che il toggle sia inizializzato
+    toggleFrameSource();
+    refreshCharactersListUI();
+    redraw(); // Redraw to show pivot if it exists
+    refreshFramesPreview();
+    
+    // Carica spawn settings per questo character
+    loadCharacterSpawnSettings(who);
   };
+
+  // Carica le impostazioni di spawn per un character
+  function loadCharacterSpawnSettings(characterName) {
+    const spawnSettings = document.getElementById('character-spawn-settings');
+    if (!spawnSettings) {
+      console.warn('[Character] spawn-settings element non trovato');
+      return;
+    }
+    
+    const charData = characterFrames.get(characterName);
+    const spawnData = charData && charData.spawnSettings ? charData.spawnSettings : {};
+    
+    // Debug: log per verificare il caricamento
+    console.log(`[Character] Caricamento spawnSettings per "${characterName}":`, spawnData);
+    
+    // Mostra la sezione
+    spawnSettings.style.display = 'block';
+    
+    // Carica checkbox isPlayer
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    if (isPlayerCheck) {
+      const isPlayerValue = spawnData.isPlayer === true;
+      isPlayerCheck.checked = isPlayerValue;
+      console.log(`[Character] isPlayer checkbox impostata a: ${isPlayerValue}`);
+    } else {
+      console.warn('[Character] isPlayer checkbox non trovata');
+    }
+    
+    // Carica checkbox autoSpawn
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    if (autoSpawnCheck) {
+      const autoSpawnValue = spawnData.autoSpawn === true;
+      autoSpawnCheck.checked = autoSpawnValue;
+      console.log(`[Character] autoSpawn checkbox impostata a: ${autoSpawnValue}`);
+    } else {
+      console.warn('[Character] autoSpawn checkbox non trovata');
+    }
+    
+    // Aggiorna visibilità dei campi (dopo aver caricato entrambe le checkbox)
+    updateSpawnSettingsVisibility();
+    
+    // Carica room selector
+    const roomSelect = document.getElementById('character-spawn-room');
+    if (roomSelect) {
+      roomSelect.innerHTML = '';
+      rooms.forEach((room) => {
+        const opt = document.createElement('option');
+        opt.value = room.id;
+        opt.textContent = room.name || room.id;
+        if (spawnData.roomId && room.id === spawnData.roomId) opt.selected = true;
+        roomSelect.appendChild(opt);
+      });
+      if (spawnData.roomId) {
+        roomSelect.value = spawnData.roomId;
+      }
+    }
+    
+    // Carica position
+    const positionInput = document.getElementById('character-spawn-position');
+    if (positionInput) {
+      if (spawnData.x !== undefined && spawnData.y !== undefined) {
+        positionInput.value = formatPositionString(spawnData.x, spawnData.y);
+      } else {
+        positionInput.value = '0, 0';
+      }
+    }
+    
+    // Carica direction
+    const directionSelect = document.getElementById('character-spawn-direction');
+    if (directionSelect && spawnData.direction) {
+      directionSelect.value = spawnData.direction;
+    }
+    
+    // Carica moveSpeed
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      if (spawnData.moveSpeed !== undefined && spawnData.moveSpeed !== null) {
+        speedInput.value = spawnData.moveSpeed;
+      } else {
+        speedInput.value = 100; // valore di default
+      }
+    }
+  }
+
+  // Salva le impostazioni di spawn per il character corrente
+  function saveCharacterSpawnSettings() {
+    const sel = document.getElementById('character-selector');
+    const characterName = sel ? sel.value : '';
+    if (!characterName) return;
+    
+    const charData = characterFrames.get(characterName);
+    if (!charData) return;
+    
+    // Inizializza spawnSettings se non esiste
+    if (!charData.spawnSettings) {
+      charData.spawnSettings = {};
+    }
+    
+    // Leggi i valori dall'UI
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const roomSelect = document.getElementById('character-spawn-room');
+    const positionInput = document.getElementById('character-spawn-position');
+    const directionSelect = document.getElementById('character-spawn-direction');
+    
+    if (isPlayerCheck) {
+      charData.spawnSettings.isPlayer = isPlayerCheck.checked;
+      console.log(`[Character] Salvataggio isPlayer per "${characterName}": ${isPlayerCheck.checked}`);
+    }
+    
+    if (autoSpawnCheck) {
+      charData.spawnSettings.autoSpawn = autoSpawnCheck.checked;
+      console.log(`[Character] Salvataggio autoSpawn per "${characterName}": ${autoSpawnCheck.checked}`);
+    }
+    
+    // Salva roomId se autoSpawn è true O se isPlayer è true (il player può avere una room iniziale)
+    if (roomSelect && ((autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked))) {
+      charData.spawnSettings.roomId = roomSelect.value || null;
+    }
+    
+    if (positionInput) {
+      const parsed = parsePositionString(positionInput.value);
+      charData.spawnSettings.x = parsed.x;
+      charData.spawnSettings.y = parsed.y;
+    }
+    
+    if (directionSelect) {
+      charData.spawnSettings.direction = directionSelect.value || 'south';
+    }
+    
+    // Salva moveSpeed
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      const speedValue = Number(speedInput.value);
+      if (!isNaN(speedValue) && speedValue > 0) {
+        charData.spawnSettings.moveSpeed = speedValue;
+        console.log(`[Character] Salvataggio moveSpeed per "${characterName}": ${speedValue}`);
+      } else {
+        charData.spawnSettings.moveSpeed = 100; // valore di default se non valido
+      }
+    }
+    
+    // Salva nel characterFrames
+    characterFrames.set(characterName, charData);
+  }
+
+  // Aggiorna la visibilità dei campi spawn in base alle checkbox
+  function updateSpawnSettingsVisibility() {
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const roomContainer = document.getElementById('character-spawn-room-container');
+    const positionContainer = document.getElementById('character-spawn-position-container');
+    const directionContainer = document.getElementById('character-spawn-direction-container');
+    const speedContainer = document.getElementById('character-spawn-speed-container');
+    
+    const showFields = (autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked);
+    
+    if (roomContainer) {
+      roomContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (positionContainer) {
+      positionContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (directionContainer) {
+      directionContainer.style.display = showFields ? 'block' : 'none';
+    }
+    if (speedContainer) {
+      speedContainer.style.display = showFields ? 'block' : 'none';
+    }
+  }
 
   // Add event listener for character selection change
   document.addEventListener('DOMContentLoaded', function() {
@@ -2704,81 +5338,343 @@ window.selectRoom = function(roomId) {
         loadCharacterDirections();
       });
     }
-    // Initialize Game Start UI
-    try { refreshStartingPlayerUI(); } catch(_) {}
-    try { refreshStartRoomSelector(); } catch(_) {}
+    
+    // Setup spawn settings event listeners
+    const isPlayerCheck = document.getElementById('character-spawn-is-player');
+    const autoSpawnCheck = document.getElementById('character-spawn-auto');
+    const roomSelect = document.getElementById('character-spawn-room');
+    const positionInput = document.getElementById('character-spawn-position');
+    const directionSelect = document.getElementById('character-spawn-direction');
+    
+    if (isPlayerCheck) {
+      isPlayerCheck.addEventListener('change', function() {
+        saveCharacterSpawnSettings();
+        updateSpawnSettingsVisibility();
+      });
+    }
+    
+    if (autoSpawnCheck) {
+      autoSpawnCheck.addEventListener('change', function() {
+        saveCharacterSpawnSettings();
+        updateSpawnSettingsVisibility();
+      });
+    }
+    
+    if (roomSelect) {
+      roomSelect.addEventListener('change', saveCharacterSpawnSettings);
+    }
+    
+    if (positionInput) {
+      positionInput.addEventListener('input', function() {
+        const parsed = parsePositionString(positionInput.value);
+        if (parsed.valid) {
+          saveCharacterSpawnSettings();
+        }
+      });
+    }
+    
+    if (directionSelect) {
+      directionSelect.addEventListener('change', saveCharacterSpawnSettings);
+    }
+    
+    const speedInput = document.getElementById('character-spawn-speed');
+    if (speedInput) {
+      speedInput.addEventListener('change', saveCharacterSpawnSettings);
+      speedInput.addEventListener('input', function() {
+        // Salva anche durante la digitazione per feedback immediato
+        const value = Number(speedInput.value);
+        if (!isNaN(value) && value > 0 && value <= 1000) {
+          saveCharacterSpawnSettings();
+        }
+      });
+    }
+    
+    // Gestione right-click per aggiornare posizione character spawn
+    if (canvas) {
+      canvas.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        
+        // Calcola sempre le coordinate (indipendentemente dalla tab)
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        const roundedX = Math.round(worldPos.x);
+        const roundedY = Math.round(worldPos.y);
+        
+        // Nota: la copia delle coordinate negli appunti in modalità rooms è gestita
+        // dal gestore contextmenu principale (riga 1773)
+        
+        const sel = document.getElementById('character-selector');
+        if (sel && sel.value) {
+          // Se siamo nella tab characters e c'è un character selezionato
+          const currentTab = document.querySelector('.nav-link.active');
+          if (currentTab && currentTab.getAttribute('data-tab') === 'characters') {
+            const positionInput = document.getElementById('character-spawn-position');
+            if (positionInput) {
+              positionInput.value = formatPositionString(roundedX, roundedY);
+              const parsed = parsePositionString(positionInput.value);
+              if (parsed.valid) {
+                positionInput.style.backgroundColor = '#2d5016';
+                setTimeout(() => {
+                  positionInput.style.backgroundColor = '';
+                }, 500);
+                saveCharacterSpawnSettings();
+              }
+            }
+          }
+        }
+      });
+    }
   });
 
-  window.uploadCharacterFrames = function(input) {
+  window.uploadCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
-    if (!who) { showNotification('Select a character first', 'warning'); input.value = ''; return; }
-    const files = Array.from(input.files || []);
-    if (!files.length) return;
+    if (!who) { showNotification('Select a character first', 'warning'); return; }
+
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
+    const resources = await pickResourceImage({
+      title: `Animation frames — ${who} [${animLabel}]`,
+      multiple: true,
+      hint: 'Click multiple images to select them. Confirm with «Add selection». Frame order follows numbers in the file name.'
+    });
+    if (!resources || !resources.length) return;
 
     const dirSel = document.getElementById('direction-selector');
     const direction = dirSel ? dirSel.value : 'south';
 
+    if (!currentUser) {
+      showNotification('Please log in', 'warning');
+      return;
+    }
+
+    const projectId = getActiveProjectId();
+    if (!projectId) {
+      showNotification('No project is open', 'warning');
+      return;
+    }
+
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, currentFrame: 0 };
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
       characterFrames.set(who, charData);
     }
 
-    if (!charData.directions[direction]) {
-      charData.directions[direction] = { frames: [], fps: 8 };
+    const activeDirections = getCharacterDirectionsStore(charData);
+    if (!activeDirections[direction]) {
+      activeDirections[direction] = { frames: [], fps: 8 };
     }
 
-    const dirData = charData.directions[direction];
-    let remaining = files.length;
-    files.forEach(file => {
-      const img = new Image();
-      img.onload = () => {
-        // Generate unique name even for same image
-        const baseName = file.name.replace(/\.[^/.]+$/, "");
-        const timestamp = Date.now();
-        const frameName = `${baseName}_${timestamp}`;
-        
-        // Store frame with unique name
-        const frameData = {
-          img: img,
-          name: frameName,
-          duration: 1000 // Default duration
-        };
-        
-        dirData.frames.push(frameData);
-        remaining--;
-        if (remaining === 0) {
-          showNotification(`Loaded ${dirData.frames.length} frames for ${who} (${direction})`, 'success');
-          updateDirectionInfo(); // Update the direction info display
-        }
-      };
-      img.src = URL.createObjectURL(file);
+    const dirData = activeDirections[direction];
+    
+    // Calcola l'indice di partenza per i nuovi frame (aggiungi alla fine invece di sovrascrivere)
+    const existingFrameCount = dirData.frames ? dirData.frames.length : 0;
+    
+    // Funzione helper per estrarre il numero dal nome del file
+    // Supporta qualsiasi pattern: frame_01.png, file.001.png, walk-1.png, etc.
+    const extractNumberFromFileName = (fileName) => {
+      // Rimuovi l'estensione per analizzare solo il nome
+      const nameWithoutExt = fileName.replace(/\.[^.]*$/, '');
+      
+      // Estrai tutti i numeri dal nome del file (mantenendo le posizioni)
+      const numberMatches = [];
+      let match;
+      const numberRegex = /\d+/g;
+      
+      while ((match = numberRegex.exec(nameWithoutExt)) !== null) {
+        numberMatches.push({
+          value: parseInt(match[0], 10),
+          original: match[0], // Mantieni il valore originale con padding
+          position: match.index,
+          length: match[0].length
+        });
+      }
+      
+      if (numberMatches.length === 0) {
+        // Se non trova numeri, usa un numero molto grande per metterli alla fine
+        return Infinity;
+      }
+      
+      // Se c'è un solo numero, usalo
+      if (numberMatches.length === 1) {
+        return numberMatches[0].value;
+      }
+      
+      // Se ci sono più numeri, preferisci quello con padding (001, 002, 01, etc.)
+      // perché di solito è il frame number
+      const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
+      
+      if (paddedNumbers.length > 0) {
+        // Se ci sono numeri con padding, usa quello con più cifre (001 > 01)
+        // o se hanno la stessa lunghezza, usa l'ultimo
+        paddedNumbers.sort((a, b) => {
+          if (b.length !== a.length) return b.length - a.length; // Preferisci più cifre
+          return b.position - a.position; // Se stessa lunghezza, usa l'ultimo
+        });
+        return paddedNumbers[0].value;
+      }
+      
+      // Se non ci sono numeri con padding, usa l'ultimo numero trovato
+      // (spesso è il frame number quando ci sono altri numeri nel nome)
+      return numberMatches[numberMatches.length - 1].value;
+    };
+    
+    // Ordina le risorse in base al numero presente nel nome (ordine crescente)
+    const sortedFiles = [...resources].sort((a, b) => {
+      const numA = extractNumberFromFileName(a.displayName || a.fileName || a.name);
+      const numB = extractNumberFromFileName(b.displayName || b.fileName || b.name);
+      
+      // Se entrambi hanno numeri, ordina per numero (crescente)
+      if (numA !== Infinity && numB !== Infinity) {
+        return numA - numB;
+      }
+      
+      // Se solo uno ha un numero, quello con numero viene prima
+      if (numA !== Infinity) return -1;
+      if (numB !== Infinity) return 1;
+      
+      // Se nessuno ha numeri, ordina alfabeticamente
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name);
     });
     
-    // Reset input to allow same file selection again
-    input.value = '';
+    console.log(`[Frame] 📁 Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
+    console.log(`[Frame] ✅ Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
+      const num = extractNumberFromFileName(f.displayName || f.fileName || f.name);
+      return `${f.displayName || f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
+    }));
+    
+    // Verifica che l'ordinamento sia corretto
+    const orderCheck = sortedFiles.map((f, idx) => {
+      const label = f.displayName || f.name;
+      const num = extractNumberFromFileName(label);
+      const prevNum = idx > 0 ? extractNumberFromFileName(sortedFiles[idx - 1].displayName || sortedFiles[idx - 1].name) : -1;
+      const isOrdered = num === Infinity || prevNum === Infinity || num >= prevNum;
+      return { file: label, num, isOrdered };
+    });
+    console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
+    
+    // Carica i frame su storage e registra nella mappa
+    showNotification(`Loading ${sortedFiles.length} frame(s) from Resources...`, 'info');
+    
+    try {
+      const framePromises = sortedFiles.map(async (resource, index) => {
+        try {
+          const actualFrameIndex = existingFrameCount + index;
+          const img = await loadImageFromResourceEntry(resource);
+          if (!img) throw new Error('Failed to load image from Resources');
+
+          const frameData = {
+            img: img,
+            name: resource.displayName || resource.fileName || resource.name,
+            orderIndex: actualFrameIndex
+          };
+          
+          return { frameData, index: actualFrameIndex, assetId: resource.assetId };
+        } catch (error) {
+          console.error(`[Frame] ❌ Errore frame ${resource.displayName || resource.name}:`, error);
+          return { frameData: null, index: existingFrameCount + index, error: error.message };
+        }
+      });
+      
+      const results = await Promise.all(framePromises);
+      
+      // Ordina per indice e aggiungi i frame nell'ordine corretto
+      results.sort((a, b) => a.index - b.index);
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      results.forEach(({ frameData, index, assetId, error }) => {
+        if (frameData) {
+          dirData.frames.push(frameData);
+          successCount++;
+          console.log(`[Frame] ✅ Frame ${index} caricato: ${assetId}`);
+        } else {
+          errorCount++;
+          console.error(`[Frame] ❌ Frame ${index} fallito: ${error || 'Unknown error'}`);
+        }
+      });
+      
+      // Aggiorna la mappa characterFrames
+      characterFrames.set(who, charData);
+      
+      if (successCount > 0) {
+        showNotification(`✅ ${successCount} frame(s) uploaded and saved to storage`, 'success');
+        updateDirectionInfo();
+        // Initialize pivot if it doesn't exist
+        initializePivotForCharacter(charData, direction);
+        redraw();
+      }
+      
+      if (errorCount > 0) {
+        showNotification(`⚠️ ${errorCount} frame(s) failed to upload`, 'warning');
+      }
+      
+    } catch (error) {
+      console.error('[Frame] ❌ Errore durante upload frame:', error);
+      showNotification('Error uploading frames', 'error');
+    }
   };
+
+  const btnCharacterFramesBrowse = document.getElementById('btn-character-frames-browse');
+  if (btnCharacterFramesBrowse) {
+    btnCharacterFramesBrowse.addEventListener('click', () => window.uploadCharacterFrames());
+  }
 
   window.startCharacterPreview = function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection] || !charData.directions[currentDirection].frames.length) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection] || !activeDirections[currentDirection].frames.length) {
       showNotification('No frames loaded for this character and direction', 'warning');
       return;
     }
 
-    const dirData = charData.directions[currentDirection];
+    // Ferma la preview precedente se attiva
+    if (characterPreviewTimer) {
+      clearInterval(characterPreviewTimer);
+      characterPreviewTimer = null;
+    }
+
+    const dirData = activeDirections[currentDirection];
+    const totalFrames = dirData.frames.length;
+    const fps = Number(dirData.fps) || 8;
+    
+    // Calcola l'intervallo in millisecondi con maggiore precisione
+    // FPS = frames per secondo, quindi intervallo = 1000ms / fps
+    const interval = Math.max(1, Math.round(1000 / fps));
+    
+    // Reset dell'indice all'inizio
     characterPreviewIndex = 0;
-    const interval = Math.max(1, Math.round(1000 / (dirData.fps || 8)));
-    if (characterPreviewTimer) clearInterval(characterPreviewTimer);
+    
+    // Ridisegna immediatamente il primo frame
+    redraw();
+    
+    // Avvia il timer per l'animazione
     characterPreviewTimer = setInterval(() => {
+      // Incrementa l'indice
       characterPreviewIndex++;
+      
+      // Loop: quando raggiunge il numero totale di frame, riparte da 0
+      if (characterPreviewIndex >= totalFrames) {
+        characterPreviewIndex = 0;
+      }
+      
+      // Verifica che ci siano ancora frame (potrebbero essere stati eliminati)
+      const currentCharData = characterFrames.get(who);
+      const currentDirs = currentCharData ? getCharacterDirectionsStore(currentCharData) : null;
+      if (!currentCharData || !currentDirs || !currentDirs[currentDirection] ||
+          !currentDirs[currentDirection].frames.length) {
+        stopCharacterPreview();
+        return;
+      }
+      
+      // Ridisegna il frame corrente
       redraw();
     }, interval);
-    showNotification(`Preview started for ${who} (${currentDirection}) @ ${dirData.fps} FPS`, 'info');
+    
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
+    showNotification(`Preview started: ${who} [${animLabel}] (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
   };
 
   window.stopCharacterPreview = function() {
@@ -2789,16 +5685,75 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.clearCharacterFrames = function() {
+  window.clearCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
-    if (confirm('Clear all animation frames for this character?')) {
-      characterFrames.delete(who);
-      showNotification('Frames cleared for ' + who, 'success');
+    const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
+    if (confirm(`Clear all frames for animation "${animLabel}"?`)) {
+      // Ferma la preview se è attiva
+      stopCharacterPreview();
+
+      const charData = characterFrames.get(who);
+      const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+
+      // Pulisce tutti i frame per tutte le direzioni dell'animazione corrente
+      if (activeDirections) {
+        for (const dirData of Object.values(activeDirections)) {
+          if (dirData.frames) dirData.frames = [];
+        }
+        if (charData) characterFrames.set(who, charData);
+      } else {
+        characterFrames.set(who, { directions: {}, animations: {}, currentFrame: 0 });
+      }
+      
+      // Reset dell'indice della preview
+      characterPreviewIndex = 0;
+      
+      // Aggiorna thumbnails, canvas e informazioni
+      updateDirectionInfo();
+      refreshFramesPreview();
+      // Initialize pivot if frames exist
+      if (charData) {
+        initializePivotForCharacter(charData, currentDirection);
+      }
+      redraw();
+      
+      showNotification(`Frames cleared for ${who} (${animLabel})`, 'success');
     }
   };
+
+  // Character Pivot Management - Automatic initialization
+  function initializePivotForCharacter(charData, direction) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[direction]) {
+      return;
+    }
+    
+    // If pivot already exists, don't override it
+    if (charData.pivotX !== undefined && charData.pivotY !== undefined) {
+      return;
+    }
+    
+    const dirData = activeDirections[direction];
+    if (dirData && dirData.frames && dirData.frames.length > 0) {
+      const frameResult = getFrameImage(dirData.frames[0], activeDirections, 0, direction);
+      if (frameResult && frameResult.img) {
+        const frameImg = frameResult.img;
+        // Set pivot at center bottom of frame
+        charData.pivotX = Math.round(frameImg.width / 2);
+        charData.pivotY = Math.round(frameImg.height);
+        
+        // Get character name from selector to save properly
+        const sel = document.getElementById('character-selector');
+        const who = sel ? sel.value : '';
+        if (who) {
+          characterFrames.set(who, charData);
+        }
+      }
+    }
+  }
 
   // Function to handle direction change
   window.changeCharacterDirection = function() {
@@ -2806,9 +5761,146 @@ window.selectRoom = function(roomId) {
     if (dirSel) {
       currentDirection = dirSel.value;
       characterPreviewIndex = 0; // Reset animation index
+      
+      // Initialize pivot if needed
+      const sel = document.getElementById('character-selector');
+      const who = sel ? sel.value : '';
+      if (who) {
+        const charData = characterFrames.get(who);
+        if (charData) {
+          initializePivotForCharacter(charData, currentDirection);
+        }
+      }
+      
       updateDirectionInfo(); // Update frame count info
       redraw(); // Update canvas preview
+      
+      // Reset il selector della direzione mirror quando si cambia direzione
+      const mirrorSel = document.getElementById('mirror-direction-selector');
+      if (mirrorSel) {
+        mirrorSel.value = '';
+      }
     }
+  };
+
+  // Function to toggle between upload and mirror frame source
+  window.toggleFrameSource = function() {
+    const uploadRadio = document.getElementById('frame-source-upload');
+    const mirrorRadio = document.getElementById('frame-source-mirror');
+    const uploadContainer = document.getElementById('frame-upload-container');
+    const mirrorContainer = document.getElementById('frame-mirror-container');
+    const framesPreview = document.getElementById('frames-preview');
+    const framesPreviewContainer = framesPreview ? framesPreview.closest('.mb-3') : null;
+    
+    if (uploadRadio && uploadRadio.checked) {
+      // Mostra upload, nascondi mirror
+      if (uploadContainer) uploadContainer.style.display = 'block';
+      if (mirrorContainer) mirrorContainer.style.display = 'none';
+      if (framesPreviewContainer) framesPreviewContainer.style.display = 'block';
+    } else if (mirrorRadio && mirrorRadio.checked) {
+      // Mostra mirror, nascondi upload
+      if (uploadContainer) uploadContainer.style.display = 'none';
+      if (mirrorContainer) mirrorContainer.style.display = 'block';
+      if (framesPreviewContainer) framesPreviewContainer.style.display = 'none';
+    }
+  };
+
+  // Helper function per ottenere l'immagine di un frame e se deve essere specchiata
+  // Gestisce sia frame normali che frame specchiati (con proprietà mirror)
+  function getFrameImage(frame, directionsStore, frameIndex, direction) {
+    if (!frame || !directionsStore) {
+      return { img: null, mirrored: false };
+    }
+
+    // Se il frame è un riferimento specchiato
+    if (frame.mirror && typeof frame.mirror === 'string') {
+      const sourceDirection = frame.mirror;
+      const sourceDirData = directionsStore[sourceDirection];
+      
+      if (sourceDirData && sourceDirData.frames && sourceDirData.frames[frameIndex]) {
+        // Recursivamente ottieni l'immagine dalla direzione sorgente
+        // (potrebbe essere un'altra direzione specchiata, ma alla fine arriveremo a un frame reale)
+        const sourceResult = getFrameImage(sourceDirData.frames[frameIndex], directionsStore, frameIndex, sourceDirection);
+        
+        // Se abbiamo trovato un'immagine, restituiscila con flag mirrored = true
+        if (sourceResult.img) {
+          return { img: sourceResult.img, mirrored: true };
+        }
+      }
+      
+      // Se non troviamo la direzione sorgente, restituisci null
+      return { img: null, mirrored: false };
+    }
+    
+    // Frame normale: estrai l'immagine (gestisce entrambi i formati)
+    let frameImg = null;
+    if (frame.img && typeof frame.img === 'object') {
+      // Formato nuovo: oggetto con proprietà img
+      frameImg = frame.img;
+    } else if (frame.src || (frame.width && frame.height)) {
+      // Formato salvato: oggetto Image direttamente
+      frameImg = frame;
+    }
+    
+    return { img: frameImg, mirrored: false };
+  }
+
+  // Function to mirror frames horizontally from another direction
+  // Ora salva solo un riferimento invece di creare frame specchiati separati
+  window.applyMirrorDirection = async function() {
+    const sel = document.getElementById('character-selector');
+    const who = sel ? sel.value : '';
+    if (!who) { 
+      showNotification('Select a character first', 'warning'); 
+      return; 
+    }
+
+    const mirrorSel = document.getElementById('mirror-direction-selector');
+    const sourceDirection = mirrorSel ? mirrorSel.value : '';
+    if (!sourceDirection) {
+      return; // Nessuna direzione selezionata, non fare nulla
+    }
+
+    const charData = characterFrames.get(who);
+    if (!charData) {
+      showNotification('Character not found', 'warning');
+      return;
+    }
+
+    const activeDirections = getCharacterDirectionsStore(charData);
+
+    // Verifica che la direzione sorgente abbia frame
+    if (!activeDirections[sourceDirection] || !activeDirections[sourceDirection].frames.length) {
+      showNotification(`No frames found in ${sourceDirection} direction`, 'warning');
+      return;
+    }
+
+    const sourceFrames = activeDirections[sourceDirection].frames;
+    const sourceFPS = activeDirections[sourceDirection].fps || 8;
+
+    // Inizializza la direzione corrente se non esiste
+    if (!activeDirections[currentDirection]) {
+      activeDirections[currentDirection] = { frames: [], fps: sourceFPS };
+    }
+
+    // Pulisce i frame esistenti per la direzione corrente
+    activeDirections[currentDirection].frames = [];
+    activeDirections[currentDirection].fps = sourceFPS;
+
+    // Crea riferimenti specchiati invece di copiare le immagini
+    for (let i = 0; i < sourceFrames.length; i++) {
+      activeDirections[currentDirection].frames.push({ mirror: sourceDirection });
+    }
+
+    characterFrames.set(who, charData);
+
+    const fpsInput = document.getElementById('character-fps');
+    if (fpsInput) fpsInput.value = sourceFPS;
+
+    updateDirectionInfo();
+    redraw();
+
+    showNotification(`Mirrored ${activeDirections[currentDirection].frames.length} frame(s) from ${sourceDirection} to ${currentDirection} (referenced, not duplicated)`, 'success');
   };
 
   // Function to update direction info display
@@ -2818,9 +5910,10 @@ window.selectRoom = function(roomId) {
     if (!who) return;
 
     const charData = characterFrames.get(who);
-    if (charData && charData.directions[currentDirection]) {
-      const frameCount = charData.directions[currentDirection].frames.length;
-      const fps = charData.directions[currentDirection].fps;
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (charData && activeDirections && activeDirections[currentDirection]) {
+      const frameCount = activeDirections[currentDirection].frames.length;
+      const fps = activeDirections[currentDirection].fps;
       
       // Update direction selector with frame count
       const dirSel = document.getElementById('direction-selector');
@@ -2862,15 +5955,16 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, currentFrame: 0 };
+      charData = { directions: {}, animations: {}, currentFrame: 0 };
       characterFrames.set(who, charData);
     }
 
-    if (!charData.directions[currentDirection]) {
-      charData.directions[currentDirection] = { frames: [], fps: 8 };
+    const activeDirections = getCharacterDirectionsStore(charData);
+    if (!activeDirections[currentDirection]) {
+      activeDirections[currentDirection] = { frames: [], fps: 8 };
     }
 
-    charData.directions[currentDirection].fps = newFPS;
+    activeDirections[currentDirection].fps = newFPS;
     updateDirectionInfo();
     showNotification(`FPS updated to ${newFPS} for ${who} (${currentDirection})`, 'success');
   };
@@ -2880,6 +5974,13 @@ window.selectRoom = function(roomId) {
     const container = document.getElementById('frames-preview');
     if (!container) return;
     
+    // Verifica se il toggle è su "mirror" - in quel caso non mostrare i thumbnails
+    const mirrorRadio = document.getElementById('frame-source-mirror');
+    if (mirrorRadio && mirrorRadio.checked) {
+      container.innerHTML = '<div class="text-muted">Thumbnails hidden when using mirror mode</div>';
+      return;
+    }
+    
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
@@ -2888,12 +5989,13 @@ window.selectRoom = function(roomId) {
     }
 
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection]) {
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection]) {
       container.innerHTML = '<div class="text-muted">No frames loaded for this direction</div>';
       return;
     }
 
-    const frames = charData.directions[currentDirection].frames;
+    const frames = activeDirections[currentDirection].frames;
     if (frames.length === 0) {
       container.innerHTML = '<div class="text-muted">No frames loaded</div>';
       return;
@@ -2907,12 +6009,78 @@ window.selectRoom = function(roomId) {
       frameItem.dataset.frameIndex = index;
       
       const img = document.createElement('img');
-      img.src = frameData.img.src;
-      img.alt = `Frame ${index + 1}`;
+      let frameName = `Frame ${index + 1}`; // Nome di default
+      let isMirrored = false;
+      
+      // Usa getFrameImage per gestire sia frame normali che specchiati
+      const frameResult = getFrameImage(frameData, activeDirections, index, currentDirection);
+      
+      if (frameResult.img) {
+        // Frame valido trovato
+        img.src = frameResult.img.src || frameResult.img;
+        isMirrored = frameResult.mirrored;
+        
+        // Se è specchiato, aggiungi un indicatore nel nome
+        if (isMirrored) {
+          frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror})`;
+        }
+      } else if (frameData && typeof frameData === 'object' && frameData.mirror) {
+        // Frame specchiato ma non riuscito a risolvere l'immagine
+        frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror} - source not found)`;
+        // Usa un'immagine placeholder o salta questo frame
+        console.warn(`Frame ${index + 1} è specchiato ma la direzione sorgente non è stata trovata`);
+        return; // Salta questo frame se non possiamo risolverlo
+      } else {
+        // Gestisce frame normali (compatibilità con codice precedente)
+        if (frameData && typeof frameData === 'object' && frameData.img) {
+          // Formato nuovo: oggetto con proprietà img
+          img.src = frameData.img.src || frameData.img;
+          if (frameData.name) {
+            frameName = frameData.name;
+          }
+        } else if (frameData && typeof frameData === 'object' && frameData.src) {
+          // Formato salvato: oggetto Image direttamente
+          img.src = frameData.src;
+          if (frameData.name) {
+            frameName = frameData.name;
+          } else if (frameData.src && typeof frameData.src === 'string') {
+            const urlParts = frameData.src.split('/');
+            const fileName = urlParts[urlParts.length - 1];
+            if (fileName && fileName !== frameData.src) {
+              frameName = fileName.split('?')[0];
+            }
+          }
+        } else if (typeof frameData === 'string') {
+          // Formato stringa URL
+          img.src = frameData;
+          const urlParts = frameData.split('/');
+          const fileName = urlParts[urlParts.length - 1];
+          if (fileName && fileName !== frameData) {
+            frameName = fileName.split('?')[0];
+          }
+        } else {
+          console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
+          return; // Salta questo frame se non è valido
+        }
+      }
+      
+      img.alt = frameName;
+      
+      // Se è specchiato, applica CSS transform per mostrarlo specchiato nella preview
+      if (isMirrored) {
+        img.style.transform = 'scaleX(-1)';
+      }
       
       const frameNumber = document.createElement('div');
       frameNumber.className = 'frame-number';
       frameNumber.textContent = index + 1;
+      
+      // Aggiunge il nome del file sotto il numero del frame
+      const frameFileName = document.createElement('div');
+      frameFileName.className = 'frame-filename';
+      frameFileName.style.cssText = 'font-size: 9px; color: #888; margin-top: 3px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; line-height: 1.2;';
+      frameFileName.textContent = frameName;
+      frameFileName.title = frameName; // Tooltip con nome completo
       
       const frameControls = document.createElement('div');
       frameControls.className = 'frame-controls';
@@ -2929,26 +6097,47 @@ window.selectRoom = function(roomId) {
       frameControls.appendChild(deleteBtn);
       frameItem.appendChild(img);
       frameItem.appendChild(frameNumber);
+      frameItem.appendChild(frameFileName);
       frameItem.appendChild(frameControls);
       container.appendChild(frameItem);
     });
 
     // Initialize drag and drop
     initializeFrameDragDrop();
+    refreshCharactersListUI();
   }
 
   // Function to delete a frame
-  function deleteFrame(frameIndex) {
+  async function deleteFrame(frameIndex) {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) return;
 
     const charData = characterFrames.get(who);
-    if (!charData || !charData.directions[currentDirection]) return;
+    const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+    if (!charData || !activeDirections || !activeDirections[currentDirection]) return;
 
     if (confirm(`Delete frame ${frameIndex + 1}?`)) {
-      charData.directions[currentDirection].frames.splice(frameIndex, 1);
+      const frameToDelete = activeDirections[currentDirection].frames[frameIndex];
+      
+      // Se è un frame specchiato, non eliminare asset (non ne ha uno)
+      if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.mirror) {
+        activeDirections[currentDirection].frames.splice(frameIndex, 1);
+        characterFrames.set(who, charData);
+        updateDirectionInfo();
+        refreshFramesPreview();
+        redraw();
+        showNotification(`Mirrored frame removed`, 'success');
+        return;
+      }
+      
+      activeDirections[currentDirection].frames.splice(frameIndex, 1);
+      
+      // Aggiorna i thumbnails e il canvas dopo l'eliminazione
       updateDirectionInfo();
+      refreshFramesPreview();
+      redraw();
+      
       showNotification(`Frame ${frameIndex + 1} deleted`, 'info');
     }
   }
@@ -2993,8 +6182,9 @@ window.selectRoom = function(roomId) {
           const who = sel ? sel.value : '';
           if (who) {
             const charData = characterFrames.get(who);
-            if (charData && charData.directions[currentDirection]) {
-              const frames = charData.directions[currentDirection].frames;
+            const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
+            if (charData && activeDirections && activeDirections[currentDirection]) {
+              const frames = activeDirections[currentDirection].frames;
               const draggedFrame = frames.splice(draggedIndex, 1)[0];
               frames.splice(targetIndex, 0, draggedFrame);
               
@@ -3018,9 +6208,55 @@ window.selectRoom = function(roomId) {
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
-  // Runtime game inventory store: itemId (string) -> count (integer >= 0)
-  const gameInventory = new Map();
-  
+
+  /** Chiave canonica script da scope + target (dropdown / albero). */
+  function normalizeScriptKey(scope, target) {
+    const s = String(scope || '');
+    let t = String(target == null ? '' : target).trim();
+    if (s === 'Global') return 'Global:main';
+    if (s === 'Hotspot') {
+      if (t.startsWith('hotspot:')) t = t.slice('hotspot:'.length);
+      return `Hotspot:${t}`;
+    }
+    return `${s}:${t}`;
+  }
+
+  /** Risolve la chiave effettiva (attachment custom o chiave standard). */
+  function resolveScriptKey(scope, target) {
+    const defaultKey = normalizeScriptKey(scope, target);
+    if (scope === 'Room' && roomScripts.has(target)) return roomScripts.get(target);
+    if (scope === 'Object' && objectScripts.has(target)) return objectScripts.get(target);
+    if (scope === 'Character' && characterScripts.has(target)) return characterScripts.get(target);
+    if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
+      return guiScripts.get(target);
+    }
+    return defaultKey;
+  }
+
+  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id → Hotspot:id). */
+  function migrateLegacyScriptKey(key) {
+    const k = String(key || '');
+    const m = k.match(/^Hotspot:hotspot:(.+)$/);
+    if (!m) return k;
+    const canonical = `Hotspot:${m[1]}`;
+    const legacyContent = jsScripts.get(k);
+    const legacyLs = (() => { try { return localStorage.getItem(`script-${k}`); } catch (_) { return null; } })();
+    const content = legacyContent !== undefined ? legacyContent : legacyLs;
+    if (content !== null && content !== undefined) {
+      if (!jsScripts.has(canonical)) jsScripts.set(canonical, content);
+      try { localStorage.setItem(`script-${canonical}`, content); } catch (_) {}
+      jsScripts.delete(k);
+      try { localStorage.removeItem(`script-${k}`); } catch (_) {}
+    }
+    return canonical;
+  }
+
+  function getScriptContent(scriptKey) {
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!key) return '';
+    return jsScripts.get(key) || (() => { try { return localStorage.getItem(`script-${key}`); } catch (_) { return ''; } })() || '';
+  }
+
   // Event conditions storage
   const objectEventConditions = new Map(); // sceneObjectId -> { onClick: [conditions], onUse: [conditions], ... }
   const hotspotEventConditions = new Map(); // hotspotId -> { onClick: [conditions], onUse: [conditions], ... }
@@ -3028,30 +6264,7 @@ window.selectRoom = function(roomId) {
   const guiButtonEventConditions = new Map(); // buttonId -> { onClick: [conditions], ... }
   const inventoryEventConditions = new Map(); // itemName -> { onClick: [conditions], onUse: [conditions], ... }
 
-  // Inventory persistence helpers
-  function persistInventory() {
-    try {
-      const obj = {};
-      for (const [k, v] of gameInventory.entries()) obj[String(k)] = Number(v) || 0;
-      localStorage.setItem('amiantoGameInventory', JSON.stringify(obj));
-    } catch (_) {}
-  }
-  function loadInventoryFromStorage() {
-    try {
-      const raw = localStorage.getItem('amiantoGameInventory');
-      if (!raw) return;
-      const obj = JSON.parse(raw);
-      gameInventory.clear();
-      if (obj && typeof obj === 'object') {
-        for (const key of Object.keys(obj)) {
-          const count = Math.max(0, Number(obj[key]) || 0);
-          if (count > 0) gameInventory.set(String(key), count);
-        }
-      }
-    } catch (_) {}
-  }
-  loadInventoryFromStorage();
-  // activePlugin rimosso - ora usiamo solo iframe sandboxed
+  // Inventario gameplay: solo in runtime (gameState.inventory via iframe Play Test)
 
   // Initialize CodeMirror when scripts tab is opened the first time
   function ensureScriptEditor() {
@@ -3095,7 +6308,10 @@ window.selectRoom = function(roomId) {
     'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
-    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible'
+    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
+    'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
+    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character',
+    'play_character_animation'
   ];
 
   function cmGameApiHint(cm) {
@@ -3309,118 +6525,481 @@ window.selectRoom = function(roomId) {
   function rebuildScriptsTree() {
     const tree = document.getElementById('scripts-tree');
     if (!tree) return;
+    Array.from(jsScripts.keys()).forEach(k => migrateLegacyScriptKey(k));
     tree.innerHTML = '';
 
     const container = document.createElement('div');
 
-    // Helper to build a group
-    const buildGroup = (title, items) => {
-      const group = document.createElement('div');
-      group.className = 'mb-2';
-      const h = document.createElement('div');
-      h.textContent = title;
-      h.style.color = '#39ff14';
-      h.style.fontWeight = '600';
-      group.appendChild(h);
-      const ul = document.createElement('ul');
-      ul.style.paddingLeft = '16px';
+    // Helper per creare un elemento script nella lista
+    const createScriptItem = (scriptInfo, onClickHandler) => {
+      const li = document.createElement('li');
+      li.style.margin = '4px 0';
+      li.style.padding = '4px 0';
+      
+      const label = document.createElement('span');
+      label.textContent = scriptInfo.label;
+      label.style.cursor = 'pointer';
+      label.style.color = scriptInfo.hasContent ? '#eee' : '#888';
+      label.style.display = 'inline-block';
+      label.style.width = '100%';
+      label.onclick = onClickHandler;
+      
+      // Aggiungi badge con numero di handler se presenti
+      if (scriptInfo.handlers && scriptInfo.handlers.length > 0) {
+        const badge = document.createElement('span');
+        badge.textContent = ` (${scriptInfo.handlers.length})`;
+        badge.style.color = '#39ff14';
+        badge.style.fontSize = '11px';
+        badge.style.marginLeft = '4px';
+        label.appendChild(badge);
+      }
+      
+      li.appendChild(label);
+      
+      // Mostra gli handler come sottolista
+      if (scriptInfo.handlers && scriptInfo.handlers.length > 0) {
+        const sub = document.createElement('ul');
+        sub.style.paddingLeft = '20px';
+        sub.style.marginTop = '2px';
+        sub.style.listStyleType = 'disc';
+        scriptInfo.handlers.forEach(handlerId => {
+          const evLi = document.createElement('li');
+          evLi.style.margin = '2px 0';
+          const a = document.createElement('a');
+          a.href = '#';
+          a.textContent = handlerId;
+          a.style.color = '#39ff14';
+          a.style.textDecoration = 'none';
+          a.onclick = (e) => {
+            e.preventDefault();
+            onClickHandler(handlerId);
+          };
+          evLi.appendChild(a);
+          sub.appendChild(evLi);
+        });
+        li.appendChild(sub);
+      }
+      
+      return li;
+    };
 
-      items.forEach(it => {
-        const li = document.createElement('li');
-        li.style.margin = '4px 0';
-        const label = document.createElement('span');
-        label.textContent = it.label;
-        label.style.cursor = 'pointer';
-        label.onclick = () => openScriptFromTree(it.scope, it.target, null);
-        li.appendChild(label);
-
-        if (it.events && it.events.length) {
-          const sub = document.createElement('ul');
-          sub.style.paddingLeft = '16px';
-          it.events.forEach(ev => {
-            const evLi = document.createElement('li');
-            const a = document.createElement('a');
-            a.href = '#';
-            a.textContent = ev.label;
-            a.onclick = (e) => { e.preventDefault(); openScriptFromTree(it.scope, it.target, ev.id); };
-            evLi.appendChild(a);
-            sub.appendChild(evLi);
-          });
-          li.appendChild(sub);
+    // Helper per aprire script hotspot (gestione speciale)
+    const openHotspotScript = (roomId, hotspotId) => {
+      // Salva il contenuto dello script corrente prima di aprire un nuovo script
+      saveCurrentScriptIfNeeded();
+      
+      // Imposta currentScriptName PRIMA di qualsiasi controllo, così deleteScript funziona anche se l'hotspot non viene trovato
+      const hotspotKey = `Hotspot:${hotspotId}`;
+      currentScriptName = hotspotKey;
+      
+      // Cerca l'hotspot nella room specificata
+      const room = rooms.get(roomId);
+      let hotspot = null;
+      if (room && room.hotspots) {
+        hotspot = room.hotspots.find(h => h.id === hotspotId);
+      }
+      
+      // Se non trovato nella room, cerca nell'array globale hotspots
+      if (!hotspot && typeof hotspots !== 'undefined') {
+        hotspot = hotspots.find(h => h.id === hotspotId);
+      }
+      
+      if (!hotspot) {
+        // Anche se l'hotspot non viene trovato, carica lo script se esiste
+        const content = getScriptContent(hotspotKey);
+        if (content) {
+          ensureLargeScriptEditor();
+          ensureScriptEditor();
+          if (largeCodeMirrorEditor) {
+            largeCodeMirrorEditor.setValue(content);
+            setTimeout(() => {
+              if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+                largeCodeMirrorEditor.refresh();
+              }
+            }, 10);
+          }
+          if (codeMirrorEditor) {
+            codeMirrorEditor.setValue(content);
+            setTimeout(() => {
+              if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+                codeMirrorEditor.refresh();
+              }
+            }, 10);
+          }
+          // Imposta i dropdown
+          const scopeSel = document.getElementById('script-scope');
+          const targetSel = document.getElementById('script-target');
+          if (scopeSel && targetSel) {
+            scopeSel.value = 'Hotspot';
+            populateTargetsForScope('Hotspot');
+            const hotspotValue = `hotspot:${hotspotId}`;
+            if (targetSel.querySelector(`option[value="${hotspotValue}"]`)) {
+              targetSel.value = hotspotValue;
+            }
+          }
+          return;
         }
-        ul.appendChild(li);
-      });
-      group.appendChild(ul);
-      container.appendChild(group);
+        showNotification('Hotspot not found', 'warning');
+        return;
+      }
+      
+      const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
+        ? String(hotspot.scripts.onClick.code) : '';
+      const fromStore = getScriptContent(hotspotKey);
+      const content = fromHotspot.trim() ? fromHotspot : fromStore;
+      
+      ensureLargeScriptEditor();
+      ensureScriptEditor();
+      
+      // Aggiorna l'editor con il contenuto corrente dell'hotspot
+      if (largeCodeMirrorEditor) {
+        largeCodeMirrorEditor.setValue(content);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+        }, 0);
+      }
+      if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(content);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+            codeMirrorEditor.refresh();
+          }
+        }, 0);
+      }
+      
+      // Sincronizza anche in jsScripts per coerenza
+      jsScripts.set(`Hotspot:${hotspotId}`, content);
+      try { localStorage.setItem(`script-Hotspot:${hotspotId}`, content); } catch(_) {}
+      
+      // Imposta i dropdown
+      const scopeSel = document.getElementById('script-scope');
+      const targetSel = document.getElementById('script-target');
+      if (scopeSel && targetSel) {
+        scopeSel.value = 'Hotspot';
+        populateTargetsForScope('Hotspot');
+        const hotspotValue = `hotspot:${hotspotId}`;
+        if (targetSel.querySelector(`option[value="${hotspotValue}"]`)) {
+          targetSel.value = hotspotValue;
+        }
+      }
     };
 
     // Global (single)
     const globalKey = 'Global:main';
-    let globalContent = jsScripts.get(globalKey) || localStorage.getItem(`script-${globalKey}`) || '';
+    let globalContent = getScriptContent(globalKey);
     const globalHandlers = extractHandlersFromScript(globalContent);
-    const globalEvents = [];
-    SCRIPT_EVENTS.Global.forEach(def => { if (globalHandlers.has(def.id)) globalEvents.push(def); });
+    const globalHandlerNames = Array.from(globalHandlers).sort();
 
-    if (globalContent && globalEvents.length) {
-      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: globalEvents }]);
-    } else if (globalContent) {
-      buildGroup('Global', [{ scope: 'Global', target: 'main', label: 'Global', events: [] }]);
+    if (globalContent.trim().length > 0) {
+      const globalGroup = document.createElement('div');
+      globalGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Global';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      globalGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      const scriptItem = createScriptItem({
+        label: 'Global',
+        handlers: globalHandlerNames,
+        hasContent: globalContent.trim().length > 0
+      }, (handlerId) => {
+        openScriptFromTree('Global', 'main', handlerId || null);
+      });
+      ul.appendChild(scriptItem);
+      
+      globalGroup.appendChild(ul);
+      container.appendChild(globalGroup);
     }
 
-    // Rooms attached
-    const roomItems = [];
-    rooms.forEach((r) => {
-      const key = roomScripts.get(r.id) || `Room:${r.id}`;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !roomScripts.get(r.id)) return;
-      const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.Room.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      roomItems.push({ scope: 'Room', target: r.id, label: `Room: ${r.name || r.id}`, events });
+    // Scripts organizzati per stanza
+    const roomsWithScripts = [];
+    rooms.forEach((room, roomId) => {
+      const scriptsInRoom = [];
+      
+      // Script della stanza
+      const scriptKeyToUse = resolveScriptKey('Room', roomId);
+      const roomContent = getScriptContent(scriptKeyToUse);
+      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
+      if (roomScripts.has(roomId) || roomContent.trim().length > 0) {
+        const handlers = extractHandlersFromScript(roomContent);
+        const handlerNames = Array.from(handlers).sort();
+        scriptsInRoom.push({
+          type: 'room',
+          scope: 'Room',
+          target: roomId,
+          label: `📋 Room: ${room.name || roomId}`,
+          handlers: handlerNames,
+          hasContent: roomContent.trim().length > 0
+        });
+      }
+      
+      // Oggetti nella stanza con script
+      if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+        room.sceneObjects.forEach(obj => {
+          const scriptKeyToUse = resolveScriptKey('Object', obj.id);
+          const objContent = getScriptContent(scriptKeyToUse);
+          if (objectScripts.has(obj.id) || objContent.trim().length > 0) {
+            const handlers = extractHandlersFromScript(objContent);
+            const handlerNames = Array.from(handlers).sort();
+            scriptsInRoom.push({
+              type: 'object',
+              scope: 'Object',
+              target: obj.id,
+              label: `📦 Object: ${obj.name || obj.id}`,
+              handlers: handlerNames,
+              hasContent: objContent.trim().length > 0
+            });
+          }
+        });
+      }
+      
+      // Hotspot nella stanza con script
+      if (room.hotspots && Array.isArray(room.hotspots)) {
+        room.hotspots.forEach(hotspot => {
+          const hotspotKey = normalizeScriptKey('Hotspot', hotspot.id);
+          const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
+            ? String(hotspot.scripts.onClick.code) : '';
+          const fromStore = getScriptContent(hotspotKey);
+          const hotspotCode = fromHotspot.trim() ? fromHotspot : fromStore;
+          const linkedName = hotspot._meta && hotspot._meta.linkedScriptName;
+          if (!hotspotCode.trim() && !linkedName) return;
+          const handlers = extractHandlersFromScript(hotspotCode);
+          const handlerNames = Array.from(handlers).sort();
+          scriptsInRoom.push({
+            type: 'hotspot',
+            scope: 'Hotspot',
+            target: hotspot.id,
+            roomId: roomId,
+            label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
+            handlers: handlerNames,
+            hasContent: hotspotCode.trim().length > 0
+          });
+        });
+      }
+      
+      if (scriptsInRoom.length > 0) {
+        roomsWithScripts.push({
+          roomId: roomId,
+          roomName: room.name || roomId,
+          scripts: scriptsInRoom
+        });
+      }
     });
-    if (roomItems.length) buildGroup('Room', roomItems);
-
-    // Objects attached
-    const objectItems = [];
-    (sceneObjects || []).forEach(o => {
-      const key = objectScripts.get(o.id) || `Object:${o.id}`;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !objectScripts.get(o.id)) return;
-      const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.Object.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      objectItems.push({ scope: 'Object', target: o.id, label: `Object: ${o.name || o.id}`, events });
+    
+    // Ordina le stanze per nome
+    roomsWithScripts.sort((a, b) => {
+      const nameA = a.roomName.toLowerCase();
+      const nameB = b.roomName.toLowerCase();
+      return nameA.localeCompare(nameB, 'en', { numeric: true, sensitivity: 'base' });
     });
-    if (objectItems.length) buildGroup('Object', objectItems);
+    
+    // Crea gruppo per ogni stanza
+    roomsWithScripts.forEach(roomData => {
+      const roomGroup = document.createElement('div');
+      roomGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = `🏠 ${roomData.roomName}`;
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      roomGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      roomData.scripts.forEach(scriptInfo => {
+        let onClickHandler;
+        if (scriptInfo.type === 'hotspot') {
+          // Gestione speciale per hotspot
+          onClickHandler = (handlerId) => {
+            openHotspotScript(scriptInfo.roomId, scriptInfo.target);
+          };
+        } else {
+          onClickHandler = (handlerId) => {
+            openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+          };
+        }
+        
+        const scriptItem = createScriptItem(scriptInfo, onClickHandler);
+        ul.appendChild(scriptItem);
+      });
+      
+      roomGroup.appendChild(ul);
+      container.appendChild(roomGroup);
+    });
 
     // GUI attached
     const guiItems = [];
     (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
-      const key = (typeof guiScripts !== 'undefined' && guiScripts.get) ? (guiScripts.get(b.id) || `GUI:${b.id}`) : `GUI:${b.id}`;
-      const content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-      if (!content && !(typeof guiScripts !== 'undefined' && guiScripts.get && guiScripts.get(b.id))) return;
+      const key = resolveScriptKey('GUI', b.id);
+      const content = getScriptContent(key);
+      if (!guiScripts.has(b.id) && !content.trim()) return;
       const handlers = extractHandlersFromScript(content);
-      const events = [];
-      SCRIPT_EVENTS.GUI.forEach(def => { if (handlers.has(def.id)) events.push(def); });
-      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, events });
+      const handlerNames = Array.from(handlers).sort();
+      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
     });
-    if (guiItems.length) buildGroup('GUI', guiItems);
+    
+    if (guiItems.length > 0) {
+      const guiGroup = document.createElement('div');
+      guiGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'GUI';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      guiGroup.appendChild(h);
+      
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+      
+      guiItems.forEach(item => {
+        const scriptItem = createScriptItem(item, (handlerId) => {
+          openScriptFromTree(item.scope, item.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
+      });
+      
+      guiGroup.appendChild(ul);
+      container.appendChild(guiGroup);
+    }
 
     tree.appendChild(container);
   }
 
-  function openScriptFromTree(scope, target, handlerId) {
+  // Helper function per salvare il contenuto dello script corrente
+  function saveCurrentScriptIfNeeded() {
+    if (!currentScriptName) return;
+    
     ensureLargeScriptEditor();
     ensureScriptEditor();
-    const key = `${scope}:${target}`;
-    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
-    if (!content) {
-      showNotification('Script not found', 'warning');
-      return;
+    let currentContent = '';
+    if (largeCodeMirrorEditor) {
+      currentContent = largeCodeMirrorEditor.getValue();
+    } else if (codeMirrorEditor) {
+      currentContent = codeMirrorEditor.getValue();
+    } else {
+      const taLarge = document.getElementById('script-editor-large');
+      const taSmall = document.getElementById('script-editor');
+      currentContent = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
     }
-    currentScriptName = key;
-    if (largeCodeMirrorEditor) largeCodeMirrorEditor.setValue(content);
-    if (codeMirrorEditor) codeMirrorEditor.setValue(content);
+    
+    // Salva il contenuto corrente
+    const currentKey = migrateLegacyScriptKey(String(currentScriptName));
+    if (currentKey !== currentScriptName) currentScriptName = currentKey;
+    if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
+      jsScripts.set(currentKey, currentContent);
+      try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
+      
+      if (currentKey.startsWith('Hotspot:')) {
+        const hotspotId = currentKey.slice('Hotspot:'.length);
+        rooms.forEach((room, roomId) => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            const hotspot = room.hotspots.find(h => h.id === hotspotId);
+            if (hotspot) {
+              if (!hotspot.scripts) hotspot.scripts = {};
+              hotspot.scripts.onClick = {
+                code: String(currentContent),
+                enabled: true
+              };
+            }
+          }
+        });
+      }
+      
+      // Se è uno script oggetto, mantieni l'attachment in objectScripts
+      if (currentKey.startsWith('Object:')) {
+        const objId = currentKey.replace('Object:', '');
+        // Verifica che l'oggetto esista
+        let objectExists = false;
+        rooms.forEach((room) => {
+          if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+            if (room.sceneObjects.find(o => o.id === objId)) {
+              objectExists = true;
+            }
+          }
+        });
+        if (objectExists) {
+          objectScripts.set(objId, currentKey);
+        }
+      }
+    }
+  }
+
+  function openScriptFromTree(scope, target, handlerId) {
+    // Salva il contenuto dello script corrente prima di aprire un nuovo script
+    saveCurrentScriptIfNeeded();
+    
+    ensureLargeScriptEditor();
+    ensureScriptEditor();
+    const scriptKeyToUse = migrateLegacyScriptKey(resolveScriptKey(scope, target));
+    let content = getScriptContent(scriptKeyToUse);
+    // Permetti di aprire script vuoti (potrebbero essere appena creati)
+    // Se lo script non esiste affatto, crealo vuoto
+    if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
+      // Verifica se c'è un attachment che indica che lo script dovrebbe esistere
+      const hasAttachment = (scope === 'Room' && roomScripts.has(target)) ||
+                            (scope === 'Object' && objectScripts.has(target)) ||
+                            (scope === 'Character' && characterScripts.has(target)) ||
+                            (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target));
+      // Per gli oggetti, permetti sempre di creare uno script vuoto (l'attachment verrà creato quando viene salvato)
+      if (!hasAttachment && scope !== 'Object') {
+        showNotification('Script not found', 'warning');
+        return;
+      }
+      // Crea lo script vuoto se ha un attachment o se è un oggetto
+      content = '';
+      jsScripts.set(scriptKeyToUse, content);
+      try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
+      
+      // Per gli oggetti, crea subito l'attachment quando si apre lo script per la prima volta
+      // Questo garantisce che lo script sia associato all'oggetto anche prima di essere salvato
+      if (scope === 'Object' && !hasAttachment) {
+        objectScripts.set(target, scriptKeyToUse);
+      }
+    }
+    currentScriptName = scriptKeyToUse;
+    
+    // Aggiorna entrambi gli editor con il nuovo contenuto
+    if (largeCodeMirrorEditor) {
+      largeCodeMirrorEditor.setValue(content);
+      // Refresh e focus per assicurarsi che l'editor si aggiorni visivamente
+      setTimeout(() => {
+        if (largeCodeMirrorEditor) {
+          if (typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+          // Forza il focus se l'editor è visibile
+          const editorContainer = document.getElementById('codeEditorContainer');
+          if (editorContainer && editorContainer.style.display !== 'none') {
+            largeCodeMirrorEditor.focus();
+          }
+        }
+      }, 10);
+    }
+    if (codeMirrorEditor) {
+      codeMirrorEditor.setValue(content);
+      // Refresh per assicurarsi che l'editor si aggiorni visivamente
+      setTimeout(() => {
+        if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+          codeMirrorEditor.refresh();
+        }
+      }, 10);
+    }
 
     // Reflect dropdowns and optionally lock
     const scopeSel = document.getElementById('script-scope');
@@ -3462,8 +7041,8 @@ window.selectRoom = function(roomId) {
     const handlerId = eventSel.value || 'on_game_start';
     const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
 
-    const key = `${scope}:${target}`;
-    let content = jsScripts.get(key) || localStorage.getItem(`script-${key}`) || '';
+    const key = migrateLegacyScriptKey(normalizeScriptKey(scope, target));
+    let content = getScriptContent(key);
 
     // Ensure header
     if (!content) {
@@ -3505,6 +7084,42 @@ window.selectRoom = function(roomId) {
       roomScripts.set(target, key);
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
+    } else if (scope === 'Hotspot') {
+      const hotspotId = key.slice('Hotspot:'.length);
+      // Salva direttamente nell'hotspot
+      let hotspotFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (!hotspot.scripts) hotspot.scripts = {};
+            hotspot.scripts.onClick = {
+              code: String(content),
+              enabled: true
+            };
+            // Aggiungi metadata per tracciare lo script
+            if (!hotspot._meta) hotspot._meta = {};
+            hotspot._meta.linkedScriptName = key;
+            hotspotFound = true;
+          }
+        }
+      });
+      // Aggiorna anche l'hotspot globale se esiste
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const globalHotspot = hotspots.find(h => h.id === hotspotId);
+        if (globalHotspot) {
+          if (!globalHotspot.scripts) globalHotspot.scripts = {};
+          globalHotspot.scripts.onClick = {
+            code: String(content),
+            enabled: true
+          };
+          if (!globalHotspot._meta) globalHotspot._meta = {};
+          globalHotspot._meta.linkedScriptName = key;
+        }
+      }
+      if (!hotspotFound) {
+        console.warn(`[createScriptFromDropdown] Hotspot ${hotspotId} non trovato`);
+      }
     } else if (scope === 'GUI') {
       if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
     }
@@ -3702,8 +7317,7 @@ window.selectRoom = function(roomId) {
     return conditions.every(cond => Condition.evaluate(cond));
   };
 
-// API esposte al sandbox
-  // Funzione helper standalone per serializzare valori in modo leggibile
+  // Helper per serializzare valori nello Script Log (ScriptLogService)
   // Deve essere standalone perché viene usata in contesti diversi (sandbox)
   function serializeValue(value) {
     if (value === null) return 'null';
@@ -3719,371 +7333,6 @@ window.selectRoom = function(roomId) {
     }
     return String(value);
   }
-
-  const sandboxApi = {
-    // Funzione print() globale per gli script utente
-    // Accetta qualsiasi numero di argomenti e li serializza correttamente
-    // Centralizza tutto l'output degli script nello Script LogService
-    print: function() {
-      try {
-        const args = Array.from(arguments);
-        if (args.length === 0) {
-          ScriptLogService.print('', 'editor-sandbox');
-          return;
-        }
-        
-        // Opzione speciale: ultimo argomento come { showInGame: true }
-        let showInGame = false;
-        const last = args[args.length - 1];
-        if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Date)) {
-          if (last.showInGame === true) {
-            showInGame = true;
-          }
-          args.pop();
-        }
-
-        // Serializza ogni argomento e uniscili con spazi
-        const messages = args.map(arg => serializeValue(arg));
-        const msg = messages.join(' ');
-        
-        // Log nello Script LogService (non usa console.log come output principale)
-        ScriptLogService.print(msg, 'editor-sandbox');
-
-        // Integrazione opzionale con il gameplay tramite Game.showText()
-        if (showInGame && window.Game && typeof window.Game.showText === 'function') {
-          try {
-            window.Game.showText(msg);
-          } catch (_) {}
-        }
-      } catch (e) {
-        // Fallback in caso di errore nella serializzazione
-        addScriptLogMessage(`[Print Error] ${e && e.message ? e.message : String(e)}`, 'error');
-      }
-    },
-    
-    // Funzione error() per log di errori nello Script Log
-    // Supporta livelli di log separati (error vs info)
-    error: function() {
-      try {
-        const args = Array.from(arguments);
-        if (args.length === 0) {
-          addScriptLogMessage('', 'error');
-          return;
-        }
-        
-        const messages = args.map(arg => serializeValue(arg));
-        const msg = messages.join(' ');
-        
-        addScriptLogMessage(msg, 'error');
-      } catch (e) {
-        addScriptLogMessage(`[Error Log Error] ${e && e.message ? e.message : String(e)}`, 'error');
-      }
-    },
-    show_message: function(text){
-      showNotification(String(text), 'info');
-    },
-    move_object: function(id, x, y){
-      const obj = sceneObjects.find(o => o.id === String(id));
-      if (!obj) { addDebugMessage(`Object ${id} not found`, 'warning'); return; }
-      obj.x = Number(x)||0; obj.y = Number(y)||0; redraw();
-    },
-    // Event System APIs
-    on_game_start: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.game_start = handler;
-        addDebugMessage('Game start handler registered', 'info');
-      }
-    },
-    on_room_change: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.room_change = handler;
-        addDebugMessage('Room change handler registered', 'info');
-      }
-    },
-    on_object_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.object_click = handler;
-        addDebugMessage('Object click handler registered', 'info');
-      }
-    },
-    on_character_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.character_click = handler;
-        addDebugMessage('Character click handler registered', 'info');
-      }
-    },
-    on_hotspot_click: function(handler) {
-      if (typeof handler === 'function') {
-        window.gameEventHandlers = window.gameEventHandlers || {};
-        window.gameEventHandlers.hotspot_click = handler;
-        addDebugMessage('Hotspot click handler registered', 'info');
-      }
-    },
-    // Inventory APIs
-    add_to_inventory: function(itemId, quantity) {
-      const id = String(itemId || '').trim();
-      const q = Math.max(1, Number(quantity) || 1);
-      if (!id) { addDebugMessage('add_to_inventory: invalid itemId', 'warning'); return 0; }
-      const current = Number(gameInventory.get(id) || 0);
-      const next = current + q;
-      gameInventory.set(id, next);
-      persistInventory();
-      showNotification(`Added ${q} × "${id}" to inventory (total: ${next})`, 'success');
-      return next;
-    },
-    remove_from_inventory: function(itemId, quantity) {
-      const id = String(itemId || '').trim();
-      const q = Math.max(1, Number(quantity) || 1);
-      if (!id) { addDebugMessage('remove_from_inventory: invalid itemId', 'warning'); return 0; }
-      const current = Number(gameInventory.get(id) || 0);
-      const next = Math.max(0, current - q);
-      if (next <= 0) gameInventory.delete(id); else gameInventory.set(id, next);
-      persistInventory();
-      showNotification(`Removed ${q} × "${id}" from inventory (total: ${next})`, 'info');
-      return next;
-    },
-    has_item: function(itemId) {
-      const id = String(itemId || '').trim();
-      if (!id) return false;
-      return (Number(gameInventory.get(id) || 0) > 0);
-    },
-    get_item_count: function(itemId) {
-      const id = String(itemId || '').trim();
-      if (!id) return 0;
-      return Number(gameInventory.get(id) || 0);
-    },
-    clear_inventory: function() {
-      gameInventory.clear();
-      persistInventory();
-      showNotification('Inventory cleared', 'warning');
-      return true;
-    },
-
-    // Room System APIs
-    load_room: function(roomIdOrName) {
-      const key = String(roomIdOrName || '').trim();
-      if (!key) { addDebugMessage('load_room: missing room id/name', 'warning'); return false; }
-      let targetId = null;
-      if (rooms.has(key)) {
-        targetId = key;
-      } else {
-        rooms.forEach((r) => { if (!targetId && (r.name === key)) targetId = r.id; });
-      }
-      if (!targetId) { addDebugMessage(`load_room: room "${key}" not found`, 'warning'); return false; }
-      try {
-        window.selectRoom(targetId);
-        return true;
-      } catch (e) {
-        addDebugMessage(`load_room error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-    get_current_room: function() {
-      return currentRoomId || null;
-    },
-    get_room_objects: function() {
-      const r = rooms.get(currentRoomId);
-      if (!r || !Array.isArray(r.sceneObjects)) return [];
-      return r.sceneObjects.map(o => ({
-        id: String(o.id || ''),
-        name: String(o.name || ''),
-        type: String(o.type || 'Interactive'),
-        x: Number(o.x) || 0,
-        y: Number(o.y) || 0,
-        rotation: Number(o.rotationRad ? (o.rotationRad * 180 / Math.PI) : 0),
-        scaleX: Number((typeof o.scaleX === 'number') ? o.scaleX : 1),
-        scaleY: Number((typeof o.scaleY === 'number') ? o.scaleY : 1),
-        visible: (o.visible !== false)
-      }));
-    },
-    set_room_background: function(imageUrlOrDataUrl) {
-      const r = rooms.get(currentRoomId);
-      if (!r) { addDebugMessage('set_room_background: no current room', 'warning'); return false; }
-      const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
-      if (!url) {
-        r.background = null;
-        background = null;
-        redraw();
-        showNotification('Room background cleared', 'info');
-        return true;
-      }
-      try {
-        const img = new Image();
-        img.onload = () => {
-          r.background = img;
-          background = img;
-          redraw();
-          showNotification(`Room background set (${img.width}×${img.height})`, 'success');
-        };
-        img.onerror = () => {
-          addDebugMessage('set_room_background: failed to load image', 'error');
-          showNotification('Failed to load background image', 'danger');
-        };
-        img.src = url;
-        return true;
-      } catch (e) {
-        addDebugMessage(`set_room_background error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-
-    // Object System APIs
-    spawn_object: function(objectNameOrId, x, y, imageUrlOrDataUrl) {
-      const name = String(objectNameOrId || '').trim() || 'Object';
-      const objX = Number(x) || 0;
-      const objY = Number(y) || 0;
-
-      function addObjectWithImage(img) {
-        const newObj = {
-          id: uid('scene'),
-          name,
-          img,
-          x: objX,
-          y: objY,
-          type: 'Interactive',
-          rotationRad: 0,
-          scaleX: 1,
-          scaleY: 1,
-          visible: true
-        };
-        sceneObjects.push(newObj);
-        const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-
-        // Add to UI list
-        try {
-          const list = document.getElementById('scene-objects-list');
-          if (list) {
-            const item = document.createElement('div');
-            item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-            item.dataset.objectId = newObj.id;
-            item.innerHTML = `
-              <div>
-                <strong>${newObj.name}</strong>
-                <br><small>Scene object</small>
-                <br><span class="badge bg-warning">Interactive</span>
-                <br><small style="color: #888;">Position: ${Math.round(newObj.x)}, ${Math.round(newObj.y)}</small>
-              </div>
-              <div>
-                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-              </div>
-            `;
-            list.appendChild(item);
-          }
-        } catch (_) {}
-
-        redraw();
-        showNotification(`Spawned object "${newObj.name}"`, 'success');
-        return newObj.id;
-      }
-
-      try {
-        const url = (imageUrlOrDataUrl == null) ? '' : String(imageUrlOrDataUrl);
-        if (!url) {
-          // Create a simple placeholder image (32x32)
-          const c = document.createElement('canvas');
-          c.width = 32; c.height = 32;
-          const t = c.getContext('2d');
-          t.fillStyle = '#cc3333'; t.fillRect(0, 0, 32, 32);
-          t.fillStyle = '#ffffff'; t.fillRect(4, 4, 24, 24);
-          const img = new Image();
-          img.onload = () => { addObjectWithImage(img); };
-          img.src = c.toDataURL('image/png');
-          return true;
-        } else {
-          const img = new Image();
-          img.onload = () => { addObjectWithImage(img); };
-          img.onerror = () => {
-            addDebugMessage('spawn_object: failed to load image', 'error');
-            showNotification('Failed to load object image', 'danger');
-          };
-          img.src = url;
-          return true;
-        }
-      } catch (e) {
-        addDebugMessage(`spawn_object error: ${e && e.message ? e.message : e}`, 'error');
-        return false;
-      }
-    },
-    despawn_object: function(objectId) {
-      const id = String(objectId || '').trim();
-      if (!id) { addDebugMessage('despawn_object: invalid id', 'warning'); return false; }
-      const before = sceneObjects.length;
-      sceneObjects = sceneObjects.filter(o => String(o.id) !== id);
-      const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-      // Remove from UI
-      try {
-        const el = document.querySelector(`[data-object-id="${id}"]`);
-        if (el) el.remove();
-      } catch (_) {}
-      const removed = (before !== sceneObjects.length);
-      if (removed) {
-        redraw();
-        showNotification(`Despawned object "${id}"`, 'info');
-      } else {
-        addDebugMessage(`despawn_object: object "${id}" not found`, 'warning');
-      }
-      return removed;
-    },
-    rotate_object: function(objectId, degrees) {
-      const id = String(objectId || '').trim();
-      const deg = Number(degrees) || 0;
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`rotate_object: object "${id}" not found`, 'warning'); return false; }
-      const rad = deg * Math.PI / 180;
-      obj.rotationRad = rad;
-      redraw();
-      return true;
-    },
-    scale_object: function(objectId, sx, sy) {
-      const id = String(objectId || '').trim();
-      let scaleX = Number(sx);
-      let scaleY = (typeof sy === 'undefined' || sy === null) ? scaleX : Number(sy);
-      if (!isFinite(scaleX)) scaleX = 1;
-      if (!isFinite(scaleY)) scaleY = 1;
-      scaleX = Math.max(0.01, scaleX);
-      scaleY = Math.max(0.01, scaleY);
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`scale_object: object "${id}" not found`, 'warning'); return false; }
-      obj.scaleX = scaleX;
-      obj.scaleY = scaleY;
-      redraw();
-      return true;
-    },
-    set_object_visible: function(objectId, visible) {
-      const id = String(objectId || '').trim();
-      const v = !!visible;
-      const obj = sceneObjects.find(o => String(o.id) === id);
-      if (!obj) { addDebugMessage(`set_object_visible: object "${id}" not found`, 'warning'); return false; }
-      obj.visible = v;
-      redraw();
-      return true;
-    },
-    // Game State API
-    get_var: function(key) {
-      return window.Game.getVar(key);
-    },
-    set_var: function(key, value) {
-      return window.Game.setVar(key, value);
-    },
-    has_var: function(key) {
-      return window.Game.hasVar(key);
-    },
-    toggle_var: function(key) {
-      return window.Game.toggleVar(key);
-    },
-    // Condition API (per uso interno, non esposto direttamente agli script)
-    evaluate_condition: function(conditionObject) {
-      return window.Condition.evaluate(conditionObject);
-    },
-    evaluate_all_conditions: function(conditions) {
-      return window.Condition.evaluateAll(conditions);
-    }
-};
 
   // Event System: Global trigger functions
   window.gameEventHandlers = window.gameEventHandlers || {};
@@ -4131,25 +7380,9 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Se il runtime non è inizializzato, non eseguire lo script
-    if (!embeddedRuntime.isInitialized || !embeddedRuntime.sandboxIframe) {
-      addDebugMessage(`[Script] Runtime not initialized, skipping handler "${handlerName}"`, 'warning');
-      return;
-    }
-    
-    // Esegui lo script nell'iframe sandboxed
-    const context = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: null,
-      variables: {}
-    };
-    
-    // Copia variabili dal gameState
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      context.variables[key] = value;
-    });
-    
-    executeScriptInSandbox(`handler_${handlerName}_${Date.now()}`, scriptContent, handlerName, argsArray, context);
+    // Script handler non più supportato in modalità iframe
+    // Gli script vengono eseguiti nel runtime standalone
+    addDebugMessage(`[Script] Handler "${handlerName}" - scripts run in the standalone runtime`, 'info');
   }
 
   window.newScript = function() {
@@ -4182,20 +7415,120 @@ window.selectRoom = function(roomId) {
       const taSmall = document.getElementById('script-editor');
       content = (taLarge && taLarge.value) || (taSmall && taSmall.value) || '';
     }
-    // Determine current key (scope/target) or fallback to legacy selector
-    let key = currentScriptName && String(currentScriptName);
+    let key = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!key) {
       const selector = document.getElementById('script-selector');
-      key = (selector && selector.value) || 'new-script';
+      key = migrateLegacyScriptKey((selector && selector.value) || 'new-script');
     }
+    if (key !== currentScriptName) currentScriptName = key;
 
+    const oldContent = getScriptContent(key);
+    
+    // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
+    if (key.startsWith('Hotspot:')) {
+      const hotspotId = key.replace('Hotspot:', '');
+      // Trova l'hotspot in tutte le stanze
+      let hotspotFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (!hotspot.scripts) hotspot.scripts = {};
+            hotspot.scripts.onClick = {
+              code: String(content),
+              enabled: true
+            };
+            hotspotFound = true;
+            
+            // Aggiorna anche l'hotspot globale se esiste
+            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspotId) : null;
+            if (globalHotspot) {
+              if (!globalHotspot.scripts) globalHotspot.scripts = {};
+              globalHotspot.scripts.onClick = {
+                code: String(content),
+                enabled: true
+              };
+            }
+          }
+        }
+      });
+      if (!hotspotFound) {
+        console.warn(`[saveScript] Hotspot ${hotspotId} non trovato in nessuna stanza`);
+      }
+    }
+    
+    // ⚠️ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se è uno script oggetto
+    if (key.startsWith('Object:')) {
+      const objId = key.replace('Object:', '');
+      // Verifica che l'oggetto esista in almeno una stanza
+      let objectFound = false;
+      rooms.forEach((room, roomId) => {
+        if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+          const obj = room.sceneObjects.find(o => o.id === objId);
+          if (obj) {
+            objectFound = true;
+          }
+        }
+      });
+      
+      if (objectFound) {
+        // Crea o aggiorna l'attachment per questo oggetto specifico
+        objectScripts.set(objId, key);
+        console.log(`[saveScript] [OBJECT] Script "${key}" associato all'oggetto "${objId}"`);
+      } else {
+        console.warn(`[saveScript] [OBJECT] Oggetto ${objId} non trovato in nessuna stanza, ma creo comunque l'attachment`);
+        // Crea comunque l'attachment, potrebbe essere che l'oggetto venga aggiunto in seguito
+        objectScripts.set(objId, key);
+      }
+    }
+    
+    // Salva il nuovo contenuto (anche per hotspot, per mantenere sincronizzazione)
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
+    
+    // Sincronizza solo hotspot collegati esplicitamente a questo script (mai per confronto sul codice)
+    if (content.trim() !== '') {
+      const hotspotIdFromKey = key.startsWith('Hotspot:') ? key.slice('Hotspot:'.length) : null;
+      const syncedHotspotIds = new Set();
+
+      const syncHotspotIfLinked = (hotspot, source) => {
+        if (!hotspot || syncedHotspotIds.has(hotspot.id)) return false;
+        const linkedRaw = hotspot._meta && hotspot._meta.linkedScriptName;
+        const linked = linkedRaw ? migrateLegacyScriptKey(String(linkedRaw)) : '';
+        const isDirect = hotspotIdFromKey && hotspot.id === hotspotIdFromKey;
+        const isLinked = linked === key;
+        if (!isDirect && !isLinked) return false;
+
+        if (!hotspot.scripts) hotspot.scripts = {};
+        hotspot.scripts.onClick = { code: String(content), enabled: true };
+        if (!hotspot._meta) hotspot._meta = {};
+        hotspot._meta.linkedScriptName = key;
+        syncedHotspotIds.add(hotspot.id);
+        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} ← "${key}" [${source}]`);
+        return true;
+      };
+
+      rooms.forEach((room, roomId) => {
+        if (!room.hotspots) return;
+        room.hotspots.forEach(hotspot => {
+          if (syncHotspotIfLinked(hotspot, `room:${roomId}`)) {
+            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspot.id) : null;
+            if (globalHotspot) syncHotspotIfLinked(globalHotspot, 'global');
+          }
+        });
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, 'global-only'));
+      }
+    }
+    
     showNotification(`Script "${key}" saved!`, 'success');
 
     // refresh attach targets
     refreshScriptSelector();
     refreshSceneObjectScriptTargets();
+    
+    // Aggiorna sempre l'albero degli script per riflettere le modifiche
     rebuildScriptsTree();
   };
 
@@ -4205,52 +7538,82 @@ window.selectRoom = function(roomId) {
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
     
     if (!content || !content.trim()) {
-      showNotification('Script vuoto!', 'warning');
+      showNotification('Script is empty!', 'warning');
       return;
     }
     
-    // Serializza il progetto completo (come fa startPlayTest) per avere tutte le variabili e il contesto
+    // Per eseguire script, apri il runtime in una nuova finestra
+    // Il runtime caricherà automaticamente il progetto da localStorage
     const jsonString = window.serializeProjectToJsonString(true);
+    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     
-    // Inizializza sempre il sandbox con i dati aggiornati del progetto
-    // Questo garantisce che lo script abbia accesso a tutte le variabili e al contesto corretto
-    initializeSandboxRuntime(jsonString);
-    
-    // Aspetta che l'iframe sia pronto e poi esegui lo script
-    const checkReady = setInterval(() => {
-      if (embeddedRuntime.isReady && embeddedRuntime.sandboxIframe) {
-        clearInterval(checkReady);
-        // Esegui lo script selezionato nel sandbox
-        executeScriptInSandbox('run_script_' + Date.now(), content, null, [], {});
-        showNotification('Script eseguito in sandbox!', 'success');
-      }
-    }, 100);
-    
-    // Timeout dopo 5 secondi
-    setTimeout(() => {
-      clearInterval(checkReady);
-      if (!embeddedRuntime.isReady) {
-        showNotification('Errore: sandbox non inizializzato', 'danger');
-      }
-    }, 5000);
+    // Apri runtime in nuova finestra
+    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeWindow = window.open(
+      runtimeUrl,
+      'AmiantoRuntime',
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+
+    if (!runtimeWindow) {
+      showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
+      return;
+    }
+
+    showNotification('Runtime opened in a new window. The script will run automatically.', 'info');
   };
 
   window.deleteScript = function() {
-    // Determina lo script corrente
-    let scriptName = currentScriptName && String(currentScriptName);
+    let scriptName = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!scriptName) {
       const selector = document.getElementById('script-selector');
-      scriptName = (selector && selector.value) || '';
+      scriptName = migrateLegacyScriptKey((selector && selector.value) || '');
     }
     
     if (!scriptName || !scriptName.trim()) {
-      showNotification('Seleziona uno script da eliminare', 'warning');
+      showNotification('Select a script to delete', 'warning');
       return;
     }
     
     // Chiedi conferma
-    if (!confirm(`Vuoi eliminare lo script "${scriptName}"?\n\nQuesta azione non può essere annullata.`)) {
+    if (!confirm(`Delete script "${scriptName}"?\n\nThis action cannot be undone.`)) {
       return;
+    }
+    
+    // Gestione speciale per script hotspot (chiave Hotspot:${hotspotId})
+    // Se si sta eliminando uno script hotspot, rimuovi anche la struttura hotspot.scripts.onClick
+    if (scriptName.startsWith('Hotspot:')) {
+      const hotspotId = scriptName.replace('Hotspot:', '');
+      
+      // Rimuovi script dagli hotspot in tutte le stanze
+      rooms.forEach((room, roomId) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          const hotspot = room.hotspots.find(h => h.id === hotspotId);
+          if (hotspot) {
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              hotspot.scripts.onClick.code = '';
+              hotspot.scripts.onClick.enabled = false;
+            }
+            if (hotspot._meta) {
+              delete hotspot._meta.linkedScriptName;
+            }
+          }
+        }
+      });
+      
+      // Rimuovi anche dagli hotspot globali se esistono
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hotspot = hotspots.find(h => h.id === hotspotId);
+        if (hotspot) {
+          if (hotspot.scripts && hotspot.scripts.onClick) {
+            hotspot.scripts.onClick.code = '';
+            hotspot.scripts.onClick.enabled = false;
+          }
+          if (hotspot._meta) {
+            delete hotspot._meta.linkedScriptName;
+          }
+        }
+      }
     }
     
     // Rimuovi lo script da jsScripts
@@ -4290,11 +7653,44 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Hotspot scripts
+    // Hotspot scripts - Rimuovi anche dalla struttura hotspot.scripts.onClick
+    // Gli hotspot ora salvano gli script direttamente in hotspot.scripts.onClick
     for (const [hotspotId, attachedScript] of hotspotScripts.entries()) {
       if (attachedScript === scriptName) {
         hotspotScripts.delete(hotspotId);
       }
+    }
+    
+    // Rimuovi script dagli hotspot che hanno questo script associato
+    // Cerca in tutte le stanze
+    rooms.forEach((room, roomId) => {
+      if (room.hotspots && Array.isArray(room.hotspots)) {
+        room.hotspots.forEach(hotspot => {
+          // Verifica se l'hotspot ha uno script associato tramite _meta.linkedScriptName
+          if (hotspot._meta && hotspot._meta.linkedScriptName === scriptName) {
+            // Rimuovi lo script dall'hotspot
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              hotspot.scripts.onClick.code = '';
+              hotspot.scripts.onClick.enabled = false;
+            }
+            // Rimuovi il riferimento
+            delete hotspot._meta.linkedScriptName;
+          }
+        });
+      }
+    });
+    
+    // Rimuovi anche dagli hotspot globali se esistono
+    if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+      hotspots.forEach(hotspot => {
+        if (hotspot._meta && hotspot._meta.linkedScriptName === scriptName) {
+          if (hotspot.scripts && hotspot.scripts.onClick) {
+            hotspot.scripts.onClick.code = '';
+            hotspot.scripts.onClick.enabled = false;
+          }
+          delete hotspot._meta.linkedScriptName;
+        }
+      });
     }
     
     // GUI scripts
@@ -4337,7 +7733,7 @@ window.selectRoom = function(roomId) {
     try { refreshHotspotScriptTargets(); } catch(_) {}
     try { refreshCursorScriptTargets(); } catch(_) {}
     
-    showNotification(`Script "${scriptName}" eliminato`, 'success');
+    showNotification(`Script "${scriptName}" deleted`, 'success');
   };
 
   window.stopScript = function() {
@@ -4348,15 +7744,34 @@ window.selectRoom = function(roomId) {
   window.loadScript = function(scriptName) {
     if (!scriptName) return;
     
-    const savedScript = localStorage.getItem(`script-${scriptName}`);
-    if (savedScript) {
+    saveCurrentScriptIfNeeded();
+    
+    const canonicalName = migrateLegacyScriptKey(String(scriptName));
+    const scriptExists = jsScripts.has(canonicalName) || (() => {
+      try { return localStorage.getItem(`script-${canonicalName}`) != null; } catch (_) { return false; }
+    })();
+    if (scriptExists) {
+      const savedScript = getScriptContent(canonicalName);
       ensureLargeScriptEditor();
       ensureScriptEditor();
+      currentScriptName = canonicalName;
       if (largeCodeMirrorEditor) {
         largeCodeMirrorEditor.setValue(savedScript);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+            largeCodeMirrorEditor.refresh();
+          }
+        }, 0);
       }
       if (codeMirrorEditor) {
         codeMirrorEditor.setValue(savedScript);
+        // Refresh per assicurarsi che l'editor si aggiorni visivamente
+        setTimeout(() => {
+          if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+            codeMirrorEditor.refresh();
+          }
+        }, 0);
       } else {
         const taSmall = document.getElementById('script-editor');
         if (taSmall) taSmall.value = savedScript;
@@ -4557,10 +7972,11 @@ window.selectRoom = function(roomId) {
     optNone.value = '';
     optNone.textContent = 'Select inventory item...';
     sel.appendChild(optNone);
-    document.querySelectorAll('#inventory-list .list-group-item strong').forEach(s => {
-      const name = s.textContent.trim();
+    inventoryItems.forEach(item => {
       const o = document.createElement('option');
-      o.value = name; o.textContent = name; sel.appendChild(o);
+      o.value = item.name;
+      o.textContent = item.name;
+      sel.appendChild(o);
     });
   }
 
@@ -4592,8 +8008,8 @@ window.selectRoom = function(roomId) {
     if (e.detail.currentTab === 'characters') {
       setTimeout(() => { refreshCharacterScriptTargets(); updateCursorTargets(); }, 0);
     }
-    if (e.detail.currentTab === 'objects') {
-      setTimeout(() => { refreshInventoryScriptTargets(); updateCursorTargets(); }, 0);
+    if (e.detail.currentTab === 'inventory') {
+      setTimeout(() => { refreshInventoryScriptTargets(); refreshInventoryItemsListUI(); refreshInventorySlotsListUI(); updateCursorTargets(); redraw(); }, 0);
     }
     if (e.detail.currentTab === 'gui') {
       setTimeout(() => { refreshGuiButtonsList(); refreshGuiScriptTargets(); updateCursorTargets(); }, 0);
@@ -4740,7 +8156,7 @@ window.selectRoom = function(roomId) {
 
   window.attachScriptToHotspot = function() {
     const selector = document.getElementById('script-selector');
-    const scriptName = selector.value;
+    const scriptName = migrateLegacyScriptKey(selector.value);
     const targetSel = document.getElementById('script-target');
     const targetValue = targetSel.value;
     
@@ -4755,19 +8171,104 @@ window.selectRoom = function(roomId) {
     }
     
     const hotspotId = targetValue.replace('hotspot:', '');
-    hotspotScripts.set(hotspotId, scriptName);
+    
+    // ⚠️ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
+    const hotspot = hotspots.find(h => h.id === hotspotId);
+    if (!hotspot) {
+      showNotification('Hotspot not found', 'error');
+      return;
+    }
+    
+    const scriptContent = getScriptContent(migrateLegacyScriptKey(scriptName));
+    
+    // DEBUG: Verifica che il contenuto dello script sia disponibile
+    if (!scriptContent || scriptContent.trim() === '') {
+      console.warn(`[attachScriptToHotspot] Script "${scriptName}" è vuoto o non trovato!`);
+      showNotification(`Script "${scriptName}" is empty or not found`, 'warning');
+      return;
+    }
+    
+    console.log(`[attachScriptToHotspot] Associazione script a hotspot:`, {
+      hotspotId: hotspotId,
+      scriptName: scriptName,
+      codeLength: scriptContent.length,
+      codePreview: scriptContent.substring(0, 50)
+    });
+    
+    // Inizializza struttura scripts se non esiste
+    if (!hotspot.scripts) {
+      hotspot.scripts = {};
+    }
+    
+    // Salva script direttamente nell'hotspot
+    hotspot.scripts.onClick = {
+      code: String(scriptContent),
+      enabled: true
+    };
+    
+    // Aggiorna anche nella room
+    const r = rooms.get(currentRoomId);
+    if (r && r.hotspots) {
+      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
+      if (roomHotspot) {
+        if (!roomHotspot.scripts) roomHotspot.scripts = {};
+        roomHotspot.scripts.onClick = {
+          code: String(scriptContent),
+          enabled: true
+        };
+      }
+    }
+    
+    // ⚠️ SINCRONIZZAZIONE: Salva anche il nome dello script in un campo meta per tracciamento futuro
+    // Questo ci permette di sapere quale script è collegato all'hotspot per sincronizzazioni future
+    // (nota: questo campo non viene serializzato, è solo per uso interno)
+    if (!hotspot._meta) hotspot._meta = {};
+    hotspot._meta.linkedScriptName = scriptName;
+    if (r && r.hotspots) {
+      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
+      if (roomHotspot) {
+        if (!roomHotspot._meta) roomHotspot._meta = {};
+        roomHotspot._meta.linkedScriptName = scriptName;
+      }
+    }
+    
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
+    
+    // Aggiorna l'albero degli script per mostrare il nuovo script associato
+    rebuildScriptsTree();
+    
+    redraw();
   };
 
   // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
+  function setMainWorkspaceMode(mode) {
+    const canvasInfo = document.querySelector('.canvas-info');
+    const canvasControls = document.querySelector('.canvas-controls');
+    const canvasContainer = document.getElementById('canvasContainer');
+    const codeEditorContainer = document.getElementById('codeEditorContainer');
+    const resourcesMainPanel = document.getElementById('resourcesMainPanel');
+    const docsMainPanel = document.getElementById('docsMainPanel');
+
+    const showCanvas = mode === 'canvas';
+    const showScripts = mode === 'scripts';
+    const showResources = mode === 'resources';
+    const showDocs = mode === 'docs';
+
+    if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
+    if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
+    if (canvasContainer) canvasContainer.style.display = showCanvas ? 'block' : 'none';
+    if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
+    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'flex' : 'none';
+    if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
+  }
+
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
-      const canvasContainer = document.getElementById('canvasContainer');
-      const codeEditorContainer = document.getElementById('codeEditorContainer');
-      const logsContainer = document.getElementById('logs-container');
-      if (canvasContainer) canvasContainer.style.display = 'none';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'flex'; // Cambiato a flex per il layout
-      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
+      setMainWorkspaceMode('scripts');
+      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
       ensureLargeScriptEditor();
       ensureScriptEditor();
       initScriptsUI();
@@ -4787,21 +8288,133 @@ window.selectRoom = function(roomId) {
           largeCodeMirrorEditor.refresh();
         }
       }, 100);
+    } else if (e.detail.currentTab === 'resources') {
+      setMainWorkspaceMode('resources');
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
+    } else if (e.detail.currentTab === 'docs') {
+      setMainWorkspaceMode('docs');
+      if (window.amiantoDocs && typeof window.amiantoDocs.init === 'function') {
+        window.amiantoDocs.init();
+      }
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     } else {
-      const canvasContainer = document.getElementById('canvasContainer');
-      const codeEditorContainer = document.getElementById('codeEditorContainer');
-      const logsContainer = document.getElementById('logs-container');
-      if (canvasContainer) canvasContainer.style.display = 'block';
-      if (codeEditorContainer) codeEditorContainer.style.display = 'none';
-      if (logsContainer) logsContainer.style.display = 'flex'; // Assicura che i log siano sempre visibili
+      setMainWorkspaceMode('canvas');
+      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     }
   });
+
+  // Variabile globale per tracciare lo stato di sincronizzazione
+  let isSyncingProjects = false;
+
+  // Function to show loading overlay with mnt.png
+  /**
+   * Mostra loader globale
+   * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
+   */
+  function showLoadingOverlay(message = 'Loading...') {
+    // Aggiorna AppState
+    updateAppState({ loading: true });
+    
+    // Rimuovi eventuali overlay esistenti
+    const existingOverlay = document.getElementById('syncLoadingOverlay');
+    if (existingOverlay) {
+      existingOverlay.remove();
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'syncLoadingOverlay';
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.85);
+      z-index: 10060;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      backdrop-filter: blur(5px);
+    `;
+
+    overlay.innerHTML = `
+      <div style="text-align: center; color: #fff;">
+        <img src="img/mnt.png" alt="Loading" style="max-width: 120px; max-height: 120px; width: auto; height: auto; object-fit: contain; margin-bottom: 20px; animation: pulse 2s ease-in-out infinite;">
+        <div style="font-size: 18px; margin-bottom: 20px; color: #39ff14;">${message}</div>
+        <div class="spinner-border text-success" role="status" style="width: 3rem; height: 3rem;">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+      </div>
+      <style>
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.7; transform: scale(1.05); }
+        }
+      </style>
+    `;
+
+    document.body.appendChild(overlay);
+  }
+
+  // Function to hide loading overlay
+  /**
+   * Nascondi loader globale
+   * RIFATTORIZZATA: Usa AppState.loading per gestire lo stato
+   */
+  function hideLoadingOverlay() {
+    // Aggiorna AppState
+    updateAppState({ loading: false });
+    const overlay = document.getElementById('syncLoadingOverlay');
+    if (overlay) {
+      overlay.remove();
+    }
+  }
+
+  // Function to close project selection modal deterministically
+  function closeProjectModal() {
+    const modal = document.getElementById('projectSelectionModal');
+    if (!modal) return;
+    
+    // Rimuovi classe show
+    modal.classList.remove('show');
+    
+    // Imposta display none
+    modal.style.display = 'none';
+    
+    // Rimuovi modal-open dal body
+    document.body.classList.remove('modal-open');
+    
+    // Rimuovi backdrop se presente
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) {
+      backdrop.remove();
+    }
+    
+    // Rimuovi padding-right dal body se presente
+    document.body.style.paddingRight = '';
+    
+    // Rimuovi overflow hidden dal body se presente
+    document.body.style.overflow = '';
+    
+    // Rimuovi il modale dal DOM
+    modal.remove();
+    
+    console.log('[ProjectModal] Modale chiuso deterministicamente');
+  }
 
   // Function to show notifications
   function showNotification(message, type = 'info') {
     const notification = document.createElement('div');
     notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
-    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    notification.style.cssText = 'top: 20px; right: 20px; z-index: 10050; min-width: 300px;';
     notification.innerHTML = `
       ${message}
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
@@ -4835,16 +8448,33 @@ window.selectRoom = function(roomId) {
   document.addEventListener('tabChanged', function(e) {
     console.log('Tab changed:', e.detail);
     
+    // Assicurati che il loop di rendering del canvas embedded continui anche quando si cambia tab
+    if (embeddedRuntime.isInitialized && embeddedRuntime.canvas && embeddedRuntime.ctx) {
+      // Se il loop non è attivo, riavvialo
+      if (!embeddedRuntime.renderLoopId) {
+        startEmbeddedRenderLoop();
+      }
+    }
+    
     // Add specific logic for each tab
     switch(e.detail.currentTab) {
-      case 'objects':
-        // Update objects list if necessary
+      case 'inventory':
+        disableRoomCanvasEditing();
+        refreshInventoryItemsListUI();
+        refreshInventorySlotsListUI();
+        redraw();
+        break;
+      case 'rooms':
+        disableRoomCanvasEditing();
+        redraw();
         break;
       case 'gui':
+        disableRoomCanvasEditing();
         refreshGuiButtonsList();
         redraw();
         break;
       case 'characters':
+        disableRoomCanvasEditing();
         // ensure character selector refreshed and redraw preview
         refreshCharacterSelector();
         redraw();
@@ -4874,7 +8504,9 @@ window.selectRoom = function(roomId) {
       currentRoomId: null,
       variables: new Map()
     },
-    isInitialized: false
+    isInitialized: false,
+    renderLoopId: null,
+    lastRenderTime: 0
   };
 
   // Funzione helper per serializzare valori
@@ -5168,6 +8800,7 @@ window.selectRoom = function(roomId) {
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'RUN_SCRIPT',
+        scriptName: scriptName,
         code: scriptContent,
         context: executionContext,
         handlerName: handlerName,
@@ -5247,8 +8880,9 @@ window.selectRoom = function(roomId) {
       const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
       if (scripts[roomScriptName]) {
         sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
-        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_enter', [], {
-          roomId: embeddedRuntime.gameState.currentRoomId
+        const newRoomId = embeddedRuntime.gameState.currentRoomId;
+        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
+          roomId: newRoomId
         });
       }
     }
@@ -5300,18 +8934,63 @@ window.selectRoom = function(roomId) {
     if (!embeddedRuntime.gameData || !Array.isArray(embeddedRuntime.gameData.rooms) || 
         index < 0 || index >= embeddedRuntime.gameData.rooms.length) return;
     
+    // Verifica che il canvas sia inizializzato
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      // Prova a inizializzare il canvas se non è già inizializzato
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        const settings = embeddedRuntime.gameData.settings || {};
+        const canvasWidth = settings.canvasWidth || 800;
+        const canvasHeight = settings.canvasHeight || 600;
+        embeddedRuntime.canvas.width = canvasWidth;
+        embeddedRuntime.canvas.height = canvasHeight;
+      } else {
+        return; // Canvas non disponibile
+      }
+    }
+    
     const room = embeddedRuntime.gameData.rooms[index];
     const assets = await loadRuntimeRoomAssets(room);
 
-    if (!embeddedRuntime.ctx) return;
+    if (!embeddedRuntime.ctx || !embeddedRuntime.canvas) return;
     
-    embeddedRuntime.ctx.clearRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
-    if (assets.background) embeddedRuntime.ctx.drawImage(assets.background, 0, 0);
-    for (const o of assets.objects) {
-      if (o.img) embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+    // Pulisci il canvas con un colore di sfondo (non nero, ma un grigio scuro per debug)
+    embeddedRuntime.ctx.fillStyle = '#1a1a1a';
+    embeddedRuntime.ctx.fillRect(0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+    
+    // Disegna il background se disponibile
+    if (assets.background && assets.background.complete && assets.background.naturalWidth > 0) {
+      try {
+        embeddedRuntime.ctx.drawImage(assets.background, 0, 0, embeddedRuntime.canvas.width, embeddedRuntime.canvas.height);
+      } catch (error) {
+        console.warn('[Runtime] Errore rendering background:', error);
+      }
     }
+    
+    // Disegna gli oggetti di scena
+    for (const o of assets.objects) {
+      if (o.img && o.img.complete && o.img.naturalWidth > 0) {
+        try {
+          embeddedRuntime.ctx.drawImage(o.img, o.x, o.y);
+        } catch (error) {
+          console.warn('[Runtime] Errore rendering oggetto:', error);
+        }
+      }
+    }
+    
+    // Disegna i foregrounds
     for (const f of assets.foregrounds) {
-      if (f.img) embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+      if (f.img && f.img.complete && f.img.naturalWidth > 0) {
+        try {
+          embeddedRuntime.ctx.drawImage(f.img, f.offsetX||0, f.offsetY||0);
+        } catch (error) {
+          console.warn('[Runtime] Errore rendering foreground:', error);
+        }
+      }
     }
 
     // Disegna marker posizione iniziale se questa è la stanza di start
@@ -5348,6 +9027,26 @@ window.selectRoom = function(roomId) {
 
     sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
 
+    // Inizializza il canvas embedded se non è già inizializzato
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        const settings = embeddedRuntime.gameData.settings || {};
+        const canvasWidth = settings.canvasWidth || 800;
+        const canvasHeight = settings.canvasHeight || 600;
+        embeddedRuntime.canvas.width = canvasWidth;
+        embeddedRuntime.canvas.height = canvasHeight;
+        
+        sendRuntimeLogToEditor(`Canvas embedded inizializzato: ${canvasWidth}x${canvasHeight}`, 'info');
+      } else {
+        sendRuntimeLogToEditor('Canvas embedded non trovato nel DOM', 'warning');
+      }
+    }
+
     // Seleziona stanza iniziale
     try {
       const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
@@ -5370,6 +9069,18 @@ window.selectRoom = function(roomId) {
       embeddedRuntime.gameState.currentRoomId = embeddedRuntime.gameData.rooms[0]?.id || null;
     }
     
+    // Renderizza la stanza iniziale
+    if (embeddedRuntime.canvas && embeddedRuntime.ctx) {
+      renderRuntimeRoom(embeddedRuntime.currentRoomIndex).then(() => {
+        sendRuntimeLogToEditor('Initial room rendered', 'info');
+      }).catch(err => {
+        sendRuntimeLogToEditor('Error rendering initial room: ' + err.message, 'error');
+      });
+      
+      // Avvia il loop di rendering continuo
+      startEmbeddedRenderLoop();
+    }
+    
     // Crea e inizializza l'iframe sandboxed
     sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
     createSandboxIframe();
@@ -5381,9 +9092,98 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.isInitialized = true;
     sendRuntimeLogToEditor('Embedded runtime initialization started (waiting for iframe ready...)', 'info');
   }
+  
+  // Loop di rendering continuo per il canvas embedded
+  function startEmbeddedRenderLoop() {
+    // Ferma il loop esistente se presente
+    if (embeddedRuntime.renderLoopId) {
+      cancelAnimationFrame(embeddedRuntime.renderLoopId);
+      embeddedRuntime.renderLoopId = null;
+    }
+    
+    // Verifica che il canvas sia disponibile prima di avviare il loop
+    if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
+      // Prova a inizializzare il canvas se non è già inizializzato
+      const canvasElement = document.getElementById('embedded-gameCanvas');
+      if (canvasElement) {
+        embeddedRuntime.canvas = canvasElement;
+        embeddedRuntime.ctx = canvasElement.getContext('2d');
+        
+        // Imposta dimensioni canvas basate sulle impostazioni del progetto
+        if (embeddedRuntime.gameData && embeddedRuntime.gameData.settings) {
+          const settings = embeddedRuntime.gameData.settings;
+          const canvasWidth = settings.canvasWidth || 800;
+          const canvasHeight = settings.canvasHeight || 600;
+          embeddedRuntime.canvas.width = canvasWidth;
+          embeddedRuntime.canvas.height = canvasHeight;
+        }
+      } else {
+        console.warn('[Runtime] Canvas embedded non trovato, loop di rendering non avviato');
+        return;
+      }
+    }
+    
+    embeddedRuntime.lastRenderTime = performance.now();
+    
+    function renderLoop(currentTime) {
+      // Verifica la tab attiva - non renderizzare se si è nella tab "characters"
+      const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+      if (activeTab === 'characters') {
+        // Nella tab characters, non renderizzare il canvas embedded
+        embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+        return;
+      }
+      
+      // Verifica che il canvas embedded sia visibile (runtime-container deve essere visibile)
+      const runtimeContainer = document.getElementById('runtime-container');
+      if (runtimeContainer && runtimeContainer.style.display === 'none') {
+        // Canvas embedded non visibile, continua il loop ma non renderizzare
+        embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+        return;
+      }
+      
+      // Renderizza solo se il canvas è disponibile e il runtime è inizializzato
+      if (embeddedRuntime.canvas && embeddedRuntime.ctx && embeddedRuntime.isInitialized && 
+          embeddedRuntime.gameData && embeddedRuntime.currentRoomIndex >= 0) {
+        // Verifica che il canvas non sia stato resettato (controlla le dimensioni)
+        if (embeddedRuntime.canvas.width === 0 || embeddedRuntime.canvas.height === 0) {
+          // Canvas resettato, ripristina le dimensioni
+          if (embeddedRuntime.gameData && embeddedRuntime.gameData.settings) {
+            const settings = embeddedRuntime.gameData.settings;
+            embeddedRuntime.canvas.width = settings.canvasWidth || 800;
+            embeddedRuntime.canvas.height = settings.canvasHeight || 600;
+          }
+        }
+        
+        // Renderizza ogni ~100ms (10 FPS) per non sovraccaricare il sistema
+        const deltaTime = currentTime - embeddedRuntime.lastRenderTime;
+        if (deltaTime >= 100) {
+          renderRuntimeRoom(embeddedRuntime.currentRoomIndex).catch(err => {
+            console.warn('[Runtime] Errore rendering:', err);
+          });
+          embeddedRuntime.lastRenderTime = currentTime;
+        }
+      }
+      
+      embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+    }
+    
+    embeddedRuntime.renderLoopId = requestAnimationFrame(renderLoop);
+  }
+  
+  // Ferma il loop di rendering
+  function stopEmbeddedRenderLoop() {
+    if (embeddedRuntime.renderLoopId) {
+      cancelAnimationFrame(embeddedRuntime.renderLoopId);
+      embeddedRuntime.renderLoopId = null;
+    }
+  }
 
   // Ferma e pulisce il runtime incorporato
   function stopEmbeddedRuntime() {
+    // Ferma il loop di rendering
+    stopEmbeddedRenderLoop();
+    
     // Rimuovi iframe sandboxed
     if (embeddedRuntime.sandboxIframe) {
       // Rimuovi listener messaggi se presente
@@ -5420,16 +9220,110 @@ window.selectRoom = function(roomId) {
   let playTestState = {
     isRunning: false,
     isPaused: false,
-    startTime: null
+    startTime: null,
+    runtimeWindow: null
   };
 
   window.startPlayTest = async function() {
-    if (playTestState.isRunning) return;
+    if (playTestState.isRunning) {
+      // Se già in esecuzione, porta la finestra in primo piano
+      if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
+        playTestState.runtimeWindow.focus();
+        return;
+      } else {
+        // Finestra chiusa, riavvia
+        playTestState.isRunning = false;
+      }
+    }
 
-    // Ensure latest project is serialized and saved for runtime
-    const jsonString = window.serializeProjectToJsonString(true);
-    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-    const projectObj = window.serializeProject();
+    // Verifica se c'è un progetto attivo e se è stato caricato da Firebase
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    const currentUser = AppState.user;
+    
+    let projectObj = null;
+    let jsonString = null;
+
+    // Se c'è un progetto attivo e un utente autenticato, prova a ricaricarlo da Firebase
+    if (activeProjectName && currentUser && currentUser.uid && window.firebaseDB) {
+      try {
+        addDebugMessage('Loading project from Firebase for playtest...', 'info');
+        
+        // Cerca il progetto nella lista progetti per ottenere l'ID
+        const projects = AppState.projects || [];
+        const projectInfo = projects.find(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : p.name || '';
+          return name === activeProjectName;
+        });
+
+        if (projectInfo && projectInfo.id) {
+          // Carica il progetto completo da Firebase
+          const firebaseProject = await loadProjectFromFirestore(currentUser.uid, projectInfo.id);
+          
+          if (firebaseProject) {
+            projectObj = firebaseProject;
+            
+            // Aggiungi metadata per il runtime (userId, projectId per risolvere assetId)
+            if (!projectObj._meta) {
+              projectObj._meta = {};
+            }
+            projectObj._meta.userId = currentUser.uid;
+            projectObj._meta.projectId = projectInfo.id;
+            
+            jsonString = JSON.stringify(projectObj, null, 2);
+            addDebugMessage('Project loaded from Firebase for playtest', 'success');
+          }
+        }
+      } catch (error) {
+        console.error('[PlayTest] Errore caricamento da Firebase:', error);
+        addDebugMessage('Firebase load error, using current project', 'warning');
+      }
+    }
+
+    // Fallback: serializza il progetto corrente
+    if (!projectObj || !jsonString) {
+      if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
+        try {
+          await window.amiantoResources.refresh();
+        } catch (e) {
+          console.warn('[PlayTest] Resources refresh before serialize:', e);
+        }
+      }
+      jsonString = window.serializeProjectToJsonString(true);
+      projectObj = window.serializeProject();
+      addDebugMessage('Using serialized current project', 'info');
+    } else if (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function') {
+      try {
+        await window.amiantoResources.refresh();
+        projectObj.resourcesCatalog = window.amiantoResources.getCatalog();
+        jsonString = JSON.stringify(projectObj, null, 2);
+      } catch (e) {
+        console.warn('[PlayTest] Resources catalog merge:', e);
+      }
+    }
+
+    // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
+    try {
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      addDebugMessage('Project saved to localStorage for runtime', 'success');
+    } catch (error) {
+      console.error('[PlayTest] Errore salvataggio localStorage:', error);
+      addDebugMessage('localStorage save error: ' + error.message, 'error');
+    }
+    
+    // Salva anche in cache locale con chiave progetto (backup)
+    try {
+      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'Untitled';
+      const currentUser = AppState.user;
+      if (currentUser && currentUser.username) {
+        const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+        localStorage.setItem(projectKey, jsonString);
+        localStorage.setItem('amiantoActiveProjectName', projectName);
+        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        addDebugMessage('Project saved to local cache', 'info');
+      }
+    } catch (error) {
+      console.error('[PlayTest] Errore salvataggio cache:', error);
+    }
     
     // Save game.json depending on mode
     if (window.AMIANTO_PLAYTEST_MODE === 'server') {
@@ -5439,23 +9333,47 @@ window.selectRoom = function(roomId) {
       saveGameJsonLocal(jsonString);
     }
     
-    // Salva anche con nome progetto (non duplicare se già salvato sopra)
+    // Salva anche con nome progetto in OPFS (backup aggiuntivo)
     // Usa setTimeout per evitare chiamate simultanee
     setTimeout(() => {
       saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
     }, 100);
 
-    // Inizializza solo l'iframe sandboxed (senza rendering canvas nell'editor)
-    initializeSandboxRuntime(jsonString);
+    // Apri runtime.html in una nuova finestra
+    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeWindow = window.open(
+      runtimeUrl,
+      'AmiantoRuntime',
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+
+    if (!runtimeWindow) {
+      showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
+      return;
+    }
 
     playTestState.isRunning = true;
     playTestState.isPaused = false;
     playTestState.startTime = Date.now();
+    playTestState.runtimeWindow = runtimeWindow;
     updateGameStatus('Test running...');
-    addDebugMessage('Sandbox runtime initialized', 'success');
-    
-    // NOTA: Gli script globali vengono già eseguiti da initializeEmbeddedRuntimeScripts()
-    // Non duplicare l'esecuzione qui
+    addDebugMessage('Runtime avviato in finestra separata', 'success');
+
+    // Non inviare postMessage se localStorage è disponibile (priorità a localStorage)
+    // Il runtime caricherà automaticamente da localStorage all'avvio
+    // PostMessage è solo un fallback se localStorage non funziona
+    addDebugMessage('Project saved to localStorage; the runtime will load it automatically', 'info');
+
+    // Monitora se la finestra viene chiusa
+    const checkWindowClosed = setInterval(() => {
+      if (runtimeWindow.closed) {
+        clearInterval(checkWindowClosed);
+        playTestState.isRunning = false;
+        playTestState.runtimeWindow = null;
+        updateGameStatus('Test stopped (finestra chiusa)');
+        addDebugMessage('Runtime window closed', 'info');
+      }
+    }, 500);
   };
 
   window.pausePlayTest = function() {
@@ -5477,11 +9395,13 @@ window.selectRoom = function(roomId) {
   window.stopPlayTest = function() {
     if (!playTestState.isRunning) return;
     
+    // Chiudi la finestra runtime se aperta
+    if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
+      playTestState.runtimeWindow.close();
+    }
+    
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
     const durationSeconds = Math.round(duration / 1000);
-    
-    // Ferma il runtime incorporato
-    stopEmbeddedRuntime();
     
     playTestState.isRunning = false;
     playTestState.isPaused = false;
@@ -5502,12 +9422,12 @@ window.selectRoom = function(roomId) {
     });
     
     if (globalScripts.length === 0) {
-      addScriptLogMessage('Nessuno script globale trovato. Crea uno script con Scope=Global, Target=main, Event=onGameStart', 'warning');
-      showNotification('Nessuno script globale trovato', 'warning');
+      addScriptLogMessage('No global script found. Create a script with Scope=Global, Target=main, Event=onGameStart', 'warning');
+      showNotification('No global script found', 'warning');
       return;
     }
     
-    addScriptLogMessage(`Trovati ${globalScripts.length} script globale/i`, 'info');
+    addScriptLogMessage(`Found ${globalScripts.length} global script(s)`, 'info');
     
     // Esegui tutti gli script globali che potrebbero avere on_game_start
     globalScripts.forEach(([scriptName, content]) => {
@@ -5515,7 +9435,7 @@ window.selectRoom = function(roomId) {
         addScriptLogMessage(`Eseguendo script: ${scriptName}`, 'info');
         executeScriptHandler(content, 'on_game_start', []);
       } else {
-        addScriptLogMessage(`Script "${scriptName}" è vuoto`, 'warning');
+        addScriptLogMessage(`Script "${scriptName}" is empty`, 'warning');
       }
     });
     
@@ -5525,7 +9445,7 @@ window.selectRoom = function(roomId) {
     triggerGameStart();
     
     addScriptLogMessage('=== Test Game Start completato ===', 'info');
-    showNotification('Game Start testato! Controlla la Script Console', 'success');
+    showNotification('Game Start tested! Check the Script Console', 'success');
   };
 
   window.testRoomChange = function() {
@@ -5618,24 +9538,39 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     addDebugMessage(`Testing hotspot interaction: ${hotspot.name}...`, 'info');
     
-    // Check if hotspot has an attached script
-    const scriptName = hotspotScripts.get(activeHotspotId);
-    if (!scriptName) {
+    // ⚠️ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
+    if (!hotspot.scripts || !hotspot.scripts.onClick) {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
     }
-    try {
-      // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
-    } catch(_) {}
-    const scriptContent = jsScripts.get(scriptName);
-    if (!scriptContent) {
-      addDebugMessage(`Script "${scriptName}" not found`, 'error');
+    
+    const onClickScript = hotspot.scripts.onClick;
+    
+    // BUG FIX: Usa la stessa logica di normalizzazione del runtime
+    // Se enabled non è definito e c'è codice, considera enabled=true
+    const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
+    const isEnabled = (typeof onClickScript.enabled === 'boolean') 
+      ? onClickScript.enabled 
+      : (hasCode ? true : false);
+    
+    if (!isEnabled) {
+      addDebugMessage('Hotspot script is disabled', 'warning');
       return;
     }
-    const eventConditions = hotspotEventConditions.get(activeHotspotId);
-    const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
-    executeScriptHandler(scriptContent, 'on_hotspot_click', [activeHotspotId], conditions);
-    addDebugMessage(`Hotspot script "${scriptName}" executed`, 'success');
+    
+    if (!onClickScript.code || onClickScript.code.trim() === '') {
+      addDebugMessage('Hotspot script is empty', 'warning');
+      return;
+    }
+    
+    try {
+      const eventConditions = hotspotEventConditions.get(activeHotspotId);
+      const conditions = eventConditions && eventConditions.onClick ? eventConditions.onClick : null;
+      executeScriptHandler(onClickScript.code, 'on_hotspot_click', [activeHotspotId], conditions);
+      addDebugMessage(`Hotspot script executed`, 'success');
+    } catch(error) {
+      addDebugMessage(`Error executing hotspot script: ${error.message}`, 'error');
+    }
   };
 
   window.testCharacterDialog = function() {
@@ -5878,6 +9813,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Project Settings functionality
   window.openProjectSettings = function() {
+    // Verifica che ci sia un progetto aperto
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is open. Open or create a project before changing settings.', 'warning');
+      return;
+    }
+
+    // Recupera il progetto corrente
+    let currentSettings = {
+      name: activeProjectName,
+      author: '',
+      version: '1.0.0',
+      description: '',
+      canvasWidth: gameViewport.width || 800,
+      canvasHeight: gameViewport.height || 600,
+      enableFullscreen: true,
+      enableSound: true,
+      enableMusic: true
+    };
+
+    // Prova a recuperare le impostazioni dal progetto serializzato
+    try {
+      const projectObj = window.serializeProject();
+      if (projectObj && projectObj.settings) {
+        const s = projectObj.settings;
+        currentSettings.name = s.name || activeProjectName;
+        currentSettings.author = s.author || '';
+        currentSettings.version = s.version || '1.0.0';
+        currentSettings.description = s.description || '';
+        currentSettings.canvasWidth = s.canvasWidth || gameViewport.width || 800;
+        currentSettings.canvasHeight = s.canvasHeight || gameViewport.height || 600;
+        currentSettings.enableFullscreen = s.enableFullscreen !== undefined ? s.enableFullscreen : true;
+        currentSettings.enableSound = s.enableSound !== undefined ? s.enableSound : true;
+        currentSettings.enableMusic = s.enableMusic !== undefined ? s.enableMusic : true;
+      }
+    } catch (error) {
+      console.warn('[ProjectSettings] Errore recupero impostazioni progetto:', error);
+      // Fallback: prova a caricare da localStorage
+      const savedSettings = localStorage.getItem('amiantoProjectSettings');
+      if (savedSettings) {
+        try {
+          const parsed = JSON.parse(savedSettings);
+          Object.assign(currentSettings, parsed);
+        } catch (e) {
+          console.warn('[ProjectSettings] Errore parsing localStorage:', e);
+        }
+      }
+    }
+
     // Create modal for project settings
     const modal = document.createElement('div');
     modal.className = 'modal fade';
@@ -5897,31 +9881,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             <form>
               <div class="mb-3">
                 <label for="projectName" class="form-label">Project Name</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectName" value="Untitled Project">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectName" value="${(currentSettings.name || 'Untitled Project').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectAuthor" class="form-label">Author</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectAuthor" placeholder="Your name">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectAuthor" placeholder="Your name" value="${(currentSettings.author || '').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectVersion" class="form-label">Version</label>
-                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectVersion" value="1.0.0">
+                <input type="text" class="form-control bg-secondary text-light border-secondary" id="projectVersion" value="${(currentSettings.version || '1.0.0').replace(/"/g, '&quot;')}">
               </div>
               <div class="mb-3">
                 <label for="projectDescription" class="form-label">Description</label>
-                <textarea class="form-control bg-secondary text-light border-secondary" id="projectDescription" rows="3" placeholder="Brief description of your game..."></textarea>
+                <textarea class="form-control bg-secondary text-light border-secondary" id="projectDescription" rows="3" placeholder="Brief description of your game...">${(currentSettings.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
               </div>
               <div class="mb-3">
                 <label for="canvasWidth" class="form-label">Canvas Width</label>
-                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasWidth" value="800">
+                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasWidth" value="${currentSettings.canvasWidth || 800}">
               </div>
               <div class="mb-3">
                 <label for="canvasHeight" class="form-label">Canvas Height</label>
-                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="600">
+                <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="${currentSettings.canvasHeight || 600}">
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableFullscreen" checked>
+                  <input class="form-check-input" type="checkbox" id="enableFullscreen" ${currentSettings.enableFullscreen ? 'checked' : ''}>
                   <label class="form-check-label" for="enableFullscreen">
                     Enable Fullscreen Mode
                   </label>
@@ -5929,7 +9913,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableSound" checked>
+                  <input class="form-check-input" type="checkbox" id="enableSound" ${currentSettings.enableSound ? 'checked' : ''}>
                   <label class="form-check-label" for="enableSound">
                     Enable Sound Effects
                   </label>
@@ -5937,7 +9921,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               </div>
               <div class="mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="enableMusic" checked>
+                  <input class="form-check-input" type="checkbox" id="enableMusic" ${currentSettings.enableMusic ? 'checked' : ''}>
                   <label class="form-check-label" for="enableMusic">
                     Enable Background Music
                   </label>
@@ -5970,11 +9954,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Save project settings function
   window.saveProjectSettings = function() {
+    if (!currentUser) {
+      showNotification('You must be logged in to save project settings', 'warning');
+      return;
+    }
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is open. Open or create a project before saving settings.', 'warning');
+      return;
+    }
+
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
+    const newProjectName = document.getElementById('projectName').value.trim();
+    
+    if (!newProjectName) {
+      showNotification('Project name cannot be empty', 'warning');
+      return;
+    }
     
     const settings = {
-      name: document.getElementById('projectName').value,
+      name: newProjectName,
       author: document.getElementById('projectAuthor').value,
       version: document.getElementById('projectVersion').value,
       description: document.getElementById('projectDescription').value,
@@ -5997,17 +9998,82 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     updateEditorDisplay();
     redraw();
     
-    // Save to localStorage
+    // Se il nome del progetto è cambiato, aggiorna il progetto attivo
+    if (newProjectName !== activeProjectName) {
+      console.log(`[ProjectSettings] Nome progetto cambiato: "${activeProjectName}" -> "${newProjectName}"`);
+      localStorage.setItem('amiantoActiveProjectName', newProjectName);
+      
+      // Aggiorna anche la lista progetti nella cache
+      try {
+        const userProjects = loadProjectsFromCache(currentUser.username);
+        const projectIndex = userProjects.findIndex(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
+          return name === activeProjectName;
+        });
+        
+        if (projectIndex >= 0) {
+          // Aggiorna il nome nel progetto nella cache
+          if (!userProjects[projectIndex].settings) {
+            userProjects[projectIndex].settings = {};
+          }
+          userProjects[projectIndex].settings.name = newProjectName;
+          saveProjectsToCache(currentUser.username, userProjects);
+          console.log('[ProjectSettings] Cache progetti aggiornata con nuovo nome');
+        }
+      } catch (error) {
+        console.warn('[ProjectSettings] Errore aggiornamento cache progetti:', error);
+      }
+    }
+    
+    // Salva le impostazioni in localStorage
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
+    
+    // Salva il progetto completo con le nuove impostazioni
+    // Questo assicura che le impostazioni siano persistenti nel progetto stesso
+    try {
+      const projectObj = window.serializeProject();
+      if (projectObj) {
+        // Aggiorna le impostazioni nel progetto
+        if (!projectObj.settings) {
+          projectObj.settings = {};
+        }
+        Object.assign(projectObj.settings, settings);
+        
+        // Salva il progetto aggiornato
+        // Usa saveCurrentProject se disponibile, altrimenti salva manualmente
+        if (typeof window.saveCurrentProject === 'function') {
+          // Salva il progetto (questo aggiornerà anche Firestore se disponibile)
+          window.saveCurrentProject().catch(error => {
+            console.warn('[ProjectSettings] Errore salvataggio progetto:', error);
+            showNotification('Settings saved locally, but full project save failed', 'warning');
+          });
+        } else {
+          // Fallback: salva solo in cache locale
+          const jsonString = JSON.stringify(projectObj);
+          const projectKey = `amiantoProject_${currentUser.username}:${newProjectName}`;
+          localStorage.setItem(projectKey, jsonString);
+          console.log('[ProjectSettings] Progetto salvato in cache locale');
+        }
+      }
+    } catch (error) {
+      console.warn('[ProjectSettings] Errore aggiornamento progetto:', error);
+    }
     
     // Close modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('projectSettingsModal'));
-    modal.hide();
+    if (modal) {
+      modal.hide();
+    }
     
-    showNotification(`Project settings saved! Game viewport: ${newWidth}×${newHeight}`, 'success');
+    showNotification(`Project settings saved! Viewport: ${newWidth}×${newHeight}`, 'success');
     
     // Log settings for debugging
     console.log('Project settings saved:', settings);
+    
+    // Aggiorna la UI se necessario (es. nome progetto nella sidebar)
+    if (typeof updateProjectsTab === 'function') {
+      updateProjectsTab();
+    }
   };
 
   // Load project settings on page load
@@ -6082,8 +10148,159 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return mod.signOut(auth);
   }
 
+  // Rimuovi progetto attivo alla chiusura della pagina
+  // Questo garantisce che ad ogni apertura/login si visualizzi il modale di selezione
+  window.addEventListener('beforeunload', function(event) {
+    // Pulisci i frame non salvati prima di chiudere la pagina
+    // NOTA: beforeunload non supporta async/await, quindi usiamo navigator.sendBeacon
+    // o salviamo l'informazione per essere eliminata al prossimo caricamento
+    if (unsavedCharacterFrames.size > 0) {
+      console.log(`[Cleanup] ${unsavedCharacterFrames.size} frame non salvati da eliminare alla chiusura...`);
+      
+      // Salva l'informazione sui frame da eliminare in sessionStorage per cleanup al prossimo caricamento
+      try {
+        const framesToClean = [];
+        
+        // Aggiungi frame tracciati come Image objects
+        for (const frameImg of unsavedCharacterFrames) {
+          const assetInfo = imageAssetMap.get(frameImg);
+          if (assetInfo) {
+            framesToClean.push({
+              assetId: assetInfo.assetId,
+              type: assetInfo.type,
+              projectId: assetInfo.projectId,
+              subfolder: assetInfo.subfolder,
+              fileName: assetInfo.fileName
+            });
+          }
+        }
+        
+        // Aggiungi frame tracciati come assetId (cerca nell'imageAssetMap)
+        for (const assetId of unsavedCharacterAssetIds) {
+          // Verifica se questo assetId è già nella lista (da unsavedCharacterFrames)
+          const alreadyInList = framesToClean.some(f => f.assetId === assetId);
+          if (!alreadyInList) {
+            // Cerca l'assetInfo nell'imageAssetMap
+            for (const [img, assetInfo] of imageAssetMap.entries()) {
+              if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+                framesToClean.push({
+                  assetId: assetInfo.assetId,
+                  type: assetInfo.type,
+                  projectId: assetInfo.projectId,
+                  subfolder: assetInfo.subfolder,
+                  fileName: assetInfo.fileName
+                });
+                break;
+              }
+            }
+          }
+        }
+        
+        if (framesToClean.length > 0) {
+          sessionStorage.setItem('amiantoUnsavedFramesToDelete', JSON.stringify(framesToClean));
+          console.log(`[Cleanup] Salvati ${framesToClean.length} frame da eliminare in sessionStorage`);
+        }
+      } catch (e) {
+        console.warn('[Cleanup] Impossibile salvare frame da eliminare:', e);
+      }
+    }
+
+    // Rimuovi progetto attivo quando l'utente chiude la pagina
+    localStorage.removeItem('amiantoActiveProjectName');
+    localStorage.removeItem('amiantoActiveProjectOwner');
+    console.log('[Cleanup] Progetto attivo rimosso alla chiusura della pagina');
+  });
+
+  // Cleanup frame non salvati salvati in sessionStorage al caricamento della pagina
+  async function cleanupStoredUnsavedFrames() {
+    try {
+      const stored = sessionStorage.getItem('amiantoUnsavedFramesToDelete');
+      if (!stored) return;
+
+      const framesToDelete = JSON.parse(stored);
+      console.log(`[Cleanup] Trovati ${framesToDelete.length} frame da eliminare dalla sessione precedente...`);
+
+      if (window.supabaseStorage && window.supabaseStorage.deleteAsset && 
+          window.firebaseAuth && window.firebaseAuth.currentUser) {
+        const userId = window.firebaseAuth.currentUser.uid;
+        let deletedCount = 0;
+
+        for (const frameInfo of framesToDelete) {
+          try {
+            // PRIMA: controlla se è un asset legacy Firebase Storage
+            let firebaseStoragePath = null;
+            let isFirebaseLegacy = false;
+            if (frameInfo.assetId && window.firebaseDB) {
+              try {
+                const assetRef = window.firebaseDB
+                  .collection('users')
+                  .doc(userId)
+                  .collection('projects')
+                  .doc(frameInfo.projectId)
+                  .collection('assets')
+                  .doc(frameInfo.assetId);
+                
+                const doc = await assetRef.get();
+                if (doc.exists) {
+                  const data = doc.data();
+                  // Controlla se è un asset legacy Firebase Storage
+                  if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
+                    firebaseStoragePath = data.storagePath;
+                    isFirebaseLegacy = true;
+                    console.log(`[Cleanup] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+                  }
+                }
+              } catch (metaErr) {
+                console.warn(`[Cleanup] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
+              }
+            }
+            
+            // Elimina da Firebase Storage se è un asset legacy
+            let firebaseDeleted = true; // Default true se non è un asset legacy
+            if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
+              try {
+                console.log(`[Cleanup] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
+                const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
+                await storageRef.delete();
+                firebaseDeleted = true;
+                console.log(`[Cleanup] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
+              } catch (firebaseError) {
+                console.warn(`[Cleanup] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
+                // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
+                firebaseDeleted = false;
+              }
+            }
+            
+            // POI: elimina da Supabase Storage
+            const deleted = await window.supabaseStorage.deleteAsset(
+              frameInfo.projectId,
+              frameInfo.type,
+              frameInfo.fileName,
+              userId,
+              frameInfo.subfolder
+            );
+            
+            // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
+            if (deleted || (firebaseDeleted && isFirebaseLegacy)) {
+              deletedCount++;
+            }
+          } catch (error) {
+            console.warn('[Cleanup] Errore eliminazione frame dalla sessione precedente:', error);
+          }
+        }
+
+        console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame dalla sessione precedente`);
+      }
+
+      // Rimuovi dallo storage dopo il cleanup
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+    } catch (error) {
+      console.error('[Cleanup] Errore cleanup frame dalla sessione precedente:', error);
+    }
+  }
+
   // Initialize authentication system
-  function initAuthSystem() {
+  async function initAuthSystem() {
     // Default view
     showLoginPage();
 
@@ -6101,12 +10318,43 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }, 0);
     }
 
-    // Observe Firebase auth state
+    // Esegui bootstrap iniziale
+    await bootstrapApp();
+    
+    // Pulisci i frame non salvati dalla sessione precedente (se la pagina è stata chiusa senza salvare)
+    cleanupStoredUnsavedFrames().catch(err => {
+      console.warn('[Bootstrap] Errore cleanup frame sessione precedente:', err);
+    });
+    
+    // Nascondi loading dopo bootstrap
+    hideLoadingOverlay();
+    
+    // Se l'app è inizializzata con un utente, mostra dashboard
+    if (AppState.initialized && AppState.user) {
+      currentUser = AppState.user;
+      localStorage.setItem('amiantoCurrentUser', AppState.user.username);
+      showDashboard();
+      
+      // Controlla se c'è un progetto attivo e abilita/disabilita tab
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      enableOtherTabs(!!activeProject);
+      
+      // Carica progetti nella tab Projects se siamo nella tab Projects
+      setTimeout(async () => {
+        const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
+        if (currentTab === 'projects') {
+          await loadAndRenderProjectsTab();
+        }
+      }, 500);
+    }
+
+    // Observe Firebase auth state per cambiamenti successivi
     fbObserveAuthState(async function(user){
       // In demo mode, ignore Firebase auth state transitions
       if (isDemoMode) {
         return;
       }
+      
       if (user) {
         const mappedUser = {
           username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
@@ -6114,34 +10362,56 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           uid: user.uid
         };
         
-        // Se l'utente è già loggato e corrisponde, sincronizza solo i progetti
-        if (currentUser && currentUser.uid === mappedUser.uid) {
-          // Utente già loggato, sincronizza solo i progetti
-          if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-            try {
-              await syncProjectsFromFirestore(mappedUser.uid);
-            } catch (error) {
-              console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
-            }
+        // Se l'utente è già loggato e corrisponde, aggiorna AppState e sincronizza in background
+        if (AppState.user && AppState.user.uid === mappedUser.uid) {
+          console.log('[AuthObserver] Utente già loggato, aggiornamento progetti in background...');
+          
+          // Sincronizza in background (non blocca UI)
+          syncProjectsFromFirestore(mappedUser.uid)
+            .then(() => {
+              // Ricarica progetti da Firestore e aggiorna AppState
+              return loadProjectsDirectlyFromFirestore(mappedUser.uid);
+            })
+            .then(projects => {
+              updateAppState({ projects: projects });
+              if (mappedUser.username) {
+                saveProjectsToCache(mappedUser.username, projects);
+              }
+              console.log('[AuthObserver] ✅ Progetti aggiornati in background');
+            })
+            .catch(error => {
+              console.error('[AuthObserver] Errore aggiornamento background:', error);
+            });
+          
+          // Mostra modale se necessario
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (!activeProject) {
+            showProjectSelectionModal(false);
           }
           return;
         }
         
-        // Nuovo login: imposta utente e sincronizza
-        currentUser = mappedUser;
-        localStorage.setItem('amiantoCurrentUser', mappedUser.username);
-        showDashboard();
+        // Nuovo login: esegui bootstrap completo
+        updateAppState({ loading: true, user: null, projects: [] });
+        showLoadingOverlay('Loading projects...');
+        await bootstrapApp();
+        hideLoadingOverlay();
         
-        // Sincronizza progetti da Firestore
-        if (mappedUser.uid && window.firebaseDB && window.firebaseAuth) {
-          try {
-            await syncProjectsFromFirestore(mappedUser.uid);
-          } catch (error) {
-            console.error('[AuthObserver] Errore sincronizzazione progetti:', error);
-          }
+        if (AppState.user) {
+          currentUser = AppState.user;
+          localStorage.setItem('amiantoCurrentUser', AppState.user.username);
+          showDashboard();
+          
+          // Verifica che i progetti siano stati caricati
+          console.log('[AuthObserver] Progetti caricati:', AppState.projects.length);
+          
+          // Mostra modale selezione progetto (AppState.projects è già popolato da bootstrapApp)
+          showProjectSelectionModal(false);
         }
       } else {
+        // Logout
         currentUser = null;
+        updateAppState({ user: null, projects: [] });
         showLoginPage();
       }
     });
@@ -6185,18 +10455,72 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Show dashboard
-  function showDashboard() {
-    document.getElementById('loginPage').style.display = 'none';
-    document.getElementById('mainDashboard').style.display = 'block';
-    document.getElementById('loginHeader').style.display = 'none';
-    document.getElementById('dashboardHeader').style.display = 'block';
+  async function showDashboard() {
+    try {
+      console.log('[showDashboard] Starting...');
+      const loginPage = document.getElementById('loginPage');
+      const mainDashboard = document.getElementById('mainDashboard');
+      const loginHeader = document.getElementById('loginHeader');
+      const dashboardHeader = document.getElementById('dashboardHeader');
+      
+      if (!loginPage || !mainDashboard || !loginHeader || !dashboardHeader) {
+        console.error('[showDashboard] Required elements not found');
+        return;
+      }
+      
+      loginPage.style.display = 'none';
+      mainDashboard.style.display = 'block';
+      loginHeader.style.display = 'none';
+      dashboardHeader.style.display = 'block';
 
-    // Update user info in header
-    document.getElementById('currentUserName').textContent = currentUser.username;
-    document.getElementById('userDisplayName').textContent = currentUser.username;
+      // Update user info in header
+      const currentUserNameEl = document.getElementById('currentUserName');
+      const userDisplayNameEl = document.getElementById('userDisplayName');
+      if (currentUserNameEl && currentUser) {
+        currentUserNameEl.textContent = currentUser.username;
+      }
+      if (userDisplayNameEl && currentUser) {
+        userDisplayNameEl.textContent = currentUser.username;
+      }
+      console.log('[showDashboard] UI updated');
 
     // Load user's projects
     loadUserProjects();
+    
+    // Verifica se ci sono progetti: se non ce ne sono, mostra il modale
+    // (solo se non c'è un progetto attivo già aperto)
+    const activeProject = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProject && currentUser && currentUser.uid) {
+      // Sincronizza e verifica progetti
+      if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          const userProjects = await syncProjectsFromFirestore(currentUser.uid);
+          if (userProjects.length === 0) {
+            // Nessun progetto: mostra il modale
+            await showProjectSelectionModal(true);
+          }
+        } catch (error) {
+          console.error('[Dashboard] Errore verifica progetti:', error);
+          // In caso di errore, prova comunque a mostrare il modale usando getProjectsForUI
+          try {
+            const localProjects = await getProjectsForUI(currentUser.uid);
+            if (localProjects.length === 0) {
+              await showProjectSelectionModal(true, true); // skipSync = true
+            }
+          } catch (fallbackError) {
+            console.error('[Dashboard] Errore anche nel fallback:', fallbackError);
+            // Se anche il fallback fallisce, mostra comunque il modale (sarà vuoto)
+            await showProjectSelectionModal(true, true);
+          }
+        }
+      }
+    }
+      console.log('[showDashboard] Completed successfully');
+    } catch (error) {
+      console.error('[showDashboard] Error:', error);
+      console.error('[showDashboard] Error stack:', error.stack);
+      throw error; // Re-throw per essere gestito dal chiamante
+    }
   }
 
   // Setup login form
@@ -6211,15 +10535,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           showLoginError('Please enter both email and password');
           return;
         }
-        fbLogin(email, password).then((cred) => {
+        fbLogin(email, password).then(async (cred) => {
           const user = cred && cred.user;
           if (user) {
+            console.log('[Login] User authenticated:', user.email);
             const mapped = {
               username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
               email: user.email || '',
               uid: user.uid
             };
-            loginUser(mapped, document.getElementById('rememberMe').checked);
+            console.log('[Login] Calling loginUser with:', mapped);
+            try {
+              await loginUser(mapped, document.getElementById('rememberMe').checked);
+              console.log('[Login] loginUser completed successfully');
+            } catch (loginError) {
+              console.error('[Login] Error in loginUser:', loginError);
+              showLoginError('Error during login process. Please try again.');
+            }
+          } else {
+            console.error('[Login] No user in credentials');
+            showLoginError('Invalid email or password');
           }
         }).catch((err) => {
           console.error('[Login] Firebase error:', err && err.code, err && err.message);
@@ -6229,9 +10564,403 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /**
+   * Aggiorna il contenuto del modale con la lista progetti aggiornata
+   * @param {HTMLElement} modal - Elemento modale da aggiornare
+   * @param {bootstrap.Modal} bsModal - Istanza Bootstrap Modal
+   * @returns {Promise<void>}
+   */
+  /**
+   * Aggiorna il contenuto del modale progetti
+   * RIFATTORIZZATA: Usa getProjectsForUI e renderProjectsList
+   * 
+   * @param {HTMLElement} modal - Elemento modale
+   * @param {Object} bsModal - Istanza Bootstrap Modal
+   */
+  /**
+   * Aggiorna il contenuto del modale progetti
+   * RIFATTORIZZATA: Legge SOLO da AppState.projects
+   * 
+   * @param {HTMLElement} modal - Elemento modale
+   * @param {Object} bsModal - Istanza Bootstrap Modal
+   */
+  function updateProjectModalContent(modal, bsModal) {
+    if (!AppState.user || !AppState.user.uid) {
+      console.warn('[ProjectModal] updateProjectModalContent: utente non disponibile in AppState');
+      return;
+    }
+    
+    console.log('[ProjectModal] Aggiornamento contenuto modale da AppState...');
+    
+    // Verifica che il modale esista ancora
+    if (!modal || !document.body.contains(modal)) {
+      console.warn('[ProjectModal] Modale non trovato nel DOM, impossibile aggiornare');
+      return;
+    }
+    
+    // Trova container modale
+    const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+    if (!modalBody) {
+      console.error('[ProjectModal] ❌ modal-body non trovato, impossibile aggiornare');
+      return;
+    }
+    
+    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÀ)
+    renderProjectsList(AppState.projects, modalBody);
+    
+    console.log('[ProjectModal] ✅ Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
+  }
+
+  /**
+   * Mostra modale di selezione/creazione progetto
+   * 
+   * RIFATTORIZZATA: Legge SOLO da AppState.projects
+   * Non avvia caricamenti, non fa fallback, non gestisce async
+   * 
+   * Flusso corretto:
+   * click →
+   *   se AppState.loading === true → mostra loader
+   *   se AppState.projects.length === 0 → mostra empty state
+   *   altrimenti → render lista e apri modale
+   * 
+   * @param {boolean} forceShow - Forza apertura anche se c'è progetto attivo
+   */
+  function showProjectSelectionModal(forceShow = false) {
+    // Verifica che l'app sia inizializzata
+    if (!AppState.initialized) {
+      console.warn('[ProjectModal] App non ancora inizializzata, attesa...');
+      // Attendi che l'app sia inizializzata
+      const checkInitialized = setInterval(() => {
+        if (AppState.initialized) {
+          clearInterval(checkInitialized);
+          showProjectSelectionModal(forceShow);
+        }
+      }, 100);
+      return;
+    }
+
+    // Verifica che ci sia un utente
+    if (!AppState.user || !AppState.user.uid) {
+      console.warn('[ProjectModal] Utente non autenticato');
+      return;
+    }
+
+    // Usa il modale statico dall'HTML invece di crearlo dinamicamente
+    let modal = document.getElementById('projectSelectionModal');
+    
+    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilità)
+    if (!modal) {
+      console.warn('[ProjectModal] Modale statico non trovato, creazione dinamica...');
+      modal = document.createElement('div');
+      modal.className = 'modal fade';
+      modal.id = 'projectSelectionModal';
+      modal.setAttribute('tabindex', '-1');
+      modal.setAttribute('aria-labelledby', 'projectSelectionModalLabel');
+      modal.setAttribute('aria-hidden', 'true');
+      modal.setAttribute('data-bs-backdrop', 'static');
+      modal.setAttribute('data-bs-keyboard', 'false');
+      document.body.appendChild(modal);
+    }
+    
+    // Chiudi eventuali istanze Bootstrap esistenti
+    const existingBsModal = bootstrap.Modal.getInstance(modal);
+    if (existingBsModal) {
+      existingBsModal.hide();
+    }
+    
+    // Chiudi altri modali aperti
+    const allModals = document.querySelectorAll('.modal.show');
+    allModals.forEach(m => {
+      if (m.id === 'projectSelectionModal') {
+        return;
+      }
+      try {
+        const bsModalInstance = bootstrap.Modal.getInstance(m);
+        if (bsModalInstance) {
+          bsModalInstance.hide();
+        }
+      } catch (error) {
+        console.warn('[ProjectModal] Errore chiusura modale:', error);
+      }
+    });
+
+    // Se c'è già un progetto attivo e non è forzato, non mostrare il modale
+    if (!forceShow) {
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      if (activeProject) {
+        console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
+        return;
+      }
+    }
+
+    // FLUSSO CORRETTO: Leggi SOLO da AppState
+    try {
+      // STEP 1: Verifica stato di caricamento
+      if (AppState.loading) {
+        console.log('[ProjectModal] App in caricamento, mostra loader...');
+        showLoadingOverlay('Loading projects...');
+      }
+
+      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÀ)
+      const userProjects = AppState.projects || [];
+      console.log('[ProjectModal] Progetti da AppState:', userProjects.length);
+
+      // STEP 3: Trova container modale
+      const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+      if (!modalBody) {
+        const error = new Error('Modal body not found');
+        console.error('[ProjectModal] DOM error:', error);
+        throw error;
+      }
+
+      // STEP 4: Renderizza lista usando funzione centralizzata
+      renderProjectsList(userProjects, modalBody);
+
+      // STEP 5: Inizializza Bootstrap Modal
+      if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        const error = new Error('Bootstrap Modal is not available');
+        console.error('[ProjectModal] Bootstrap error:', error);
+        throw error;
+      }
+
+      const bsModal = new bootstrap.Modal(modal, {
+        backdrop: 'static',
+        keyboard: false
+      });
+
+      if (!bsModal) {
+        const error = new Error('Failed to create Bootstrap Modal instance');
+        console.error('[ProjectModal] Bootstrap error:', error);
+        throw error;
+      }
+
+      // STEP 6: Mostra modale
+      bsModal.show();
+      console.log('[ProjectModal] Modale mostrato con', userProjects.length, 'progetti da AppState');
+
+      // STEP 7: Nascondi loader se era visibile
+      if (AppState.loading) {
+        // Il loader verrà nascosto quando AppState.loading diventa false
+        // Ma nascondiamo anche qui per sicurezza
+        hideLoadingOverlay();
+      }
+
+    // Gestione click su pulsanti Open con event delegation (funziona anche dopo aggiornamenti contenuto)
+    // Aggiungi listener solo se non è già stato aggiunto
+    if (!modal.dataset.clickListenersAttached) {
+      modal.dataset.clickListenersAttached = 'true';
+      
+      modal.addEventListener('click', async (e) => {
+      // Blocca azioni durante il caricamento
+      if (AppState.loading) {
+        e.preventDefault();
+        e.stopPropagation();
+        showNotification('Please wait for loading to complete', 'warning');
+        return false;
+      }
+
+      // Gestisci click su pulsanti "Open"
+      let target = e.target;
+      while (target && target !== modal) {
+        if (target.hasAttribute && target.hasAttribute('data-action') && 
+            target.getAttribute('data-action') === 'open') {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          
+          const projectName = target.getAttribute('data-project-name');
+          if (projectName) {
+            // NON chiudere qui - aspetta che il progetto sia caricato
+            showNotification(`Loading project "${projectName}"...`, 'info');
+            
+            try {
+              await openProjectByName(projectName);
+              
+              // Chiudi il modale DOPO che il progetto è stato caricato con successo
+              closeProjectModal();
+            } catch (error) {
+              console.error('[ProjectModal] Errore apertura progetto:', error);
+              showNotification('Error opening project', 'danger');
+              // Non chiudere il modale in caso di errore
+            }
+          }
+          return false;
+        }
+        target = target.parentElement;
+      }
+      
+      // Gestione click su pulsante "Create New Project"
+      if (e.target && (e.target.id === 'btn-create-new-project' || e.target.closest('#btn-create-new-project'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        
+        // Blocca durante la sincronizzazione
+        if (isSyncingProjects) {
+          showNotification('Please wait for synchronization to complete', 'warning');
+          return false;
+        }
+        
+        const projectName = prompt('Enter the new project name:');
+        if (projectName && projectName.trim()) {
+          showNotification(`Creating project "${projectName.trim()}"...`, 'info');
+          
+          // Crea il progetto (questo salva anche su Firestore)
+          // Passa false per showSuccessNotification per evitare notifica duplicata
+          await window.createNewProject(projectName.trim(), false);
+          
+          // Attendi che Firestore abbia completato il salvataggio e propagato i cambiamenti
+          // Firestore può richiedere tempo per propagare i cambiamenti, specialmente su dispositivi lenti
+          console.log('[ProjectModal] Attesa completamento salvataggio Firestore...');
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Aumentato a 2 secondi per dare tempo a Firestore
+          
+          // Mostra notifica di successo dopo la creazione
+          showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
+          
+          // Dopo la creazione, sincronizza e aggiorna il modale con la nuova lista progetti
+          // Questo mostrerà il loading durante la sincronizzazione
+          console.log('[ProjectModal] Avvio sincronizzazione per aggiornare lista progetti...');
+          const currentBsModal = bootstrap.Modal.getInstance(modal);
+          if (currentBsModal) {
+            await updateProjectModalContent(modal, currentBsModal);
+            console.log('[ProjectModal] Sincronizzazione completata, modale aggiornato');
+          }
+          
+          // Chiudi il modale solo se il progetto è stato aperto con successo
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (activeProject === projectName.trim() && currentBsModal) {
+            currentBsModal.hide();
+          }
+        } else if (projectName !== null) {
+          // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
+          showNotification('Project name cannot be empty', 'warning');
+        }
+        // Se projectName === null, l'utente ha annullato, non fare nulla
+        return false;
+      }
+      
+      // Previeni chiusura tramite click sul backdrop (area esterna al modale)
+      if (e.target === modal) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          showNotification('You must select or create a project to continue', 'warning');
+        }
+        return false;
+      }
+      }, { capture: true });
+    }
+
+      // Il modale è statico nell'HTML, non rimuoverlo quando viene nascosto
+      // Aggiungi listener per sincronizzare sempre all'apertura (solo una volta)
+      if (!modal.dataset.listenersAttached) {
+        modal.dataset.listenersAttached = 'true';
+        
+        modal.addEventListener('show.bs.modal', function() {
+          // Aggiorna il contenuto del modale con i progetti da AppState
+          if (AppState.user && AppState.user.uid) {
+            console.log('[ProjectModal] Modale aperto, aggiornamento da AppState...');
+            
+            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+            if (modalBody) {
+              renderProjectsList(AppState.projects, modalBody);
+              console.log('[ProjectModal] Modale aggiornato con', AppState.projects.length, 'progetti da AppState');
+            }
+            
+            // Se AppState.loading è true, mostra loader
+            if (AppState.loading) {
+              showLoadingOverlay('Loading projects...');
+            } else {
+              hideLoadingOverlay();
+            }
+          }
+        }, { once: false });
+      }
+
+    // Previeni completamente la chiusura del modale tramite backdrop o ESC
+    // L'utente DEVE selezionare o creare un progetto
+    if (!modal.dataset.hideListenerAttached) {
+      modal.dataset.hideListenerAttached = 'true';
+      modal.addEventListener('hide.bs.modal', function (e) {
+        const activeProject = localStorage.getItem('amiantoActiveProjectName');
+        if (!activeProject) {
+          e.preventDefault();
+          e.stopPropagation();
+          showNotification('You must select or create a project to continue', 'warning');
+          return false;
+        }
+        // Se c'è un progetto attivo, permettere la chiusura
+        console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
+      });
+    }
+
+    // Il listener per il backdrop è già gestito dentro handleProjectClick
+    // Non aggiungere listener duplicati
+
+    } catch (error) {
+      // Gestione errori
+      console.error('[ProjectModal] Errore durante il rendering:', error);
+
+      // Distingui tra diversi tipi di errori
+      if (error.code === 'permission-denied') {
+        console.error('[ProjectModal] Firestore permission denied error:', error);
+        console.error('[ProjectModal] Check Firestore security rules for user:', AppState.user?.uid);
+      } else if (error.code === 'network-error' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[ProjectModal] Network error:', error);
+      } else if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
+        console.error('[ProjectModal] DOM/Bootstrap error:', error);
+        showNotification('Error creating modal. Reload the page.', 'danger');
+        return;
+      } else {
+        console.error('[ProjectModal] Unexpected error:', error);
+      }
+
+      // In caso di errore, mostra modale con lista vuota da AppState
+      const errorModal = document.getElementById('projectSelectionModal');
+      if (!errorModal) {
+        console.error('[ProjectModal] Modale statico non trovato in error handler');
+        return;
+      }
+
+      const modalBody = errorModal.querySelector('#projectSelectionModalBody') || errorModal.querySelector('.modal-body');
+      if (!modalBody) {
+        console.error('[ProjectModal] Modal body not found in error handler');
+        return;
+      }
+
+      // Renderizza lista vuota o da AppState
+      renderProjectsList(AppState.projects || [], modalBody);
+
+      if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        console.error('[ProjectModal] Bootstrap Modal not available in error handler');
+        return;
+      }
+
+      const bsModal = new bootstrap.Modal(errorModal, {
+        backdrop: 'static',
+        keyboard: false
+      });
+
+      bsModal.show();
+      console.log('[ProjectModal] Modale mostrato con', AppState.projects?.length || 0, 'progetti (gestione errore)');
+      
+      // Nascondi loader se era visibile
+      if (AppState.loading) {
+        hideLoadingOverlay();
+      }
+    }
+  }
+
   // Login user
   async function loginUser(user, rememberMe = false) {
+    console.log('[loginUser] Starting with user:', user);
+    if (!user || !user.uid) {
+      console.error('[loginUser] Invalid user object:', user);
+      throw new Error('Invalid user object');
+    }
     currentUser = user;
+    console.log('[loginUser] currentUser set to:', currentUser);
     localStorage.setItem('amiantoCurrentUser', user.username);
 
     if (rememberMe) {
@@ -6240,31 +10969,87 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       localStorage.removeItem('amiantoRememberUser');
     }
 
-    showDashboard();
-    showNotification(`Welcome back, ${user.username}!`, 'success');
+    // Mostra loading overlay durante la sincronizzazione progetti
+    // IMPORTANTE: Durante il caricamento si vede SOLO il loading, NON il modale
+    showLoadingOverlay('Loading projects...');
 
-    // Sincronizza progetti da Firestore dopo il login
+    // Sincronizza progetti da Firestore PRIMA di mostrare la dashboard
     if (user.uid && window.firebaseDB && window.firebaseAuth) {
       console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
-      showNotification('Sincronizzazione progetti in corso...', 'info');
       
       try {
-        const syncSuccess = await syncProjectsFromFirestore(user.uid);
-        if (syncSuccess) {
-          console.log('[Login] ✅ Sincronizzazione progetti completata');
-          // Ricarica la lista progetti se la dashboard è già aperta
-          if (typeof loadUserProjects === 'function') {
-            loadUserProjects();
-          }
-        } else {
-          console.warn('[Login] Sincronizzazione progetti non completata (fallback a cache locale)');
+        // STEP 1: Sincronizza progetti (salva in localStorage)
+        await syncProjectsFromFirestore(user.uid);
+        console.log('[Login] ✅ Sincronizzazione progetti completata');
+        
+        // STEP 2: Carica progetti da Firestore e aggiorna AppState
+        const projects = await loadProjectsDirectlyFromFirestore(user.uid);
+        console.log('[Login] ✅ Progetti caricati:', projects.length);
+        
+        // STEP 3: Aggiorna AppState con i progetti caricati
+        updateAppState({ projects: projects });
+        
+        // STEP 4: Aggiorna anche la cache localStorage
+        if (user.username) {
+          saveProjectsToCache(user.username, projects);
         }
+        
       } catch (error) {
         console.error('[Login] Errore durante sincronizzazione progetti:', error);
-        showNotification('Errore sincronizzazione progetti. Usando cache locale.', 'warning');
+        
+        // In caso di errore, prova a caricare dalla cache come fallback
+        if (user.username) {
+          console.log('[Login] Fallback a cache localStorage...');
+          const cachedProjects = loadProjectsFromCache(user.username);
+          updateAppState({ projects: cachedProjects });
+          console.log('[Login] Progetti da cache:', cachedProjects.length);
+        } else {
+          updateAppState({ projects: [] });
+        }
+        
+        // Per dispositivi senza cache (primo accesso), questo è normale se non ci sono progetti
+        // Mostra un messaggio informativo ma non bloccante
+        if (error.code === 'permission-denied') {
+          console.error('[Login] Firestore permission denied error');
+          console.warn('[Login] Questo può essere normale per nuovi utenti. L\'utente può comunque creare progetti.');
+          // Non mostrare notifica per permission-denied, il modale gestirà l'errore
+        } else if (error.code === 'network-error') {
+          console.error('[Login] Network error');
+          showNotification('Connection error. You can still create a new project.', 'warning');
+        } else {
+          // Per altri errori, mostra un messaggio informativo
+          console.warn('[Login] Errore sincronizzazione. L\'utente può comunque creare progetti.');
+          // Non mostrare notifica per errori generici, il modale gestirà l'errore
+        }
       }
     } else {
       console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
+      updateAppState({ projects: [] });
+    }
+
+    // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
+    try {
+      hideLoadingOverlay();
+      console.log('[Login] Showing dashboard...');
+      await showDashboard();
+      console.log('[Login] Dashboard shown');
+      
+      if (typeof showNotification === 'function') {
+        showNotification(`Welcome back, ${user.username}!`, 'success');
+      }
+      
+      // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
+      // L'utente deve selezionare o creare un progetto per continuare
+      // skipSync = true perché abbiamo già sincronizzato i progetti sopra
+      // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
+      await showProjectSelectionModal(false, true);
+      console.log('[Login] Project selection modal shown');
+    } catch (dashboardError) {
+      console.error('[Login] Error showing dashboard:', dashboardError);
+      hideLoadingOverlay();
+      if (typeof showLoginError === 'function') {
+        showLoginError('Error showing dashboard. Please refresh the page.');
+      }
     }
   }
 
@@ -6347,8 +11132,78 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     alert.classList.remove('d-none');
   }
 
+  // Funzione per pulire i frame non salvati da Supabase
+  async function cleanupUnsavedCharacterFrames() {
+    if (unsavedCharacterFrames.size === 0 && unsavedCharacterAssetIds.size === 0) {
+      return; // Nessun frame da eliminare
+    }
+
+    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati da Supabase...`);
+
+    let deletedCount = 0;
+    
+    // Prima: elimina usando gli Image objects tracciati
+    const framesToDelete = Array.from(unsavedCharacterFrames);
+    for (const frameImg of framesToDelete) {
+      try {
+        const deleted = await deleteAssetFromImage(frameImg);
+        if (deleted) {
+          deletedCount++;
+          unsavedCharacterFrames.delete(frameImg);
+        }
+      } catch (error) {
+        console.warn('[Cleanup] Errore eliminazione frame non salvato:', error);
+      }
+    }
+    
+    // Secondo: elimina usando gli assetId tracciati (cerca le immagini corrispondenti)
+    if (unsavedCharacterAssetIds.size > 0 && window.supabaseStorage && window.supabaseStorage.deleteAsset) {
+      try {
+        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+        const projectId = activeProjectName ? activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_') : null;
+        
+        if (projectId && window.firebaseAuth && window.firebaseAuth.currentUser) {
+          const userId = window.firebaseAuth.currentUser.uid;
+          
+          // Cerca le immagini corrispondenti agli assetId nell'imageAssetMap
+          for (const assetId of Array.from(unsavedCharacterAssetIds)) {
+            try {
+              // Cerca l'immagine nell'imageAssetMap
+              let foundImage = null;
+              for (const [img, assetInfo] of imageAssetMap.entries()) {
+                if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+                  foundImage = img;
+                  break;
+                }
+              }
+              
+              if (foundImage) {
+                const deleted = await deleteAssetFromImage(foundImage);
+                if (deleted) {
+                  deletedCount++;
+                }
+              } else {
+                // Se non trovato nell'imageAssetMap, prova a eliminare direttamente usando i metadati
+                // (richiede che abbiamo salvato i metadati in Firestore)
+                console.warn(`[Cleanup] Immagine non trovata nell'imageAssetMap per assetId ${assetId}, eliminazione diretta non supportata`);
+              }
+            } catch (error) {
+              console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[Cleanup] Errore eliminazione frame per assetId:', error);
+      }
+    }
+
+    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati da Supabase`);
+    unsavedCharacterFrames.clear();
+    unsavedCharacterAssetIds.clear();
+  }
+
   // Logout user
-  window.logout = function() {
+  window.logout = async function() {
     // If in demo mode, just exit demo without calling Firebase
     if (isDemoMode) {
       isDemoMode = false;
@@ -6357,11 +11212,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       localStorage.removeItem('amiantoCurrentUser');
       localStorage.removeItem('amiantoRememberUser');
       showLoginPage();
-      showNotification('Hai lasciato la Demo Mode', 'info');
+      showNotification('You left Demo Mode', 'info');
       return;
     }
 
     if (confirm('Are you sure you want to logout?')) {
+      // Pulisci i frame non salvati prima del logout
+      try {
+        await cleanupUnsavedCharacterFrames();
+      } catch (error) {
+        console.error('[Logout] Errore cleanup frame:', error);
+        // Continua comunque con il logout
+      }
+
       fbSignOut().catch(()=>{}).finally(() => {
         currentUser = null;
         localStorage.removeItem('amiantoCurrentUser');
@@ -6382,7 +11245,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       uid: 'demo'
     };
     showDashboard();
-    showNotification('Demo Mode attiva: stai usando l’editor senza account', 'info');
+    showNotification('Demo Mode active: you are using the editor without an account', 'info');
   };
 
   // Show user profile (placeholder)
@@ -6411,15 +11274,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Load user's projects
-  function loadUserProjects() {
-    if (!currentUser) return;
+  /**
+   * Carica progetti utente per la UI
+   * RIFATTORIZZATA: Usa getProjectsForUI invece di accedere direttamente a localStorage
+   */
+  async function loadUserProjects() {
+    if (!currentUser || !currentUser.uid) return;
 
-    // Load user's projects from localStorage
-    const userProjects = localStorage.getItem(`amiantoProjects_${currentUser.username}`);
-    if (userProjects) {
-      const projects = JSON.parse(userProjects);
-      // Update UI to show user's projects
-      console.log('Loaded projects for user:', currentUser.username, projects);
+    try {
+      // Usa getProjectsForUI per ottenere progetti (gestisce cache e fallback)
+      const projects = await getProjectsForUI(currentUser.uid);
+      console.log('Loaded projects for user:', currentUser.username, projects.length, 'progetti');
+      return projects;
+    } catch (error) {
+      console.error('[loadUserProjects] Errore caricamento progetti:', error);
+      return [];
     }
   }
 
@@ -6443,36 +11312,171 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /**
+   * Serializza un'immagine: restituisce assetId se disponibile, altrimenti dataURL come fallback
+   * @param {Image} img - Oggetto Image da serializzare
+   * @returns {string|null} - assetId o dataURL, o null se immagine non valida
+   */
+  function serializeImage(img) {
+    if (!img) return null;
+    
+    // Controlla se l'immagine ha un assetId associato
+    const assetInfo = imageAssetMap.get(img);
+    if (assetInfo && assetInfo.assetId) {
+      // Restituisce assetId (prefisso per distinguerlo da dataURL)
+      return `asset:${assetInfo.assetId}`;
+    }
+    
+    // IMPORTANTE: Se l'immagine è un oggetto Image ma non è nella mappa,
+    // serializzala come dataURL. Verrà poi processata da saveAllAssetsToStorage
+    // che la convertirà in assetId e la caricherà nello storage.
+    // Questo garantisce che TUTTI gli assets vengano serializzati e salvati.
+    if (img && typeof img === 'object' && (img.src || (img.width && img.height))) {
+      // È un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
+      const dataURL = imageToDataURL(img);
+      if (dataURL) {
+        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrà convertita in assetId al salvataggio)`);
+        return dataURL;
+      }
+    }
+    
+    // Se è già una stringa (dataURL o assetId), restituiscila così com'è
+    if (typeof img === 'string') {
+      return img;
+    }
+    
+    // Fallback: usa dataURL (per compatibilità con progetti esistenti)
+    return imageToDataURL(img);
+  }
+
   function serializeRooms() {
     const serialized = [];
     rooms.forEach((r) => {
+      // DEBUG: Log foreground prima della serializzazione
+      if (Array.isArray(r.foregrounds)) {
+        console.log(`[Serialize] Room ${r.id}: serializzando ${r.foregrounds.length} foreground`, r.foregrounds.map(f => ({ id: f.id, name: f.name, hasImg: !!f.img })));
+      } else {
+        console.log(`[Serialize] Room ${r.id}: r.foregrounds non è un array`, typeof r.foregrounds, r.foregrounds);
+      }
       serialized.push({
         id: r.id,
         name: r.name || r.id,
-        background: r.background ? imageToDataURL(r.background) : null,
-        foregrounds: Array.isArray(r.foregrounds) ? r.foregrounds.map(f => ({
-          id: f.id,
-          name: f.name,
-          image: f.img ? imageToDataURL(f.img) : null,
-          offsetX: Number(f.offsetX) || 0,
-          offsetY: Number(f.offsetY) || 0
-        })) : [],
-        sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
-          id: o.id,
-          name: o.name,
-          type: o.type || 'Interactive',
-          x: Number(o.x) || 0,
-          y: Number(o.y) || 0,
-          image: o.img ? imageToDataURL(o.img) : null
-        })) : [],
+        background: serializeImage(r.background),
+        foregrounds: Array.isArray(r.foregrounds) ? r.foregrounds.map(f => {
+          // Support both x/y and offsetX/offsetY for backward compatibility
+          const x = (typeof f.x === 'number') ? f.x : (f.offsetX || 0);
+          const y = (typeof f.y === 'number') ? f.y : (f.offsetY || 0);
+          return {
+            id: f.id,
+            name: f.name || 'Layer',
+            image: serializeImage(f.img),
+            x: Number(x) || 0,
+            y: Number(y) || 0,
+            offsetX: Number(x) || 0, // Mantieni per compatibilità
+            offsetY: Number(y) || 0, // Mantieni per compatibilità
+            rotationRad: Number(f.rotationRad) || 0,
+            scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
+            scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
+            visible: (typeof f.visible === 'boolean') ? f.visible : true
+          };
+        }) : [],
+        sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => {
+          const visible = (typeof o.visible === 'boolean') ? o.visible : true;
+          const enabled = (typeof o.enabled === 'boolean') ? o.enabled : visible;
+          return {
+            id: o.id,
+            name: o.name,
+            type: o.type || 'Interactive',
+            x: Number(o.x) || 0,
+            y: Number(o.y) || 0,
+            image: serializeImage(o.img),
+            rotationRad: Number(o.rotationRad) || 0,
+            scaleX: (typeof o.scaleX === 'number') ? Number(o.scaleX) : 1,
+            scaleY: (typeof o.scaleY === 'number') ? Number(o.scaleY) : 1,
+            visible,
+            enabled
+          };
+        }) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-        hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
-          id: h.id,
-          name: h.name,
-          points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-          visible: !!h.visible
-        })) : []
+        hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
+          // ⚠️ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
+          const hotspotObj = {
+            id: h.id,
+            name: h.name,
+            points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+            visible: !!h.visible,
+            scripts: {}
+          };
+          
+          // ⚠️ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
+          // enabled = true di default se non definito e c'è codice
+          // BUG FIX CRITICO: Garantisce che enabled=true quando c'è codice e enabled non è esplicitamente definito come false
+          if (h.scripts && h.scripts.onClick) {
+            const onClickData = h.scripts.onClick;
+            
+            // DEBUG AGGIUNTIVO: Log sempre per diagnosticare
+            console.log(`[Serialize] Hotspot ${h.id} - Serializzazione script:`, {
+              hasCode: !!onClickData.code,
+              codeLength: onClickData.code ? String(onClickData.code).length : 0,
+              codePreview: onClickData.code ? String(onClickData.code).substring(0, 50) : '(vuoto)',
+              enabled: onClickData.enabled,
+              codeType: typeof onClickData.code
+            });
+            
+            const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
+            
+            // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
+            // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+            let normalizedEnabled;
+            if (hasCode) {
+              // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+              normalizedEnabled = true;
+              if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
+                console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
+              }
+            } else {
+              // Se non c'è codice, enabled può essere false
+              normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
+            }
+            
+            // DEBUG: Verifica che il codice venga salvato correttamente
+            const codeToSave = String(onClickData.code || '');
+            if (hasCode && codeToSave.length === 0) {
+              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave è vuoto!`, {
+                originalCode: onClickData.code,
+                codeType: typeof onClickData.code,
+                codeLength: onClickData.code ? String(onClickData.code).length : 0
+              });
+            }
+            
+            hotspotObj.scripts.onClick = {
+              code: codeToSave,
+              enabled: normalizedEnabled
+            };
+          } else {
+            // Se non c'è script, imposta struttura vuota e disabilitata
+            hotspotObj.scripts.onClick = {
+              code: '',
+              enabled: false
+            };
+          }
+          
+          return hotspotObj;
+        }) : [],
+        // Character scaling data
+        scalingForegroundY: (typeof r.scalingForegroundY === 'number') ? Number(r.scalingForegroundY) : null,
+        scalingBackgroundY: (typeof r.scalingBackgroundY === 'number') ? Number(r.scalingBackgroundY) : null,
+        scalingMinScale: (typeof r.scalingMinScale === 'number') ? Number(r.scalingMinScale) : 0.5,
+        scalingMaxScale: (typeof r.scalingMaxScale === 'number') ? Number(r.scalingMaxScale) : 1.5
       });
+      
+      // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
+      const serializedRoom = serialized[serialized.length - 1];
+      if (serializedRoom && Array.isArray(serializedRoom.foregrounds)) {
+        console.log(`[Serialize] ✓ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
+      } else {
+        console.warn(`[Serialize] ⚠️ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
+      }
     });
     return serialized;
   }
@@ -6483,7 +11487,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       name: g.name,
       type: g.type || 'MainInterface',
       settings: serializeGuiSettings(g.settings, g.type),
-      background: g.background ? imageToDataURL(g.background) : null,
+      background: serializeImage(g.background),
       buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
         id: b.id,
         name: b.name,
@@ -6492,7 +11496,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         w: Number(b.w)||0,
         h: Number(b.h)||0,
         text: b.text || '',
-        backgroundImage: b.backgroundImage ? imageToDataURL(b.backgroundImage) : null
+        backgroundImage: serializeImage(b.backgroundImage)
       })) : []
     })) : [];
   }
@@ -6519,33 +11523,91 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function serializeCharacters() {
-    const directionsList = ['north','northeast','east','southeast','south','southwest','west','northwest'];
+    // Salva le impostazioni spawn del character corrente prima di serializzare
+    // Questo garantisce che le modifiche non salvate vengano incluse
+    try {
+      saveCharacterSpawnSettings();
+    } catch (e) {
+      // Ignora errori (potrebbe non esserci un character selezionato)
+    }
+    
     const result = [];
     const names = collectCharacterNames();
     names.forEach(name => {
       const charData = (characterFrames && characterFrames.get) ? characterFrames.get(name) : null;
       const out = { name, directions: {} };
-      directionsList.forEach(dir => {
-        const d = charData && charData.directions ? charData.directions[dir] : null;
-        if (d) {
-          out.directions[dir] = {
-            fps: Number(d.fps) || 8,
-            frames: Array.isArray(d.frames) ? d.frames.map(fr => (fr && fr.img) ? imageToDataURL(fr.img) : null).filter(Boolean) : []
-          };
-        }
-      });
+      // Include pivot if it exists
+      if (charData && charData.pivotX !== undefined && charData.pivotY !== undefined) {
+        out.pivotX = Number(charData.pivotX) || 0;
+        out.pivotY = Number(charData.pivotY) || 0;
+      }
+      // Include spawnSettings if it exists
+      if (charData && charData.spawnSettings) {
+        const spawn = charData.spawnSettings;
+        out.spawnSettings = {
+          isPlayer: spawn.isPlayer === true,
+          autoSpawn: spawn.autoSpawn === true,
+          roomId: spawn.roomId || null,
+          x: typeof spawn.x === 'number' ? spawn.x : 0,
+          y: typeof spawn.y === 'number' ? spawn.y : 0,
+          direction: spawn.direction || 'south',
+          moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
+        };
+        console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
+      }
+      out.directions = serializeDirectionsMap(charData ? charData.directions : null);
+      if (charData && charData.animations && Object.keys(charData.animations).length > 0) {
+        out.animations = {};
+        Object.entries(charData.animations).forEach(([animName, animData]) => {
+          if (animName && animData) {
+            out.animations[animName] = {
+              directions: serializeDirectionsMap(animData.directions)
+            };
+          }
+        });
+      }
       result.push(out);
     });
     return result;
   }
 
   function serializeInventory() {
-    const items = [];
-    try {
-      document.querySelectorAll('#inventory-list .list-group-item strong').forEach(s => items.push({ name: s.textContent.trim() }));
-    } catch (_) {}
-    return items;
+    return {
+      displayMode: normalizeInventoryDisplayMode(inventoryDefinition.displayMode),
+      popupEdgeHeight: Math.max(16, Math.min(200, Number(inventoryDefinition.popupEdgeHeight) || 48)),
+      panel: (() => {
+        ensureInventoryRects();
+        const p = inventoryDefinition.panel;
+        return { x: p.x, y: p.y, w: p.w, h: p.h };
+      })(),
+      toggleIconBounds: (() => {
+        ensureInventoryRects();
+        const t = inventoryDefinition.toggleIconBounds;
+        return { x: t.x, y: t.y, w: t.w, h: t.h };
+      })(),
+      toggleIcon: serializeImage(inventoryDefinition.toggleIcon),
+      background: serializeImage(inventoryDefinition.background),
+      slots: Array.isArray(inventoryDefinition.slots)
+        ? inventoryDefinition.slots
+            .filter(s => s && s.id !== '__drawing__')
+            .map(s => ({
+              id: s.id,
+              name: s.name || 'Slot',
+              x: Number(s.x) || 0,
+              y: Number(s.y) || 0,
+              w: Number(s.w) || 0,
+              h: Number(s.h) || 0
+            }))
+        : [],
+      items: inventoryItems.map(item => ({
+        id: item.id,
+        name: item.name,
+        scriptName: item.scriptName || item.name,
+        image: serializeImage(item.image)
+      }))
+    };
   }
+
 
   function serializeScripts() {
     const scriptsObj = {};
@@ -6579,8 +11641,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       objectScripts: mapToObject(objectScripts),
       characterScripts: mapToObject(characterScripts),
       inventoryScripts: mapToObject(inventoryScripts),
-      guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {},
-      hotspotScripts: mapToObject(hotspotScripts)
+      guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {}
+      // ⚠️ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
     };
   }
 
@@ -6591,7 +11653,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       targetId: c.targetId,
       actionText: c.actionText || '',
       scriptName: c.scriptName || '',
-      cursorImage: c.cursorImage ? imageToDataURL(c.cursorImage) : null
+      cursorImage: serializeImage(c.cursorImage)
     })) : [];
   }
 
@@ -6614,6 +11676,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Normalize start config types
     if (typeof settings.startX !== 'undefined') settings.startX = Number(settings.startX) || 0;
     if (typeof settings.startY !== 'undefined') settings.startY = Number(settings.startY) || 0;
+    // Map startRoomId to startRoom for runtime compatibility
+    if (settings.startRoomId && !settings.startRoom) {
+      settings.startRoom = settings.startRoomId;
+    }
     return settings;
   }
 
@@ -6654,7 +11720,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   window.serializeProject = function() {
-    return {
+    const projectObj = {
       format: 'amianto-game',
       version: 1,
       meta: {
@@ -6671,8 +11737,30 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
       variables: serializeVariables(),
-      eventConditions: serializeEventConditions()
+      eventConditions: serializeEventConditions(),
+      resourcesCatalog: (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function')
+        ? window.amiantoResources.getCatalog()
+        : []
     };
+    
+    // Aggiungi _meta con userId e projectId per il runtime (per risolvere assetId)
+    if (currentUser && currentUser.uid) {
+      projectObj._meta = projectObj._meta || {};
+      projectObj._meta.userId = currentUser.uid;
+      
+      // Prova a ottenere projectId da settings.id o normalizzando settings.name
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (projectObj.settings && projectObj.settings.id) {
+        projectObj._meta.projectId = projectObj.settings.id;
+      } else if (projectObj.settings && projectObj.settings.name) {
+        // Normalizza il nome come viene fatto in saveCurrentProject
+        projectObj._meta.projectId = projectObj.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      } else if (activeProjectName) {
+        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      }
+    }
+    
+    return projectObj;
   }
 
   window.serializeProjectToJsonString = function(pretty = true) {
@@ -6804,6 +11892,102 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /** Conta stringhe data:…;base64, nel progetto (immagini, audio, ecc.). */
+  function countEmbeddedDataUrls(root) {
+    let count = 0;
+    const walk = (v) => {
+      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
+        count++;
+        return;
+      }
+      if (!v || typeof v !== 'object') return;
+      if (Array.isArray(v)) {
+        v.forEach(walk);
+        return;
+      }
+      Object.values(v).forEach(walk);
+    };
+    walk(root);
+    return count;
+  }
+
+  function slimResourcesCatalogForFirestore(catalog) {
+    if (!Array.isArray(catalog)) return [];
+    if (window.amiantoResources && typeof window.amiantoResources.getSlimCatalog === 'function') {
+      return window.amiantoResources.getSlimCatalog();
+    }
+    return catalog.map(row => ({
+      assetId: row.assetId,
+      name: row.name || '',
+      displayName: row.displayName || row.name || '',
+      fileName: row.fileName || row.name || ''
+    }));
+  }
+
+  function collectHotspotOnClickCodesById(projectObj) {
+    const codes = new Map();
+    if (!projectObj || !Array.isArray(projectObj.rooms)) return codes;
+    for (const room of projectObj.rooms) {
+      if (!Array.isArray(room.hotspots)) continue;
+      for (const h of room.hotspots) {
+        const code = h && h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+        if (code && String(code).trim()) {
+          codes.set(String(h.id), String(code).trim());
+        }
+      }
+    }
+    return codes;
+  }
+
+  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
+  function dedupeHotspotScriptsForFirestore(projectObj) {
+    const clone = JSON.parse(JSON.stringify(projectObj));
+    if (!clone.scripts || typeof clone.scripts !== 'object') return clone;
+    const embeddedById = collectHotspotOnClickCodesById(clone);
+    const scripts = { ...clone.scripts };
+    for (const key of Object.keys(scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const embedded = embeddedById.get(hotspotId);
+      const legacy = String(scripts[key] || '').trim();
+      if (embedded && legacy && embedded === legacy) {
+        delete scripts[key];
+      }
+    }
+    clone.scripts = scripts;
+    return clone;
+  }
+
+  function prepareProjectPayloadForFirestore(projectObj) {
+    let payload = dedupeHotspotScriptsForFirestore(projectObj);
+    payload.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
+    return payload;
+  }
+
+  /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
+  function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
+    if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
+    for (const [key, content] of Object.entries(projectObj.scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const legacyCode = String(content || '').trim();
+      if (!legacyCode) continue;
+      for (const room of projectObj.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (String(h.id) !== hotspotId) continue;
+          if (!h.scripts) h.scripts = {};
+          if (!h.scripts.onClick) h.scripts.onClick = { code: '', enabled: false };
+          const embedded = String(h.scripts.onClick.code || '').trim();
+          if (!embedded) {
+            h.scripts.onClick.code = legacyCode;
+            h.scripts.onClick.enabled = true;
+          }
+        }
+      }
+    }
+  }
+
   // ================================
   // FIRESTORE PERSISTENCE SYSTEM
   // ================================
@@ -6856,7 +12040,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Verifica che Firestore sia disponibile
       if (!window.firebaseDB) {
         console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
-        addDebugMessage('[Firestore] Firestore non disponibile, uso fallback cache', 'warning');
+        addDebugMessage('[Firestore] Firestore unavailable, using cache fallback', 'warning');
         return false;
       }
       console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
@@ -6870,7 +12054,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
       const jsonString = JSON.stringify(projectData);
-      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length });
+      const dataSizeBytes = new Blob([jsonString]).size;
+      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
+      const dataURLCount = countEmbeddedDataUrls(projectData);
+      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB`, dataURLCount });
+
+      if (dataURLCount > 0) {
+        const errorMsg = `Salvataggio Firestore bloccato: ${dataURLCount} asset ancora in base64 (data:…). Carica tutti gli asset su storage prima di salvare.`;
+        console.error('[Firestore] ❌', errorMsg);
+        addDebugMessage(errorMsg, 'error');
+        throw new Error(errorMsg);
+      }
+      
+      // Firestore ha un limite di 1MB per campo
+      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
+      if (dataSizeBytes > FIRESTORE_MAX_SIZE) {
+        const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
+        console.error('[Firestore] ❌', errorMsg);
+        addDebugMessage(errorMsg, 'error');
+        throw new Error(errorMsg);
+      }
 
       // Struttura dati Firestore: users/{userId}/projects/{projectId}
       const projectRef = window.firebaseDB
@@ -6900,13 +12103,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.log('[Firestore] Aggiornamento documento esistente');
       }
 
-      console.log('[Firestore] Tentativo scrittura su Firestore...');
+      console.log('[Firestore] 🔄 Tentativo scrittura su Firestore...');
       
       // Usa set con merge per creare o aggiornare
       await projectRef.set(firestoreData, { merge: true });
 
       console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
-      addDebugMessage(`[Firestore] Progetto salvato: ${projectName}`, 'success');
+      console.log(`[Firestore] 📊 Dettagli salvataggio:`, {
+        projectId,
+        projectName,
+        dataSize: `${dataSizeMB} MB`,
+        documentExists: documentExists ? 'aggiornato' : 'creato'
+      });
+      addDebugMessage(`[Firestore] Project saved: ${projectName}`, 'success');
+      
+      // Aggiorna i counter dopo salvataggio progetto
+      if (typeof updateProjectSizeIndicator === 'function') {
+        updateProjectSizeIndicator();
+      }
+      
       return true;
     } catch (error) {
       console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
@@ -6915,7 +12130,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         message: error.message,
         stack: error.stack
       });
-      addDebugMessage(`[Firestore] Errore salvataggio: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      addDebugMessage(`[Firestore] Save error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
       return false;
     }
   }
@@ -6985,7 +12200,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Parse del JSON salvato
       const projectObj = JSON.parse(data.projectData);
       console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
-      addDebugMessage(`[Firestore] Progetto caricato: ${data.name || projectId}`, 'success');
+      addDebugMessage(`[Firestore] Project loaded: ${data.name || projectId}`, 'success');
       return projectObj;
     } catch (error) {
       console.error('[Firestore] ❌ Errore durante il caricamento:', error);
@@ -6994,7 +12209,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         message: error.message,
         stack: error.stack
       });
-      addDebugMessage(`[Firestore] Errore caricamento: ${error.message || error} (${error.code || 'unknown'})`, 'error');
+      addDebugMessage(`[Firestore] Load error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
       return null;
     }
   }
@@ -7009,7 +12224,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // 1. Verifica Firestore disponibile
     if (!window.firebaseDB) {
       console.error('❌ window.firebaseDB non disponibile');
-      addDebugMessage('❌ Firestore non disponibile', 'error');
+      addDebugMessage('❌ Firestore unavailable', 'error');
       return false;
     }
     console.log('✅ window.firebaseDB disponibile');
@@ -7017,7 +12232,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // 2. Verifica utente autenticato
     if (!currentUser || !currentUser.uid) {
       console.error('❌ Utente non autenticato o uid mancante');
-      addDebugMessage('❌ Utente non autenticato', 'error');
+      addDebugMessage('❌ User not authenticated', 'error');
       return false;
     }
     console.log('✅ Utente autenticato:', currentUser.uid);
@@ -7062,7 +12277,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         code: error.code,
         message: error.message
       });
-      addDebugMessage(`❌ Test Firestore fallito: ${error.message} (${error.code})`, 'error');
+      addDebugMessage(`❌ Firestore test failed: ${error.message} (${error.code})`, 'error');
       return false;
     }
   };
@@ -7075,187 +12290,820 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * AGGIUNTO: Questa funzione per listare progetti da Firestore
    * TODO: Integrare questa funzione nella UI di selezione progetti
    */
+  /**
+   * Lista progetti da Firestore
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti caricati da Firestore
+   * @throws {Error} - Lancia errori invece di ritornare array vuoto
+   */
   async function listProjectsFromFirestore(userId) {
-    try {
-      if (!window.firebaseDB || !userId) {
-        return [];
-      }
+    if (!window.firebaseDB) {
+      const error = new Error('Firestore database not available');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
 
+    if (!userId) {
+      const error = new Error('User ID is required');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    // Verifica che l'utente sia autenticato
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      const error = new Error('User not authenticated');
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    const currentAuthUid = window.firebaseAuth.currentUser.uid;
+    if (currentAuthUid !== userId) {
+      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
+      console.error('[Firestore] listProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    try {
       const projectsRef = window.firebaseDB
         .collection('users')
         .doc(userId)
         .collection('projects');
 
-      const snapshot = await projectsRef.get();
       const projects = [];
+      let lastDoc = null;
+      let hasMore = true;
+      const batchSize = 100; // Firestore default limit
 
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        projects.push({
-          id: doc.id,
-          name: data.name || doc.id,
-          updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+      // Implementa paginazione per recuperare TUTTI i progetti
+      // Usa documentId come campo di ordinamento (sempre disponibile)
+      try {
+        const firebaseObj = window.firebase || firebase;
+        const FieldPath = firebaseObj.firestore.FieldPath;
+        
+        while (hasMore) {
+          let query = projectsRef.orderBy(FieldPath.documentId()).limit(batchSize);
+          
+          if (lastDoc) {
+            query = query.startAfter(lastDoc);
+          }
+
+          const snapshot = await query.get();
+          
+          if (snapshot.empty) {
+            hasMore = false;
+            break;
+          }
+
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            projects.push({
+              id: doc.id,
+              name: data.name || doc.id,
+              updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+              createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+            });
+          });
+
+          // Se abbiamo meno documenti del batch size, non ci sono più documenti
+          if (snapshot.size < batchSize) {
+            hasMore = false;
+          } else {
+            // Prendi l'ultimo documento per la prossima query
+            lastDoc = snapshot.docs[snapshot.docs.length - 1];
+          }
+        }
+      } catch (orderByError) {
+        // Fallback: se orderBy fallisce, prova una query semplice
+        console.warn('[Firestore] Errore con orderBy, uso query semplice:', orderByError);
+        const snapshot = await projectsRef.get();
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          projects.push({
+            id: doc.id,
+            name: data.name || doc.id,
+            updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+            createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+          });
         });
-      });
+      }
 
+      console.log(`[Firestore] Recuperati ${projects.length} progetti totali con paginazione`);
       return projects;
     } catch (error) {
-      console.error('[Firestore] Errore durante il listing:', error);
+      // Distingui tra errori di permesso e altri errori
+      if (error.code === 'permission-denied') {
+        console.error('[Firestore] Permission denied error:', error);
+        console.error('[Firestore] Check Firestore security rules for user:', userId);
+        const permissionError = new Error(`Permission denied: ${error.message}`);
+        permissionError.code = 'permission-denied';
+        throw permissionError;
+      }
+      
+      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[Firestore] Network error:', error);
+        const networkError = new Error(`Network error: ${error.message}`);
+        networkError.code = 'network-error';
+        throw networkError;
+      }
+
+      console.error('[Firestore] Unexpected error during listing:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Normalizza un progetto per garantire struttura coerente
+   * @param {Object} project - Progetto da normalizzare
+   * @param {number} index - Indice opzionale per progetti senza nome
+   * @returns {Object} - Progetto normalizzato
+   */
+  function normalizeProject(project, index = null) {
+    if (!project || typeof project !== 'object') {
+      return {
+        settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
+        updatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        source: 'unknown'
+      };
+    }
+
+    return {
+      settings: project.settings || { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` },
+      updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
+      createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+      source: project.source || 'unknown',
+      id: project.id || null
+    };
+  }
+
+  /**
+   * Carica progetti dalla cache localStorage
+   * @param {string} username - Username dell'utente
+   * @returns {Array} - Array di progetti normalizzati o array vuoto
+   */
+  function loadProjectsFromCache(username) {
+    if (!username) {
+      console.warn('[Cache] Username non disponibile per caricamento cache');
+      return [];
+    }
+
+    try {
+      const cacheKey = `amiantoProjects_${username}`;
+      const cachedData = localStorage.getItem(cacheKey);
+      
+      if (!cachedData) {
+        console.log('[Cache] Nessun dato in cache');
+        return [];
+      }
+
+      const projects = JSON.parse(cachedData);
+      
+      if (!Array.isArray(projects)) {
+        console.error('[Cache] Dati cache non sono un array:', typeof projects);
+        return [];
+      }
+
+      // Normalizza tutti i progetti
+      const normalizedProjects = projects.map((p, i) => normalizeProject(p, i));
+      console.log('[Cache] ✅ Caricati', normalizedProjects.length, 'progetti dalla cache');
+      return normalizedProjects;
+    } catch (error) {
+      console.error('[Cache] ❌ Errore parsing cache:', error);
       return [];
     }
   }
 
   /**
-   * Sincronizza i progetti da Firestore al login
-   * Carica tutti i progetti da Firestore e li sincronizza con localStorage
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<boolean>} - true se sincronizzazione completata, false altrimenti
+   * Salva progetti in cache localStorage
+   * @param {string} username - Username dell'utente
+   * @param {Array} projects - Array di progetti da salvare
+   */
+  function saveProjectsToCache(username, projects) {
+    if (!username) {
+      console.warn('[Cache] Username non disponibile per salvataggio cache');
+      return;
+    }
+
+    if (!Array.isArray(projects)) {
+      console.error('[Cache] Tentativo di salvare dati non-array in cache');
+      return;
+    }
+
+    try {
+      const cacheKey = `amiantoProjects_${username}`;
+      localStorage.setItem(cacheKey, JSON.stringify(projects));
+      console.log('[Cache] ✅ Salvati', projects.length, 'progetti in cache');
+    } catch (error) {
+      console.error('[Cache] ❌ Errore salvataggio cache:', error);
+    }
+  }
+
+  /**
+   * FUNZIONE PRINCIPALE: Ottiene progetti per la UI
+   * Questa è l'UNICA funzione che la UI deve usare per ottenere progetti
+   * Gestisce internamente cache e fallback
    * 
-   * AGGIUNTO: Questa funzione sincronizza i progetti da Firestore al login
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti normalizzati (sempre un array, anche vuoto)
+   */
+  async function getProjectsForUI(userId) {
+    if (!userId) {
+      console.error('[getProjectsForUI] userId mancante');
+      return [];
+    }
+
+    if (!currentUser || !currentUser.username) {
+      console.error('[getProjectsForUI] currentUser non disponibile');
+      return [];
+    }
+
+    const username = currentUser.username;
+
+    // STEP 1: Verifica se la cache esiste ed è valida
+    const cachedProjects = loadProjectsFromCache(username);
+    
+    // Se la cache esiste e ha progetti, usala immediatamente
+    // (ma aggiorna in background se possibile)
+    if (cachedProjects.length > 0) {
+      console.log('[getProjectsForUI] Cache trovata con', cachedProjects.length, 'progetti');
+      
+      // Prova ad aggiornare in background (non blocca il ritorno)
+      loadProjectsDirectlyFromFirestore(userId)
+        .then(firestoreProjects => {
+          if (Array.isArray(firestoreProjects) && firestoreProjects.length > 0) {
+            const normalized = firestoreProjects.map((p, i) => normalizeProject(p, i));
+            saveProjectsToCache(username, normalized);
+            console.log('[getProjectsForUI] Cache aggiornata in background');
+          }
+        })
+        .catch(error => {
+          console.warn('[getProjectsForUI] Errore aggiornamento background (non critico):', error);
+        });
+      
+      return cachedProjects;
+    }
+
+    // STEP 2: Cache vuota o non valida, carica da Firestore
+    console.log('[getProjectsForUI] Cache vuota o non valida, caricamento da Firestore...');
+    
+    try {
+      const firestoreProjects = await loadProjectsDirectlyFromFirestore(userId);
+      
+      if (!Array.isArray(firestoreProjects)) {
+        console.error('[getProjectsForUI] Firestore ha restituito dati non-array');
+        return [];
+      }
+
+      // Normalizza progetti
+      const normalizedProjects = firestoreProjects.map((p, i) => normalizeProject(p, i));
+      
+      // Salva in cache
+      saveProjectsToCache(username, normalizedProjects);
+      
+      console.log('[getProjectsForUI] ✅ Caricati', normalizedProjects.length, 'progetti da Firestore');
+      return normalizedProjects;
+    } catch (error) {
+      console.error('[getProjectsForUI] ❌ Errore caricamento da Firestore:', error);
+      
+      // Distingui errori critici
+      if (error.code === 'permission-denied') {
+        console.error('[getProjectsForUI] Permission denied - verifica regole Firestore per utente:', userId);
+      } else if (error.code === 'network-error') {
+        console.error('[getProjectsForUI] Network error - verifica connessione');
+      }
+      
+      // Ritorna array vuoto invece di lanciare errore
+      // La UI può gestire lista vuota mostrando messaggio appropriato
+      return [];
+    }
+  }
+
+  /**
+   * Carica e renderizza progetti sempre da Firestore (NO cache) nella tab Projects
+   * Questa funzione viene chiamata quando si entra nella tab Projects
+   */
+  async function loadAndRenderProjectsTab() {
+    const container = document.getElementById('projects-list-container');
+    const currentProjectInfo = document.getElementById('current-project-info');
+    const currentProjectName = document.getElementById('current-project-name');
+    const currentProjectUpdated = document.getElementById('current-project-updated');
+    
+    if (!container) {
+      console.error('[ProjectsTab] Container not found');
+      return;
+    }
+    
+    // Mostra loading
+    container.innerHTML = `
+      <div class="text-center py-4">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="text-muted mt-3">Loading projects from Firestore...</p>
+      </div>
+    `;
+    
+    try {
+      // Usa AppState.user come fonte primaria, fallback a currentUser, poi a firebaseAuth
+      let userId = null;
+      let username = null;
+      
+      console.log('[ProjectsTab] Verifica utente:', {
+        appStateUser: AppState.user,
+        currentUser: currentUser,
+        firebaseAuth: !!window.firebaseAuth,
+        firebaseAuthCurrentUser: window.firebaseAuth?.currentUser
+      });
+      
+      if (AppState.user && AppState.user.uid) {
+        userId = AppState.user.uid;
+        username = AppState.user.username;
+        console.log('[ProjectsTab] Usando AppState.user:', userId);
+      } else if (currentUser && currentUser.uid) {
+        userId = currentUser.uid;
+        username = currentUser.username;
+        console.log('[ProjectsTab] Usando currentUser:', userId);
+      } else if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+        const fbUser = window.firebaseAuth.currentUser;
+        userId = fbUser.uid;
+        username = (fbUser.email || '').split('@')[0] || `user_${fbUser.uid.substring(0, 6)}`;
+        console.log('[ProjectsTab] Usando firebaseAuth.currentUser:', userId);
+      }
+      
+      if (!userId) {
+        console.warn('[ProjectsTab] Nessun utente trovato');
+        container.innerHTML = `
+          <div class="alert alert-warning" role="alert">
+            <strong>Please login to view projects</strong><br>
+            <small>No authenticated user found. Please refresh the page or login again.</small>
+          </div>
+        `;
+        return;
+      }
+      
+      console.log('[ProjectsTab] Caricamento progetti per userId:', userId);
+      
+      // Carica SEMPRE direttamente da Firestore (no cache)
+      const projects = await loadProjectsDirectlyFromFirestore(userId);
+      
+      // Renderizza lista progetti
+      renderProjectsListInTab(projects, container);
+      
+      // Aggiorna info progetto corrente
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (activeProjectName && currentProjectInfo && currentProjectName && currentProjectUpdated) {
+        const project = projects.find(p => {
+          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
+          return name === activeProjectName;
+        });
+        
+        if (project) {
+          currentProjectName.textContent = activeProjectName;
+          const updated = project.updatedAt || project.createdAt || '';
+          if (updated) {
+            const updatedDate = new Date(updated);
+            currentProjectUpdated.textContent = `Last updated: ${updatedDate.toLocaleString()}`;
+          } else {
+            currentProjectUpdated.textContent = '';
+          }
+          currentProjectInfo.style.display = 'block';
+          
+          // Abilita altre tab
+          enableOtherTabs(true);
+        } else {
+          currentProjectInfo.style.display = 'none';
+          enableOtherTabs(false);
+        }
+      } else {
+        if (currentProjectInfo) currentProjectInfo.style.display = 'none';
+        enableOtherTabs(false);
+      }
+      
+    } catch (error) {
+      console.error('[ProjectsTab] Errore caricamento progetti:', error);
+      container.innerHTML = `
+        <div class="alert alert-danger" role="alert">
+          <strong>Error loading projects:</strong><br>
+          ${error.message || error}
+          ${error.code ? ` (${error.code})` : ''}
+        </div>
+      `;
+      enableOtherTabs(false);
+    }
+  }
+  
+  // WeakMap per memorizzare gli event handler dei container (evita memory leak)
+  const containerHandlers = new WeakMap();
+  
+  /**
+   * Renderizza lista progetti nella tab Projects
+   */
+  function renderProjectsListInTab(projects, container) {
+    if (!container) return;
+    
+    const hasProjects = Array.isArray(projects) && projects.length > 0;
+    
+    if (hasProjects) {
+      const projectsHtml = projects.map((p) => {
+        const normalized = normalizeProject(p);
+        const name = normalized.settings.name;
+        const updated = normalized.updatedAt || normalized.createdAt || '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        
+        const isActive = name === localStorage.getItem('amiantoActiveProjectName');
+        
+        return `
+          <div class="list-group-item bg-secondary text-light mb-2 ${isActive ? 'border border-success' : ''}" data-project-name="${name}">
+            <div class="d-flex justify-content-between align-items-start">
+              <div class="flex-grow-1">
+                <strong>${name}</strong>
+                ${isActive ? ' <span class="badge bg-success">Active</span>' : ''}
+                ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+              </div>
+              <div class="btn-group btn-group-sm ms-2">
+                <button class="btn btn-success" data-action="open" data-project-name="${name}" ${isActive ? 'disabled' : ''}>
+                  <i class="fas fa-folder-open"></i> ${isActive ? 'Active' : 'Open'}
+                </button>
+                <button class="btn btn-outline-danger" data-action="delete" data-project-name="${name}">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      
+      container.innerHTML = `
+        <div class="list-group">
+          ${projectsHtml}
+        </div>
+      `;
+    } else {
+      container.innerHTML = `
+        <div class="text-center py-4">
+          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+        </div>
+      `;
+    }
+    
+    // Aggiungi event listeners ai pulsanti usando delegazione eventi (più efficiente e evita duplicati)
+    // Rimuovi listener precedenti se esistono
+    const existingHandler = containerHandlers.get(container);
+    if (existingHandler) {
+      container.removeEventListener('click', existingHandler);
+    }
+    
+    const clickHandler = async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      
+      e.preventDefault();
+      e.stopPropagation();
+      const action = btn.getAttribute('data-action');
+      const projectName = btn.getAttribute('data-project-name');
+        
+      if (action === 'open' && projectName) {
+        try {
+          showNotification(`Loading project "${projectName}"...`, 'info');
+          await openProjectByName(projectName);
+          // Ricarica la lista dopo apertura
+          await loadAndRenderProjectsTab();
+          showNotification(`Project "${projectName}" opened successfully!`, 'success');
+        } catch (error) {
+          console.error('[ProjectsTab] Errore apertura progetto:', error);
+          showNotification('Error opening project', 'error');
+        }
+      } else if (action === 'delete' && projectName) {
+        if (confirm(`Delete project "${projectName}"? This action cannot be undone.`)) {
+          try {
+            await deleteProjectByName(projectName);
+            // Ricarica la lista dopo eliminazione
+            await loadAndRenderProjectsTab();
+            showNotification(`Project "${projectName}" deleted`, 'info');
+          } catch (error) {
+            console.error('[ProjectsTab] Errore eliminazione progetto:', error);
+            showNotification('Error deleting project', 'error');
+          }
+        }
+      }
+    };
+    
+    container.addEventListener('click', clickHandler);
+    containerHandlers.set(container, clickHandler);
+  }
+  
+  /**
+   * Abilita/disabilita altre tab (tutte tranne Projects)
+   */
+  function enableOtherTabs(enabled) {
+    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
+    tabsToDisable.forEach(tabId => {
+      const button = document.querySelector(`[data-section="${tabId}"]`);
+      if (button) {
+        button.disabled = !enabled;
+        if (!enabled) {
+          button.classList.add('disabled');
+        } else {
+          button.classList.remove('disabled');
+        }
+      }
+    });
+  }
+
+  /**
+   * Renderizza la lista progetti nel container specificato
+   * @param {Array} projects - Array di progetti normalizzati
+   * @param {HTMLElement} container - Container dove renderizzare (es. modal-body)
+   */
+  function renderProjectsList(projects, container) {
+    if (!container) {
+      console.error('[renderProjectsList] Container non fornito');
+      return;
+    }
+
+    if (!Array.isArray(projects)) {
+      console.error('[renderProjectsList] projects non è un array');
+      projects = [];
+    }
+
+    const hasProjects = projects.length > 0;
+    
+    // Costruisci HTML progetti
+    let projectsHtml = '';
+    if (hasProjects) {
+      projectsHtml = projects.map((p, i) => {
+        const normalized = normalizeProject(p, i);
+        const name = normalized.settings.name;
+        const updated = normalized.updatedAt || normalized.createdAt || '';
+        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) : '';
+        
+        return `
+          <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
+            <div class="flex-grow-1">
+              <strong>${name}</strong>
+              ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+            </div>
+            <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
+              <i class="fas fa-folder-open"></i> Open
+            </button>
+          </li>
+        `;
+      }).join('');
+    }
+
+    // Aggiorna contenuto container
+    container.innerHTML = `
+      ${hasProjects ? `
+        <div class="mb-3">
+          <p class="text-muted">Select an existing project or create a new one:</p>
+        </div>
+        <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
+          <ul class="list-group">
+            ${projectsHtml}
+          </ul>
+        </div>
+      ` : `
+        <div class="text-center py-4">
+          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+        </div>
+      `}
+      <div class="d-grid gap-2">
+        <button class="btn btn-primary btn-lg" id="btn-create-new-project">
+          <i class="fas fa-plus"></i> Create New Project
+        </button>
+      </div>
+    `;
+
+    console.log('[renderProjectsList] ✅ Lista renderizzata con', projects.length, 'progetti');
+  }
+
+  /**
+   * Carica direttamente i progetti da Firestore (solo metadata, senza dipendere da localStorage)
+   * Questa funzione è ottimale per PC nuovi senza cache, garantisce sempre dati aggiornati
+   * 
+   * RIFATTORIZZATA: Ora è una funzione pura che SOLO legge da Firestore
+   * Nessun accesso a DOM o localStorage
+   * 
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<Array>} - Array di progetti con metadata normalizzati
+   * @throws {Error} - Lancia errori invece di ritornare array vuoto
+   */
+  async function loadProjectsDirectlyFromFirestore(userId) {
+    if (!window.firebaseDB) {
+      const error = new Error('Firestore database not available');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    if (!userId) {
+      const error = new Error('User ID is required');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    // Verifica che l'utente sia autenticato
+    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+      const error = new Error('User not authenticated');
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    const currentAuthUid = window.firebaseAuth.currentUser.uid;
+    if (currentAuthUid !== userId) {
+      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
+      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
+      throw error;
+    }
+
+    try {
+      console.log('[FirestoreDirect] Caricamento diretto progetti da Firestore...');
+      
+      // Lista progetti da Firestore (solo metadata, veloce)
+      const firestoreProjects = await listProjectsFromFirestore(userId);
+      console.log('[FirestoreDirect] Trovati', firestoreProjects.length, 'progetti su Firestore');
+      
+      // Normalizza progetti usando funzione centralizzata
+      const projectsList = firestoreProjects.map((fp, i) => normalizeProject({
+        settings: { name: fp.name },
+        updatedAt: fp.updatedAt || null,
+        createdAt: fp.createdAt || null,
+        source: 'firestore',
+        id: fp.id
+      }, i));
+      
+      console.log('[FirestoreDirect] ✅ Lista progetti caricata direttamente da Firestore:', projectsList.length);
+      return projectsList;
+    } catch (error) {
+      // Distingui tra errori di permesso e altri errori
+      if (error.code === 'permission-denied') {
+        console.error('[FirestoreDirect] Permission denied error:', error);
+        const permissionError = new Error(`Permission denied: ${error.message}`);
+        permissionError.code = 'permission-denied';
+        throw permissionError;
+      }
+      
+      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
+        console.error('[FirestoreDirect] Network error:', error);
+        const networkError = new Error(`Network error: ${error.message}`);
+        networkError.code = 'network-error';
+        throw networkError;
+      }
+
+      console.error('[FirestoreDirect] Unexpected error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sincronizza progetti da Firestore a localStorage (solo background)
+   * 
+   * RIFATTORIZZATA: Questa funzione serve SOLO per aggiornare la cache in background
+   * NON deve essere usata per il rendering UI - usa getProjectsForUI() invece
+   * 
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @returns {Promise<void>} - Non restituisce dati per la UI
+   * @throws {Error} - Lancia errori in caso di fallimento critico
    */
   async function syncProjectsFromFirestore(userId) {
-    try {
-      console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId });
-      
-      if (!window.firebaseDB || !userId) {
-        console.warn('[Sync] Firestore non disponibile o userId mancante');
-        return false;
+    if (!currentUser || !currentUser.username) {
+      const error = new Error('Current user not available');
+      console.error('[Sync] syncProjectsFromFirestore error:', error);
+      throw error;
+    }
+
+    const username = currentUser.username;
+    console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId, username });
+
+    // Carica lista progetti da Firestore
+    const firestoreProjects = await listProjectsFromFirestore(userId);
+    console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
+
+    // Carica progetti locali esistenti usando funzione centralizzata
+    const localProjects = loadProjectsFromCache(username);
+    console.log('[Sync] Progetti locali esistenti:', localProjects.length);
+
+    // Crea una mappa dei progetti locali per confronto rapido
+    const localProjectsMap = new Map();
+    localProjects.forEach((p, i) => {
+      const normalized = normalizeProject(p, i);
+      if (normalized.settings && normalized.settings.name) {
+        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        localProjectsMap.set(projectId, normalized);
       }
+    });
 
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Sync] Utente non autenticato - impossibile sincronizzare');
-        return false;
-      }
+    // Sincronizza ogni progetto da Firestore
+    const syncedProjects = [];
+    let syncedCount = 0;
+    let newCount = 0;
+    let updatedCount = 0;
 
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid !== userId) {
-        console.error('[Sync] userId non corrisponde a utente autenticato', { userId, currentAuthUid });
-        return false;
-      }
+    for (const firestoreProject of firestoreProjects) {
+      try {
+        const projectId = firestoreProject.id;
+        const projectName = firestoreProject.name;
 
-      // Carica lista progetti da Firestore
-      const firestoreProjects = await listProjectsFromFirestore(userId);
-      console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
-
-      if (firestoreProjects.length === 0) {
-        console.log('[Sync] Nessun progetto su Firestore, sincronizzazione completata');
-        return true;
-      }
-
-      // Carica progetti locali esistenti
-      const localProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      console.log('[Sync] Progetti locali esistenti:', localProjects.length);
-
-      // Crea una mappa dei progetti locali per confronto rapido
-      const localProjectsMap = new Map();
-      localProjects.forEach(p => {
-        if (p && p.settings && p.settings.name) {
-          const projectId = p.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          localProjectsMap.set(projectId, p);
+        // Carica i dati completi del progetto da Firestore
+        const projectData = await loadProjectFromFirestore(userId, projectId);
+        
+        if (!projectData) {
+          console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
+          continue;
         }
-      });
 
-      // Sincronizza ogni progetto da Firestore
-      const syncedProjects = [];
-      let syncedCount = 0;
-      let newCount = 0;
-      let updatedCount = 0;
+        // Normalizza progetto usando funzione centralizzata
+        const projectEntry = normalizeProject({
+          settings: projectData.settings || { name: projectName },
+          updatedAt: firestoreProject.updatedAt || null,
+          createdAt: firestoreProject.createdAt || null,
+          source: 'firestore',
+          id: projectId
+        });
 
-      for (const firestoreProject of firestoreProjects) {
-        try {
-          const projectId = firestoreProject.id;
-          const projectName = firestoreProject.name;
-
-          // Carica i dati completi del progetto da Firestore
-          const projectData = await loadProjectFromFirestore(userId, projectId);
+        // Controlla se il progetto esiste già localmente
+        const localProject = localProjectsMap.get(projectId);
+        
+        if (localProject) {
+          // Progetto esiste localmente: confronta timestamp e mantieni il più recente
+          const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
+          const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
           
-          if (!projectData) {
-            console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
-            continue;
-          }
-
-          // Prepara entry per la lista progetti
-          const projectEntry = {
-            settings: projectData.settings || { name: projectName },
-            updatedAt: firestoreProject.updatedAt || new Date().toISOString(),
-            createdAt: firestoreProject.createdAt || new Date().toISOString(),
-            source: 'firestore'
-          };
-
-          // Controlla se il progetto esiste già localmente
-          const localProject = localProjectsMap.get(projectId);
-          
-          if (localProject) {
-            // Progetto esiste localmente: confronta timestamp e mantieni il più recente
-            const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
-            const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
-            
-            if (firestoreUpdated >= localUpdated) {
-              // Firestore è più recente o uguale: usa Firestore
-              syncedProjects.push(projectEntry);
-              updatedCount++;
-              
-              // Salva anche il JSON completo in cache locale
-              const jsonString = JSON.stringify(projectData);
-              const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-              localStorage.setItem(projectKey, jsonString);
-              
-              console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
-            } else {
-              // Locale è più recente: mantieni locale
-              syncedProjects.push(localProject);
-              console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
-            }
-          } else {
-            // Nuovo progetto da Firestore
+          if (firestoreUpdated >= localUpdated) {
+            // Firestore è più recente o uguale: usa Firestore
             syncedProjects.push(projectEntry);
-            newCount++;
+            updatedCount++;
             
-            // Salva il JSON completo in cache locale
+            // Salva anche il JSON completo in cache locale
             const jsonString = JSON.stringify(projectData);
-            const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+            const projectKey = `amiantoProject_${username}:${projectName}`;
             localStorage.setItem(projectKey, jsonString);
             
-            console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+            console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
+          } else {
+            // Locale è più recente: mantieni locale
+            syncedProjects.push(localProject);
+            console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
           }
+        } else {
+          // Nuovo progetto da Firestore
+          syncedProjects.push(projectEntry);
+          newCount++;
+          
+          // Salva il JSON completo in cache locale
+          const jsonString = JSON.stringify(projectData);
+          const projectKey = `amiantoProject_${username}:${projectName}`;
+          localStorage.setItem(projectKey, jsonString);
+          
+          console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+        }
 
-          syncedCount++;
-        } catch (error) {
-          console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        syncedCount++;
+      } catch (error) {
+        console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
+        // Continua con gli altri progetti anche se uno fallisce
+      }
+    }
+
+    // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
+    localProjects.forEach((localProject, i) => {
+      const normalized = normalizeProject(localProject, i);
+      if (normalized.settings && normalized.settings.name) {
+        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        const existsInFirestore = firestoreProjects.some(fp => {
+          const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+          return fpId === projectId;
+        });
+        
+        if (!existsInFirestore) {
+          // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
+          syncedProjects.push(normalized);
+          console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${normalized.settings.name}`);
         }
       }
+    });
 
-      // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
-      localProjects.forEach(localProject => {
-        if (localProject && localProject.settings && localProject.settings.name) {
-          const projectId = localProject.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          const existsInFirestore = firestoreProjects.some(fp => {
-            const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-            return fpId === projectId;
-          });
-          
-          if (!existsInFirestore) {
-            // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
-            syncedProjects.push(localProject);
-            console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${localProject.settings.name}`);
-          }
-        }
-      });
+    // Salva lista sincronizzata usando funzione centralizzata
+    saveProjectsToCache(username, syncedProjects);
 
-      // Salva lista sincronizzata in localStorage
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(syncedProjects));
-
-      console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
-      addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
-      
-      return true;
-    } catch (error) {
-      console.error('[Sync] ❌ Errore durante la sincronizzazione:', error);
-      addDebugMessage(`Errore sincronizzazione: ${error.message || error}`, 'error');
-      return false;
-    }
+    console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
+    addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
+    
+    // IMPORTANTE: Questa funzione NON restituisce dati per la UI
+    // Usa getProjectsForUI() per ottenere progetti per il rendering
   }
 
   /**
@@ -7290,15 +13138,430 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Save current project for current user
   // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  /**
+   * Converte un dataURL in un File object per l'upload
+   * @param {string} dataURL - Data URL dell'immagine
+   * @param {string} fileName - Nome del file
+   * @returns {Promise<File|null>} - File object o null se errore
+   */
+  async function dataURLtoFile(dataURL, fileName) {
+    try {
+      const arr = dataURL.split(',');
+      const mime = arr[0].match(/:(.*?);/)[1];
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new File([u8arr], fileName, { type: mime });
+    } catch (error) {
+      console.error('[Asset] Errore conversione dataURL to File:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica su Supabase
+   * @param {Object} projectObj - Oggetto progetto serializzato
+   * @param {string} projectId - ID del progetto
+   * @returns {Promise<Object>} - Progetto aggiornato con assetId invece di dataURL
+   */
+  async function saveAllAssetsToStorage(projectObj, projectId) {
+    const updatedProject = JSON.parse(JSON.stringify(projectObj)); // Deep clone
+    let savedCount = 0;
+    let errorCount = 0;
+
+    // Funzione helper per generare un assetId determinista per i frame dei character
+    // Basato su character/direction/index per garantire che lo stesso frame abbia sempre lo stesso ID
+    const generateFrameAssetId = (characterName, direction, index, animationName = null) => {
+      const safeCharName = (characterName || 'char').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      const safeAnim = animationName
+        ? `_${String(animationName).replace(/[^a-z0-9]/gi, '_').toLowerCase()}`
+        : '';
+      const safeDir = (direction || 'unknown').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      return `frame_${safeCharName}${safeAnim}_${safeDir}_${index}`;
+    };
+
+    // Funzione helper per processare un asset
+    const processAsset = async (assetValue, assetType, assetName, subfolder = null, existingAssetId = null, overwrite = false) => {
+      // Se è già un assetId (prefisso "asset:"), salta
+      if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
+        return assetValue;
+      }
+      
+      // Se è un oggetto Image, convertilo prima in dataURL
+      let dataURL = null;
+      if (assetValue && typeof assetValue === 'object' && (assetValue.src || (assetValue.width && assetValue.height))) {
+        // È un oggetto Image, convertilo in dataURL
+        try {
+          dataURL = imageToDataURL(assetValue);
+          if (!dataURL) {
+            console.warn(`[Asset] Impossibile convertire Image in dataURL per ${assetName}`);
+            errorCount++;
+            return null; // Non possiamo processare questo asset
+          }
+          console.log(`[Asset] Image convertita in dataURL per ${assetName}`);
+        } catch (error) {
+          console.error(`[Asset] Errore conversione Image per ${assetName}:`, error);
+          errorCount++;
+          return null;
+        }
+      } else if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
+        dataURL = assetValue;
+      } else if (assetValue === null || assetValue === undefined) {
+        // Valore null/undefined, mantieni così
+        return assetValue;
+      } else {
+        // Non è né un assetId, né un dataURL, né un Image - potrebbe essere un valore non-immagine
+        // Verifica se è un oggetto con proprietà img (come i frame dei character)
+        if (assetValue && typeof assetValue === 'object' && assetValue.img) {
+          // È un oggetto frame con proprietà img, processa l'immagine
+          const imgDataURL = imageToDataURL(assetValue.img);
+          if (imgDataURL) {
+            dataURL = imgDataURL;
+            console.log(`[Asset] Frame object convertito in dataURL per ${assetName}`);
+          } else {
+            console.warn(`[Asset] Impossibile convertire frame.img in dataURL per ${assetName}`);
+            errorCount++;
+            return assetValue; // Mantieni originale se fallisce
+          }
+        } else {
+          // Non è un asset immagine, mantieni come è
+          return assetValue;
+        }
+      }
+      
+      // Se abbiamo un dataURL (da stringa, da Image, o da frame object), convertilo e caricalo
+      if (dataURL) {
+        try {
+          const fileName = assetName || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.png`;
+          const file = await dataURLtoFile(dataURL, fileName);
+          if (!file) {
+            console.warn(`[Asset] Impossibile convertire dataURL in File per ${assetName}`);
+            errorCount++;
+            return dataURL; // Mantieni dataURL originale se fallisce
+          }
+
+          // Se esiste già un assetId per questo asset, usalo
+          // IMPORTANTE: Sovrascrivi solo se è un dataURL nuovo/modificato, non se è già un assetId
+          const finalAssetId = existingAssetId || null;
+          // Sovrascrivi solo se:
+          // 1. È esplicitamente richiesto (overwrite=true)
+          // 2. O se esiste già un assetId E il valore corrente è un dataURL (modificato)
+          const shouldOverwrite = overwrite || (!!existingAssetId && dataURL && typeof assetValue === 'string' && assetValue.startsWith('data:image/'));
+
+          const { assetId } = await uploadImage(file, projectId, assetType, { 
+            assetId: finalAssetId, 
+            overwriteExisting: shouldOverwrite,
+            subfolder 
+          });
+          
+          if (shouldOverwrite && existingAssetId) {
+            console.log(`[Asset] ✅ Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+          } else {
+            console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+          }
+          savedCount++;
+          
+          // Se è un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
+          if (assetType === 'character' && assetId) {
+            unsavedCharacterAssetIds.add(assetId);
+            console.log(`[Asset] Frame character tracciato per cleanup (assetId: ${assetId})`);
+          }
+          
+          return `asset:${assetId}`;
+        } catch (error) {
+          console.error(`[Asset] ❌ Errore salvataggio asset ${assetName}:`, error);
+          errorCount++;
+          return dataURL; // Mantieni dataURL originale se fallisce
+        }
+      }
+      
+      return assetValue;
+    };
+
+    // Processa tutti i background delle room
+    if (updatedProject.rooms && Array.isArray(updatedProject.rooms)) {
+      for (const room of updatedProject.rooms) {
+        // Costruisci subfolder per questa stanza: rooms/roomname
+        const roomName = room.name || room.id;
+        const roomSubfolder = `rooms/${roomName}`;
+        
+        if (room.background) {
+          room.background = await processAsset(room.background, 'background', `room_${room.id}_background`, roomSubfolder);
+        }
+        
+        // Processa foregrounds
+        if (room.foregrounds && Array.isArray(room.foregrounds)) {
+          for (const fg of room.foregrounds) {
+            if (fg.image) {
+              fg.image = await processAsset(fg.image, 'foreground', `room_${room.id}_fg_${fg.id || 'unknown'}`, roomSubfolder);
+            }
+          }
+        }
+        
+        // Processa scene objects
+        if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
+          for (const obj of room.sceneObjects) {
+            if (obj.image) {
+              obj.image = await processAsset(obj.image, 'sprite', `room_${room.id}_obj_${obj.id || 'unknown'}`, roomSubfolder);
+            }
+          }
+        }
+      }
+    }
+
+    // Processa GUI backgrounds e button images
+    if (updatedProject.guis && Array.isArray(updatedProject.guis)) {
+      for (const gui of updatedProject.guis) {
+        if (gui.background) {
+          gui.background = await processAsset(gui.background, 'gui', `gui_${gui.id}_background`);
+        }
+        
+        if (gui.buttons && Array.isArray(gui.buttons)) {
+          for (const btn of gui.buttons) {
+            if (btn.backgroundImage) {
+              btn.backgroundImage = await processAsset(btn.backgroundImage, 'gui', `gui_${gui.id}_btn_${btn.id || 'unknown'}`);
+            }
+          }
+        }
+      }
+    }
+
+    // Processa character frames
+    // IMPORTANTE: Verifica che il character esista ancora in characterFrames prima di processarlo
+    // Questo evita di ricreare frame per character eliminati
+    if (updatedProject.characters && Array.isArray(updatedProject.characters)) {
+      for (const char of updatedProject.characters) {
+        // Costruisci subfolder per questo character: characters/charactername
+        const characterName = char.name || char.id;
+        
+        // Verifica che il character esista ancora in characterFrames
+        // Se non esiste, significa che è stato eliminato e non dovremmo processare i suoi frame
+        if (!characterFrames.has(characterName)) {
+          console.warn(`[Asset] ⚠️ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
+          const clearDirs = (dirs) => {
+            if (!dirs) return;
+            for (const dirData of Object.values(dirs)) {
+              if (dirData.frames) dirData.frames = [];
+            }
+          };
+          clearDirs(char.directions);
+          if (char.animations) {
+            Object.values(char.animations).forEach(anim => clearDirs(anim.directions));
+          }
+          continue;
+        }
+        
+        const characterSubfolder = `characters/${characterName}`;
+        const originalChar = projectObj.characters?.find(c => (c.name || c.id) === characterName);
+
+        const processCharacterDirectionsFrames = async (directionsMap, animationName = null) => {
+          if (!directionsMap) return;
+          const originalDirs = animationName
+            ? originalChar?.animations?.[animationName]?.directions
+            : originalChar?.directions;
+          const memDirs = animationName
+            ? characterFrames.get(characterName)?.animations?.[animationName]?.directions
+            : characterFrames.get(characterName)?.directions;
+
+          for (const [dir, dirData] of Object.entries(directionsMap)) {
+            if (!dirData.frames || !Array.isArray(dirData.frames)) continue;
+            for (let i = 0; i < dirData.frames.length; i++) {
+              if (!dirData.frames[i]) continue;
+              const originalFrame = dirData.frames[i];
+              const frameLabel = animationName ? `${characterName}/${animationName}/${dir}/${i}` : `${characterName}/${dir}/${i}`;
+
+              if (originalFrame && typeof originalFrame === 'object' && originalFrame.mirror) {
+                console.log(`[Asset] Frame specchiato saltato per ${frameLabel}`);
+                continue;
+              }
+
+              let frameToCheck = originalFrame;
+              let frameToProcess = originalFrame;
+              if (originalFrame && typeof originalFrame === 'object' && originalFrame.img) {
+                frameToCheck = originalFrame.img;
+                frameToProcess = originalFrame.img;
+              } else if (typeof originalFrame === 'string') {
+                frameToCheck = originalFrame;
+                frameToProcess = originalFrame;
+              }
+
+              let existingAssetId = null;
+              const isAlreadyAssetId = typeof frameToCheck === 'string' && frameToCheck.startsWith('asset:');
+              const isDataURL = typeof frameToCheck === 'string' && frameToCheck.startsWith('data:image/');
+              const isImageObject = frameToCheck && typeof frameToCheck === 'object' && (frameToCheck.src || (frameToCheck.width && frameToCheck.height));
+
+              if (isAlreadyAssetId) {
+                existingAssetId = frameToCheck.replace('asset:', '');
+              } else if (isDataURL || isImageObject) {
+                if (originalDirs?.[dir]?.frames?.[i]) {
+                  let originalFrameValue = originalDirs[dir].frames[i];
+                  if (originalFrameValue && typeof originalFrameValue === 'object' && originalFrameValue.img) {
+                    originalFrameValue = originalFrameValue.img;
+                  }
+                  if (typeof originalFrameValue === 'string' && originalFrameValue.startsWith('asset:')) {
+                    existingAssetId = originalFrameValue.replace('asset:', '');
+                  }
+                }
+                if (!existingAssetId) {
+                  existingAssetId = generateFrameAssetId(characterName, dir, i, animationName);
+                }
+              }
+
+              const assetName = animationName
+                ? `char_${char.name}_${animationName}_${dir}_${i}`
+                : `char_${char.name}_${dir}_${i}`;
+
+              dirData.frames[i] = await processAsset(
+                frameToProcess,
+                'character',
+                assetName,
+                characterSubfolder,
+                existingAssetId,
+                isDataURL || isImageObject
+              );
+
+              if ((isDataURL || isImageObject) &&
+                  typeof dirData.frames[i] === 'string' && dirData.frames[i].startsWith('asset:')) {
+                const frameObj = memDirs?.[dir]?.frames?.[i];
+                let frameImg = null;
+                if (frameObj && typeof frameObj === 'object' && frameObj.img) frameImg = frameObj.img;
+                else if (frameObj && typeof frameObj === 'object' && frameObj.src) frameImg = frameObj;
+                if (frameImg && unsavedCharacterFrames.has(frameImg)) {
+                  unsavedCharacterFrames.delete(frameImg);
+                }
+              }
+            }
+          }
+        };
+
+        await processCharacterDirectionsFrames(char.directions, null);
+        if (char.animations) {
+          for (const [animName, animData] of Object.entries(char.animations)) {
+            if (animName && animData) {
+              await processCharacterDirectionsFrames(animData.directions, animName);
+            }
+          }
+        }
+      }
+    }
+
+    // Processa cursors
+    if (updatedProject.cursors && Array.isArray(updatedProject.cursors)) {
+      for (const cursor of updatedProject.cursors) {
+        if (cursor.image) {
+          cursor.image = await processAsset(cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
+        }
+      }
+    }
+
+    console.log(`[Asset] 📊 Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    
+    // Verifica finale: controlla che tutti gli asset siano stati salvati correttamente
+    if (errorCount > 0) {
+      console.warn(`[Asset] ⚠️ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
+    } else {
+      console.log(`[Asset] ✅ Tutti gli asset sono stati salvati con successo su Supabase`);
+    }
+    
+    // Controllo finale: verifica se ci sono ancora dataURL o oggetti Image nel progetto e convertili
+    const finalConversion = async (obj, path = 'root') => {
+      if (!obj || typeof obj !== 'object') return;
+      
+      for (const key in obj) {
+        const value = obj[key];
+        const currentPath = path ? `${path}.${key}` : key;
+        
+        if (value === null || value === undefined) {
+          continue;
+        }
+        
+        // Se è un array, processa ogni elemento
+        if (Array.isArray(value)) {
+          for (let i = 0; i < value.length; i++) {
+            const item = value[i];
+            if (item && typeof item === 'object') {
+              // Se è un oggetto Image, processalo direttamente
+              if (item.src || (item.width && item.height)) {
+                console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
+                const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
+                if (converted && converted.startsWith('asset:')) {
+                  value[i] = converted;
+                  savedCount++;
+                }
+              } else {
+                // Altrimenti processa ricorsivamente
+                await finalConversion(item, `${currentPath}[${i}]`);
+              }
+            } else if (typeof item === 'string' && item.startsWith('data:image/')) {
+              // Trovato un dataURL in un array, convertilo
+              console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}[${i}]`);
+              const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
+              if (converted && converted.startsWith('asset:')) {
+                value[i] = converted;
+                savedCount++;
+              }
+            }
+          }
+        } 
+        // Se è un oggetto, verifica se è un oggetto Image
+        else if (typeof value === 'object') {
+          // Se è un oggetto Image, processalo direttamente
+          if (value.src || (value.width && value.height)) {
+            console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}`);
+            const converted = await processAsset(value, 'unknown', currentPath);
+            if (converted && converted.startsWith('asset:')) {
+              obj[key] = converted;
+              savedCount++;
+            }
+          } else {
+            // Altrimenti processa ricorsivamente
+            await finalConversion(value, currentPath);
+          }
+        } 
+        // Se è una stringa dataURL, convertila
+        else if (typeof value === 'string' && value.startsWith('data:image/')) {
+          console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}`);
+          const converted = await processAsset(value, 'unknown', currentPath);
+          if (converted && converted.startsWith('asset:')) {
+            obj[key] = converted;
+            savedCount++;
+          }
+        }
+      }
+    };
+    
+    // Esegui la conversione finale su tutto il progetto
+    console.log('[Asset] 🔍 Controllo finale per dataURL rimanenti...');
+    await finalConversion(updatedProject, 'project');
+    console.log(`[Asset] ✅ Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
+    
+    return updatedProject;
+  }
+
   window.saveCurrentProject = async function saveCurrentProject() {
     if (!currentUser) {
       showNotification('Please login to save projects', 'warning');
       return;
     }
 
-    const jsonString = window.serializeProjectToJsonString(true);
-    const projectObj = window.serializeProject();
-    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : 'amianto-project';
+    // Verifica che ci sia un progetto aperto
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open. Please open or create a project first.', 'warning');
+      return;
+    }
+
+    let projectObj = window.serializeProject();
+    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : activeProjectName;
+    
+    // Verifica che il progetto serializzato corrisponda al progetto attivo
+    if (projectName !== activeProjectName && projectName !== 'amianto-project') {
+      showNotification('Project name mismatch. Please open the project you want to save.', 'warning');
+      return;
+    }
     
     // TODO: Implementare sistema di projectId univoci
     // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
@@ -7310,36 +13573,120 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const userId = currentUser.uid;
     if (!userId) {
       console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
-      addDebugMessage('[Firestore] Utente non autenticato correttamente', 'error');
+      addDebugMessage('[Firestore] User not authenticated correctly', 'error');
       // Continua con cache locale come fallback
     }
 
-    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
+    // 0. SALVA TUTTI GLI ASSET NON ANCORA CARICATI
+    showNotification('Saving all assets to storage...', 'info');
+    
+    // DEBUG: Verifica foreground prima del salvataggio asset
+    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
+      projectObj.rooms.forEach(room => {
+        if (Array.isArray(room.foregrounds)) {
+          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground prima del salvataggio asset`);
+        }
+      });
+    }
+    
+    try {
+      console.log('[Save] 🔄 Inizio salvataggio asset su Supabase...');
+      projectObj = await saveAllAssetsToStorage(projectObj, projectId);
+      console.log('[Save] ✅ Tutti gli asset salvati su Supabase');
+      
+      // Verifica che non ci siano più dataURL nel progetto (dovrebbero essere tutti convertiti in assetId)
+      const projectJsonString = JSON.stringify(projectObj);
+      const remainingDataURLs = (projectJsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
+      const assetIdCount = (projectJsonString.match(/asset:[^"]+/g) || []).length;
+      
+      console.log('[Save] 📊 Statistiche conversione asset:', {
+        dataURLRimanenti: remainingDataURLs,
+        assetIdTotali: assetIdCount,
+        conversioneCompleta: remainingDataURLs === 0
+      });
+      
+      if (remainingDataURLs > 0) {
+        const warnMsg = `Salvataggio Firestore bloccato: ${remainingDataURLs} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
+        console.warn(`[Save] ⚠️ ${warnMsg}`);
+        addDebugMessage(warnMsg, 'error');
+        showNotification(warnMsg, 'warning');
+        const dataURLMatches = projectJsonString.match(/data:[^;]+;base64,[^"]+/g);
+        if (dataURLMatches && dataURLMatches.length > 0) {
+          console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
+        }
+      } else {
+        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti in assetId');
+      }
+      
+      // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
+      // Tutti i frame che erano nel progetto sono stati salvati con successo
+      unsavedCharacterFrames.clear();
+      unsavedCharacterAssetIds.clear();
+      // Rimuovi anche eventuali frame salvati in sessionStorage (da sessioni precedenti)
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+      console.log('[Save] Set frame non salvati pulito (progetto salvato con successo)');
+    } catch (error) {
+      console.error('[Save] Errore salvataggio asset:', error);
+      showNotification('Warning: Some assets could not be saved', 'warning');
+      // Se il salvataggio fallisce, i frame rimangono in unsavedCharacterFrames per cleanup successivo
+    }
+
+    // DEBUG: Verifica foreground dopo il salvataggio asset e prima di Firestore
+    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
+      projectObj.rooms.forEach(room => {
+        if (Array.isArray(room.foregrounds)) {
+          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground nel JSON da salvare su Firestore`, 
+            room.foregrounds.map(f => ({ id: f.id, name: f.name, image: f.image ? f.image.substring(0, 50) + '...' : 'null' })));
+        } else {
+          console.warn(`[Save] ⚠️ Room ${room.id}: foregrounds non è un array!`, typeof room.foregrounds, room.foregrounds);
+        }
+      });
+    }
+
+    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload slim, no base64
     let firestoreSuccess = false;
-    if (userId) {
-      console.log('[Save] Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
-      firestoreSuccess = await saveProjectToFirestore(userId, projectId, projectObj);
-      console.log('[Save] Risultato salvataggio Firestore:', firestoreSuccess);
+    const embeddedDataUrls = countEmbeddedDataUrls(projectObj);
+    if (userId && embeddedDataUrls > 0) {
+      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel progetto`);
+    } else if (userId) {
+      console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
+      
+      const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
+      const projectJsonPreview = JSON.stringify(firestorePayload);
+      const projectSizeBytes = new Blob([projectJsonPreview]).size;
+      const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
+      console.log(`[Save] 📦 Dimensione payload Firestore: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
+      
+      firestoreSuccess = await saveProjectToFirestore(userId, projectId, firestorePayload);
+      
+      if (firestoreSuccess) {
+        console.log('[Save] ✅ Salvataggio Firestore completato con successo');
+      } else {
+        console.warn('[Save] ⚠️ Salvataggio Firestore fallito, uso cache locale come fallback');
+      }
     } else {
-      console.warn('[Save] userId non disponibile, salto Firestore');
+      console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
     }
 
     // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
+    // Usa il progetto aggiornato con assetId invece di dataURL
+    const jsonString = JSON.stringify(projectObj, null, 2);
     autosaveToCache(projectName, jsonString);
 
     // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
 
-    // 4. LIGHTWEIGHT ENTRY PER LISTING - GIÀ IMPLEMENTATO
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    // 4. LIGHTWEIGHT ENTRY PER LISTING - Aggiorna cache usando funzione centralizzata
+    const userProjects = loadProjectsFromCache(currentUser.username);
     const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
-    const entry = { 
+    const entry = normalizeProject({ 
       settings: projectObj.settings, 
       updatedAt: new Date().toISOString(),
+      createdAt: projectObj.createdAt || new Date().toISOString(),
       source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
-    };
+    });
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+    saveProjectsToCache(currentUser.username, userProjects);
 
     // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
     try {
@@ -7359,20 +13706,36 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Messaggio di successo con indicazione della fonte
     if (firestoreSuccess) {
       showNotification('Project saved successfully to Firestore!', 'success');
+    } else if (embeddedDataUrls > 0) {
+      showNotification('Progetto salvato in locale; Firestore bloccato (converti gli asset base64).', 'warning');
     } else {
       showNotification('Project saved to cache (Firestore unavailable)', 'warning');
     }
+    
+    // Aggiorna indicatore dimensione progetto dopo il salvataggio
+    updateProjectSizeIndicator();
   }
 
   // Create new project
   // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
-  window.createNewProject = async function() {
+  window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
     if (!currentUser) {
       showNotification('Please login to create projects', 'warning');
       return;
     }
 
-    const projectName = prompt('Enter project name:');
+    // Blocca durante la sincronizzazione
+    if (isSyncingProjects) {
+      showNotification('Please wait for synchronization to complete before creating a project', 'warning');
+      return;
+    }
+
+    // Se il nome progetto viene passato come parametro (dal modale), usalo
+    // Altrimenti chiedi all'utente
+    let projectName = projectNameFromModal;
+    if (!projectName) {
+      projectName = prompt('Enter project name:');
+    }
     if (!projectName || !projectName.trim()) return;
 
     const trimmedName = projectName.trim();
@@ -7391,7 +13754,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         canvasWidth: 800,
         canvasHeight: 600
       },
-      rooms: [],
+      rooms: [
+        {
+          id: 'room_1',
+          name: 'Room 1',
+          background: null,
+          foregrounds: [],
+          sceneObjects: [],
+          walkableArea: [],
+          hotspots: []
+        }
+      ],
       guis: [],
       characters: [],
       inventory: [],
@@ -7402,6 +13775,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         definitions: [],
         state: {}
       },
+      resourcesCatalog: [],
       eventConditions: {
         objects: {},
         hotspots: {},
@@ -7417,16 +13791,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Imposta come progetto attivo
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    
+    // Aggiorna indicatore dimensione progetto
+    updateProjectSizeIndicator();
 
-    // Aggiungi alla lista progetti utente
-    const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-    const entry = {
+    // Aggiungi alla lista progetti utente usando funzione centralizzata
+    const userProjects = loadProjectsFromCache(currentUser.username);
+    const entry = normalizeProject({
       settings: newProject.settings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    });
     userProjects.push(entry);
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(userProjects));
+    saveProjectsToCache(currentUser.username, userProjects);
 
     // Salva su Firestore se l'utente è autenticato
     const userId = currentUser.uid;
@@ -7435,8 +13812,645 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       await saveProjectToFirestore(userId, projectId, newProject);
     }
 
-    showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+    // Abilita altre tab ora che c'è un progetto aperto
+    enableOtherTabs(true);
+    
+    // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
+    if (showSuccessNotification) {
+      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+    }
   };
+
+  // ================================
+  // ASSET MANAGEMENT SYSTEM
+  // ================================
+  // 
+  // Sistema completo per gestione asset (immagini) usando Firebase Storage
+  // 
+  // STRUTTURA STORAGE:
+  // projects/{projectId}/images/filename.png
+  // projects/{projectId}/gui/filename.png
+  // projects/{projectId}/audio/filename.mp3
+  // 
+  // STRUTTURA FIRESTORE:
+  // users/{userId}/projects/{projectId}/assets/{assetId}
+  // {
+  //   assetId: string,
+  //   name: string,
+  //   type: 'background' | 'foreground' | 'sprite' | 'gui' | 'character' | 'cursor',
+  //   storagePath: string,
+  //   projectId: string,
+  //   createdAt: timestamp
+  // }
+  // 
+  // NOTA: Le immagini NON vengono più salvate come base64 nel JSON del progetto.
+  // Vengono salvati solo gli assetId che vengono poi risolti in URL da Firebase Storage.
+  // 
+  // STATO IMPLEMENTAZIONE:
+  // ✅ IMPLEMENTATO:
+  //   - Upload background images
+  //   - Upload foreground layers
+  //   - Upload scene objects (sprites)
+  //   - Serializzazione con assetId
+  //   - Caricamento e risoluzione assetId in URL
+  //   - Gestione errori con fallback locale
+  // 
+  // ⚠️ TODO: not yet implemented:
+  //   - Upload GUI background images
+  //   - Upload GUI button background images
+  //   - Upload character animation frames
+  //   - Upload cursor images
+  //   - Export progetti come ZIP con asset inclusi
+  //   - Re-link asset in runtime.html per esecuzione jailed/iframe
+
+  /**
+   * Genera un assetId univoco
+   * @returns {string} - ID univoco per l'asset
+   */
+  function generateAssetId() {
+    return 'asset_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+  }
+
+  /**
+   * Determina la cartella Storage in base al tipo di asset
+   * Mappatura per Supabase Storage: backgrounds, foregrounds, sprites, audio
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
+   * @returns {string} - Nome della cartella (backgrounds, foregrounds, sprites, audio)
+   */
+  function getStorageFolderForType(assetType) {
+    switch (assetType) {
+      case 'background':
+        return 'backgrounds';
+      case 'foreground':
+        return 'foregrounds';
+      case 'sprite':
+        return 'sprites';
+      case 'gui':
+        return 'gui';
+      case 'character':
+        return 'characters';
+      case 'cursor':
+        return 'cursors';
+      case 'audio':
+        return 'audio';
+      case 'resource':
+        return 'resources';
+      default:
+        // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
+        return assetType ? assetType.toLowerCase() : 'sprites';
+    }
+  }
+
+  /**
+   * Carica un'immagine su Supabase Storage
+   * 
+   * FALLBACK: Se Supabase non è disponibile:
+   * - Mostra errore chiaro all'utente
+   * - Blocca l'upload del nuovo asset
+   * - Non blocca il caricamento di asset esistenti (che hanno URL validi)
+   * - Non blocca il salvataggio del progetto (gli asset già caricati hanno URL persistenti)
+   * 
+   * @param {File} file - File immagine da caricare
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
+   * @param {string} assetId - ID univoco dell'asset (opzionale, generato se non fornito)
+   * @returns {Promise<{assetId: string, storagePath: string, downloadURL: string, fileName: string}>} - Metadata dell'asset caricato
+   */
+  async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null, subfolder = null) {
+    try {
+      // Verifica che Supabase Storage sia disponibile
+      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
+        const errorMsg = 'Supabase Storage non disponibile. Impossibile caricare asset. Verifica la configurazione SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js';
+        console.error('[Asset] ❌', errorMsg);
+        
+        // Mostra notifica all'utente
+        if (typeof showNotification === 'function') {
+          showNotification(errorMsg, 'error');
+        }
+        
+        throw new Error(errorMsg);
+      }
+
+      // Genera assetId se non fornito
+      if (!assetId) {
+        assetId = generateAssetId();
+      }
+
+      let forcedFileName = fileNameOverride;
+      if (!forcedFileName && overwriteExisting && assetId) {
+        const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop() : 'png';
+        forcedFileName = `${assetId}.${(ext || 'png').toLowerCase()}`;
+      }
+
+      // Determina categoria (backgrounds, foregrounds, sprites, audio)
+      const category = getStorageFolderForType(assetType);
+      
+      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId, subfolder });
+
+      // Usa la funzione uploadAsset da supabase.js
+      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
+      
+      // Costruisci storagePath per compatibilità con il resto del codice
+      // Usa il fileName generato da Supabase (include assetId)
+      const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
+      const actualFolder = subfolder || category;
+      const storagePath = `${projectId}/${actualFolder}/${generatedFileName}`;
+      
+      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
+      
+      return {
+        assetId,
+        storagePath,
+        downloadURL: result.url,
+        fileName: generatedFileName, // Nome file generato (con assetId) per risoluzione futura
+        subfolder // Includi subfolder per salvare nei metadati
+      };
+    } catch (error) {
+      console.error('[Asset] ❌ Errore upload immagine:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Salva metadata asset in Firestore
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetId - ID univoco dell'asset
+   * @param {string} name - Nome originale del file
+   * @param {string} assetType - Tipo di asset
+   * @param {string} storagePath - Percorso Storage
+   * @param {string} fileName - Nome file generato (opzionale, per Supabase)
+   * @param {string} publicUrl - URL pubblico dell'asset (opzionale, per Supabase)
+   * @returns {Promise<boolean>} - true se salvato con successo
+   */
+  async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null, subfolder = null) {
+    try {
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile');
+        return false;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
+        return false;
+      }
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      // Coerente con la struttura esistente dei progetti
+      const assetRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId);
+
+      const metadata = {
+        assetId,
+        name,
+        type: assetType,
+        storagePath,
+        projectId,
+        // Aggiungi campi per Supabase Storage
+        fileName: fileName || null,
+        publicUrl: publicUrl || null,
+        subfolder: subfolder || null, // Sottocartella opzionale (es: "rooms/roomname")
+        storageProvider: 'supabase', // Indica che usa Supabase Storage
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      await assetRef.set(metadata);
+      
+      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId, fileName, publicUrl });
+      return true;
+    } catch (error) {
+      console.error('[Asset] ❌ Errore salvataggio metadata:', error);
+      
+      // Se è un errore di permessi, fornisci informazioni utili
+      if (error.code === 'permission-denied') {
+        console.error('[Asset] ⚠️ Errore permessi Firestore. Verifica che le regole Firestore includano:');
+        console.error('[Asset]   match /users/{userId}/projects/{projectId}/assets/{assetId}');
+        console.error('[Asset]   allow write: if request.auth != null && request.auth.uid == userId;');
+        console.error('[Asset] Vedi FIRESTORE_SETUP.md per istruzioni su come deployare le regole.');
+      }
+      
+      return false;
+    }
+  }
+
+  /**
+   * Carica metadata di tutti gli asset di un progetto
+   * @param {string} projectId - ID del progetto
+   * @returns {Promise<Array>} - Array di metadata asset
+   */
+  async function loadProjectAssets(projectId) {
+    try {
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile');
+        return [];
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
+        return [];
+      }
+
+      console.log('[Asset] Caricamento asset per progetto:', projectId);
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Carica tutti gli asset del progetto
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      const assetsRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets');
+
+      const snapshot = await assetsRef.get();
+      
+      const assets = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        assets.push({
+          assetId: data.assetId || doc.id,
+          name: data.name || '',
+          type: data.type || 'sprite',
+          storagePath: data.storagePath || '',
+          projectId: data.projectId || projectId,
+          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
+        });
+      });
+
+      console.log(`[Asset] ✅ Caricati ${assets.length} asset per progetto ${projectId}`);
+      return assets;
+    } catch (error) {
+      console.error('[Asset] ❌ Errore caricamento asset:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Elimina un asset da Supabase Storage dato un'immagine
+   * @param {Image} img - Oggetto Image che rappresenta l'asset
+   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
+   */
+  async function deleteAssetFromImage(img) {
+    try {
+      if (!img) {
+        return false;
+      }
+
+      // Verifica se l'immagine ha un assetId associato
+      const assetInfo = imageAssetMap.get(img);
+      if (!assetInfo || !assetInfo.assetId) {
+        // Non è un asset caricato su Supabase, potrebbe essere una dataURL o URL esterno
+        console.log('[Asset] Immagine non ha assetId associato, non è necessario eliminarla da Supabase');
+        return true; // Non è un errore, semplicemente non c'è nulla da eliminare
+      }
+
+      const { assetId, type, projectId, fileName } = assetInfo;
+
+      // Verifica che Supabase Storage sia disponibile
+      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
+        console.warn('[Asset] Supabase Storage non disponibile, impossibile eliminare asset:', assetId);
+        return false;
+      }
+
+      // Se non abbiamo fileName o subfolder, cerchiamo prima nei metadata Firestore
+      let finalFileName = fileName;
+      let subfolder = assetInfo.subfolder || null;
+      let firebaseStoragePath = null; // Path per Firebase Storage legacy
+      let isFirebaseLegacy = false; // Flag per asset legacy Firebase
+      if ((!finalFileName || !subfolder) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          const userId = window.firebaseAuth.currentUser.uid;
+          const assetRef = window.firebaseDB
+            .collection('users')
+            .doc(userId)
+            .collection('projects')
+            .doc(projectId)
+            .collection('assets')
+            .doc(assetId);
+
+          const doc = await assetRef.get();
+          if (doc.exists) {
+            const data = doc.data();
+            if (data && data.fileName && !finalFileName) {
+              finalFileName = data.fileName;
+              console.log(`[Asset] fileName recuperato da Firestore per eliminazione: ${finalFileName}`);
+            }
+            if (data && data.subfolder && !subfolder) {
+              subfolder = data.subfolder;
+              console.log(`[Asset] subfolder recuperato da Firestore per eliminazione: ${subfolder}`);
+            }
+            // Controlla se è un asset legacy Firebase Storage
+            if (data && data.storagePath && !data.storageProvider) {
+              // Asset legacy: ha storagePath ma non storageProvider (o storageProvider !== 'supabase')
+              firebaseStoragePath = data.storagePath;
+              isFirebaseLegacy = true;
+              console.log(`[Asset] ⚠️ Asset legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+            } else if (data && data.storagePath && data.storageProvider && data.storageProvider !== 'supabase') {
+              // Asset con storageProvider diverso da 'supabase'
+              firebaseStoragePath = data.storagePath;
+              isFirebaseLegacy = true;
+              console.log(`[Asset] ⚠️ Asset con storageProvider "${data.storageProvider}" rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
+            }
+          }
+        } catch (metaErr) {
+          console.warn('[Asset] Impossibile recuperare metadata da Firestore per eliminazione asset:', metaErr);
+        }
+      }
+      
+      // Se non abbiamo subfolder ma la categoria è background/foreground/sprite, 
+      // costruisci il subfolder dal roomName corrente
+      if (!subfolder && (type === 'background' || type === 'foreground' || type === 'sprite')) {
+        const room = rooms.get(currentRoomId);
+        if (room) {
+          const roomName = room.name || room.id || currentRoomId;
+          subfolder = `rooms/${roomName}`;
+          console.log(`[Asset] subfolder costruito dal roomName corrente: ${subfolder}`);
+        }
+      }
+
+      // Come ultimo fallback, prova a ricostruire il nome file dall'URL dell'immagine
+      if (!finalFileName) {
+        if (img.src && img.src.includes('.')) {
+          const ext = img.src.split('.').pop().split('?')[0].toLowerCase();
+          finalFileName = `${assetId}.${ext}`;
+        } else {
+          // Fallback storico: usa png come estensione predefinita
+          finalFileName = `${assetId}.png`;
+        }
+        console.log(`[Asset] fileName non trovato nei metadata, ricostruito da URL: ${finalFileName}`);
+      }
+
+      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
+
+      // Elimina da Supabase Storage (passa userId e subfolder per path corretto)
+      let userIdOverride = null;
+      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
+        userIdOverride = window.firebaseAuth.currentUser.uid;
+      }
+
+      // PRIMA: elimina da Firebase Storage se è un asset legacy
+      let firebaseDeleted = true; // Default true se non è un asset legacy
+      if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
+        try {
+          console.log(`[Asset] Eliminazione asset legacy da Firebase Storage: ${firebaseStoragePath}`);
+          const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
+          await storageRef.delete();
+          firebaseDeleted = true;
+          console.log(`[Asset] ✅ Asset eliminato da Firebase Storage: ${firebaseStoragePath}`);
+        } catch (firebaseError) {
+          console.warn(`[Asset] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
+          // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
+          firebaseDeleted = false;
+        }
+      }
+
+      // POI: elimina da Supabase Storage (passa userId e subfolder per path corretto)
+      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride, subfolder);
+      
+      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
+      // (potrebbe essere solo su Supabase o solo su Firebase legacy)
+      if (deleted || firebaseDeleted) {
+        if (deleted) {
+          console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
+        }
+        if (firebaseDeleted && isFirebaseLegacy) {
+          console.log(`[Asset] ✅ Asset legacy eliminato da Firebase Storage: ${assetId}`);
+        }
+        
+        // Rimuovi anche da imageAssetMap
+        imageAssetMap.delete(img);
+        
+        // Opzionale: elimina anche da Firestore se disponibile
+        if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+          try {
+            const userId = window.firebaseAuth.currentUser.uid;
+            const assetRef = window.firebaseDB
+              .collection('users')
+              .doc(userId)
+              .collection('projects')
+              .doc(projectId)
+              .collection('assets')
+              .doc(assetId);
+            
+            await assetRef.delete();
+            console.log(`[Asset] ✅ Metadata eliminato da Firestore: ${assetId}`);
+          } catch (firestoreError) {
+            console.warn(`[Asset] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
+            // Non blocchiamo il successo se Firestore fallisce
+          }
+        }
+        
+        // Aggiorna i counter dopo eliminazione asset
+        if (typeof updateProjectSizeIndicator === 'function') {
+          updateProjectSizeIndicator();
+        }
+        
+        return true;
+      } else {
+        console.warn(`[Asset] ⚠️ Impossibile eliminare asset da Supabase: ${assetId}`);
+        return false;
+      }
+    } catch (error) {
+      console.error('[Asset] ❌ Errore eliminazione asset:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Risolve un assetId in un URL di download da Supabase Storage
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetId - ID dell'asset
+   * @returns {Promise<string|null>} - URL di download o null se non trovato
+   */
+  async function resolveAssetUrl(projectId, assetId) {
+    try {
+      // Verifica che Firestore sia disponibile
+      if (!window.firebaseDB) {
+        console.warn('[Asset] Firestore non disponibile per risolvere asset:', assetId);
+        return null;
+      }
+
+      // Verifica che l'utente sia autenticato
+      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+        console.warn('[Asset] Utente non autenticato');
+        return null;
+      }
+
+      const userId = window.firebaseAuth.currentUser.uid;
+
+      // Carica metadata asset da Firestore
+      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
+      const assetRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId)
+        .collection('assets')
+        .doc(assetId);
+
+      const doc = await assetRef.get();
+      
+      if (!doc.exists) {
+        console.warn('[Asset] Asset non trovato in Firestore:', assetId);
+        return null;
+      }
+
+      const data = doc.data();
+      
+      // Se abbiamo già l'URL pubblico salvato (per Supabase), usalo direttamente
+      if (data.publicUrl) {
+        console.log('[Asset] ✅ Asset risolto da metadata (Supabase):', { assetId, publicUrl: data.publicUrl });
+        return data.publicUrl;
+      }
+
+      // Fallback: prova a ricostruire l'URL da Supabase Storage
+      if (data.fileName && data.type && window.supabaseStorage && window.supabaseStorage.isAvailable()) {
+        const category = getStorageFolderForType(data.type);
+        // Passa userId per asset nuovi (con userId nel path), null per asset legacy
+        const publicUrl = window.supabaseStorage.getAssetPublicUrl(userId, projectId, category, data.fileName);
+        if (publicUrl) {
+          console.log('[Asset] ✅ Asset risolto da Supabase Storage:', { assetId, publicUrl });
+          return publicUrl;
+        }
+      }
+
+      // Se non è un asset Supabase, potrebbe essere un asset Firebase legacy
+      // In questo caso, prova a usare Firebase Storage come fallback
+      if (data.storagePath && window.firebaseStorage) {
+        console.warn('[Asset] ⚠️ Asset legacy Firebase rilevato, uso Firebase Storage come fallback:', assetId);
+        const storageRef = window.firebaseStorage.ref(data.storagePath);
+        const downloadURL = await storageRef.getDownloadURL();
+        console.log('[Asset] ✅ Asset risolto da Firebase Storage (legacy):', { assetId, downloadURL });
+        return downloadURL;
+      }
+
+      console.warn('[Asset] Impossibile risolvere asset:', assetId);
+      return null;
+    } catch (error) {
+      console.warn('[Asset] ⚠️ Errore risoluzione asset:', assetId, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Carica un'immagine da un URL (helper per compatibilità)
+   * @param {string} url - URL dell'immagine (può essere dataURL o URL Storage)
+   * @returns {Promise<Image|null>} - Oggetto Image o null se errore
+   */
+  async function loadImageFromUrl(url) {
+    return new Promise((resolve) => {
+      if (!url) {
+        resolve(null);
+        return;
+      }
+      
+      // Controlla se l'URL è un URL Firebase Storage diretto senza token
+      // Se è così, potrebbe causare problemi CORS
+      if (url.includes('firebasestorage.googleapis.com') && !url.includes('token=')) {
+        console.warn('[Asset] ⚠️ URL Firebase Storage senza token rilevato. Questo potrebbe causare errori CORS:', url);
+        console.warn('[Asset] Suggerimento: usa assetId invece di URL diretto per evitare problemi CORS');
+      }
+      
+      const img = new Image();
+      
+      // Prova prima con crossOrigin per supportare CORS
+      img.crossOrigin = 'anonymous';
+      
+      let resolved = false;
+      
+      img.onload = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(img);
+        }
+      };
+      
+      img.onerror = async (error) => {
+        if (resolved) return;
+        
+        // Se fallisce con crossOrigin, prova senza (per dataURL o URL locali)
+        if (img.crossOrigin === 'anonymous' && !url.startsWith('data:')) {
+          console.warn('[Asset] ⚠️ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
+          
+          // Crea una nuova immagine senza crossOrigin
+          const imgNoCors = new Image();
+          imgNoCors.onload = () => {
+            if (!resolved) {
+              resolved = true;
+              resolve(imgNoCors);
+            }
+          };
+          imgNoCors.onerror = (error2) => {
+            if (!resolved) {
+              resolved = true;
+              console.error('[Asset] ❌ Errore definitivo caricamento immagine:', url, error2);
+              resolve(null);
+            }
+          };
+          imgNoCors.src = url;
+        } else {
+          resolved = true;
+          console.error('[Asset] ❌ Errore caricamento immagine:', url, error);
+          resolve(null);
+        }
+      };
+      
+      img.src = url;
+    });
+  }
+
+  /**
+   * Upload immagine e salva metadata (funzione combinata)
+   * @param {File} file - File immagine
+   * @param {string} projectId - ID del progetto
+   * @param {string} assetType - Tipo di asset
+   * @returns {Promise<{assetId: string, downloadURL: string}>} - Risultato upload
+   */
+  async function uploadImage(file, projectId, assetType, options = {}) {
+    try {
+      const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null, subfolder = null } = options || {};
+      // Upload su Supabase Storage
+      const { assetId: finalAssetId, storagePath, downloadURL, fileName, subfolder: resultSubfolder } = await uploadImageToStorage(
+        file,
+        projectId,
+        assetType,
+        assetId,
+        overwriteExisting,
+        fileNameOverride,
+        subfolder
+      );
+      
+      // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
+      // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
+      // perché l'asset è già caricato su Supabase Storage
+      const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL, resultSubfolder || subfolder);
+      
+      if (!metadataSaved) {
+        console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
+      }
+      
+      // Aggiorna i counter dopo upload asset
+      if (typeof updateProjectSizeIndicator === 'function') {
+        updateProjectSizeIndicator();
+      }
+      
+      return { assetId: finalAssetId, downloadURL, fileName };
+    } catch (error) {
+      console.error('[Asset] ❌ Errore upload immagine completo:', error);
+      throw error;
+    }
+  }
 
   // Helpers per file name sicuro in OPFS
   function sanitizeProjectFileName(name) {
@@ -7474,18 +14488,81 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  function createImageFromDataUrl(url) {
-    return new Promise((resolve) => {
-      if (!url) { resolve(null); return; }
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => resolve(null);
-      img.src = url;
-    });
+  /**
+   * Carica un'immagine da URL o assetId
+   * @param {string} urlOrAssetId - URL (dataURL o HTTP) oppure assetId con prefisso "asset:"
+   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId è un assetId)
+   * @returns {Promise<Image|null>} - Oggetto Image o null se errore
+   */
+  async function createImageFromDataUrl(urlOrAssetId, projectId = null) {
+    if (!urlOrAssetId) {
+      return null;
+    }
+
+    // Se è un assetId (prefisso "asset:"), risolvi da Supabase Storage (o Firebase Storage legacy)
+    if (urlOrAssetId.startsWith('asset:')) {
+      const assetId = urlOrAssetId.replace('asset:', '');
+      
+      if (!projectId) {
+        // Prova a ottenere projectId dal progetto corrente
+        const projectName = localStorage.getItem('amiantoActiveProjectName');
+        if (projectName) {
+          projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        }
+      }
+
+      if (!projectId) {
+        console.warn('[Asset] projectId mancante per risolvere asset:', assetId);
+        return null;
+      }
+
+      // Risolvi assetId in URL (funziona sia per Supabase che Firebase legacy)
+      const downloadURL = await resolveAssetUrl(projectId, assetId);
+      if (!downloadURL) {
+        console.warn('[Asset] Impossibile risolvere asset:', assetId);
+        return null;
+      }
+
+      // Carica immagine dall'URL risolto
+      return await loadImageFromUrl(downloadURL);
+    }
+
+    // Se è un URL Supabase Storage, caricalo direttamente
+    if (urlOrAssetId.includes('supabase.co/storage/v1/object/public/')) {
+      console.log('[Asset] URL Supabase Storage rilevato:', urlOrAssetId);
+      return await loadImageFromUrl(urlOrAssetId);
+    }
+
+    // Se è un URL Firebase Storage diretto senza token, avvisa l'utente
+    if (urlOrAssetId.includes('firebasestorage.googleapis.com') && !urlOrAssetId.includes('token=')) {
+      console.error('[Asset] ❌ URL Firebase Storage diretto rilevato (senza token). Questo causerà errori CORS.');
+      console.error('[Asset] URL problematico:', urlOrAssetId);
+      console.error('[Asset] Suggerimento: il progetto potrebbe essere stato salvato con URL diretti invece di assetId.');
+      console.error('[Asset] Prova a ricaricare l\'immagine dal progetto per generare un nuovo assetId.');
+      
+      // Prova comunque a caricarlo (potrebbe funzionare se le regole CORS sono configurate)
+      const img = await loadImageFromUrl(urlOrAssetId);
+      if (!img) {
+        showNotification('CORS error: image could not be loaded. Re-import the image from the project.', 'error');
+      }
+      return img;
+    }
+
+    // Fallback: tratta come URL normale (dataURL o HTTP)
+    return await loadImageFromUrl(urlOrAssetId);
   }
 
   async function applyProjectObject(projectObj) {
     try {
+      mergeLegacyHotspotScriptsIntoRooms(projectObj);
+
+      // Ottieni projectId dal progetto (necessario per risolvere assetId)
+      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
+      const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      
+      // Pulisci mappa asset prima di caricare nuovo progetto
+      imageAssetMap.clear();
+
       // Settings / viewport
       if (projectObj && projectObj.settings) {
         const s = projectObj.settings;
@@ -7495,6 +14572,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           gameViewport.height = Number(s.canvasHeight) || gameViewport.height;
           canvas.width = gameViewport.width;
           canvas.height = gameViewport.height;
+          editorState.panX = 0;
+          editorState.panY = 0;
           updateEditorDisplay();
         }
         // persisti impostazioni progetto
@@ -7514,76 +14593,194 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             name: r.name || roomId,
             background: null,
             foregrounds: [],
-            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => ({
-              id: o.id || uid('scene'),
-              name: o.name || 'Object',
-              type: o.type || 'Interactive',
-              x: Number(o.x) || 0,
-              y: Number(o.y) || 0,
-              img: null
-            })) : [],
+            sceneObjects: Array.isArray(r.sceneObjects) ? r.sceneObjects.map(o => {
+              const visible = (typeof o.visible === 'boolean') ? o.visible : true;
+              const enabled = (typeof o.enabled === 'boolean') ? o.enabled : visible;
+              return {
+                id: o.id || uid('scene'),
+                name: o.name || 'Object',
+                type: o.type || 'Interactive',
+                x: Number(o.x) || 0,
+                y: Number(o.y) || 0,
+                img: null,
+                rotationRad: Number(o.rotationRad) || 0,
+                scaleX: (typeof o.scaleX === 'number') ? Number(o.scaleX) : 1,
+                scaleY: (typeof o.scaleY === 'number') ? Number(o.scaleY) : 1,
+                visible,
+                enabled
+              };
+            }) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => ({
-              id: h.id || uid('hotspot'),
-              name: h.name || 'Hotspot',
-              points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
-              visible: (typeof h.visible === 'boolean') ? h.visible : true
-            })) : []
+            hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
+              const hotspotObj = {
+                id: h.id || uid('hotspot'),
+                name: h.name || 'Hotspot',
+                points: Array.isArray(h.points) ? h.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+                visible: (typeof h.visible === 'boolean') ? h.visible : true
+              };
+              
+              // ⚠️ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
+              // BUG FIX: Inizializza sempre la struttura scripts.onClick per garantire consistenza
+              hotspotObj.scripts = {};
+          if (h.scripts && h.scripts.onClick) {
+            const onClickData = h.scripts.onClick;
+            
+            // DEBUG AGGIUNTIVO: Log sempre per diagnosticare
+            console.log(`[Serialize] Hotspot ${h.id} - Serializzazione script:`, {
+              hasCode: !!onClickData.code,
+              codeLength: onClickData.code ? String(onClickData.code).length : 0,
+              codePreview: onClickData.code ? String(onClickData.code).substring(0, 50) : '(vuoto)',
+              enabled: onClickData.enabled,
+              codeType: typeof onClickData.code
+            });
+            
+            const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
+                
+                // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
+                // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+                let normalizedEnabled;
+                if (hasCode) {
+                  // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+                  normalizedEnabled = true;
+                  if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
+                    console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
+                  }
+                } else {
+                  // Se non c'è codice, enabled può essere false
+                  normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
+                }
+                
+                hotspotObj.scripts.onClick = {
+                  code: String(onClickData.code || ''),
+                  enabled: normalizedEnabled
+                };
+              } else {
+                // Se non c'è script, imposta struttura vuota e disabilitata
+                hotspotObj.scripts.onClick = {
+                  code: '',
+                  enabled: false
+                };
+              }
+              
+              return hotspotObj;
+            }) : [],
+            // Character scaling data
+            scalingForegroundY: (typeof r.scalingForegroundY === 'number') ? Number(r.scalingForegroundY) : null,
+            scalingBackgroundY: (typeof r.scalingBackgroundY === 'number') ? Number(r.scalingBackgroundY) : null,
+            scalingMinScale: (typeof r.scalingMinScale === 'number') ? Number(r.scalingMinScale) : 0.5,
+            scalingMaxScale: (typeof r.scalingMaxScale === 'number') ? Number(r.scalingMaxScale) : 1.5
           };
           rooms.set(roomId, roomVal);
           // carica immagini async (background, foregrounds, scene objects)
           Promise.resolve().then(async () => {
             if (r.background) {
-              roomVal.background = await createImageFromDataUrl(r.background);
-              redraw();
+              const img = await createImageFromDataUrl(r.background, projectId);
+              if (img) {
+                // Verifica che l'immagine sia completamente caricata
+                const width = img.naturalWidth || img.width;
+                const height = img.naturalHeight || img.height;
+                
+                if (width && height) {
+                  roomVal.background = img;
+                  // Se è la stanza corrente, aggiorna anche il background globale
+                  if (roomId === currentRoomId) {
+                    background = img;
+                  }
+                  // Se è un assetId, registra nella mappa
+                  if (r.background && r.background.startsWith('asset:')) {
+                    const assetId = r.background.replace('asset:', '');
+                    imageAssetMap.set(img, { assetId, type: 'background', projectId });
+                  }
+                  redraw();
+                } else {
+                  console.warn('[Load Project] Background image loaded but has no dimensions:', {
+                    complete: img.complete,
+                    naturalWidth: img.naturalWidth,
+                    naturalHeight: img.naturalHeight,
+                    width: img.width,
+                    height: img.height
+                  });
+                }
+              }
             }
             if (Array.isArray(r.foregrounds)) {
+              console.log(`[Load] Caricamento ${r.foregrounds.length} foreground per room ${roomId}`, r.foregrounds);
               const out = [];
               for (const f of r.foregrounds) {
-                out.push({
+                if (!f || !f.image) {
+                  console.warn(`[Load] Foreground senza image, skip:`, f);
+                  continue;
+                }
+                
+                const img = await createImageFromDataUrl(f.image, projectId);
+                if (!img) {
+                  console.warn(`[Load] Impossibile caricare immagine foreground:`, f.image);
+                  continue;
+                }
+                
+                // Support both x/y and offsetX/offsetY for backward compatibility
+                const x = (typeof f.x === 'number') ? f.x : (f.offsetX || 0);
+                const y = (typeof f.y === 'number') ? f.y : (f.offsetY || 0);
+                
+                const foregroundObj = {
                   id: f.id || uid('fg'),
                   name: f.name || 'Layer',
-                  img: f.image ? await createImageFromDataUrl(f.image) : null,
-                  offsetX: Number(f.offsetX)||0,
-                  offsetY: Number(f.offsetY)||0
-                });
+                  img: img,
+                  x: Number(x) || 0,
+                  y: Number(y) || 0,
+                  offsetX: Number(x) || 0, // Mantieni per compatibilità
+                  offsetY: Number(y) || 0, // Mantieni per compatibilità
+                  rotationRad: Number(f.rotationRad) || 0,
+                  scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
+                  scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
+                  visible: (typeof f.visible === 'boolean') ? f.visible : true
+                };
+                
+                out.push(foregroundObj);
+                
+                // Se è un assetId, registra nella mappa
+                if (f.image && f.image.startsWith('asset:')) {
+                  const assetId = f.image.replace('asset:', '');
+                  imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
+                }
+                
+                console.log(`[Load] ✓ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
               }
+              
+              console.log(`[Load] Foreground caricati per room ${roomId}: ${out.length}/${r.foregrounds.length}`);
               roomVal.foregrounds = out;
+              
+              // IMPORTANTE: Se questa è la room corrente, aggiorna anche lo stato globale
+              if (roomId === currentRoomId) {
+                foregrounds = out;
+                console.log(`[Load] ✓ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
+              }
+              
               refreshForegroundListUI();
               redraw();
+            } else {
+              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non è un array o è vuoto)`);
             }
             if (Array.isArray(r.sceneObjects)) {
               for (let i = 0; i < r.sceneObjects.length; i++) {
                 const src = r.sceneObjects[i];
                 const dst = roomVal.sceneObjects[i];
                 if (src && src.image) {
-                  dst.img = await createImageFromDataUrl(src.image);
+                  const img = await createImageFromDataUrl(src.image, projectId);
+                  dst.img = img;
+                  // Se è un assetId, registra nella mappa
+                  if (img && src.image.startsWith('asset:')) {
+                    const assetId = src.image.replace('asset:', '');
+                    imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
+                  }
                 }
               }
               // ricrea lista oggetti
-              const list = document.getElementById('scene-objects-list');
-              if (list) {
-                list.innerHTML = '';
-                roomVal.sceneObjects.forEach(obj => {
-                  const item = document.createElement('div');
-                  item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-                  item.dataset.objectId = obj.id;
-                  item.innerHTML = `
-        <div>
-          <strong>${obj.name}</strong>
-          <br><small>Scene object</small>
-          <br><span class="badge bg-warning">Interactive</span>
-          <br><small style="color: #888;">Position: ${Math.round(obj.x)}, ${Math.round(obj.y)}</small>
-        </div>
-        <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editSceneObject(this)">✏️</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeSceneObject(this)">🗑️</button>
-        </div>
-                  `;
-                  list.appendChild(item);
-                });
+              if (roomId === currentRoomId) {
+                sceneObjects = roomVal.sceneObjects;
+                refreshSceneObjectsListUI();
+                redraw();
               }
-              redraw();
             }
             refreshHotspotsListUI();
           });
@@ -7591,31 +14788,58 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } else {
         // assicura almeno una stanza
         const rid = uid('room');
-        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [] });
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
       // Seleziona prima stanza e sincronizza riferimenti
       const firstRoom = rooms.keys().next().value;
       currentRoomId = firstRoom;
       bindRoomRefs();
+      refreshForegroundListUI();
+      refreshSceneObjectsListUI();
+      refreshHotspotsListUI();
       refreshRoomsSelector();
       try { refreshStartRoomSelector(); } catch(_) {}
       redraw();
 
       // GUI
-      guis = Array.isArray(projectObj.guis) ? projectObj.guis.map(g => ({
-        id: g.id || uid('gui'),
-        name: g.name || 'GUI',
-        type: g.type || 'MainInterface',
-        settings: g.settings || {},
-        background: g.background ? null : null, // background immagine opzionale, non serializzato ora
-        buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
-          id: b.id || uid('btn'),
-          name: b.name || 'Button',
-          x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
-          text: b.text || '',
-          backgroundImage: null
-        })) : []
-      })) : [];
+      guis = [];
+      if (Array.isArray(projectObj.guis)) {
+        for (const g of projectObj.guis) {
+          const guiBg = g.background ? await createImageFromDataUrl(g.background, projectId) : null;
+          if (guiBg && g.background && g.background.startsWith('asset:')) {
+            const assetId = g.background.replace('asset:', '');
+            imageAssetMap.set(guiBg, { assetId, type: 'gui', projectId });
+          }
+          
+          const buttons = [];
+          if (Array.isArray(g.buttons)) {
+            for (const b of g.buttons) {
+              const btnBg = b.backgroundImage ? await createImageFromDataUrl(b.backgroundImage, projectId) : null;
+              if (btnBg && b.backgroundImage && b.backgroundImage.startsWith('asset:')) {
+                const assetId = b.backgroundImage.replace('asset:', '');
+                imageAssetMap.set(btnBg, { assetId, type: 'gui', projectId });
+              }
+              buttons.push({
+                id: b.id || uid('btn'),
+                name: b.name || 'Button',
+                x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
+                text: b.text || '',
+                backgroundImage: btnBg
+              });
+            }
+          }
+          
+          const loadedGuiType = (g.type === 'Inventory') ? 'OverlayCustom' : (g.type || 'MainInterface');
+          guis.push({
+            id: g.id || uid('gui'),
+            name: g.name || 'GUI',
+            type: loadedGuiType,
+            settings: g.settings || {},
+            background: guiBg,
+            buttons: buttons
+          });
+        }
+      }
       if (guis.length === 0) {
         const defaultGui = { id: uid('gui'), name: 'Main GUI', type: 'MainInterface', settings: {}, background: null, buttons: [] };
         guis.push(defaultGui);
@@ -7634,50 +14858,196 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Characters frames (Map)
       try {
         characterFrames.clear();
+        // Pulisce anche la lista DOM dei character
+        const charactersList = document.getElementById('characters-list');
+        if (charactersList) {
+          charactersList.innerHTML = '';
+        }
+        
         if (Array.isArray(projectObj.characters)) {
           for (const ch of projectObj.characters) {
-            const directions = {};
-            if (ch && ch.directions) {
-              for (const [dir, data] of Object.entries(ch.directions)) {
-                const frames = Array.isArray(data.frames) ? await Promise.all(data.frames.map(f => createImageFromDataUrl(f))) : [];
-                directions[dir] = { fps: Number(data.fps) || 8, frames: frames.filter(Boolean) };
+            const characterName = ch.name || ch.id || uid('char');
+            const directions = await loadCharacterDirectionsFromData(ch.directions, projectId, characterName);
+            const animations = {};
+            if (ch.animations && typeof ch.animations === 'object') {
+              for (const [animName, animData] of Object.entries(ch.animations)) {
+                if (animName && animData) {
+                  animations[animName] = {
+                    directions: await loadCharacterDirectionsFromData(animData.directions, projectId, characterName)
+                  };
+                }
               }
             }
-            characterFrames.set(ch.name || uid('char'), { directions, currentFrame: 0 });
+            const charData = { directions, animations, currentFrame: 0 };
+            // Load pivot if it exists
+            if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
+              charData.pivotX = Number(ch.pivotX) || 0;
+              charData.pivotY = Number(ch.pivotY) || 0;
+            }
+            // Load spawnSettings if it exists
+            if (ch.spawnSettings) {
+              charData.spawnSettings = {
+                isPlayer: ch.spawnSettings.isPlayer === true,
+                autoSpawn: ch.spawnSettings.autoSpawn === true,
+                roomId: ch.spawnSettings.roomId || null,
+                x: typeof ch.spawnSettings.x === 'number' ? ch.spawnSettings.x : 0,
+                y: typeof ch.spawnSettings.y === 'number' ? ch.spawnSettings.y : 0,
+                direction: ch.spawnSettings.direction || 'south',
+                moveSpeed: typeof ch.spawnSettings.moveSpeed === 'number' && ch.spawnSettings.moveSpeed > 0 ? ch.spawnSettings.moveSpeed : 100
+              };
+            }
+            characterFrames.set(characterName, charData);
           }
         }
-        refreshCharacterSelector();
-        refreshStartingPlayerUI();
-      } catch(_) {}
+        refreshCharactersListUI();
+      } catch(error) {
+        console.error('[Load] Errore caricamento character:', error);
+      }
 
-      // Inventory UI (lista DOM)
+      // Inventory (layout + items)
       try {
-        const inv = Array.isArray(projectObj.inventory) ? projectObj.inventory : [];
-        const list = document.getElementById('inventory-list');
-        if (list) {
-          list.innerHTML = '';
-          inv.forEach(item => {
-            const el = document.createElement('div');
-            el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
-            el.innerHTML = `
-              <div>
-                <strong>${item.name || 'Item'}</strong>
-                <br><small>Inventory item</small>
-              </div>
-              <div>
-                <button class="btn btn-sm btn-outline-light me-1" title="Edit" onclick="editInventoryObject(this)">✏️</button>
-                <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="removeInventoryObject(this)">🗑️</button>
-              </div>
-            `;
-            list.appendChild(el);
+        inventoryItems = [];
+        inventoryDefinition = {
+          background: null,
+          slots: [],
+          displayMode: 'popup',
+          popupEdgeHeight: 48,
+          panel: null,
+          toggleIcon: null,
+          toggleIconBounds: null
+        };
+        selectedInventorySlotId = null;
+        selectedInventoryItemId = null;
+        const invData = projectObj.inventory;
+        const itemSources = [];
+        if (Array.isArray(invData)) {
+          invData.forEach(item => {
+            itemSources.push({ ...item, _legacy: true });
           });
+        } else if (invData && typeof invData === 'object') {
+          inventoryDefinition.displayMode = normalizeInventoryDisplayMode(invData.displayMode);
+          inventoryDefinition.popupEdgeHeight = Math.max(16, Math.min(200, Number(invData.popupEdgeHeight) || 48));
+          inventoryDefinition.panel = normalizeInventoryRect(invData.panel, defaultInventoryPanel());
+          inventoryDefinition.toggleIconBounds = normalizeInventoryRect(
+            invData.toggleIconBounds,
+            defaultInventoryToggleIconBounds()
+          );
+          if (Array.isArray(invData.items)) itemSources.push(...invData.items);
+          if (Array.isArray(invData.slots)) {
+            inventoryDefinition.slots = invData.slots.map(s => ({
+              id: s.id || uid('invslot'),
+              name: s.name || 'Slot',
+              x: Number(s.x) || 0,
+              y: Number(s.y) || 0,
+              w: Number(s.w) || 0,
+              h: Number(s.h) || 0
+            }));
+          }
+          if (invData.background) {
+            const bgRef = invData.background;
+            Promise.resolve().then(async () => {
+              const img = await createImageFromDataUrl(bgRef, projectId);
+              if (img) {
+                inventoryDefinition.background = img;
+                if (typeof bgRef === 'string' && bgRef.startsWith('asset:')) {
+                  imageAssetMap.set(img, { assetId: bgRef.replace('asset:', ''), type: 'inventory', projectId });
+                }
+                redraw();
+              }
+            });
+          }
+          if (invData.toggleIcon) {
+            const iconRef = invData.toggleIcon;
+            Promise.resolve().then(async () => {
+              const img = await createImageFromDataUrl(iconRef, projectId);
+              if (img) {
+                inventoryDefinition.toggleIcon = img;
+                if (typeof iconRef === 'string' && iconRef.startsWith('asset:')) {
+                  imageAssetMap.set(img, { assetId: iconRef.replace('asset:', ''), type: 'inventory', projectId });
+                }
+                updateInventoryToggleIconLabel();
+                redraw();
+              }
+            });
+          }
         }
-        refreshInventoryScriptTargets();
-      } catch(_) {}
-
+        itemSources.forEach(item => {
+          const entry = {
+            id: item.id || uid('invitem'),
+            name: item.name || 'Item',
+            scriptName: item.scriptName || item.name || 'Item',
+            image: null,
+            _imageRef: item.image || null
+          };
+          inventoryItems.push(entry);
+          if (item.scriptName) inventoryScripts.set(entry.name, item.scriptName);
+        });
+        Promise.resolve().then(async () => {
+          for (const item of inventoryItems) {
+            if (item._imageRef) {
+              item.image = await createImageFromDataUrl(item._imageRef, projectId);
+              if (item.image && typeof item._imageRef === 'string' && item._imageRef.startsWith('asset:')) {
+                imageAssetMap.set(item.image, { assetId: item._imageRef.replace('asset:', ''), type: 'inventory', projectId });
+              }
+            }
+            delete item._imageRef;
+            syncInventoryItemScript(item);
+          }
+          refreshInventoryItemsListUI();
+          refreshInventorySlotsListUI();
+          applyInventoryRectsToUI();
+          refreshInventoryDisplayModeUI();
+          redraw();
+        });
+        refreshInventoryItemsListUI();
+        refreshInventorySlotsListUI();
+        applyInventoryRectsToUI();
+        refreshInventoryDisplayModeUI();
+      } catch (invErr) {
+        console.error('[Load] Errore caricamento inventory:', invErr);
+      }
       // Scripts
       try {
         jsScripts.clear();
+        
+        // ⚠️ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
+        // Questo assicura che anche se la cache del browser non è stata svuotata,
+        // l'editor sarà vuoto quando si crea un nuovo progetto
+        currentScriptName = null;
+        ensureLargeScriptEditor();
+        ensureScriptEditor();
+        if (largeCodeMirrorEditor) {
+          largeCodeMirrorEditor.setValue('');
+          setTimeout(() => {
+            if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
+              largeCodeMirrorEditor.refresh();
+            }
+          }, 0);
+        }
+        if (codeMirrorEditor) {
+          codeMirrorEditor.setValue('');
+          setTimeout(() => {
+            if (codeMirrorEditor && typeof codeMirrorEditor.refresh === 'function') {
+              codeMirrorEditor.refresh();
+            }
+          }, 0);
+        }
+        // Pulisci anche i textarea se esistono
+        const taLarge = document.getElementById('script-editor-large');
+        if (taLarge) taLarge.value = '';
+        const taSmall = document.getElementById('script-editor');
+        if (taSmall) taSmall.value = '';
+        
+        // Reset dropdowns
+        const scopeSel = document.getElementById('script-scope');
+        const targetSel = document.getElementById('script-target');
+        if (scopeSel && targetSel) {
+          scopeSel.value = 'Global';
+          populateTargetsForScope('Global');
+          targetSel.disabled = true;
+          scopeSel.disabled = false;
+        }
+        
         const selector = document.getElementById('script-selector');
         if (selector) {
           // reset, mantieni placeholder
@@ -7686,14 +15056,39 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           opt0.value = ''; opt0.textContent = 'Select a script...';
           selector.appendChild(opt0);
         }
+        
+        // ⚠️ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
+        // Questo previene che script di progetti eliminati compaiano in progetti nuovi
+        try {
+          const projectScriptNames = new Set();
+          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
+            Object.keys(projectObj.scripts).forEach(name => {
+              if (name) projectScriptNames.add(String(name));
+            });
+          }
+          // Rimuovi tutti gli script da localStorage che non sono nel progetto corrente
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('script-')) {
+              const scriptName = key.slice('script-'.length);
+              if (!projectScriptNames.has(scriptName)) {
+                localStorage.removeItem(key);
+              }
+            }
+          }
+        } catch (cleanupError) {
+          console.warn('[applyProjectObject] Errore pulizia script localStorage:', cleanupError);
+        }
+        
         if (projectObj.scripts && typeof projectObj.scripts === 'object') {
           Object.entries(projectObj.scripts).forEach(([name, content]) => {
             if (!name) return;
-            jsScripts.set(String(name), String(content || ''));
-            localStorage.setItem(`script-${name}`, String(content || ''));
+            const canonical = migrateLegacyScriptKey(String(name));
+            jsScripts.set(canonical, String(content || ''));
+            localStorage.setItem(`script-${canonical}`, String(content || ''));
             if (selector) {
               const o = document.createElement('option');
-              o.value = name; o.textContent = name;
+              o.value = canonical; o.textContent = canonical;
               selector.appendChild(o);
             }
           });
@@ -7726,15 +15121,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         roomScripts.clear();
         characterScripts.clear();
         inventoryScripts.clear();
-        hotspotScripts.clear();
+        hotspotScripts.clear(); // ⚠️ hotspotScripts Map non più usata per gli hotspot (script salvati in hotspot.scripts.onClick)
         if (projectObj.attachments && typeof projectObj.attachments === 'object') {
           const A = projectObj.attachments;
           if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
           if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
-          if (A.characterScripts && typeof A.characterScripts === 'object') Object.entries(A.characterScripts).forEach(([k,v]) => { if (k && v) characterScripts.set(String(k), String(v)); });
+          if (A.characterScripts && typeof A.characterScripts === 'object') {
+            Object.entries(A.characterScripts).forEach(([k,v]) => { 
+              if (k && v) characterScripts.set(String(k), String(v)); 
+            });
+          }
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
-          if (A.hotspotScripts && typeof A.hotspotScripts === 'object') Object.entries(A.hotspotScripts).forEach(([k,v]) => { if (k && v) hotspotScripts.set(String(k), String(v)); });
+          // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
         }
       } catch(_) {}
       
@@ -7804,24 +15203,96 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       } catch(_) {}
 
+      // ⚠️ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
+      // Questo assicura che gli hotspot con codice siano sempre attivi, anche se il progetto salvato aveva enabled=false
+      try {
+        let cleanedCount = 0;
+        rooms.forEach((room, roomId) => {
+          if (room.hotspots && Array.isArray(room.hotspots)) {
+            room.hotspots.forEach(hotspot => {
+              if (hotspot.scripts && hotspot.scripts.onClick) {
+                const hasCode = hotspot.scripts.onClick.code && 
+                              typeof hotspot.scripts.onClick.code === 'string' && 
+                              hotspot.scripts.onClick.code.trim() !== '';
+                
+                if (hasCode && hotspot.scripts.onClick.enabled === false) {
+                  console.log(`[Cleanup] Auto-enable hotspot ${hotspot.id} (${hotspot.name}) - ha codice ma enabled=false`);
+                  hotspot.scripts.onClick.enabled = true;
+                  cleanedCount++;
+                }
+              }
+            });
+          }
+        });
+        
+        // Aggiorna anche gli hotspot globali se esistenti
+        if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+          hotspots.forEach(hotspot => {
+            if (hotspot.scripts && hotspot.scripts.onClick) {
+              const hasCode = hotspot.scripts.onClick.code && 
+                            typeof hotspot.scripts.onClick.code === 'string' && 
+                            hotspot.scripts.onClick.code.trim() !== '';
+              
+              if (hasCode && hotspot.scripts.onClick.enabled === false) {
+                console.log(`[Cleanup] Auto-enable hotspot globale ${hotspot.id} (${hotspot.name}) - ha codice ma enabled=false`);
+                hotspot.scripts.onClick.enabled = true;
+                cleanedCount++;
+              }
+            }
+          });
+        }
+        
+        if (cleanedCount > 0) {
+          console.log(`[Cleanup] ✅ Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
+        }
+      } catch (cleanupError) {
+        console.warn('[Cleanup] Errore durante pulizia hotspot:', cleanupError);
+      }
+
       // Cursors contestuali
       try {
-        contextualCursors = Array.isArray(projectObj.cursors) ? projectObj.cursors.map(c => ({
-          id: c.id || uid('cursor'),
-          targetType: c.targetType || 'hotspot',
-          targetId: c.targetId || '',
-          cursorImage: null, // immagine non serializzata
-          actionText: c.actionText || '',
-          scriptName: c.scriptName || ''
-        })) : [];
+        contextualCursors = [];
+        if (Array.isArray(projectObj.cursors)) {
+          for (const c of projectObj.cursors) {
+            const cursorImg = c.cursorImage ? await createImageFromDataUrl(c.cursorImage, projectId) : null;
+            if (cursorImg && c.cursorImage && c.cursorImage.startsWith('asset:')) {
+              const assetId = c.cursorImage.replace('asset:', '');
+              imageAssetMap.set(cursorImg, { assetId, type: 'cursor', projectId });
+            }
+            contextualCursors.push({
+              id: c.id || uid('cursor'),
+              targetType: c.targetType || 'hotspot',
+              targetId: c.targetId || '',
+              cursorImage: cursorImg,
+              actionText: c.actionText || '',
+              scriptName: c.scriptName || ''
+            });
+          }
+        }
         refreshCursorsList();
       } catch(_) {}
 
-      redraw();
+      // Centra la preview rooms/inventory dopo il caricamento (evita pan obsoleto fuori schermo)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+      });
+      
+      // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
+      rebuildScriptsTree();
+      
+      // Inizializza il canvas embedded e il runtime sandboxed
+      try {
+        // Serializza il progetto per il runtime
+        const projectJson = JSON.stringify(projectObj);
+        initializeSandboxRuntime(projectJson);
+      } catch (runtimeError) {
+        console.warn('[applyProjectObject] Errore inizializzazione runtime embedded:', runtimeError);
+      }
+      
       showNotification('Project loaded', 'success');
     } catch (err) {
       addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
-      showNotification('Errore nel caricamento del progetto', 'danger');
+      showNotification('Error loading project', 'danger');
     }
   }
 
@@ -7831,7 +15302,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       await applyProjectObject(obj);
     } catch (err) {
       addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
-      showNotification('JSON progetto non valido', 'danger');
+      showNotification('Invalid project JSON', 'danger');
     }
   };
 
@@ -7842,6 +15313,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return; 
     }
     if (!projectName) return;
+
+    // Blocca durante la sincronizzazione
+    if (isSyncingProjects) {
+      showNotification('Please wait for synchronization to complete before opening a project', 'warning');
+      return;
+    }
 
     const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
     
@@ -7927,43 +15404,246 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Applica il progetto caricato
     await applyProjectObject(projectObj);
 
-    // Aggiorna stato locale
+    // IMPORTANTE: Salva il progetto attivo PRIMA di qualsiasi altra operazione
+    // Questo assicura che il listener hide.bs.modal possa rilevarlo
     localStorage.setItem('amiantoActiveProjectName', projectName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    localStorage.setItem('amiantoActiveProjectId', projectId);
 
+    // Abilita altre tab ora che c'è un progetto aperto
+    enableOtherTabs(true);
+    
+    // Aggiorna indicatore dimensione progetto
+    updateProjectSizeIndicator();
+    
     // Mostra notifica con fonte di caricamento
     if (loadedFrom === 'firestore') {
       showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
     } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
       showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
     }
+    
+    // Il modale verrà chiuso dal chiamante dopo questa funzione completa
   }
 
-  // MODIFICATO: Ora elimina anche da Firestore
+  // Funzione per aggiornare l'indicatore della dimensione del progetto
+  async function updateProjectSizeIndicator() {
+    try {
+      const indicator = document.getElementById('projectSizeIndicator');
+      const sizeText = document.getElementById('projectSizeText');
+      
+      if (!indicator || !sizeText) {
+        return; // Elementi non ancora disponibili
+      }
+      
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      
+      if (!activeProjectName) {
+        indicator.style.display = 'none';
+        return;
+      }
+      
+      // Calcola dimensione Firestore (progetto serializzato)
+      const projectObj = window.serializeProject();
+      const jsonString = JSON.stringify(projectObj);
+      const dataSizeBytes = new Blob([jsonString]).size;
+      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
+      const dataSizeKB = (dataSizeBytes / 1024).toFixed(1);
+      
+      // Calcola percentuale rispetto al limite Firestore (1MB)
+      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
+      const percentageUsed = ((dataSizeBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1);
+      
+      // Mostra dimensione Firestore in KB o MB
+      let sizeDisplay;
+      if (dataSizeBytes >= 1024 * 1024) {
+        sizeDisplay = `Firestore: ${dataSizeMB} MB (${percentageUsed}%)`;
+      } else {
+        sizeDisplay = `Firestore: ${dataSizeKB} KB (${percentageUsed}%)`;
+      }
+      
+      sizeText.textContent = sizeDisplay;
+      
+      // Colore Firestore in base alla percentuale
+      if (percentageUsed >= 90) {
+        sizeText.style.color = '#ff6b6b'; // Rosso per >90%
+      } else if (percentageUsed >= 75) {
+        sizeText.style.color = '#ffa500'; // Arancione per 75-90%
+      } else {
+        sizeText.style.color = '#aaa'; // Grigio per <75%
+      }
+      
+      indicator.style.display = 'block';
+    } catch (error) {
+      console.warn('[ProjectSize] Errore aggiornamento indicatore:', error);
+    }
+  }
+  
+  // Esponi funzione globalmente
+  window.updateProjectSizeIndicator = updateProjectSizeIndicator;
+
+  /**
+   * Elimina completamente un progetto da Firestore, incluse tutte le subcollezioni
+   * IMPORTANTE: In Firestore, eliminare un documento padre NON elimina automaticamente le subcollezioni
+   * Questa funzione elimina prima tutte le subcollezioni, poi il documento principale
+   * @param {string} userId - ID utente (uid di Firebase)
+   * @param {string} projectId - ID progetto
+   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
+   */
+  async function deleteProjectFromFirestoreCompletely(userId, projectId) {
+    if (!userId || !projectId || !window.firebaseDB) {
+      console.warn('[Firestore] Parametri mancanti per eliminazione completa progetto');
+      return false;
+    }
+
+    try {
+      // Ottieni riferimento a Firebase per accedere a batch()
+      const firebaseObj = window.firebase || firebase;
+      if (!firebaseObj) {
+        console.error('[Firestore] Firebase non disponibile');
+        return false;
+      }
+
+      const projectRef = window.firebaseDB
+        .collection('users')
+        .doc(userId)
+        .collection('projects')
+        .doc(projectId);
+
+      // STEP 1: Elimina tutte le subcollezioni (es: assets)
+      // Firestore non supporta eliminazione ricorsiva automatica, quindi dobbiamo farlo manualmente
+      const subcollections = ['assets']; // Aggiungi altre subcollezioni se necessario
+      
+      for (const subcollectionName of subcollections) {
+        try {
+          const subcollectionRef = projectRef.collection(subcollectionName);
+          
+          // Elenca tutti i documenti nella subcollezione
+          // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
+          const snapshot = await subcollectionRef.get({ source: 'server' });
+          
+          if (!snapshot.empty) {
+            console.log(`[Firestore] Eliminazione ${snapshot.size} documenti dalla subcollezione '${subcollectionName}'...`);
+            
+            // Elimina tutti i documenti in batch (Firestore supporta batch fino a 500 operazioni)
+            const BATCH_SIZE = 500;
+            const batches = [];
+            let currentBatch = window.firebaseDB.batch();
+            let operationCount = 0;
+            
+            snapshot.forEach((doc) => {
+              currentBatch.delete(doc.ref);
+              operationCount++;
+              
+              if (operationCount >= BATCH_SIZE) {
+                batches.push(currentBatch);
+                currentBatch = window.firebaseDB.batch();
+                operationCount = 0;
+              }
+            });
+            
+            // Aggiungi l'ultimo batch se ha operazioni
+            if (operationCount > 0) {
+              batches.push(currentBatch);
+            }
+            
+            // Esegui tutti i batch
+            for (const batch of batches) {
+              await batch.commit();
+            }
+            
+            console.log(`[Firestore] ✅ Subcollezione '${subcollectionName}' eliminata completamente`);
+          } else {
+            console.log(`[Firestore] Subcollezione '${subcollectionName}' già vuota`);
+          }
+        } catch (subError) {
+          console.error(`[Firestore] Errore eliminazione subcollezione '${subcollectionName}':`, subError);
+          // Continua anche se una subcollezione fallisce
+        }
+      }
+
+      // STEP 2: Verifica che il documento esista prima di eliminarlo
+      // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
+      const projectDoc = await projectRef.get({ source: 'server' });
+      
+      if (!projectDoc.exists) {
+        console.log(`[Firestore] Progetto ${projectId} non esiste già su Firestore`);
+        return true; // Considera come successo se non esiste
+      }
+
+      // STEP 3: Elimina il documento principale
+      await projectRef.delete();
+      
+      // STEP 4: Verifica che l'eliminazione sia stata applicata (forza lettura dal server)
+      // Questo previene problemi con la cache offline di Firestore
+      // Attendi un breve momento per permettere la propagazione
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const verifyDoc = await projectRef.get({ source: 'server' });
+      
+      if (verifyDoc.exists) {
+        console.error(`[Firestore] ⚠️ ATTENZIONE: Il progetto ${projectId} esiste ancora dopo l'eliminazione!`);
+        addDebugMessage(`[Firestore] ⚠️ Project may not have been permanently deleted`, 'warning');
+        return false;
+      }
+      
+      console.log(`[Firestore] ✅ Progetto ${projectId} eliminato permanentemente da Firestore`);
+      return true;
+    } catch (error) {
+      console.error('[Firestore] Errore eliminazione completa progetto:', error);
+      addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
+      return false;
+    }
+  }
+
+  // MODIFICATO: Ora elimina anche da Firestore (con eliminazione completa delle subcollezioni)
   async function deleteProjectByName(projectName) {
     if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
     if (!projectName) return;
-    if (!confirm(`Eliminare il progetto "${projectName}"? Questa azione non è reversibile.`)) return;
+    if (!confirm(`Delete project "${projectName}"? This action cannot be undone.`)) return;
     
     const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
     
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
     const userId = currentUser.uid;
 
-    // 1. ELIMINA DA FIRESTORE (se disponibile) - AGGIUNTO
+    // 1. ELIMINA COMPLETAMENTE DA FIRESTORE (incluse subcollezioni) - MODIFICATO
     if (userId && window.firebaseDB) {
       try {
-        const projectRef = window.firebaseDB
-          .collection('users')
-          .doc(userId)
-          .collection('projects')
-          .doc(projectId);
-        await projectRef.delete();
-        console.log(`[Firestore] Progetto eliminato: ${projectName}`);
-        addDebugMessage(`[Firestore] Progetto eliminato: ${projectName}`, 'success');
+        const deleted = await deleteProjectFromFirestoreCompletely(userId, projectId);
+        if (deleted) {
+          console.log(`[Firestore] Progetto eliminato permanentemente: ${projectName}`);
+          addDebugMessage(`[Firestore] Project permanently deleted: ${projectName}`, 'success');
+        } else {
+          console.error(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`);
+          addDebugMessage(`[Firestore] Could not permanently delete project: ${projectName}`, 'error');
+          // Continua comunque con l'eliminazione locale
+        }
       } catch (error) {
         console.error('[Firestore] Errore eliminazione:', error);
-        addDebugMessage(`[Firestore] Errore eliminazione: ${error.message || error}`, 'error');
+        addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
+        // Continua comunque con l'eliminazione locale
+      }
+    }
+
+    // 1.5. ELIMINA CARTELLA PROGETTO DA SUPABASE STORAGE (se disponibile) - AGGIUNTO
+    if (userId && window.supabaseStorage && window.supabaseStorage.deleteProjectFolder) {
+      try {
+        const deleted = await window.supabaseStorage.deleteProjectFolder(projectId);
+        if (deleted) {
+          console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
+          addDebugMessage(`[Supabase] Project folder deleted: ${projectName}`, 'success');
+          
+          // Aggiorna i counter dopo eliminazione cartella progetto
+          if (typeof updateProjectSizeIndicator === 'function') {
+            updateProjectSizeIndicator();
+          }
+        } else {
+          console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
+          addDebugMessage(`[Supabase] Could not delete project folder: ${projectName}`, 'warning');
+        }
+      } catch (error) {
+        console.error('[Supabase] Errore eliminazione cartella progetto:', error);
+        addDebugMessage(`[Supabase] Folder delete error: ${error.message || error}`, 'error');
       }
     }
     
@@ -7980,10 +15660,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     } catch(_) {}
     
-    // 3. Rimuovi dalla lista progetti - GIÀ IMPLEMENTATO
-    const list = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+    // 3. Rimuovi dalla lista progetti usando funzione centralizzata
+    const list = loadProjectsFromCache(currentUser.username);
     const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
-    localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filtered));
+    saveProjectsToCache(currentUser.username, filtered);
     
     // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
     try { localStorage.removeItem(projectKey); } catch(_) {}
@@ -8012,7 +15692,71 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
     try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
-    showNotification('Progetto eliminato', 'success');
+    
+    // 8. Se è il progetto corrente aperto, rimuovi anche il progetto attivo
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (activeProjectName === projectName) {
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+      // Nascondi indicatore dimensione progetto
+      const indicator = document.getElementById('projectSizeIndicator');
+      if (indicator) {
+        indicator.style.display = 'none';
+      }
+    }
+    
+    // 9. Verifica se ci sono ancora progetti dopo la cancellazione
+    // Sincronizza con Firestore per avere la lista aggiornata
+    let remainingProjects = [];
+    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+      try {
+        await syncProjectsFromFirestore(userId);
+        remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+      } catch (error) {
+        console.error('[Delete] Errore sincronizzazione dopo cancellazione:', error);
+        // Fallback: usa la lista locale già filtrata
+        remainingProjects = filtered;
+      }
+    } else {
+      // Fallback: usa la lista locale già filtrata
+      remainingProjects = filtered;
+    }
+    
+    showNotification('Project deleted', 'success');
+    
+    // 10. Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
+    if (remainingProjects.length === 0) {
+      console.log('[Delete] Nessun progetto rimasto, mostro modale selezione');
+      // Rimuovi progetto attivo se ancora presente
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+      // Pulisci l'editor
+      rooms = new Map();
+      currentRoomId = null;
+      background = null;
+      foregrounds = [];
+      sceneObjects = [];
+      guis = [];
+      characters = [];
+      contextualCursors = [];
+      
+      // Disabilita altre tab (non c'è più un progetto aperto)
+      enableOtherTabs(false);
+      
+      // Torna alla tab Projects
+      if (typeof showSectionById === 'function') {
+        showSectionById('projects', false);
+      } else {
+        // Fallback: usa il bottone direttamente
+        const projectsButton = document.querySelector(`[data-section="projects"]`);
+        if (projectsButton) {
+          projectsButton.click();
+        }
+      }
+      
+      // Mostra il modale (forzato, anche se c'era un progetto attivo)
+      await showProjectSelectionModal(true);
+    }
   }
 
   // Show project list (modal)
@@ -8042,7 +15786,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     modal.setAttribute('aria-hidden', 'true');
     const count = userProjects.length;
     const itemsHtml = count === 0 ? `
-      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu File.</div>
+      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu Profilo > File.</div>
     ` : userProjects.map((p, i) => {
       const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
       const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
@@ -8089,24 +15833,78 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const bsModal = new bootstrap.Modal(modal);
     bsModal.show();
     modal.addEventListener('hidden.bs.modal', function () { modal.remove(); });
-    // Bind azioni
+    // Bind azioni - usa capture: true per intercettare prima di altri listener
     modal.addEventListener('click', async (e) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
       const action = t.getAttribute('data-action');
       const name = t.getAttribute('data-name');
+      
       if (action === 'open' && name) {
-        await openProjectByName(name);
-        const inst = bootstrap.Modal.getInstance(modal);
-        if (inst) inst.hide();
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        
+        // NON chiudere qui - aspetta che il progetto sia caricato
+        showNotification(`Loading project "${name}"...`, 'info');
+        
+        try {
+          await openProjectByName(name);
+          
+          // Chiudi il modale DOPO che il progetto è stato caricato con successo
+          const inst = bootstrap.Modal.getInstance(modal);
+          if (inst) {
+            inst.hide();
+            // Il listener hidden.bs.modal già presente rimuoverà il modale dal DOM
+          } else {
+            // Fallback: chiudi manualmente se Bootstrap non è disponibile
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+            document.body.classList.remove('modal-open');
+            const backdrop = document.querySelector('.modal-backdrop');
+            if (backdrop) backdrop.remove();
+            modal.remove();
+          }
+        } catch (error) {
+          console.error('[ProjectListModal] Errore apertura progetto:', error);
+          showNotification('Error opening project', 'danger');
+          // Non chiudere il modale in caso di errore
+        }
+        return false;
       }
+      
       if (action === 'delete' && name) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         await deleteProjectByName(name);
         // aggiorna lista nel modale senza ricrearlo
         const li = t.closest('li');
         if (li) li.remove();
+        
+        // Verifica se ci sono ancora progetti dopo l'eliminazione
+        const remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+        if (remainingProjects.length === 0) {
+          // Se non ci sono più progetti, chiudi il modale "My Projects"
+          // Il modale di selezione verrà mostrato automaticamente da deleteProjectByName
+          const projectListModal = document.getElementById('projectListModal');
+          if (projectListModal) {
+            const bsModal = bootstrap.Modal.getInstance(projectListModal);
+            if (bsModal) {
+              bsModal.hide();
+            }
+          }
+        } else {
+          // Aggiorna il contatore dei progetti nel modale
+          const badge = modal.querySelector('.badge');
+          if (badge) {
+            badge.textContent = `${remainingProjects.length} projects`;
+          }
+        }
+        
+        return false;
       }
-    });
+    }, { capture: true });
     // New / Import
     modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
       const projectName = prompt('Enter project name:');
@@ -8180,7 +15978,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
     modal.querySelector('#btn-import-json')?.addEventListener('click', async () => {
       try {
-        if (!window.showOpenFilePicker) { showNotification('Import non supportato su questo browser', 'warning'); return; }
+        if (!window.showOpenFilePicker) { showNotification('Import not supported in this browser', 'warning'); return; }
         const [handle] = await window.showOpenFilePicker({
           types: [{ description: 'Amianto Project JSON', accept: { 'application/json': ['.json'] } }],
           multiple: false
@@ -8204,16 +16002,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         const inst = bootstrap.Modal.getInstance(modal);
         if (inst) inst.hide();
-        showNotification('Progetto importato', 'success');
+        showNotification('Project imported', 'success');
       } catch (err) {
         addDebugMessage('Import failed: ' + (err && err.message ? err.message : err), 'error');
-        showNotification('Import fallito', 'danger');
+        showNotification('Import failed', 'danger');
       }
     });
   };
 
   // Delete current project
-  window.deleteCurrentProject = function() {
+  window.deleteCurrentProject = async function() {
     if (!currentUser) {
       showNotification('Please login to delete projects', 'warning');
       return;
@@ -8276,9 +16074,65 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Ricostruisci la lista script nell'UI
         refreshScriptSelector();
         rebuildScriptsTree();
+        
+        // Rimuovi progetto attivo
+        localStorage.removeItem('amiantoActiveProjectName');
+        localStorage.removeItem('amiantoActiveProjectOwner');
+      }
+      
+      // Verifica se ci sono ancora progetti dopo la cancellazione
+      // Sincronizza con Firestore per avere la lista aggiornata
+      const userId = currentUser.uid;
+      let remainingProjects = [];
+      if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
+        try {
+          await syncProjectsFromFirestore(userId);
+          remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
+        } catch (error) {
+          console.error('[DeleteCurrent] Errore sincronizzazione dopo cancellazione:', error);
+          // Fallback: usa la lista locale già filtrata
+          remainingProjects = filteredProjects;
+        }
+      } else {
+        // Fallback: usa la lista locale già filtrata
+        remainingProjects = filteredProjects;
       }
       
       showNotification('Project deleted successfully!', 'success');
+      
+      // Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
+      if (remainingProjects.length === 0) {
+        console.log('[DeleteCurrent] Nessun progetto rimasto, mostro modale selezione');
+        // Rimuovi progetto attivo se ancora presente
+        localStorage.removeItem('amiantoActiveProjectName');
+        localStorage.removeItem('amiantoActiveProjectOwner');
+        // Pulisci l'editor
+        rooms = new Map();
+        currentRoomId = null;
+        background = null;
+        foregrounds = [];
+        sceneObjects = [];
+        guis = [];
+        characters = [];
+        contextualCursors = [];
+        
+        // Disabilita altre tab (non c'è più un progetto aperto)
+        enableOtherTabs(false);
+        
+        // Torna alla tab Projects
+        if (typeof showSectionById === 'function') {
+          showSectionById('projects', false);
+        } else {
+          // Fallback: usa il bottone direttamente
+          const projectsButton = document.querySelector(`[data-section="projects"]`);
+          if (projectsButton) {
+            projectsButton.click();
+          }
+        }
+        
+        // Mostra il modale (forzato, anche se c'era un progetto attivo)
+        await showProjectSelectionModal(true);
+      }
     }
   };
 
@@ -8402,8 +16256,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (selector) selector.value = guiId;
     // Update type selector and render settings
     const typeSel = document.getElementById('gui-type-select');
-    if (typeSel) typeSel.value = gui.type || 'MainInterface';
-    renderGuiSettingsPanel(gui.type || 'MainInterface', gui.settings || {});
+    const guiType = (gui.type === 'Inventory') ? 'OverlayCustom' : (gui.type || 'MainInterface');
+    if (gui.type === 'Inventory') gui.type = guiType;
+    if (typeSel) typeSel.value = guiType;
+    renderGuiSettingsPanel(guiType, gui.settings || {});
     
     redraw();
     refreshGUIButtonsList();
@@ -8539,26 +16395,43 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Cursor deleted', 'success');
   };
 
-  window.uploadCursorImage = function(input) {
+  window.uploadCursorImage = async function() {
     if (!selectedCursorId) {
-      showNotification('Please select a cursor first', 'warning');
+      showNotification('Select a cursor first', 'warning');
       return;
     }
-    
-    const file = input.files ? input.files[0] : null;
-    if (!file) return;
-    
+
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
-    
-    const img = new Image();
-    img.onload = () => {
+
+    if (!currentUser) {
+      showNotification('Please log in', 'warning');
+      return;
+    }
+    if (!getActiveProjectId()) {
+      showNotification('No project is open', 'warning');
+      return;
+    }
+
+    const resource = await pickResourceImage({ title: 'Cursor image from Resources' });
+    if (!resource) return;
+
+    try {
+      const img = await loadImageFromResourceEntry(resource);
+      if (!img) throw new Error('Failed to load image from Resources');
       cursor.cursorImage = img;
-      showNotification(`Cursor image uploaded for ${cursor.targetType}: ${cursor.targetId}`, 'success');
+      showNotification(`Cursor set: ${cursor.targetType} / ${cursor.targetId}`, 'success');
       refreshCursorsList();
-    };
-    img.src = URL.createObjectURL(file);
+    } catch (error) {
+      console.error('[Asset] Errore cursore da Resources:', error);
+      showNotification(`Error: ${error.message}`, 'error');
+    }
   };
+
+  const btnCursorBrowse = document.getElementById('btn-cursor-browse-image');
+  if (btnCursorBrowse) {
+    btnCursorBrowse.addEventListener('click', () => window.uploadCursorImage());
+  }
 
   updateCursorTargets = function() {
     const targetType = document.getElementById('cursor-target-type').value;
@@ -8861,8 +16734,104 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // Inizializza il resize handle quando il DOM è pronto
   initializeConsoleResize();
 
+  // ============================================
+  // Console Log Toggle - nascondi/mostra console log
+  // ============================================
+  function initializeConsoleLogToggle() {
+    const toggleBtn = document.getElementById('console-log-toggle');
+    const toggleIcon = document.getElementById('console-log-toggle-icon');
+    const logsContainer = document.getElementById('logs-container');
+    const resizeHandle = document.getElementById('console-resize-handle');
+    
+    if (!toggleBtn || !toggleIcon || !logsContainer || !resizeHandle) {
+      return;
+    }
+
+    // Funzione per ottenere lo stato salvato (default: visibile)
+    function getConsoleLogVisibility() {
+      const saved = localStorage.getItem('amiantoConsoleLogVisible');
+      return saved === null ? true : saved === 'true';
+    }
+
+    // Funzione per salvare lo stato
+    function setConsoleLogVisibility(visible) {
+      localStorage.setItem('amiantoConsoleLogVisible', visible.toString());
+    }
+
+    // Funzione per applicare lo stato
+    function applyConsoleLogVisibility(visible) {
+      const wrapper = document.querySelector('.console-logs-wrapper');
+      if (visible) {
+        logsContainer.style.display = 'flex';
+        resizeHandle.style.display = 'flex';
+        toggleIcon.classList.remove('fa-eye-slash');
+        toggleIcon.classList.add('fa-eye');
+        toggleBtn.title = 'Nascondi console log';
+        if (wrapper) wrapper.classList.remove('console-hidden');
+      } else {
+        logsContainer.style.display = 'none';
+        resizeHandle.style.display = 'none';
+        toggleIcon.classList.remove('fa-eye');
+        toggleIcon.classList.add('fa-eye-slash');
+        toggleBtn.title = 'Mostra console log';
+        if (wrapper) wrapper.classList.add('console-hidden');
+      }
+    }
+
+    // Carica lo stato salvato all'avvio
+    const isVisible = getConsoleLogVisibility();
+    applyConsoleLogVisibility(isVisible);
+
+    // Gestisci il click sul toggle
+    toggleBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentVisibility = getConsoleLogVisibility();
+      const newVisibility = !currentVisibility;
+      setConsoleLogVisibility(newVisibility);
+      applyConsoleLogVisibility(newVisibility);
+    });
+
+    // Esponi la funzione per applicare lo stato quando si cambia tab
+    window.applyConsoleLogVisibilityState = function() {
+      const isVisible = getConsoleLogVisibility();
+      applyConsoleLogVisibility(isVisible);
+    };
+  }
+
+  // Inizializza il toggle quando il DOM è pronto
+  initializeConsoleLogToggle();
+
+  // Gestione sottomenu File nel dropdown del profilo
+  const submenuItems = document.querySelectorAll('.dropdown-submenu > .dropdown-item');
+  submenuItems.forEach(item => {
+    item.addEventListener('click', function(e) {
+      if (window.innerWidth <= 768) {
+        // Su dispositivi mobili, toggle del sottomenu
+        e.preventDefault();
+        e.stopPropagation();
+        const submenu = this.nextElementSibling;
+        if (submenu && submenu.classList.contains('dropdown-menu')) {
+          submenu.style.display = submenu.style.display === 'block' ? 'none' : 'block';
+        }
+      }
+    });
+  });
+
   // Expose global functions
   window.showNotification = showNotification;
   window.addDebugMessage = addDebugMessage;
   window.redraw = redraw;
+
+  if (typeof window.initAmiantoResources === 'function') {
+    window.initAmiantoResources({
+      getProjectId: getActiveProjectId,
+      uploadImage: uploadImage,
+      saveAssetMetadata: saveAssetMetadata,
+      deleteFirestoreAsset: deleteFirestoreAssetDoc,
+      showNotification: showNotification,
+      generateAssetId: generateAssetId,
+      updateProjectSizeIndicator: typeof updateProjectSizeIndicator === 'function' ? updateProjectSizeIndicator : null
+    });
+  }
 });

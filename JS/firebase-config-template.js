@@ -21,16 +21,16 @@ console.log('Firebase Config:', {
 try {
   // Verifica se la configurazione è stata aggiornata
   if (firebaseConfig.apiKey === "LA_TUA_API_KEY_REALE") {
-    console.warn('⚠️ Firebase non configurato correttamente!');
-    console.warn('Per favore, segui le istruzioni nel file firebase-config.js');
-    console.warn('1. Crea un progetto Firebase su https://console.firebase.google.com');
-    console.warn('2. Abilita Authentication e Firestore');
-    console.warn('3. Sostituisci i valori di configurazione');
+    console.warn('⚠️ Firebase is not configured correctly!');
+    console.warn('Please follow the instructions in firebase-config.js');
+    console.warn('1. Create a Firebase project at https://console.firebase.google.com');
+    console.warn('2. Enable Authentication and Firestore');
+    console.warn('3. Replace the configuration values');
     
-    // Mostra avviso all'utente
+    // Show warning to the user
     if (typeof window !== 'undefined') {
       setTimeout(() => {
-        alert('⚠️ Firebase non configurato!\n\nPer creare account e salvare dati, configura Firebase seguendo le istruzioni nel file JS/firebase-config.js');
+        alert('⚠️ Firebase not configured!\n\nTo create accounts and save data, configure Firebase following the instructions in JS/firebase-config.js');
       }, 2000);
     }
   }

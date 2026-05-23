@@ -35,6 +35,13 @@ try {
 // Export Firebase services
 window.firebaseAuth = firebase.auth();
 window.firebaseDB = firebase.firestore();
+// Inizializza Storage solo se disponibile
+if (firebase.storage) {
+  window.firebaseStorage = firebase.storage();
+} else {
+  console.warn('⚠️ Firebase Storage non disponibile. Assicurati che firebase-storage-compat.js sia caricato.');
+  window.firebaseStorage = null;
+}
 
 // Configure Firebase settings for better performance
 window.firebaseDB.settings({
@@ -42,4 +49,4 @@ window.firebaseDB.settings({
   cacheSizeBytes: firebase.firestore.CACHE_SIZE_UNLIMITED
 });
 
-console.log('🔥 Firebase services ready');
+console.log('🔥 Firebase services ready (Auth, Firestore, Storage)');

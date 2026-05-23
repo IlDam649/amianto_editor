@@ -1,68 +1,569 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Runtime Sandbox</title>
+  <title>Amianto Runtime - Game Player</title>
   <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       padding: 0;
+      background: #0a0a0a;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #eee;
+    }
+
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #game-canvas-container {
+      flex: 1;
+      position: relative;
       background: #000;
       overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #game-canvas {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
+    }
+
+    #runtime-log {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 200px;
+      background: rgba(10, 10, 10, 0.95);
+      border-top: 2px solid #39ff14;
+      display: flex;
+      flex-direction: column;
+      z-index: 1000;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    #runtime-log-header {
+      background: #1a1a1a;
+      padding: 8px 12px;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    #runtime-log-header h4 {
+      margin: 0;
+      color: #39ff14;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    #runtime-log-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    #runtime-log-controls button {
+      background: #2a2a2a;
+      border: 1px solid #39ff14;
+      color: #39ff14;
+      padding: 4px 12px;
+      cursor: pointer;
+      font-size: 11px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    #runtime-log-controls button:hover {
+      background: #39ff14;
+      color: #000;
+    }
+
+    #runtime-log-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 12px;
+      color: #eee;
+    }
+
+    #runtime-log-content::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    #runtime-log-content::-webkit-scrollbar-track {
+      background: #1a1a1a;
+    }
+
+    #runtime-log-content::-webkit-scrollbar-thumb {
+      background: #39ff14;
+      border-radius: 4px;
+    }
+
+    .log-entry {
+      margin: 2px 0;
+      padding: 2px 0;
+      word-wrap: break-word;
+      line-height: 1.4;
+    }
+
+    .log-entry.info {
+      color: #eee;
+    }
+
+    .log-entry.warning {
+      color: #ffaa00;
+    }
+
+    .log-entry.error {
+      color: #ff4444;
+    }
+
+    .log-entry .timestamp {
+      color: #666;
+      margin-right: 8px;
+    }
+
+    #loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.9);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    #loading-overlay.hidden {
+      display: none;
+    }
+
+    #loading-overlay h2 {
+      color: #39ff14;
+      font-size: 24px;
+    }
+
+    #loading-overlay p {
+      color: #aaa;
+      font-size: 14px;
+    }
+
+    #file-input-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 1500;
+      display: flex;
+      gap: 10px;
+      flex-direction: column;
+    }
+
+    #file-input-container button {
+      background: #2a2a2a;
+      border: 1px solid #39ff14;
+      color: #39ff14;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 12px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    #file-input-container button:hover {
+      background: #39ff14;
+      color: #000;
+    }
+
+    #file-input {
+      display: none;
+    }
+
+    /* Notifiche messaggi */
+    .game-notification {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      min-width: 300px;
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 2px solid #39ff14;
+      border-radius: 8px;
+      padding: 16px 20px;
+      color: #eee;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 14px;
+      z-index: 10000;
+      box-shadow: 0 4px 20px rgba(57, 255, 20, 0.3);
+      animation: slideInCenter 0.3s ease-out;
+      word-wrap: break-word;
+    }
+
+    @keyframes slideInCenter {
+      from {
+        transform: translate(-50%, -50%) scale(0.8);
+        opacity: 0;
+      }
+      to {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+      }
+    }
+
+    .game-notification.fade-out {
+      animation: fadeOutCenter 0.3s ease-out forwards;
+    }
+
+    @keyframes fadeOutCenter {
+      from {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+      to {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.8);
+      }
+    }
+
+    .game-notification .close-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: transparent;
+      border: none;
+      color: #39ff14;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+
+    .game-notification .close-btn:hover {
+      color: #fff;
     }
   </style>
 </head>
 <body>
-  <!-- Carica il runtime.js esterno con il sistema migliorato di buffer, retry e fallback -->
-  <!-- Usa percorso assoluto dalla root per garantire che funzioni anche quando caricato in iframe -->
+  <div id="loading-overlay">
+    <h2>Loading Runtime...</h2>
+    <p id="loading-message">Initializing...</p>
+  </div>
+
+  <div id="file-input-container">
+    <button onclick="document.getElementById('file-input').click()">Load Project JSON</button>
+    <button onclick="loadLastSavedProject()">Load Last Save</button>
+    <input type="file" id="file-input" accept=".json" />
+  </div>
+
+  <div id="game-container">
+    <div id="game-canvas-container">
+      <canvas id="game-canvas"></canvas>
+    </div>
+  </div>
+
+  <div id="runtime-log">
+    <div id="runtime-log-header">
+      <h4>Runtime Log</h4>
+      <div id="runtime-log-controls">
+        <button onclick="clearRuntimeLog()">Clear</button>
+        <button onclick="toggleRuntimeLog()">Hide</button>
+      </div>
+    </div>
+    <div id="runtime-log-content"></div>
+  </div>
+
+  <!-- Supabase SDK per caricare assets -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
+  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found')"></script>
+  <script src="JS/supabase.js"></script>
+  <script src="JS/runtime.js"></script>
   <script>
-    // Determina il percorso corretto per runtime.js
-    (function() {
-      const scripts = document.getElementsByTagName('script');
-      let basePath = '';
+    // Gestione caricamento file
+    document.getElementById('file-input').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
       
-      // Cerca lo script corrente per determinare il percorso base
-      for (let i = 0; i < scripts.length; i++) {
-        const src = scripts[i].src;
-        if (src && src.includes('runtime.html')) {
-          // Estrai il percorso base
-          const match = src.match(/(.*\/)runtime\.html/);
-          if (match) {
-            basePath = match[1];
-            break;
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        try {
+          const projectData = JSON.parse(event.target.result);
+          if (window.initRuntime) {
+            window.initRuntime(projectData);
+          } else {
+            console.error('Runtime not initialized yet');
+            addRuntimeLog('Error: Runtime not initialized yet', 'error');
+          }
+        } catch (error) {
+          console.error('Error loading project:', error);
+          addRuntimeLog('Error loading project: ' + error.message, 'error');
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // Carica ultimo salvataggio da localStorage
+    function loadLastSavedProject() {
+      try {
+        const jsonString = localStorage.getItem('amiantoLastSavedProjectJson');
+        if (jsonString) {
+          const projectData = JSON.parse(jsonString);
+          
+          // Valida formato progetto
+          if (!projectData || typeof projectData !== 'object') {
+            throw new Error('Invalid project data');
+          }
+          
+          if (projectData.format !== 'amianto-game') {
+            addRuntimeLog('Warning: non-standard project format; it may not work correctly', 'warning');
+          }
+          
+          // Usa la funzione con retry
+          if (!loadProjectWithRetry(projectData, 'localStorage')) {
+            // Se non è riuscito, il retry è già gestito
+            return;
+          }
+        } else {
+          addRuntimeLog('No saved project found in localStorage', 'warning');
+          addRuntimeLog('Use the "Load Project JSON" button to load a project', 'info');
+        }
+      } catch (error) {
+        console.error('Error loading last save:', error);
+        addRuntimeLog('Error loading last save: ' + error.message, 'error');
+      }
+    }
+
+    // Funzioni helper per il log
+    function addRuntimeLog(message, level = 'info') {
+      const logContent = document.getElementById('runtime-log-content');
+      if (!logContent) return;
+
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${level}`;
+      
+      const timestamp = new Date().toLocaleTimeString();
+      entry.innerHTML = `<span class="timestamp">[${timestamp}]</span>${escapeHtml(message)}`;
+      
+      logContent.appendChild(entry);
+      logContent.scrollTop = logContent.scrollHeight;
+
+      // Limita a 1000 entry per evitare problemi di performance
+      while (logContent.children.length > 1000) {
+        logContent.removeChild(logContent.firstChild);
+      }
+    }
+
+    function clearRuntimeLog() {
+      const logContent = document.getElementById('runtime-log-content');
+      if (logContent) {
+        logContent.innerHTML = '';
+      }
+    }
+
+    let logVisible = true;
+    function toggleRuntimeLog() {
+      logVisible = !logVisible;
+      const log = document.getElementById('runtime-log');
+      if (log) {
+        log.style.display = logVisible ? 'flex' : 'none';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Esponi addRuntimeLog globalmente per il runtime
+    window.addRuntimeLog = addRuntimeLog;
+
+    // Variabile per salvare progetto ricevuto prima che il runtime sia pronto
+    let pendingProjectData = null;
+    let projectLoadAttempts = 0;
+    const maxProjectLoadAttempts = 30; // 3 secondi max
+
+    // Funzione per caricare progetto con retry
+    function loadProjectWithRetry(projectData, source = 'unknown') {
+      if (!projectData) return;
+      
+      if (window.initRuntime) {
+        try {
+          window.initRuntime(projectData);
+          addRuntimeLog(`Project loaded from ${source}`, 'success');
+          pendingProjectData = null; // Reset
+          projectLoadAttempts = 0;
+          return true;
+        } catch (error) {
+          addRuntimeLog(`Error loading project: ${error.message}`, 'error');
+          return false;
+        }
+      } else {
+        // Salva per retry successivo
+        pendingProjectData = projectData;
+        projectLoadAttempts++;
+        
+        if (projectLoadAttempts < maxProjectLoadAttempts) {
+          addRuntimeLog(`Runtime not ready yet, waiting... (attempt ${projectLoadAttempts}/${maxProjectLoadAttempts})`, 'warning');
+          setTimeout(() => {
+            loadProjectWithRetry(projectData, source);
+          }, 100);
+        } else {
+          addRuntimeLog('Error: Runtime unavailable after ' + maxProjectLoadAttempts + ' attempts', 'error');
+          pendingProjectData = null;
+          projectLoadAttempts = 0;
+        }
+        return false;
+      }
+    }
+
+    // Ascolta messaggi dall'editor per caricare progetti
+    window.addEventListener('message', function(event) {
+      // Accetta messaggi da qualsiasi origine (in sviluppo locale)
+      if (event.data && event.data.type === 'LOAD_PROJECT' && event.data.projectData) {
+        addRuntimeLog('Received project from editor (postMessage)', 'info');
+        // Non dare priorità a postMessage se localStorage è disponibile
+        const hasLocalStorage = localStorage.getItem('amiantoLastSavedProjectJson');
+        if (hasLocalStorage) {
+          addRuntimeLog('Ignoring postMessage, using localStorage instead', 'info');
+          return;
+        }
+        loadProjectWithRetry(event.data.projectData, 'postMessage');
+      }
+    });
+
+    // Prova a caricare game.json all'avvio
+    window.addEventListener('DOMContentLoaded', function() {
+      // Aspetta che il runtime.js sia caricato (aumentato a 200ms per sicurezza)
+      setTimeout(() => {
+        // PRIORITÀ 1: localStorage (più veloce e affidabile per playtest)
+        const jsonString = localStorage.getItem('amiantoLastSavedProjectJson');
+        if (jsonString) {
+          addRuntimeLog('Found project in localStorage, loading...', 'info');
+          loadLastSavedProject();
+          return;
+        }
+        
+        // PRIORITÀ 2: Cache locale (backup)
+        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+        const activeProjectOwner = localStorage.getItem('amiantoActiveProjectOwner');
+        if (activeProjectName && activeProjectOwner) {
+          const projectKey = `amiantoProject_${activeProjectOwner}:${activeProjectName}`;
+          const cachedProject = localStorage.getItem(projectKey);
+          if (cachedProject) {
+            addRuntimeLog('Found project in local cache, loading...', 'info');
+            try {
+              const projectData = JSON.parse(cachedProject);
+              if (!loadProjectWithRetry(projectData, 'cache locale')) {
+                // Retry già gestito
+                return;
+              }
+            } catch (error) {
+              addRuntimeLog('Cache parse error: ' + error.message, 'error');
+            }
           }
         }
+        
+        // PRIORITÀ 3: OPFS (fallback)
+        if (navigator.storage && navigator.storage.getDirectory) {
+          addRuntimeLog('Trying to load from OPFS...', 'info');
+          loadProjectFromOPFS().catch((error) => {
+            addRuntimeLog('OPFS failed: ' + error.message, 'warning');
+            addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
+          });
+        } else {
+          addRuntimeLog('OPFS not available', 'info');
+          addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
+        }
+      }, 200); // Delay aumentato per assicurarsi che runtime.js sia caricato
+    });
+
+    async function loadProjectFromOPFS() {
+      try {
+        if (!navigator.storage || !navigator.storage.getDirectory) {
+          throw new Error('OPFS not available');
+        }
+        
+        const root = await navigator.storage.getDirectory();
+        const projectDir = await root.getDirectoryHandle('amianto-projects', { create: false });
+        const files = [];
+        
+        for await (const [name, handle] of projectDir.entries()) {
+          if (handle.kind === 'file' && name.endsWith('.amianto.json')) {
+            files.push({ name, handle });
+          }
+        }
+        
+        if (files.length > 0) {
+          // Prendi il file più recente o game.json
+          let targetFile = files.find(f => f.name === 'game.json');
+          if (!targetFile && files.length > 0) {
+            targetFile = files[files.length - 1]; // Ultimo file
+          }
+          
+          if (targetFile) {
+            const file = await targetFile.handle.getFile();
+            const text = await file.text();
+            const projectData = JSON.parse(text);
+            
+            if (window.initRuntime) {
+              window.initRuntime(projectData);
+              addRuntimeLog('Project loaded from OPFS: ' + targetFile.name, 'success');
+              return;
+            } else {
+              addRuntimeLog('Runtime not initialized yet, retrying...', 'warning');
+              // Aspetta che il runtime sia pronto
+              setTimeout(() => {
+                if (window.initRuntime) {
+                  window.initRuntime(projectData);
+                  addRuntimeLog('Project loaded from OPFS (retry): ' + targetFile.name, 'success');
+                } else {
+                  throw new Error('Runtime unavailable');
+                }
+              }, 1000);
+              return;
+            }
+          }
+        }
+        throw new Error('No project file found in OPFS');
+      } catch (error) {
+        // OPFS non disponibile o errore - fallback a localStorage
+        console.log('OPFS failed:', error.message);
+        addRuntimeLog('OPFS unavailable or error, trying localStorage...', 'info');
+        // Non fare throw, così il catch nel DOMContentLoaded può gestire il fallback
+        throw error;
       }
-      
-      // Se non trovato, usa percorso relativo standard
-      if (!basePath) {
-        // Prova a determinare dalla location
-        const path = window.location.pathname;
-        const lastSlash = path.lastIndexOf('/');
-        basePath = lastSlash >= 0 ? path.substring(0, lastSlash + 1) : './';
-      }
-      
-      // Carica runtime.js
-      const script = document.createElement('script');
-      script.src = basePath + 'JS/runtime.js';
-      script.onerror = function() {
-        console.error('[Runtime] Failed to load JS/runtime.js from:', script.src);
-        console.error('[Runtime] Tried basePath:', basePath);
-        console.error('[Runtime] Current location:', window.location.href);
-        // Fallback: prova percorso assoluto dalla root
-        const fallbackScript = document.createElement('script');
-        fallbackScript.src = '/JS/runtime.js';
-        fallbackScript.onerror = function() {
-          console.error('[Runtime] Fallback path also failed:', fallbackScript.src);
-        };
-        document.head.appendChild(fallbackScript);
-      };
-      script.onload = function() {
-        console.log('[Runtime] Successfully loaded JS/runtime.js from:', script.src);
-      };
-      document.head.appendChild(script);
-    })();
+    }
   </script>
 </body>
 </html>

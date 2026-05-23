@@ -27,14 +27,8 @@
     <!-- Background image spanning the header with bottom fade -->
     <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
     <div class="container-fluid d-flex align-items-center" style="position: relative; z-index: 1;">
-      <!-- Immagine di copertina / icona -->
-      <img src="img/Amnt.png" alt="Amianto Editor Icon"
-           style="width: 120px; height: 120px; margin-right: 20px; flex-shrink: 0;">
-
-      <!-- Contenuto testuale -->
       <div class="flex-grow-1">
-        <!-- Titolo principale -->
-        <img src="img/logo.png" alt="Amianto Editor" class="logo-main">
+        <img src="img/mnt.png" alt="Amianto Editor" class="logo-main">
 
         <!-- Sottotitolo -->
         <p style="color: #eee; font-size: 1rem; margin: 5px 0 0 0;">
@@ -49,15 +43,9 @@
     <!-- Background image spanning the header with bottom fade -->
     <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
     <div class="container-fluid d-flex align-items-center justify-content-between" style="position: relative; z-index: 1;">
-      <!-- Immagine di copertina / icona -->
       <div class="d-flex align-items-center">
-        <img src="img/Amnt.png" alt="Amianto Editor Icon"
-             style="width: 80px; height: 80px; margin-right: 15px; flex-shrink: 0;">
-
-        <!-- Contenuto testuale -->
         <div>
-          <!-- Titolo principale -->
-          <img src="img/logo.png" alt="Amianto Editor" class="logo-dashboard">
+          <img src="img/mnt.png" alt="Amianto Editor" class="logo-dashboard">
           <p style="color: #eee; font-size: 0.9rem; margin: 2px 0 0 0;">
             <span id="currentUserName">User</span>'s Projects
           </p>
@@ -65,16 +53,35 @@
       </div>
 
       <!-- User menu -->
-      <div class="dropdown">
-        <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
-          <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
-        </button>
-        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
-          <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
-          <li><hr class="dropdown-divider"></li>
-          <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
-        </ul>
+      <div class="d-flex flex-column align-items-end">
+        <div class="dropdown">
+          <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
+            <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+            <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
+            <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li class="dropdown-submenu">
+              <a class="dropdown-item dropdown-toggle" href="#"><i class="fas fa-file"></i> File</a>
+              <ul class="dropdown-menu dropdown-menu-dark">
+                <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
+                <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
+                <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
+                <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
+                <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
+              </ul>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+          </ul>
+        </div>
+        <!-- Project size indicator -->
+        <div id="projectSizeIndicator" style="display: none; margin-top: 8px; font-size: 0.85rem; color: #aaa;">
+          <i class="fas fa-database"></i> <span id="projectSizeText">-</span>
+        </div>
       </div>
     </div>
   </div>
@@ -87,7 +94,7 @@
         <div class="card bg-dark text-light border-secondary">
           <div class="card-body p-5">
             <div class="text-center mb-4">
-              <img src="img/logo.png" alt="Amianto Editor" class="logo-auth">
+              <img src="img/mnt.png" alt="Amianto Editor" class="logo-auth">
               <h2 class="mt-3">Welcome Back</h2>
               <p class="text-muted">Sign in to your account</p>
             </div>
@@ -175,35 +182,43 @@
     </div>
   </div>
 
+  <!-- Project Selection Modal -->
+  <div class="modal fade" id="projectSelectionModal" tabindex="-1" aria-labelledby="projectSelectionModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content bg-dark text-light">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="projectSelectionModalLabel">
+            <i class="fas fa-folder"></i> Your Projects
+          </h5>
+        </div>
+        <div class="modal-body" id="projectSelectionModalBody">
+          <!-- Content will be dynamically updated -->
+          <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="text-muted mt-3">Loading projects...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Main Dashboard (hidden by default) -->
   <div id="mainDashboard" style="display: none;">
     <!-- Menu inline -->
     <nav class="navbar navbar-expand-lg navbar-custom">
       <div class="container-fluid d-flex justify-content-center">
 
-        <!-- File dropdown inline -->
-        <div class="dropdown d-inline-block me-2">
-          <button class="section-btn dropdown-toggle" type="button" id="fileDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-            File
-          </button>
-          <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="fileDropdown">
-            <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
-            <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
-            <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
-            <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
-            <li><hr class="dropdown-divider"></li>
-            <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
-            <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
-          </ul>
-        </div>
-
-
-        <button class="section-btn active-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+1)">Rooms</button>
-        <button class="section-btn" data-section="objects" aria-label="Manage game objects" title="Manage game objects (Ctrl+2)">Objects</button>
-        <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+3)">Characters</button>
-        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+4)">GUI</button>
-        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+5)">Scripts</button>
-        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+6)">PLAY</button>
+        <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
+        <button class="section-btn" data-section="resources" aria-label="Game resources library" title="Central image library on Supabase (Ctrl+1)" disabled>Resources</button>
+        <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+2)" disabled>Rooms</button>
+        <button class="section-btn" data-section="inventory" aria-label="Manage inventory" title="Manage inventory and items (Ctrl+3)">Inventory</button>
+        <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+4)">Characters</button>
+        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+5)">GUI</button>
+        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+6)">Scripts</button>
+        <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+7)">Docs</button>
+        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+8)">PLAY</button>
       </div>
     </nav>
 
@@ -224,9 +239,8 @@
           <div class="btn-group btn-group-sm" role="group">
             <button class="btn btn-outline-light" onclick="zoomOut()" title="Zoom Out">-</button>
             <button class="btn btn-outline-light" onclick="resetEditorZoom()" title="Reset Zoom">100%</button>
-            <button class="btn btn-outline-light" onclick="zoomIn()" title="Zoom In">+</button>
             <button class="btn btn-outline-light" onclick="fitToScreen()" title="Fit to Screen">Fit</button>
-            <button class="btn btn-outline-light" onclick="centerView()" title="Center View">Center</button>
+            <button class="btn btn-outline-light" onclick="zoomIn()" title="Zoom In">+</button>
           </div>
         </div>
         
@@ -235,8 +249,71 @@
           <textarea id="script-editor-large" style="width: 100%; height: 100%;"></textarea>
         </div>
         
+        <!-- Documentation panel (Docs tab) -->
+        <div id="docsMainPanel" class="docs-main-panel" style="display: none;">
+          <div class="docs-main-header">
+            <h4 class="docs-main-title"><i class="fas fa-book"></i> Amianto Editor — Documentation</h4>
+          </div>
+          <div id="docs-main-content" class="docs-main-content" tabindex="0"></div>
+        </div>
+
+        <!-- Resources panel (Resources tab — occupa lo spazio del canvas) -->
+        <div id="resourcesMainPanel" class="resources-main-panel" style="display: none;">
+          <div class="resources-main-header">
+            <h4 class="resources-main-title"><i class="fas fa-folder-open"></i> Resource library</h4>
+            <ul class="nav nav-tabs resources-subtabs" id="resources-subtabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="resources-tab-images" data-resource-tab="images" type="button" role="tab" aria-selected="true">
+                  <i class="fas fa-image"></i> Images
+                </button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="resources-tab-sounds" data-resource-tab="sounds" type="button" role="tab" aria-selected="false">
+                  <i class="fas fa-music"></i> Sounds
+                </button>
+              </li>
+            </ul>
+          </div>
+          <div id="resources-images-pane" class="resources-pane" role="tabpanel">
+            <div class="alert alert-info py-2 mb-2" role="alert">
+              <small><strong>Centralized library</strong> — import all game images here (Supabase). Other editors open the picker from this folder.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              <button class="btn btn-success btn-sm" id="btn-resources-import" type="button"><i class="fas fa-file-import"></i> Import</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
+            </div>
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Search images...">
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <small class="text-muted" id="resources-status">Loading...</small>
+              <small class="text-muted" id="resources-count"></small>
+            </div>
+            <div id="resources-grid" class="resources-grid resources-grid-main"></div>
+          </div>
+          <div id="resources-sounds-pane" class="resources-pane" role="tabpanel" style="display: none;">
+            <div class="alert alert-info py-2 mb-2" role="alert">
+              <small><strong>Audio</strong> — import music and sound effects (folder <code>audio/</code> on Supabase).</small>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button"><i class="fas fa-file-import"></i> Import</button>
+              <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
+            </div>
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Search sounds...">
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <small class="text-muted" id="sounds-status">Loading...</small>
+              <small class="text-muted" id="sounds-count"></small>
+            </div>
+            <div id="sounds-grid" class="resources-grid resources-grid-main sounds-grid"></div>
+          </div>
+        </div>
+
         <!-- Canvas Container -->
-        <div id="canvasContainer" style="overflow: auto; text-align: center; background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
+        <div id="canvasContainer" style="background-color: #1a1a1a; border-radius: 8px; padding: 10px;">
           <canvas id="editorCanvas"></canvas>
           <!-- Runtime Canvas (mostrato durante il playtest) -->
           <div id="runtime-container" style="display: none; text-align: center;">
@@ -245,11 +322,16 @@
         </div>
 
         <!-- Script Log e Engine Log Panel - sotto al canvas, sempre visibili -->
-        <!-- Resize handle per ridimensionare verticalmente le console -->
-        <div id="console-resize-handle" class="console-resize-handle" title="Trascina per ridimensionare le console">
-          <i class="fas fa-grip-lines"></i>
-        </div>
-        <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
+        <div class="console-logs-wrapper" style="position: relative;">
+          <!-- Toggle button per nascondere/mostrare le console log -->
+          <button id="console-log-toggle" class="btn btn-sm console-log-toggle-btn" title="Hide/Show console logs">
+            <i class="fas fa-eye" id="console-log-toggle-icon"></i>
+          </button>
+          <!-- Resize handle per ridimensionare verticalmente le console -->
+          <div id="console-resize-handle" class="console-resize-handle" title="Drag to resize consoles">
+            <i class="fas fa-grip-lines"></i>
+          </div>
+          <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
           <!-- Script Log Panel -->
           <div id="script-log-container" style="flex: 1;">
             <div class="d-flex justify-content-between align-items-center mb-1">
@@ -288,11 +370,108 @@
             </div>
           </div>
         </div>
+        </div>
       </div>
       <!-- Sidebar -->
       <div class="col-md-3 sidebar p-3">
-        <div id="rooms" class="section active">
+        <div id="projects" class="section active">
+          <h3>Project Manager</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <div class="alert alert-warning" role="alert">
+                <small>
+                  <strong>⚠️ Select or create a project to continue.</strong> You cannot access other tabs until a project is open.
+                </small>
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <button class="btn btn-success btn-sm w-100 mb-2" id="btn-create-project-in-tab">
+                <i class="fas fa-plus"></i> Create New Project
+              </button>
+              <button class="btn btn-info btn-sm w-100 mb-2" id="btn-refresh-projects">
+                <i class="fas fa-sync-alt"></i> Refresh List
+              </button>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label text-light">Projects List:</label>
+              <div id="projects-list-container" style="max-height: 500px; overflow-y: auto;">
+                <div class="text-center py-4">
+                  <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                  </div>
+                  <p class="text-muted mt-3">Loading projects...</p>
+                </div>
+              </div>
+            </div>
+            
+            <div id="current-project-info" class="mt-3 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px; display: none;">
+              <h6 class="m-0 mb-2" style="color:#eee">Current Project:</h6>
+              <div id="current-project-name" style="color:#39ff14; font-weight: bold;"></div>
+              <small class="text-muted" id="current-project-updated"></small>
+            </div>
+          </div>
+        </div>
+
+        <div id="resources" class="section">
+          <h3>Resources</h3>
+          <div class="section-content">
+            <div class="resources-sidebar-subtabs btn-group btn-group-sm w-100 mb-2" role="group">
+              <button type="button" class="btn btn-outline-success active" data-resource-tab="images" id="resources-sidebar-tab-images">
+                <i class="fas fa-image"></i> Images
+              </button>
+              <button type="button" class="btn btn-outline-success" data-resource-tab="sounds" id="resources-sidebar-tab-sounds">
+                <i class="fas fa-music"></i> Sounds
+              </button>
+            </div>
+            <div id="resources-inspector" class="resources-inspector">
+              <div id="resources-inspector-empty" class="resources-inspector-empty">
+                <i class="fas fa-image" id="resources-inspector-empty-icon" aria-hidden="true"></i>
+                <p class="text-muted small mb-0" id="resources-inspector-empty-text">Select a resource in the grid to preview it here.</p>
+              </div>
+              <div id="resources-inspector-image" class="resources-inspector-panel" hidden>
+                <h6 class="text-light mb-2">Image preview</h6>
+                <div class="resources-inspector-preview-box">
+                  <img id="resources-inspector-img" alt="" />
+                </div>
+                <dl class="resources-inspector-meta small mb-0">
+                  <dt>Name</dt>
+                  <dd id="resources-inspector-name">—</dd>
+                  <dt>Dimensions</dt>
+                  <dd id="resources-inspector-dimensions">—</dd>
+                  <dt>Size</dt>
+                  <dd id="resources-inspector-size">—</dd>
+                  <dt>ID</dt>
+                  <dd id="resources-inspector-id" class="text-break">—</dd>
+                </dl>
+              </div>
+              <div id="resources-inspector-sound" class="resources-inspector-panel" hidden>
+                <h6 class="text-light mb-2">Audio preview</h6>
+                <div class="resources-inspector-sound-icon" aria-hidden="true">
+                  <i class="fas fa-volume-up"></i>
+                </div>
+                <dl class="resources-inspector-meta small mb-2">
+                  <dt>Name</dt>
+                  <dd id="resources-inspector-sound-name">—</dd>
+                  <dt>Size</dt>
+                  <dd id="resources-inspector-sound-size">—</dd>
+                  <dt>ID</dt>
+                  <dd id="resources-inspector-sound-id" class="text-break">—</dd>
+                </dl>
+                <audio id="resources-inspector-audio" class="resources-inspector-audio w-100" controls preload="metadata"></audio>
+                <button type="button" class="btn btn-outline-success btn-sm w-100 mt-2" id="resources-inspector-play-btn">
+                  <i class="fas fa-play"></i> Play
+                </button>
+              </div>
+            </div>
+            <p class="text-muted small mb-0 mt-2" id="resources-sidebar-hint">Import, search, and delete files from the main panel.</p>
+          </div>
+        </div>
+
+        <div id="rooms" class="section">
       <h3>Rooms</h3>
+      <div class="section-content">
 
       <!-- Rooms Manager -->
       <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
@@ -304,7 +483,16 @@
             <button class="btn btn-outline-danger" onclick="deleteRoom()">Delete</button>
           </div>
         </div>
-        <select class="form-select form-select-sm" id="rooms-selector" onchange="selectRoom(this.value)"></select>
+        <select class="form-select form-select-sm mb-2" id="rooms-selector" onchange="selectRoom(this.value)"></select>
+        <div class="mb-2">
+          <label class="form-label text-light" style="font-size: 0.85rem; margin-bottom: 0.25rem;">Room ID:</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="room-id-display" readonly style="background-color: #2a2a2a; color: #39ff14; font-family: monospace; font-size: 0.85rem; cursor: text;" value="">
+            <button class="btn btn-outline-secondary" type="button" onclick="copyRoomId()" title="Copy Room ID">
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Bottoni per aggiungere immagini -->
@@ -322,7 +510,6 @@
           <button class="btn btn-info btn-sm w-100 mb-2" onclick="addSceneObject()">
             <i class="fas fa-plus"></i> Add Scene Object
           </button>
-          <input type="file" id="scene-object-upload" accept="image/*" style="display: none;" onchange="uploadSceneObject(this)">
         </div>
         
         <div class="mb-3">
@@ -376,25 +563,149 @@
         </div>
         <div id="hotspots-list" class="list-group"></div>
       </div>
+
+      <!-- Character Scaling Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Character Scaling</h5>
+        <div class="alert alert-info" role="alert">
+          <small>
+            <strong>💡 Tip:</strong> Draw two horizontal lines on the canvas to define scaling planes. Drag the lines to move them. The top line (background) and bottom line (foreground) set character scale based on Y position.
+          </small>
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-light">Min Scale (background — top line):</label>
+          <input type="number" class="form-control form-control-sm" id="scaling-min-scale" value="0.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-light">Max Scale (foreground — bottom line):</label>
+          <input type="number" class="form-control form-control-sm" id="scaling-max-scale" value="1.5" min="0.1" max="2.0" step="0.1" onchange="updateScalingValues()">
+        </div>
+        <div class="btn-group w-100 mb-2" role="group">
+          <button class="btn btn-outline-success btn-sm" onclick="initializeScalingLines()">Initialize Lines</button>
+          <button class="btn btn-outline-warning btn-sm" onclick="toggleScalingVisibility()">Show/Hide Lines</button>
+        </div>
+      </div>
+      </div>
     </div>
 
-        <div id="objects" class="section">
-          <h3>Inventory Objects</h3>
+        <div id="inventory" class="section">
+          <h3>Inventory</h3>
           <div class="section-content">
-            <div class="mb-3">
-              <button class="btn btn-success btn-sm w-100 mb-2" onclick="addInventoryObject()">
-                <i class="fas fa-plus"></i> Add Inventory Item
-              </button>
-              <input type="file" id="inventory-upload" accept="image/*" style="display: none;" onchange="uploadInventoryObject(this)">
+            <div class="mt-1 p-2 mb-3" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <h6 class="m-0 mb-2" style="color:#eee">Inventory layout</h6>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1" for="inventory-display-mode">Display mode</label>
+                <select class="form-select form-select-sm" id="inventory-display-mode">
+                  <option value="popup">Pop-up (bottom edge hover)</option>
+                  <option value="always">Always on screen</option>
+                  <option value="toggle">Toggle via icon click</option>
+                </select>
+                <small class="text-muted d-block mt-1" id="inventory-popup-hint">Opens when the cursor enters the bottom edge of the screen.</small>
+              </div>
+              <div class="mb-2" id="inventory-popup-edge-wrap">
+                <label class="form-label text-light mb-1" for="inventory-popup-edge-height">Bottom edge height (px)</label>
+                <input type="number" class="form-control form-control-sm" id="inventory-popup-edge-height" min="16" max="200" value="48">
+              </div>
+              <div class="mb-2 p-2" style="background:#252525;border:1px solid #444;border-radius:6px;">
+                <h6 class="text-light mb-2" style="font-size:0.85rem;">Panel position &amp; size</h6>
+                <div class="row g-1 mb-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-x">X</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-x" value="0">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-y">Y</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-y" value="0">
+                  </div>
+                </div>
+                <div class="row g-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-w">Width</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-w" min="1" value="800">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-panel-h">Height</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-panel-h" min="1" value="600">
+                  </div>
+                </div>
+              </div>
+              <div class="mb-2" id="inventory-toggle-icon-wrap" style="display:none;">
+                <label class="form-label text-light mb-1">Toggle icon</label>
+                <div class="input-group input-group-sm mb-2">
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-browse">
+                    <i class="fas fa-folder-open"></i> Browse Resources
+                  </button>
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-clear">Remove</button>
+                </div>
+                <small class="text-muted d-block mb-2" id="inventory-toggle-icon-label">No icon</small>
+                <h6 class="text-light mb-2" style="font-size:0.85rem;">Icon position &amp; size</h6>
+                <div class="row g-1 mb-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-x">X</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-x" value="744">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-y">Y</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-y" value="544">
+                  </div>
+                </div>
+                <div class="row g-1">
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-w">Width</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-w" min="1" value="48">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label text-light mb-0" style="font-size:0.75rem;" for="inventory-toggle-h">Height</label>
+                    <input type="number" class="form-control form-control-sm" id="inventory-toggle-h" min="1" value="48">
+                  </div>
+                </div>
+              </div>
+              <div class="btn-group w-100 mb-2" role="group">
+                <button class="btn btn-success btn-sm" id="btn-inventory-bg" type="button">Inventory background</button>
+                <button class="btn btn-primary btn-sm" id="btn-inventory-slot" type="button">Add slot</button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-inventory-slot-delete" type="button">Delete slot</button>
+              </div>
+              <small class="text-muted d-block mb-2">
+                The canvas shows the inventory panel. Drag rectangles to position item slots.
+              </small>
+              <h6 class="text-light mb-1">Inventory slots</h6>
+              <div id="inventory-slots-list" class="list-group mb-0"></div>
             </div>
-            
-            <div class="mb-3">
-              <label class="form-label text-light">Filter inventory items:</label>
-              <input type="text" class="form-control form-control-sm" id="inventory-filter" placeholder="Search inventory..." onkeyup="filterInventoryObjects(this.value)">
-            </div>
-            
-            <div id="inventory-list" class="list-group">
-              <!-- Inventory objects will be dynamically added here -->
+
+            <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <h6 class="m-0 mb-2" style="color:#eee">Inventory items</h6>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Name</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-item-name" placeholder="Red key">
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Script name</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="red_key">
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Item image</label>
+                <div class="input-group input-group-sm">
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-browse-image">
+                    <i class="fas fa-folder-open"></i> Browse Resources
+                  </button>
+                  <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-clear-image">Remove</button>
+                </div>
+                <small class="text-muted" id="inventory-item-image-label">No image</small>
+              
+              </div>
+              <div class="btn-group w-100 mb-2" role="group">
+                <button class="btn btn-success btn-sm" id="btn-inventory-item-create" type="button">
+                  <i class="fas fa-plus"></i> Create item
+                </button>
+                <button class="btn btn-outline-light btn-sm" id="btn-inventory-item-update" type="button" disabled>
+                  Save changes
+                </button>
+              </div>
+              <div class="mb-2">
+                <label class="form-label text-light mb-1">Filter items</label>
+                <input type="text" class="form-control form-control-sm" id="inventory-filter" placeholder="Search items..." onkeyup="filterInventoryObjects(this.value)">
+              </div>
+              <div id="inventory-list" class="list-group"></div>
             </div>
           </div>
         </div>
@@ -414,7 +725,18 @@
               <select class="form-select form-select-sm" id="character-selector" onchange="loadCharacterDirections()"></select>
             </div>
             <div class="mb-3">
-              <label class="form-label text-light">Select direction (8 directions):</label>
+              <label class="form-label text-light">Animation:</label>
+              <div class="input-group input-group-sm mb-2">
+                <select class="form-select form-select-sm" id="character-animation-selector" onchange="onCharacterAnimationChange()">
+                  <option value="walking">Walking (standard)</option>
+                </select>
+                <button class="btn btn-outline-success btn-sm" type="button" onclick="addCharacterAnimation()" title="Add custom animation">+</button>
+                <button class="btn btn-outline-danger btn-sm" type="button" onclick="removeCharacterAnimation()" title="Remove selected custom animation" id="btn-remove-character-animation">−</button>
+              </div>
+              <small class="text-muted d-block">Walking is the default walk cycle. Custom animations can be assigned a name and played later via script.</small>
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-light" id="character-animation-direction-label">Select direction (8 directions):</label>
               <select class="form-select form-select-sm" id="direction-selector" onchange="changeCharacterDirection()">
                 <option value="north">North (↑)</option>
                 <option value="northeast">Northeast (↗)</option>
@@ -426,9 +748,42 @@
                 <option value="northwest">Northwest (↖)</option>
               </select>
             </div>
+            
+            <!-- Toggle per scegliere tra caricare frame o specchiare -->
             <div class="mb-3">
+              <label class="form-label text-light">Frame source:</label>
+              <div class="btn-group w-100" role="group">
+                <input type="radio" class="btn-check" name="frame-source" id="frame-source-upload" value="upload" checked onchange="toggleFrameSource()">
+                <label class="btn btn-outline-light btn-sm" for="frame-source-upload">Upload Frames</label>
+                
+                <input type="radio" class="btn-check" name="frame-source" id="frame-source-mirror" value="mirror" onchange="toggleFrameSource()">
+                <label class="btn btn-outline-light btn-sm" for="frame-source-mirror">Mirror Direction</label>
+              </div>
+            </div>
+            
+            <!-- Container per upload frames -->
+            <div class="mb-3" id="frame-upload-container">
               <label class="form-label text-light">Animation frames for selected direction:</label>
-              <input type="file" id="character-frames-upload" class="form-control form-control-sm" accept="image/*" multiple onchange="uploadCharacterFrames(this)">
+              <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-character-frames-browse">
+                <i class="fas fa-folder-open"></i> Browse Resources (frames)
+              </button>
+              <small class="text-muted d-block mt-1">You can select multiple images from the Resources window; frame order follows numbers in the file name.</small>
+            </div>
+            
+            <!-- Container per specchiare direzione -->
+            <div class="mb-3" id="frame-mirror-container" style="display: none;">
+              <label class="form-label text-light">Mirror frames from direction:</label>
+              <select class="form-select form-select-sm" id="mirror-direction-selector" onchange="applyMirrorDirection()">
+                <option value="">Select direction to mirror...</option>
+                <option value="north">North (↑)</option>
+                <option value="northeast">Northeast (↗)</option>
+                <option value="east">East (→)</option>
+                <option value="southeast">Southeast (↘)</option>
+                <option value="south">South (↓)</option>
+                <option value="southwest">Southwest (↙)</option>
+                <option value="west">West (←)</option>
+                <option value="northwest">Northwest (↖)</option>
+              </select>
             </div>
             <div class="mb-3">
               <label class="form-label text-light">FPS for selected direction:</label>
@@ -464,28 +819,57 @@
             </div>
 
             <!-- Game Start Configuration -->
-            <div class="mb-3">
+            <div class="mb-3" id="character-spawn-settings" style="display: none;">
               <h6 class="text-light">Game Start</h6>
-              <small class="text-muted d-block mb-2">Select the initial player character and the starting room/position.</small>
+              <small class="text-muted d-block mb-2">Configure the initial player character and automatic character spawning.</small>
 
-              <label class="form-label text-light">Initial player character:</label>
-              <div id="starting-player-list" class="list-group mb-2">
-                <!-- Radio list dynamically populated -->
+              <div class="mb-2">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-is-player">
+                  <label class="form-check-label text-light" for="character-spawn-is-player">
+                    Spawn as player on game start
+                  </label>
+                </div>
               </div>
 
-              <div class="row g-2 align-items-end">
-                <div class="col-12">
-                  <label class="form-label text-light">Starting room:</label>
-                  <select class="form-select form-select-sm" id="start-room-selector"></select>
+              <div class="mb-2">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-auto">
+                  <label class="form-check-label text-light" for="character-spawn-auto">
+                    Auto-spawn in room
+                  </label>
                 </div>
-                <div class="col-6">
-                  <label for="start-x" class="form-label text-light">Position X</label>
-                  <input type="number" class="form-control form-control-sm" id="start-x" value="0">
+              </div>
+
+              <div id="character-spawn-room-container" style="display: none;">
+                <label class="form-label text-light">Room:</label>
+                <select class="form-select form-select-sm mb-2" id="character-spawn-room"></select>
+              </div>
+
+              <div id="character-spawn-position-container" style="display: none;">
+                <label class="form-label text-light">Position (x, y):</label>
+                <input type="text" class="form-control form-control-sm mb-2" id="character-spawn-position" placeholder="0, 0">
+                  <small class="text-muted">Right-click on canvas to copy position</small>
                 </div>
-                <div class="col-6">
-                  <label for="start-y" class="form-label text-light">Position Y</label>
-                  <input type="number" class="form-control form-control-sm" id="start-y" value="0">
-                </div>
+
+              <div id="character-spawn-direction-container" style="display: none;">
+                <label class="form-label text-light">Initial direction:</label>
+                <select class="form-select form-select-sm" id="character-spawn-direction">
+                  <option value="south">South</option>
+                  <option value="north">North</option>
+                  <option value="east">East</option>
+                  <option value="west">West</option>
+                  <option value="northeast">Northeast</option>
+                  <option value="northwest">Northwest</option>
+                  <option value="southeast">Southeast</option>
+                  <option value="southwest">Southwest</option>
+                </select>
+              </div>
+
+              <div id="character-spawn-speed-container" style="display: none;">
+                <label class="form-label text-light">Movement speed (pixel/second):</label>
+                <input type="number" class="form-control form-control-sm" id="character-spawn-speed" value="100" min="1" max="1000" step="1">
+                <small class="text-muted">Character movement speed in pixels per second</small>
               </div>
             </div>
             
@@ -528,7 +912,6 @@
                 <select class="form-select form-select-sm" id="gui-type-select">
                   <option value="MainInterface">MainInterface</option>
                   <option value="DialogBox">DialogBox</option>
-                  <option value="Inventory">Inventory</option>
                   <option value="Menu">Menu</option>
                   <option value="VerbGUI">VerbGUI</option>
                   <option value="VerbCoin">VerbCoin</option>
@@ -581,10 +964,9 @@
 
               <div class="mb-3">
                 <label class="form-label text-light">Cursor Image:</label>
-                <div class="input-group input-group-sm">
-                  <input type="file" class="form-control" id="cursor-image-upload" accept="image/*" onchange="uploadCursorImage(this)">
-                  <button class="btn btn-outline-light" onclick="document.getElementById('cursor-image-upload').click()">Browse</button>
-                </div>
+                <button class="btn btn-outline-light btn-sm w-100" type="button" id="btn-cursor-browse-image">
+                  <i class="fas fa-folder-open"></i> Browse Resources
+                </button>
               </div>
 
               <div class="mb-3">
@@ -678,9 +1060,28 @@
 
             <div class="alert alert-info mt-3" role="alert">
               <small>
-                <strong>Tip:</strong> Editor unico con Ctrl+S per salvare. Autocomplete: Ctrl+Space (API di gioco).
+                <strong>Tip:</strong> Single editor with Ctrl+S to save. Autocomplete: Ctrl+Space (game API).
               </small>
             </div>
+          </div>
+        </div>
+
+        <div id="docs" class="section">
+          <h3>Documentation</h3>
+          <div class="section-content docs-sidebar-toc">
+            <p class="text-muted small mb-2">Quick navigation — full guide in the main panel.</p>
+            <nav class="nav flex-column docs-toc-nav" id="docs-toc-nav">
+              <a class="nav-link docs-toc-link" href="#doc-overview">Overview</a>
+              <a class="nav-link docs-toc-link" href="#doc-quickstart">Quick start</a>
+              <a class="nav-link docs-toc-link" href="#doc-tabs">Editor tabs</a>
+              <a class="nav-link docs-toc-link" href="#doc-workflow">Workflow</a>
+              <a class="nav-link docs-toc-link" href="#doc-scripting">Scripting</a>
+              <a class="nav-link docs-toc-link" href="#doc-events">Events</a>
+              <a class="nav-link docs-toc-link" href="#doc-api">Game API</a>
+              <a class="nav-link docs-toc-link" href="#doc-examples">Examples</a>
+              <a class="nav-link docs-toc-link" href="#doc-playtest">Play test</a>
+              <a class="nav-link docs-toc-link" href="#doc-tips">Tips</a>
+            </nav>
           </div>
         </div>
 
@@ -708,7 +1109,7 @@
             </div>
 
             <div class="mb-3">
-              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Esegui gli script on_game_start senza aprire il runtime">
+              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Run on_game_start scripts without opening the runtime">
                 <i class="fas fa-rocket"></i> Test Game Start
               </button>
             </div>
@@ -749,11 +1150,62 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+
+  <!-- Supabase SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
 
   <script src="JS/device-detector.js"></script>
   <script src="JS/firebase-config.js"></script>
   <script src="JS/firebase-verify.js"></script>
   <script src="JS/firebase-usage.js"></script>
+  <!-- Supabase Config (opzionale, crea supabase-config.js basandoti su supabase-config-template.js) -->
+  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found. Set SUPABASE_URL and SUPABASE_ANON_KEY in supabase.js or create supabase-config.js')"></script>
+  <script src="JS/supabase.js"></script>
+  <script src="JS/resources.js"></script>
+  <script src="JS/docs-panel.js"></script>
   <script src="JS/main.js"></script>
+
+  <!-- Resource picker modal (usato da tutti i Browse) -->
+  <div class="modal fade" id="resourcePickerModal" tabindex="-1" aria-labelledby="resourcePickerModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content bg-dark text-light border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="resource-picker-title">Select image</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+            <input type="text" class="form-control form-control-sm flex-grow-1" id="resource-picker-search" placeholder="Search...">
+            <button type="button" class="btn btn-success btn-sm" id="resource-picker-upload-btn">
+              <i class="fas fa-file-import"></i> Import
+            </button>
+          </div>
+          <small class="text-muted d-block mb-1" id="resource-picker-hint" style="display: none;"></small>
+          <div class="d-flex flex-wrap gap-2 mb-2 align-items-center" id="resource-picker-multi-actions" style="display: none;">
+            <button type="button" class="btn btn-outline-light btn-sm" id="resource-picker-select-all-btn">Select all</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="resource-picker-clear-btn">Clear selection</button>
+          </div>
+          <small class="text-muted d-block mb-2" id="resource-picker-selection">No selection</small>
+          <div id="resource-picker-grid" class="resources-grid resources-grid-picker"></div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-success btn-sm" id="resource-picker-confirm-btn">Use image</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+

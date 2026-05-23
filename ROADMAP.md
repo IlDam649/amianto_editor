@@ -5,9 +5,14 @@
 **Amianto Editor** è una webapp per creare giochi punta e clicca nel browser. L'architettura è divisa in:
 - **Editor** (`index.html` + `JS/main.js`): Interfaccia di editing con tabs
 - **Runtime Standalone** (`runtime.html` + `JS/runtime.js`): Player standalone per test/gioco
-- **Runtime Sandboxed** (iframe + `JS/runtime.js`): Esecuzione script isolata durante Play Test con sistema MessageQueue robusto
-- **Backend**: Firebase (autenticazione, storage progetti)
-- **Scripting**: JavaScript eseguito in iframe sandboxed (`sandbox="allow-scripts"`) per isolamento completo e sicurezza
+- **Runtime Sandboxed** (iframe + `JS/runtime.js`): Esecuzione script isolata durante Play Test
+- **Backend**: Firebase (auth/progetti) + Supabase Storage (asset, in migrazione)
+- **Scripting**: JavaScript in iframe `sandbox="allow-scripts"`; API esposte via `GameAPI` + `getScriptApiBindings()` / `compileScript`
+
+**Documenti correlati:**
+- [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
+
+**✅ Nota API (maggio 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/variabili, scope handler Fase C). Prossimi step: **Fase E** (test manuali), GUI inventario giocabile, cursori contestuali, dialoghi.
 
 ---
 
@@ -74,11 +79,11 @@
 - Tipi GUI: MainInterface, DialogBox, Inventory, Menu, VerbGUI, VerbCoin, OverlayCustom
 - Salvataggio GUI nel progetto
 
+#### ✅ **Completato in runtime**
+- Rendering GUI overlay (background, pulsanti, testo)
+- Click su pulsanti GUI + script `on_gui_click`
+
 #### 🟡 **Parzialmente Implementato**
-- **Rendering GUI nel runtime**: GUI salvata ma non renderizzata nel runtime
-  - **Prossimo passo**: Implementare rendering GUI overlay nel runtime.js
-- **Interazioni GUI nel runtime**: Click su pulsanti non gestiti
-  - **Prossimo passo**: Sistema di eventi click per pulsanti GUI nel runtime
 - **Layout responsive**: GUI non si adatta a dimensioni canvas diverse
   - **Prossimo passo**: Sistema di scaling/anchoring per GUI responsive
 
@@ -96,40 +101,31 @@
 
 ### 4. SCRIPTING (Sistema di Scripting)
 
-#### ✅ **Già Implementato**
-- Editor CodeMirror con syntax highlighting JavaScript
-- Sandbox Jailed per esecuzione sicura
-- **Sistema eventi completo (5 API)**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-- **API base (3 API)**: `print()`, `show_message()`, `move_object()`
-- **API inventario completo (5 API)**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
-- **API oggetti completo (5 API)**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
-- **API stanze completo (4 API)**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
-- **Sistema variabili completo (4 API)**: `Game.getVar()`, `Game.setVar()`, `Game.hasVar()`, `Game.toggleVar()` (con alias `get_var()`, `set_var()`, `has_var()`, `toggle_var()`)
-- Attach script a rooms, objects, characters, hotspots, GUI buttons, cursors
-- Salvataggio/caricamento script nel progetto
-- **Totale: 24 API funzionanti implementate**
+#### ✅ **Runtime (`JS/runtime.js`) — Play Test e standalone**
+- Editor CodeMirror + attach script a rooms, objects, characters, hotspots, GUI, cursors
+- **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
+- **Eventi (6):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
+- **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
+- **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
+- **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
+- **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
+- **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (animazioni custom da editor)
+- Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
 
-#### 🟡 **Parzialmente Implementato**
-- **Print/log nel runtime**: Sistema postMessage funziona ma ha problemi di sincronizzazione
-  - **Prossimo passo**: Fixare comunicazione editor↔runtime, aggiungere retry mechanism
-- **Error handling**: Errori script non sempre catturati correttamente
-  - **Prossimo passo**: Migliorare try/catch e logging errori con stack trace
-- **Autocomplete API**: CodeMirror hints non include tutte le API disponibili
-  - **Prossimo passo**: Aggiornare hints con tutte le API documentate
+#### ✅ **API runtime (Fase B completata)**
+- Inventario, oggetti dinamici, stanze, alias variabili — tutti in `GameAPI` + `getScriptApiBindings()`
 
-#### ❌ **Mancante**
-- **Sistema dialogo**: Nessuna API per dialoghi ramificati
-  - **Prossimo passo**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`
-- **Sistema audio**: Nessuna API per musica/effetti sonori
-  - **Prossimo passo**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-- **Sistema personaggi avanzato**: Nessuna API per movimento/animazione personaggi
-  - **Prossimo passo**: `move_character()`, `animate_character()`, `set_character_direction()`, `spawn_character()`
-- **Sistema effetti visivi**: Nessuna API per transizioni/effetti
-  - **Prossimo passo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
-- **Sistema salvataggio gioco**: Nessuna API per salvare stato gioco (non progetto)
-  - **Prossimo passo**: `save_game()`, `load_game()`, `delete_save()`, `get_save_info()`
-- **Utility functions**: Nessuna funzione helper matematica/geometria
-  - **Prossimo passo**: `distance()`, `angle_between()`, `lerp()`, `shuffle_array()`
+#### 🟡 **Qualità scripting**
+- Error handling: migliorare stack trace negli script utente
+- Test manuali checklist Fase E (`await` + inventario nello stesso handler)
+
+#### ❌ **Mancante (backlog)**
+- Dialoghi: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`
+- Audio: `play_music()`, `play_sound()`, volumi, ambient
+- Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
+- Salvataggio gioco: `save_game()`, `load_game()`, slot, metadata
+- Utility: `distance()`, `angle_between()`, `lerp()`, `shuffle_array()`
+- AI personaggi: patrol, follow (oltre a `walk_character` già presente)
 
 ---
 
@@ -157,23 +153,48 @@
   - Sistema di inizializzazione con RUNTIME_READY
   - Gestione script pending durante inizializzazione
 
+#### ✅ **Completato**
+- **Cambio stanza**: ✅ Sistema completo `changeRoom()` e `load_room()` implementato
+  - ✅ Cambio stanza con cleanup risorse
+  - ✅ Esecuzione script `on_room_change` automatica
+  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot)
+  - ✅ Gestione transizione tra stanze
+- **Interazioni click**: ✅ Sistema completo di hit detection e dispatch eventi
+  - ✅ Hit detection per hotspot (polygon), oggetti (bounding box), character (bounding box), GUI buttons
+  - ✅ Sistema di click centralizzato con protezioni anti-doppio click (debounce, frame guard)
+  - ✅ Dispatch eventi click agli script (`on_hotspot_click`, `on_object_click`, `on_character_click`, `on_gui_click`)
+  - ✅ Priorità click: hotspot > oggetti > character > GUI > pathfinding
+- **Movimento personaggio**: ✅ Sistema completo di pathfinding e click-to-move
+  - ✅ Pathfinding su walkable area polygon con verifica percorso valido
+  - ✅ Click-to-move del player con pathfinding automatico
+  - ✅ Animazione movimento con direzione corretta (8 direzioni)
+  - ✅ Smooth movement con sub-pixel rendering
+  - ✅ Gestione pivot per posizionamento corretto
+  - ✅ Sistema di scaling basato su posizione Y (character scaling)
+- **Rendering personaggi**: ✅ Sistema completo implementato
+  - ✅ Rendering personaggi con animazioni 8-direzioni
+  - ✅ Supporto pivot per posizionamento corretto
+  - ✅ Character scaling dinamico basato su posizione Y
+  - ✅ Sub-pixel rendering per movimento fluido
+  - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
+  - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
+- **Rendering GUI**: ✅ Sistema completo implementato
+  - ✅ Rendering overlay GUI con background immagini
+  - ✅ Rendering pulsanti GUI con immagini e testo
+  - ✅ Sistema di click su pulsanti GUI funzionante
+  - ✅ Esecuzione script associati a pulsanti
+
 #### 🟡 **Parzialmente Implementato**
-- **Cambio stanza**: `load_room()` esiste ma non implementato completamente
-  - **Prossimo passo**: Implementare cambio stanza con transizione, cleanup, script execution
-- **Sistema inventario runtime**: API placeholder, nessun rendering
-  - **Prossimo passo**: Implementare inventario runtime con rendering GUI Inventory
+- **Sistema inventario runtime**
+  - ❌ API inventario **non** in `runtime.js` (solo codice legacy in `main.js`, non collegato al Play Test)
+  - ❌ Rendering inventario GUI non implementato
+  - **Prossimo passo (Fase B.1):** `gameState.inventory` + 5 API in `GameAPI` + binding; poi GUI Inventory visuale
 
 #### ❌ **Mancante**
-- **Interazioni click**: Nessun sistema di click su oggetti/personaggi/hotspot nel runtime
-  - **Prossimo passo**: Sistema di hit detection e dispatch eventi click
-- **Movimento personaggio**: Nessun sistema di pathfinding e click-to-move
-  - **Prossimo passo**: Pathfinding A* su walkable area, animazione movimento, direzione personaggio
-- **Rendering personaggi**: Personaggi non vengono renderizzati nel runtime
-  - **Prossimo passo**: Rendering personaggi con animazioni 8-direzioni, z-ordering
-- **Rendering GUI**: GUI non viene renderizzata nel runtime
-  - **Prossimo passo**: Rendering overlay GUI con pulsanti clickabili
-- **Sistema cursori**: Cursori contestuali non funzionano nel runtime
-  - **Prossimo passo**: Cambio cursore in base a hover su hotspot/character/object
+- **Sistema cursori contestuali**: Cursori definiti ma cambio dinamico non implementato
+  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
+  - ✅ Cursor fisso 'pointer' implementato
+  - **Prossimo passo**: Sistema hover detection e cambio cursore dinamico con action text
 - **Sistema inventario visuale**: Inventario non visibile nel runtime
   - **Prossimo passo**: Rendering inventario GUI con drag&drop, tooltip
 - **Sistema dialogo visuale**: Nessun rendering dialoghi
@@ -260,18 +281,23 @@
 
 **Obiettivo**: Rendere il runtime completamente funzionale per gameplay base.
 
-**✅ COMPLETATO - Sistema Scripting API (24 API implementate)**:
-- ✅ Sistema eventi (5 API): `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-- ✅ Sistema inventario (5 API): `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
-- ✅ Sistema oggetti (5 API): `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
-- ✅ Sistema stanze (4 API): `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
-- ✅ Sistema variabili (4 API): `Game.getVar()`, `Game.setVar()`, `Game.hasVar()`, `Game.toggleVar()`
-- ✅ API base (3 API): `print()`, `show_message()`, `move_object()`
+**✅ COMPLETATO - Runtime core (rendering, click, stanze, personaggi)**:
+- ✅ Eventi (6): incluso `on_gui_click`
+- ✅ API base runtime: `print`, `show_message`, `move_object`, `load_room`, variabili (`getVariable`/`setVariable`)
+- ✅ Personaggi: `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation`
+
+**✅ COMPLETATO - Unificazione API scripting** (vedi [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
+- ✅ **Fase A:** `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
+- ✅ **Fase B:** inventario, oggetti spawn, stanze, alias `Game.getVar`
+- ✅ **Fase C:** `buildHandlerExecutionScope` + `runHandlerWithExecutionScope` negli handler
+- ✅ **Fase D:** rimossi `sandboxApi` / `gameInventory` editor; `scriptName` stabile in Play Test
+
+**⏳ Prossimo:** Fase E test manuali; sync inventario in `UPDATE_CONTEXT`
 
 **✅ COMPLETATO - Sistema Runtime Sandboxed**:
 - ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
 - ✅ Sistema MessageQueue robusto (buffer, retry, fallback)
-- ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `changeRoom()`, `getCurrentRoom()`, `getCurrentObject()`)
+- ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `load_room()`, `getCurrentRoom()`, `getCurrentObject()`)
 - ✅ ScriptLogService integrato con logging timestamped e livelli
 - ✅ Gestione contesto esecuzione (roomId, objectId, variables)
 - ✅ Sistema di inizializzazione con RUNTIME_READY e script pending
@@ -289,47 +315,61 @@
   - ✅ `GameAPI.print()` - Logging con serializzazione valori
   - ✅ `GameAPI.error()` - Error logging
   - ✅ `GameAPI.getVariable()` / `GameAPI.setVariable()` - Gestione variabili
-  - ✅ `GameAPI.changeRoom()` - Richiesta cambio stanza
+  - ✅ `load_room()` - Carica una stanza per ID o nome
   - ✅ `GameAPI.getCurrentRoom()` / `GameAPI.getCurrentObject()` - Info contesto
 - **ScriptLogService**: Sistema di logging integrato nell'editor con timestamp e livelli (info, warning, error)
 
-#### 1.2 Implementare Interazioni Click Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Click su canvas non gestiti, nessun hit detection
-- **Soluzione**:
-  - Sistema hit detection per oggetti/personaggi/hotspot
-  - Dispatch eventi click agli script
-  - Visual feedback (highlight, cursor change)
-- **Tempo stimato**: 3-4 giorni
+#### 1.2 ✅ Implementare Interazioni Click Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di hit detection e click handling
+  - ✅ Hit detection per hotspot (polygon con `isPointInPolygon`), oggetti (bounding box), character (bounding box), GUI buttons
+  - ✅ Sistema di click centralizzato (`handleCanvasClick`, `handleClick`) con protezioni multiple
+  - ✅ Protezioni anti-doppio click: debounce (50ms), frame guard, stopImmediatePropagation
+  - ✅ Dispatch eventi click agli script con priorità: hotspot > oggetti > character > GUI > pathfinding
+  - ✅ Esecuzione script associati a hotspot/oggetti/character/GUI buttons
+  - ✅ Gestione coordinate canvas con scaling CSS e devicePixelRatio
+- **Tempo impiegato**: Completato
 
-#### 1.3 Implementare Cambio Stanza Runtime
-- **Stato**: 🟡 Parzialmente implementato (API esiste, logica manca)
-- **Problema**: `load_room()` non funziona realmente
-- **Soluzione**:
-  - Implementare cambio stanza con cleanup risorse
-  - Eseguire script `on_room_change`
-  - Transizione base (fade semplice)
-- **Tempo stimato**: 2-3 giorni
+#### 1.3 ✅ Implementare Cambio Stanza Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo `changeRoom()` e `load_room()`
+  - ✅ Cambio stanza con cleanup risorse (immagini, oggetti, hotspot)
+  - ✅ Esecuzione script `on_room_change` automatica (`executeRoomChangeScripts`)
+  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot, walkable area)
+  - ✅ Gestione transizione tra stanze con preload asset
+  - ✅ Supporto cambio stanza per ID o nome
+  - ✅ Posizionamento player opzionale con direzione iniziale
+- **Tempo impiegato**: Completato
 
-#### 1.4 Rendering Personaggi Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Personaggi non vengono renderizzati
-- **Soluzione**:
-  - Rendering personaggi con animazioni 8-direzioni
-  - Z-ordering (personaggi dietro/avanti oggetti)
-  - Sistema di posizionamento personaggi per stanza
-- **Tempo stimato**: 4-5 giorni
+#### 1.4 ✅ Rendering Personaggi Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di rendering personaggi
+  - ✅ Rendering personaggi con animazioni 8-direzioni
+  - ✅ Supporto pivot per posizionamento corretto (pivotX, pivotY)
+  - ✅ Character scaling dinamico basato su posizione Y (`calculateCharacterScale`)
+  - ✅ Sub-pixel rendering per movimento fluido (renderX, renderY)
+  - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
+  - ✅ Animazioni custom nominate in editor (`animations.{nome}`) + API `play_character_animation`
+  - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
+  - ✅ Gestione frame specchiati (Canvas) e frame normali (Image)
+  - ✅ Placeholder rendering quando frame non disponibili
+- **Tempo impiegato**: Completato
 
-#### 1.5 Sistema Inventario Runtime Completo
-- **Stato**: 🟡 Parzialmente implementato (API placeholder)
-- **Problema**: API esistono ma inventario non funziona realmente
-- **Soluzione**:
-  - Implementare storage inventario runtime
-  - Rendering GUI Inventory
-  - Drag&drop, tooltip, combinazioni
-- **Tempo stimato**: 5-6 giorni
+#### 1.5 ✅ Unificazione API — Fase A (infrastruttura) - COMPLETATO
+- **Stato**: ✅ Completato (maggio 2026)
+- **Implementazione**:
+  - `SUPPORTED_SCRIPT_HANDLERS` centralizzato
+  - `getScriptApiBindings()` — elenco unico API per `compileScript` e `window`
+  - `buildScriptExecutor()` — sostituisce `new Function` duplicati
+  - `exposeScriptGlobals()` — esposizione globale coerente
+  - API personaggio incluse nei parametri di compilazione (prima solo su `window`)
 
-**Totale Fase 1**: ~16-21 giorni lavorativi
+#### 1.6 Sistema Inventario Runtime — API ✅ / GUI 🟡
+- **Stato API**: ✅ 5 API in `GameAPI` + `gameState.inventory`
+- **Stato GUI**: 🟡 rendering parziale; mancano drag&drop, tooltip, combinazioni
+- **Tempo stimato GUI**: 5-6 giorni
+
+**Totale Fase 1**: runtime scripting unificato; prossimo focus GUI inventario + Fase E test
 
 ---
 
@@ -337,31 +377,41 @@
 
 **Obiettivo**: Implementare meccaniche base di gameplay punta e clicca.
 
-#### 2.1 Pathfinding e Movimento Personaggio
-- **Stato**: ❌ Mancante
-- **Problema**: Nessun sistema di movimento, walkable area non usata
-- **Soluzione**:
-  - Implementare pathfinding A* su walkable area polygon
-  - Click-to-move del personaggio
-  - Animazione movimento con direzione corretta
-  - Smooth movement con easing
-- **Tempo stimato**: 7-10 giorni
+#### 2.1 ✅ Pathfinding e Movimento Personaggio - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di pathfinding e movimento
+  - ✅ Pathfinding su walkable area polygon con verifica percorso valido (`findPath`)
+  - ✅ Click-to-move del player con pathfinding automatico
+  - ✅ Animazione movimento con direzione corretta (8 direzioni, `getDirectionFromVector`)
+  - ✅ Smooth movement con sub-pixel rendering (renderX, renderY)
+  - ✅ Gestione pivot per posizionamento corretto durante movimento
+  - ✅ Sistema di scaling basato su posizione Y (character scaling)
+  - ✅ Gestione dead ends e posizioni sicure (`findSafePositionNearTarget`)
+  - ✅ Verifica spazio movimento (`hasMovementSpace`) per evitare incastri
+  - ✅ Gestione velocità movimento configurabile (moveSpeed in pixel/secondo)
+  - ✅ Animazioni: idle (frame 0) quando fermo, movimento (frame 1+) quando cammina
+- **Tempo impiegato**: Completato
 
-#### 2.2 Rendering GUI Runtime
-- **Stato**: 🟡 Parzialmente implementato (salvato, non renderizzato)
-- **Problema**: GUI non visibile nel runtime
-- **Soluzione**:
-  - Rendering overlay GUI con background e pulsanti
-  - Sistema di click su pulsanti GUI
-  - Esecuzione script associati a pulsanti
-- **Tempo stimato**: 4-5 giorni
+#### 2.2 ✅ Rendering GUI Runtime - COMPLETATO
+- **Stato**: ✅ Completato
+- **Implementazione**: Sistema completo di rendering GUI
+  - ✅ Rendering overlay GUI con background immagini
+  - ✅ Rendering pulsanti GUI con immagini e testo
+  - ✅ Sistema di click su pulsanti GUI funzionante (hit detection bounding box)
+  - ✅ Esecuzione script associati a pulsanti (`on_gui_click`)
+  - ✅ Fallback rendering (rettangolo verde) quando immagine non disponibile
+  - ✅ Gestione pulsanti abilitati/disabilitati
+- **Tempo impiegato**: Completato
 
 #### 2.3 Sistema Cursori Contestuali Runtime
-- **Stato**: ❌ Mancante
-- **Problema**: Cursori definiti ma non funzionano nel runtime
+- **Stato**: 🟡 Parzialmente implementato
+- **Problema**: Cursori definiti ma cambio dinamico non implementato
+- **Implementazione attuale**:
+  - ✅ Cursor fisso 'pointer' implementato
+  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
 - **Soluzione**:
-  - Hit detection per hotspot/character/object
-  - Cambio cursore in base a hover
+  - Hit detection hover per hotspot/character/object
+  - Cambio cursore dinamico in base a hover
   - Visual feedback con action text
 - **Tempo stimato**: 3-4 giorni
 
@@ -404,13 +454,11 @@
 - **Tempo stimato**: 6-8 giorni
 
 #### 3.3 Sistema Personaggi Avanzato
-- **Stato**: 🟡 Parzialmente implementato (animazioni base)
-- **Problema**: Nessun movimento/animazione avanzata
-- **Soluzione**:
-  - API scripting: `move_character()`, `animate_character()`, `set_character_direction()`, `spawn_character()`
-  - Sistema AI base (patrol, follow, idle)
-  - Animazioni per stato (walk, idle, talk)
-- **Tempo stimato**: 7-9 giorni
+- **Stato**: 🟡 Parzialmente implementato
+- **✅ Già in runtime:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (+ pathfinding player; animazioni custom nominate in editor)
+- **✅ Editor:** animazioni custom con nome (`animations.wave`, ecc.) e 8 direzioni
+- **❌ Mancante:** AI (patrol, follow), loop/repeat animazione da script, NPC scheduling
+- **Tempo stimato**: 5-7 giorni (solo parti AI/stato)
 
 #### 3.4 Sistema Salvataggi Gioco
 - **Stato**: ❌ Mancante
@@ -537,37 +585,32 @@
 - **Impatto**: Performance degrada con molti asset
 - **Soluzione**: Resource pool con cleanup automatico, LRU cache
 
-### 4. **Scripting API Inconsistente**
-- **Problema**: Alcune API funzionano solo in editor, altre solo in runtime
-- **Impatto**: Confusione per sviluppatori, bug difficili da debuggare
-- **Soluzione**: Unificare API, documentazione chiara, test suite
+### 4. **Scripting API Inconsistente** — 🟡 IN RISOLUZIONE
+- **Problema**: API documentate vs runtime non allineate; `sandboxApi` in `main.js` morto
+- **Impatto**: Script con `add_to_inventory` / `Game.getVar` falliscono in Play Test
+- **Soluzione**: ✅ Fase A infrastruttura; ⏳ Fase B porting API; test in `API_UNIFICATION_CHECKLIST.md`
 
 ---
 
 ## 📈 PRIORITÀ SVILUPPO RACCOMANDATE
 
-### ✅ **Completato (Fase 1 - Sistema Scripting e Runtime)**
-- ✅ Sistema eventi completo (5 API)
-- ✅ Sistema inventario completo (5 API)
-- ✅ Sistema oggetti completo (5 API)
-- ✅ Sistema stanze completo (4 API)
-- ✅ Sistema variabili completo (4 API)
-- ✅ Sistema Runtime Sandboxed completo con MessageQueue robusto
-- ✅ GameAPI completo con tutte le funzioni di base
-- ✅ ScriptLogService integrato
-- **Totale: 24 API implementate e funzionanti + Runtime Sandboxed completo**
+### ✅ **Completato — Runtime e gameplay base**
+- ✅ Rendering, click, stanze, pathfinding, personaggi (8 dir.), GUI overlay
+- ✅ MessageQueue / log runtime, iframe sandbox, cache script (`compileScript`)
+- ✅ **Fase A unificazione API:** binding unico `getScriptApiBindings` + `buildScriptExecutor`
+- ✅ API personaggio script nel runtime
 
-### **Immediato (Settimane 1-4)**
-1. Fix sistema print/log runtime (Fase 1.1)
-2. Implementare interazioni click runtime (Fase 1.2)
-3. Implementare cambio stanza runtime (Fase 1.3)
-4. Rendering personaggi runtime (Fase 1.4)
+### **Immediato — Unificazione API (Fase B)**
+1. ✅ Fase A infrastruttura scripting — COMPLETATO
+2. ⏳ **Fase B.1:** inventario in `runtime.js` (5 API + `gameState.inventory`)
+3. ⏳ **Fase B.2:** oggetti dinamici (`spawn_object`, …)
+4. ⏳ **Fase B.3:** `get_room_objects`, `set_room_background`, alias variabili
+5. ⏳ Pulizia `sandboxApi` morto in `main.js` + fix `on_room_enter` → `on_room_change` (Play Test)
 
-### **Breve Termine (Settimane 5-8)**
-5. Sistema inventario runtime completo (Fase 1.5)
-6. Pathfinding e movimento personaggio (Fase 2.1)
-7. Rendering GUI runtime (Fase 2.2)
-8. Sistema cursori contestuali (Fase 2.3)
+### **Breve Termine**
+6. Inventario GUI visuale (rendering + drag&drop) — dopo Fase B.1
+7. Sistema cursori contestuali (Fase 2.3)
+8. Dialoghi base (Fase 2.4)
 
 ### **Medio Termine (Settimane 9-16)**
 9. Sistema dialoghi base (Fase 2.4)
@@ -585,15 +628,15 @@
 
 **Amianto Editor** dovrebbe permettere di:
 1. ✅ Creare stanze, oggetti, personaggi, GUI (completato)
-2. ✅ Scrivere script JavaScript funzionanti (24 API implementate)
-3. 🟡 Testare gioco completo nel runtime (API complete, manca rendering/interazioni runtime)
+2. 🟡 Scrivere script JavaScript funzionanti nel Play Test (runtime core OK; inventario/oggetti/alias variabili — Fase B)
+3. 🟡 Testare gameplay punta-e-clicca (cammina, clic, stanze, GUI, personaggi ✅; puzzle/inventario ⏳)
 4. ❌ Esportare gioco standalone (manca export ottimizzato)
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
 
 ---
 
-*Roadmap aggiornata il: Gennaio 2025*
-*Versione progetto analizzata: 0.3*
-*Ultimo aggiornamento: Sistema Runtime Sandboxed completato con MessageQueue robusto, GameAPI completo e ScriptLogService*
+*Roadmap aggiornata il: Maggio 2026*
+*Versione progetto: 0.4+*
+*Ultimo aggiornamento: Fase A unificazione API (`getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`); correzione stato inventario/24 API; riferimento a `API_UNIFICATION_CHECKLIST.md`*
 

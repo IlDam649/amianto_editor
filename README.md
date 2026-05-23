@@ -2,13 +2,13 @@
   <table>
     <tr>
       <td align="center" width="220">
-        <img src="img/cover.png" alt="Amianto Editor Cover" width="180" />
+        <img src="img/mnt.png" alt="Amianto Editor Cover" width="180" />
       </td>
       <td align="center" width="280" style="vertical-align: middle;">
         <h2 style="font-size: 2.5em; margin: 0; font-weight: bold;">si evolve....</h2>
       </td>
       <td align="center" width="220">
-        <img src="img/Amnt.png" alt="Amianto Editor" width="180" />
+        <img src="img/mnt.png" alt="Amianto Editor" width="180" />
       </td>
     </tr>
   </table>
@@ -20,8 +20,12 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 ## 📚 Documentazione
 
+- 📖 **In-app Docs tab** — full English guide in the editor toolbar (**Docs**, `Ctrl+7`)
 - 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
+- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
+- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
 ---
 
@@ -41,6 +45,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Hotspots
   - Create polygonal hotspots; add/finish/clear points; show/hide all
   - Select/move/delete vertices; list and manage hotspots
+  - Per-hotspot **Is active?** (clickable in playtest); script API `enableHotspot` / `disableHotspot`
 - Scene Objects (Rooms)
   - Add image-based objects; edit name and position; delete
   - List with filtering and type badges
@@ -48,7 +53,8 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Multiple image layers; list and ordering controls
 - Characters
   - Create characters; 8-direction setup
-  - Upload multiple animation frames per direction; FPS control; preview
+  - **Walking** animation: upload frames per direction; FPS control; preview
+  - **Custom animations**: named animations (e.g. `wave`, `talk`) with their own 8-direction frames; playable via `play_character_animation()` in scripts
   - Game start configuration: choose starting player, room and position
 - Inventory Objects
   - Manage items (upload, filter, edit, delete)
@@ -61,10 +67,11 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Upload cursor image, optional action text; list active cursors
 - Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
-  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
-  - **Utility APIs**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
+  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
+  - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili — vedi [Current API Status](#current-api-status)
+  - **API unification (Fasi A–B ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` in `runtime.js`; stesse API in iframe e `runtime.html`
   - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
-  - **GameAPI**: Complete API exposed to user scripts (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **GameAPI / `Game`**: API esposte agli script (`print`, `load_room`, `add_to_inventory`, `spawn_object`, `Game.getVar()`, …)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
   - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
   - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
@@ -83,12 +90,31 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - **Sandboxed Runtime**: Script execution in isolated iframe during Play Test
   - **GameAPI Integration**: Full API access in runtime with context management (roomId, objectId, variables)
   - **Script Console**: Real-time logging from scripts with level filtering and timestamps
+  - **Complete Runtime Rendering**: Rooms, objects, characters (8-direction animations), GUI (backgrounds, buttons)
+  - **Click Interactions**: Full hit detection for hotspots, objects, characters, GUI buttons with script execution
+  - **Pathfinding & Movement**: Click-to-move player with pathfinding on walkable areas, smooth animations
+  - **Room Changes**: Complete room switching system with asset loading and script execution
 - Theming
   - Acid dark + neon UI across forms, buttons, lists, dropdowns
 
+## Runtime Features
+
+The runtime system provides a complete game execution environment:
+
+- **✅ Complete Rendering**: Rooms (background, foregrounds, objects), characters with 8-direction animations and scaling, GUI overlays with buttons
+- **✅ Click Interactions**: Full hit detection system for hotspots (polygon), objects (bounding box), characters, and GUI buttons with script execution
+- **✅ Pathfinding & Movement**: Click-to-move player with intelligent pathfinding on walkable areas, smooth character movement with direction-based animations
+- **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
+- **✅ Character System**: Character rendering with pivot support, dynamic scaling, walking + custom named animations (`play_character_animation`)
+- **✅ GUI System**: GUI rendering with background images and clickable buttons, script execution on button clicks
+
 ## Current API Status
 
-The JavaScript scripting system currently provides **24 working APIs** organized in 5 categories:
+Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone. L’editor espone le stesse funzioni tramite `getScriptApiBindings()` (Fasi A–B dell’unificazione API).
+
+**Fasi completate:** A (infrastruttura binding) · B.1 (inventario) · B.2 (oggetti dinamici) · B.3 (stanze + alias variabili)
+
+### API disponibili (per categoria)
 
 ### Basic APIs
 - **`print(...)`** / **`GameAPI.print(...)`** - Outputs messages to the script console (with serialization)
@@ -118,21 +144,51 @@ The JavaScript scripting system currently provides **24 working APIs** organized
 - **`set_object_visible(objectId, visible)`** - Shows or hides an object
 
 ### Room System APIs
-- **`load_room(roomIdOrName)`** - Loads a room by ID or name
-- **`get_current_room()`** - Returns the current room ID
-- **`get_room_objects()`** - Returns array of all objects in current room
-- **`set_room_background(imageUrlOrDataUrl)`** - Sets the room background image
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Loads a room by ID or name; optional player placement
+- **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - Returns the current room ID
+- **`get_room_objects()`** - Returns plain objects `{ id, name, x, y, rotation, scaleX, scaleY, visible, enabled }` for the current room
+- **`set_room_background(imageUrlOrDataUrl)`** - Sets or clears background (`""` / null clears); supports URLs and `asset:...` keys already in `AssetRegistry`
 
 ### Game Variables APIs
-- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Gets a game variable value
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Sets a game variable value
-- **`has_var(key)`** / **`Game.hasVar(key)`** - Checks if a variable exists
-- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggles a boolean variable
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVar(key)`** - Gets a variable (returns `initialValue` from project definitions if not set yet)
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVar(key, value)`** - Sets a variable (type coercion from editor definitions when available)
+- **`has_var(key)`** / **`Game.hasVar(key)`** / **`GameAPI.hasVar(key)`** - Checks if a variable exists or is defined in the project
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** / **`GameAPI.toggleVar(key)`** - Toggles a boolean variable
+- **`GameAPI.getVariable(key)`** / **`GameAPI.setVariable(key, value)`** - camelCase aliases (same storage as `get_var` / `set_var`)
 
-### Runtime Context APIs (GameAPI)
-- **`GameAPI.getCurrentRoom()`** - Returns the current room ID
-- **`GameAPI.getCurrentObject()`** - Returns the current object ID (if any)
-- **`GameAPI.changeRoom(roomId)`** - Requests a room change (sends ROOM_CHANGE_REQUEST message)
+### Character APIs (runtime)
+- **`spawn_character(name, x, y, direction?, id?)`** - Spawns a character; returns id
+- **`move_character(idOrName, x, y)`** - Instant move
+- **`walk_character(idOrName, x, y, wait?)`** - Pathfinding move on walkable area (returns Promise if `wait` is true; default). Stops any custom animation in progress.
+- **`set_character_direction(idOrName, direction)`** - Sets 8-direction facing (walking sprites)
+- **`animate_character(idOrName, enabled?)`** - Animation control hook (reserved for future use)
+- **`play_character_animation(idOrName, animationName, direction, wait?)`** - Plays one full cycle of a **custom** animation defined in the editor (Characters tab → **+** → name, e.g. `wave`). Uses `characterDefinitions.animations[animationName].directions[direction]`. Stops movement; on completion returns to walking idle (frame 0). Directions: `north`, `northeast`, `east`, `southeast`, `south`, `southwest`, `west`, `northwest`. With `await` (default) blocks input until the cycle ends (same pattern as `walk_character`).
+
+**Editor setup (custom animation):** Characters → select character → Animation dropdown → **+** → enter name → assign frames per direction (same workflow as walking).
+
+**Project JSON (excerpt):**
+```json
+{
+  "name": "Hero",
+  "directions": { "south": { "fps": 8, "frames": ["asset:..."] } },
+  "animations": {
+    "wave": {
+      "directions": {
+        "south": { "fps": 10, "frames": ["asset:..."] }
+      }
+    }
+  }
+}
+```
+
+### Hotspot APIs
+- **`enableHotspot(idOrName)`** — Activates a hotspot in the current room (clickable; sets `visible` to true). Returns `true` on success.
+- **`disableHotspot(idOrName)`** — Deactivates a hotspot (no clicks; sets `visible` to false). Returns `true` on success.
+- Initial state comes from the **Is active?** checkbox in the Rooms tab (saved as `visible` in project JSON).
+
+### GUI / display
+- **`show_message(text)`** / **`showText(text)`** - On-screen message overlay
+- **`enableObject(id)`** / **`disableObject(id)`** - Enable/disable scene objects (by id or name)
 
 ### Usage Examples
 ```javascript
@@ -173,9 +229,23 @@ scale_object("treasure", 1.5, 1.5);
 load_room("kitchen");
 const objects = get_room_objects();
 print("Room has " + objects.length + " objects");
+
+// Pickup key (object click + inventory + persistent flag)
+function on_object_click(object_id, x, y) {
+  if (has_item("key")) return;
+  add_to_inventory("key", 1);
+  set_object_visible(object_id, false);
+  set_var("key_collected", true);
+}
+
+// Custom character animation (requires "wave" defined in Characters tab)
+on_hotspot_click(async function() {
+  await play_character_animation("Hero", "wave", "south");
+  show_message("Hello!");
+});
 ```
 
-All other APIs listed in the extension roadmap are planned for future implementation.
+**Not yet in runtime (roadmap):** dialogue system, audio, save/load slots, visual transitions (`fade_in`, …). See [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -186,7 +256,7 @@ All other APIs listed in the extension roadmap are planned for future implementa
 3. Add a Background and optional Foreground Layers.
 4. Scene Objects → add images; edit positions as needed.
 5. Walkable Area → Start Drawing → click to add vertices → Finish.
-6. Characters → select a character → upload animation frames → Start Preview.
+6. Characters → select a character → upload walking frames (or add a custom animation with **+**) → Start Preview.
 7. Scripts → write JavaScript and Run; use the provided APIs.
 8. Play → Start Test to see runtime logs and basic flow.
 
@@ -204,7 +274,7 @@ All other APIs listed in the extension roadmap are planned for future implementa
 - `runtime.html` — Standalone runtime player
 - `JS/runtime.js` — Runtime renderer (rooms/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Full list of APIs to implement
-- `img/Amnt.png` — Project cover (shown above)
+- `img/mnt.png` — Project cover (shown above)
 
 ## Extending
 
@@ -213,15 +283,17 @@ All other APIs listed in the extension roadmap are planned for future implementa
 ### 🚀 JavaScript API Roadmap
 
 #### **Phase 1 - Core Systems (High Priority)**
-- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETED)**
-- ✅ **Inventory System**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETED)**
-- ✅ **Object System**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETED)**
-- ✅ **Room System**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETED)**
+- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()` **(runtime)**
+- ✅ **Inventory System** (runtime B.1): `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
+- ✅ **Object System** (runtime B.2): `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
+- ✅ **Room System** (runtime B.3): `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
+- ✅ **Variables** (runtime B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, `GameAPI.getVariable`, …
+- ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
 - **Dialogue System**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Audio System**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-- **Character System**: `spawn_character()`, `move_character()`, `animate_character()`, `set_character_ai()`
+- **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Phase 3 - Advanced Features (Low Priority)**
@@ -284,7 +356,10 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 ## 📚 Documentazione
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni (24 API implementate)
+- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
+- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
+- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
 
 ---
 
@@ -304,6 +379,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Hotspot
   - Crea hotspot poligonali; aggiungi/termina/svuota punti; mostra/nascondi tutti
   - Selezione/spostamento/eliminazione vertici; lista hotspot
+  - Checkbox **Is active?** per stato iniziale; API script `enableHotspot` / `disableHotspot`
 - Oggetti di Scena
   - Aggiunta immagini; modifica nome/posizione; rimozione
   - Supporto per più oggetti con stessa immagine (nomi unici)
@@ -312,7 +388,8 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Più livelli immagine con ordinamento
 - Personaggi
   - Creazione personaggi; setup 8 direzioni
-  - Upload multiplo frame per direzione; controllo FPS; anteprima
+  - Animazione **Walking**: frame per direzione; FPS; anteprima
+  - **Animazioni custom** con nome (es. `wave`, `idle`) e frame per direzione; riproducibili in script con `play_character_animation()`
   - Configurazione avvio gioco: personaggio/room/posizione iniziali
 - Oggetti di Inventario
   - Gestione item inventario (upload, filtro, modifica, elimina)
@@ -328,7 +405,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato con `sandbox="allow-scripts"` per sicurezza
-  - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `GameAPI.changeRoom()`, etc.)
+  - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
   - **Messaggistica Robusta**: Sistema MessageQueue con buffer, retry (3 tentativi) e fallback a console
   - **Script Logging**: ScriptLogService integrato con log timestamped e livelli (info, warning, error)
   - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
@@ -347,12 +424,29 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato durante Play Test
   - **Integrazione GameAPI**: Accesso completo alle API nel runtime con gestione contesto (roomId, objectId, variables)
   - **Script Console**: Logging in tempo reale dagli script con filtri per livello e timestamp
+  - **Rendering Completo Runtime**: Stanze, oggetti, personaggi (animazioni 8 direzioni), GUI (sfondi, pulsanti)
+  - **Interazioni Click**: Sistema completo di hit detection per hotspot, oggetti, personaggi, pulsanti GUI con esecuzione script
+  - **Pathfinding & Movimento**: Click-to-move player con pathfinding su aree camminabili, animazioni fluide
+  - **Cambio Stanza**: Sistema completo di cambio stanza con caricamento asset ed esecuzione script
 - Tema
   - Interfaccia acid dark + neon uniforme (form, pulsanti, liste, menu)
 
+## Funzionalità Runtime
+
+Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
+
+- **✅ Rendering Completo**: Stanze (background, foregrounds, oggetti), personaggi con animazioni 8 direzioni e scaling, overlay GUI con pulsanti
+- **✅ Interazioni Click**: Sistema completo di hit detection per hotspot (polygon), oggetti (bounding box), personaggi e pulsanti GUI con esecuzione script
+- **✅ Pathfinding & Movimento**: Click-to-move player con pathfinding intelligente su aree camminabili, movimento fluido personaggi con animazioni basate su direzione
+- **✅ Gestione Stanze**: Sistema completo di cambio stanza (`load_room()`) con caricamento asset, cleanup ed esecuzione script
+- **✅ Sistema Personaggi**: Rendering personaggi con supporto pivot, scaling dinamico basato su posizione Y, movimento fluido sub-pixel
+- **✅ Sistema GUI**: Rendering GUI con immagini di sfondo e pulsanti cliccabili, esecuzione script su click pulsanti
+
 ## Stato Corrente delle API
 
-Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** organizzate in 5 categorie:
+Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone.
+
+**Fasi unificazione API completate:** A (binding) · B.1 (inventario) · B.2 (oggetti) · B.3 (stanze + variabili)
 
 ### API Base
 - **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
@@ -380,23 +474,35 @@ Il sistema di scripting JavaScript fornisce attualmente **24 API funzionanti** o
 - **`rotate_object(objectId, degrees)`** - Ruota un oggetto di gradi specificati
 - **`scale_object(objectId, scaleX, scaleY)`** - Scala un oggetto
 - **`set_object_visible(objectId, visible)`** - Mostra o nasconde un oggetto
+- **`enableObject(id)`** / **`disableObject(id)`** - Abilita/disabilita oggetti di scena (per id o nome)
+
+### API Hotspot
+- **`enableHotspot(idOrName)`** — Attiva un hotspot nella stanza corrente (cliccabile; `visible=true`). Restituisce `true` se trovato.
+- **`disableHotspot(idOrName)`** — Disattiva i click sull'hotspot (`visible=false`). Restituisce `true` se trovato.
+- Stato iniziale: checkbox **Is active?** nel tab Rooms (salvato come `visible` nel JSON progetto).
 
 ### API Sistema Stanze
-- **`load_room(roomIdOrName)`** - Carica una stanza per ID o nome
-- **`get_current_room()`** - Restituisce l'ID della stanza corrente
-- **`get_room_objects()`** - Restituisce array di tutti gli oggetti nella stanza corrente
-- **`set_room_background(imageUrlOrDataUrl)`** - Imposta l'immagine di sfondo della stanza
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Carica stanza; posizionamento opzionale del player
+- **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - ID stanza corrente
+- **`get_room_objects()`** - Oggetti stanza corrente come dati plain (`id`, `name`, `x`, `y`, `rotation`, …)
+- **`set_room_background(imageUrlOrDataUrl)`** - Imposta o rimuove lo sfondo (URL o `asset:...`)
 
 ### API Variabili di Gioco
-- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVariable(key)`** - Ottiene il valore di una variabile di gioco
-- **`set_var(key, value)`** / **`Game.setVar(key, value)`** / **`GameAPI.setVariable(key, value)`** - Imposta il valore di una variabile di gioco
-- **`has_var(key)`** / **`Game.hasVar(key)`** - Verifica se una variabile esiste
-- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Inverte il valore di una variabile booleana
+- **`get_var(key)`** / **`Game.getVar(key)`** / **`GameAPI.getVar(key)`** - Legge variabile (anche `initialValue` dalle definizioni progetto)
+- **`set_var(key, value)`** / **`Game.setVar(key, value)`** - Scrive variabile (coercizione tipo se definita in editor)
+- **`has_var(key)`** / **`Game.hasVar(key)`** - Variabile impostata o definita nel progetto
+- **`toggle_var(key)`** / **`Game.toggleVar(key)`** - Toggle booleano
+- **`GameAPI.getVariable` / `setVariable`** - Alias camelCase
 
-### API Contesto Runtime (GameAPI)
-- **`GameAPI.getCurrentRoom()`** - Restituisce l'ID della stanza corrente
-- **`GameAPI.getCurrentObject()`** - Restituisce l'ID dell'oggetto corrente (se presente)
-- **`GameAPI.changeRoom(roomId)`** - Richiede un cambio stanza (invia messaggio ROOM_CHANGE_REQUEST)
+### API Personaggi (runtime)
+- **`spawn_character(name, x, y, direction?, id?)`** — Spawna un personaggio; restituisce l’id
+- **`move_character(idOrName, x, y)`** — Spostamento istantaneo
+- **`walk_character(idOrName, x, y, wait?)`** — Movimento con pathfinding sulla walkable area (Promise se `wait` è true). Interrompe un’animazione custom in corso.
+- **`set_character_direction(idOrName, direction)`** — Imposta la direzione (8 direzioni, sprite walking)
+- **`animate_character(idOrName, enabled?)`** — Hook controllo animazione (uso futuro)
+- **`play_character_animation(idOrName, animationName, direction, wait?)`** — Riproduce un ciclo completo di un’animazione **custom** definita nell’editor (tab Characters → **+** → nome, es. `wave`). Usa `characterDefinitions.animations[nome].directions[direzione]`. Ferma il movimento; al termine torna alla posa idle del walking. Con `await` (default) blocca l’input fino alla fine (come `walk_character`).
+
+**Setup editor:** Characters → personaggio → menu Animation → **+** → nome → frame per direzione.
 
 ### Esempi di Utilizzo
 ```javascript
@@ -437,9 +543,15 @@ scale_object("tesoro", 1.5, 1.5);
 load_room("cucina");
 const oggetti = get_room_objects();
 print("La stanza ha " + oggetti.length + " oggetti");
+
+// Animazione custom (richiede "wave" definita in Characters)
+on_hotspot_click(async function() {
+  await play_character_animation("Eroe", "wave", "south");
+  show_message("Ciao!");
+});
 ```
 
-Tutte le altre API elencate nella roadmap sono pianificate per implementazioni future.
+**Non ancora nel runtime:** dialoghi, audio, salvataggi, transizioni visive. Vedi [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -450,7 +562,7 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 3. Aggiungi un Background e, se vuoi, livelli di Foreground.
 4. Scene Objects → aggiungi immagini; modifica le posizioni.
 5. Walkable Area → Start Drawing → clic per i vertici → Finish.
-6. Characters → seleziona un personaggio → carica i frame → Start Preview.
+6. Characters → seleziona un personaggio → carica frame walking (o animazione custom con **+**) → Start Preview.
 7. Scripts → scrivi JavaScript e premi Run; usa le API fornite.
 8. Play → Start Test per vedere i log e provare il flusso.
 
@@ -468,7 +580,7 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 - `runtime.html` — Player runtime standalone
 - `JS/runtime.js` — Renderer runtime (stanze/assets, start room, OPFS/localStorage)
 - `# 🎮 Funzioni da Implementare - Amianto editor.md` — Lista completa API da implementare
-- `img/Amnt.png` — Cover (in alto)
+- `img/mnt.png` — Cover (in alto)
 
 ## Estensioni Possibili
 
@@ -477,15 +589,17 @@ Tutte le altre API elencate nella roadmap sono pianificate per implementazioni f
 ### 🚀 Roadmap JavaScript API
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
-- ✅ **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()` **(COMPLETATO)**
-- ✅ **Sistema Inventario**: `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()` **(COMPLETATO)**
-- ✅ **Sistema Oggetti**: `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()` **(COMPLETATO)**
-- ✅ **Sistema Stanze**: `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()` **(COMPLETATO)**
+- ✅ **Sistema Eventi** (runtime): `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
+- ✅ **Inventario** (B.1): `add_to_inventory`, `remove_from_inventory`, `has_item`, `get_item_count`, `clear_inventory`
+- ✅ **Oggetti** (B.2): `spawn_object`, `despawn_object`, `rotate_object`, `scale_object`, `set_object_visible`
+- ✅ **Stanze** (B.3): `load_room`, `get_current_room`, `get_room_objects`, `set_room_background`
+- ✅ **Variabili** (B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, …
+- ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
 - **Sistema Dialoghi**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Sistema Audio**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-- **Sistema Personaggi**: `spawn_character()`, `move_character()`, `animate_character()`, `set_character_ai()`
+- **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Fase 3 - Funzionalità Avanzate (Priorità Bassa)**
@@ -553,7 +667,7 @@ Vedi `# 🎮 Funzioni da Implementare - Amianto editor.md` per la lista completa
 - Sistema dialoghi ramificati con scelte e condizioni
 - Audio: musica di fondo, SFX, suoni ambientali con mixer/volumi
 - Inventario avanzato con combinazioni, uso su hotspot/oggetti
-- Sistema personaggi: movimento, animazioni per stato, AI semplice (patrol/follow)
+- Sistema personaggi: movimento, animazioni custom (`play_character_animation`), AI semplice (patrol/follow)
 - Effetti visivi: fade/transition, particellari, cutscene
 
 ### Fase 3 — Scripting & Tools
