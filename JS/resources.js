@@ -983,10 +983,21 @@
     }));
   }
 
+  /** Solo metadati (senza publicUrl) per Firestore — URL da Supabase/Firestore assets a runtime. */
+  function getResourcesCatalogSlim() {
+    return state.entries.map(entry => ({
+      assetId: entry.assetId,
+      name: entry.name || '',
+      displayName: entry.displayName || entry.name || '',
+      fileName: entry.fileName || entry.name || ''
+    }));
+  }
+
   window.amiantoResources = {
     refresh: loadResources,
     refreshSounds: loadSounds,
     getCatalog: getResourcesCatalog,
+    getSlimCatalog: getResourcesCatalogSlim,
     showSubTab: showResourceSubTab,
     pick: openPicker,
     upload: uploadResourceFile,

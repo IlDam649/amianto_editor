@@ -11892,6 +11892,102 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  /** Conta stringhe data:…;base64, nel progetto (immagini, audio, ecc.). */
+  function countEmbeddedDataUrls(root) {
+    let count = 0;
+    const walk = (v) => {
+      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
+        count++;
+        return;
+      }
+      if (!v || typeof v !== 'object') return;
+      if (Array.isArray(v)) {
+        v.forEach(walk);
+        return;
+      }
+      Object.values(v).forEach(walk);
+    };
+    walk(root);
+    return count;
+  }
+
+  function slimResourcesCatalogForFirestore(catalog) {
+    if (!Array.isArray(catalog)) return [];
+    if (window.amiantoResources && typeof window.amiantoResources.getSlimCatalog === 'function') {
+      return window.amiantoResources.getSlimCatalog();
+    }
+    return catalog.map(row => ({
+      assetId: row.assetId,
+      name: row.name || '',
+      displayName: row.displayName || row.name || '',
+      fileName: row.fileName || row.name || ''
+    }));
+  }
+
+  function collectHotspotOnClickCodesById(projectObj) {
+    const codes = new Map();
+    if (!projectObj || !Array.isArray(projectObj.rooms)) return codes;
+    for (const room of projectObj.rooms) {
+      if (!Array.isArray(room.hotspots)) continue;
+      for (const h of room.hotspots) {
+        const code = h && h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+        if (code && String(code).trim()) {
+          codes.set(String(h.id), String(code).trim());
+        }
+      }
+    }
+    return codes;
+  }
+
+  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
+  function dedupeHotspotScriptsForFirestore(projectObj) {
+    const clone = JSON.parse(JSON.stringify(projectObj));
+    if (!clone.scripts || typeof clone.scripts !== 'object') return clone;
+    const embeddedById = collectHotspotOnClickCodesById(clone);
+    const scripts = { ...clone.scripts };
+    for (const key of Object.keys(scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const embedded = embeddedById.get(hotspotId);
+      const legacy = String(scripts[key] || '').trim();
+      if (embedded && legacy && embedded === legacy) {
+        delete scripts[key];
+      }
+    }
+    clone.scripts = scripts;
+    return clone;
+  }
+
+  function prepareProjectPayloadForFirestore(projectObj) {
+    let payload = dedupeHotspotScriptsForFirestore(projectObj);
+    payload.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
+    return payload;
+  }
+
+  /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
+  function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
+    if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
+    for (const [key, content] of Object.entries(projectObj.scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const legacyCode = String(content || '').trim();
+      if (!legacyCode) continue;
+      for (const room of projectObj.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (String(h.id) !== hotspotId) continue;
+          if (!h.scripts) h.scripts = {};
+          if (!h.scripts.onClick) h.scripts.onClick = { code: '', enabled: false };
+          const embedded = String(h.scripts.onClick.code || '').trim();
+          if (!embedded) {
+            h.scripts.onClick.code = legacyCode;
+            h.scripts.onClick.enabled = true;
+          }
+        }
+      }
+    }
+  }
+
   // ================================
   // FIRESTORE PERSISTENCE SYSTEM
   // ================================
@@ -11960,24 +12056,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const jsonString = JSON.stringify(projectData);
       const dataSizeBytes = new Blob([jsonString]).size;
       const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB` });
+      const dataURLCount = countEmbeddedDataUrls(projectData);
+      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB`, dataURLCount });
+
+      if (dataURLCount > 0) {
+        const errorMsg = `Salvataggio Firestore bloccato: ${dataURLCount} asset ancora in base64 (data:…). Carica tutti gli asset su storage prima di salvare.`;
+        console.error('[Firestore] ❌', errorMsg);
+        addDebugMessage(errorMsg, 'error');
+        throw new Error(errorMsg);
+      }
       
       // Firestore ha un limite di 1MB per campo
       const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
       if (dataSizeBytes > FIRESTORE_MAX_SIZE) {
-        // Verifica se ci sono ancora dataURL nel progetto (dovrebbero essere stati convertiti in assetId)
-        const dataURLCount = (jsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
-        if (dataURLCount > 0) {
-          const errorMsg = `Project is too large (${dataSizeMB} MB) and still contains ${dataURLCount} unconverted image(s). Make sure all frames are saved as assets before saving the project.`;
-          console.error('[Firestore] ❌', errorMsg);
-          addDebugMessage(errorMsg, 'error');
-          throw new Error(errorMsg);
-        } else {
-          const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
-          console.error('[Firestore] ❌', errorMsg);
-          addDebugMessage(errorMsg, 'error');
-          throw new Error(errorMsg);
-        }
+        const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
+        console.error('[Firestore] ❌', errorMsg);
+        addDebugMessage(errorMsg, 'error');
+        throw new Error(errorMsg);
       }
 
       // Struttura dati Firestore: users/{userId}/projects/{projectId}
@@ -13511,9 +13606,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
       
       if (remainingDataURLs > 0) {
-        console.warn(`[Save] ⚠️ Attenzione: ci sono ancora ${remainingDataURLs} dataURL nel progetto dopo il salvataggio asset. Questo potrebbe causare problemi di dimensione.`);
-        // Cerca di identificare dove sono i dataURL rimanenti
-        const dataURLMatches = projectJsonString.match(/data:image\/[^;]+;base64,[^"]+/g);
+        const warnMsg = `Salvataggio Firestore bloccato: ${remainingDataURLs} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
+        console.warn(`[Save] ⚠️ ${warnMsg}`);
+        addDebugMessage(warnMsg, 'error');
+        showNotification(warnMsg, 'warning');
+        const dataURLMatches = projectJsonString.match(/data:[^;]+;base64,[^"]+/g);
         if (dataURLMatches && dataURLMatches.length > 0) {
           console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
         }
@@ -13546,18 +13643,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
     }
 
-    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale)
+    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload slim, no base64
     let firestoreSuccess = false;
-    if (userId) {
+    const embeddedDataUrls = countEmbeddedDataUrls(projectObj);
+    if (userId && embeddedDataUrls > 0) {
+      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel progetto`);
+    } else if (userId) {
       console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
       
-      // Verifica preliminare: controlla dimensione progetto prima di salvare
-      const projectJsonPreview = JSON.stringify(projectObj);
+      const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
+      const projectJsonPreview = JSON.stringify(firestorePayload);
       const projectSizeBytes = new Blob([projectJsonPreview]).size;
       const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
-      console.log(`[Save] 📦 Dimensione progetto: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
+      console.log(`[Save] 📦 Dimensione payload Firestore: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
       
-      firestoreSuccess = await saveProjectToFirestore(userId, projectId, projectObj);
+      firestoreSuccess = await saveProjectToFirestore(userId, projectId, firestorePayload);
       
       if (firestoreSuccess) {
         console.log('[Save] ✅ Salvataggio Firestore completato con successo');
@@ -13606,6 +13706,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Messaggio di successo con indicazione della fonte
     if (firestoreSuccess) {
       showNotification('Project saved successfully to Firestore!', 'success');
+    } else if (embeddedDataUrls > 0) {
+      showNotification('Progetto salvato in locale; Firestore bloccato (converti gli asset base64).', 'warning');
     } else {
       showNotification('Project saved to cache (Firestore unavailable)', 'warning');
     }
@@ -14452,6 +14554,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   async function applyProjectObject(projectObj) {
     try {
+      mergeLegacyHotspotScriptsIntoRooms(projectObj);
+
       // Ottieni projectId dal progetto (necessario per risolvere assetId)
       const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
       const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');

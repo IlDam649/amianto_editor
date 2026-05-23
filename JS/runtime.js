@@ -38,7 +38,7 @@
     // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
     // Questo previene riesecuzione di codice JS a ogni evento
     compiledScripts: new Map(),
-    inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible }
+    inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible, carriedItem, pointerX, pointerY }
     resourceFileIndex: null, // Map<filenameLower, "asset:assetId"> — cache Resources per spawn_object
     resourceFileIndexKey: null
   };
@@ -288,6 +288,9 @@
       registerResourceFileAlias(index, row.name, row.assetId, url);
       if (row.displayName) registerResourceFileAlias(index, row.displayName, row.assetId, url);
       if (row.fileName) registerResourceFileAlias(index, row.fileName, row.assetId, url);
+    }
+    if (catalog.length > 0 && catalog.every(r => !r.publicUrl)) {
+      log('[Runtime] resourcesCatalog slim (senza publicUrl); URL da Supabase/Firestore assets', 'info');
     }
   }
 
@@ -1885,7 +1888,11 @@
       slots: [],
       itemDefs: new Map(),
       contents: new Map(),
-      visible: false
+      visible: false,
+      carriedItem: null,
+      pointerX: 0,
+      pointerY: 0,
+      suppressPanelUntilDrop: false
     };
   }
 
@@ -2006,16 +2013,25 @@
     inv.toggleIconRect = { ...inv.toggleIconBounds };
   }
 
-  function updateInventoryVisibilityFromPointer(canvasY, inCanvas) {
+  function updateInventoryVisibilityFromPointer(canvasX, canvasY, inCanvas) {
     const inv = gameState.inventory;
     if (!inv || !inv.enabled) return;
+    if (inv.carriedItem && inv.suppressPanelUntilDrop) {
+      if (inv.displayMode !== 'always') {
+        inv.visible = false;
+      }
+      return;
+    }
     if (inv.displayMode === 'always') {
       inv.visible = true;
       return;
     }
     if (inv.displayMode === 'popup') {
       const edge = inv.popupEdgeHeight || 48;
-      inv.visible = !!(inCanvas && canvasY >= canvas.height - edge);
+      const panel = getInventoryPanelRect();
+      const inBottomEdge = inCanvas && canvasY >= canvas.height - edge;
+      const inPanel = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
+      inv.visible = inBottomEdge || inPanel;
     }
   }
 
@@ -2067,9 +2083,96 @@
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
   }
 
+  function isPointInInventoryRect(x, y, rect) {
+    if (!rect) return false;
+    return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+  }
+
+  function getInventoryPanelRect() {
+    const inv = gameState.inventory;
+    if (!inv) return null;
+    return inv.panel || defaultRuntimeInventoryPanel();
+  }
+
+  /** Pannello nascosto finché l'oggetto è in mano dopo essere usciti dal panel (suppressPanelUntilDrop). */
+  function shouldDrawInventoryPanel() {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || !inv.visible) return false;
+    if (inv.carriedItem && inv.suppressPanelUntilDrop) return false;
+    return true;
+  }
+
+  function findInventorySlotIndexAt(x, y) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || !inv.visible) return -1;
+    for (let i = 0; i < inv.slots.length; i++) {
+      const slot = inv.slots[i];
+      if (isPointInInventoryRect(x, y, slot)) return i;
+    }
+    return -1;
+  }
+
+  function getInventorySlotEntry(slotIndex) {
+    const contents = getInventoryContentsList();
+    return slotIndex >= 0 && slotIndex < contents.length ? contents[slotIndex] : null;
+  }
+
+  function startCarryingInventoryItem(slotIndex, entry, x, y) {
+    const inv = gameState.inventory;
+    if (!inv || !entry || !entry.def) return;
+    const slot = inv.slots[slotIndex];
+    inv.carriedItem = {
+      key: entry.key,
+      def: entry.def,
+      sourceSlotIndex: slotIndex,
+      slotW: slot ? Math.max(1, slot.w) : 48,
+      slotH: slot ? Math.max(1, slot.h) : 48
+    };
+    inv.suppressPanelUntilDrop = false;
+    inv.pointerX = x;
+    inv.pointerY = y;
+    updateInventoryCursorStyle();
+    log(`[Runtime] Inventario: preso in mano "${entry.def.name || entry.key}"`, 'info');
+  }
+
+  function clearCarriedInventoryItem() {
+    const inv = gameState.inventory;
+    if (!inv || !inv.carriedItem) return;
+    const name = inv.carriedItem.def && inv.carriedItem.def.name;
+    inv.carriedItem = null;
+    inv.suppressPanelUntilDrop = false;
+    updateInventoryCursorStyle();
+    log(`[Runtime] Inventario: oggetto rilasciato${name ? ` ("${name}")` : ''}`, 'info');
+  }
+
+  function updateInventoryCursorStyle() {
+    if (!canvas) return;
+    const inv = gameState.inventory;
+    canvas.style.cursor = (inv && inv.carriedItem) ? 'none' : 'pointer';
+  }
+
+  function updateInventoryCarriedPointer(x, y) {
+    const inv = gameState.inventory;
+    if (!inv) return;
+    inv.pointerX = x;
+    inv.pointerY = y;
+
+    if (!inv.carriedItem || inv.suppressPanelUntilDrop) return;
+
+    const panel = getInventoryPanelRect();
+    if (!isPointInInventoryRect(x, y, panel)) {
+      inv.suppressPanelUntilDrop = true;
+      if (inv.displayMode === 'toggle' || inv.displayMode === 'popup') {
+        inv.visible = false;
+      }
+      log('[Runtime] Inventario: pannello chiuso (oggetto in mano)', 'info');
+    }
+  }
+
   function renderInventoryPanel(ctx) {
     const inv = gameState.inventory;
     if (!inv || !inv.enabled || !inv.visible) return;
+    if (!shouldDrawInventoryPanel()) return;
 
     const panel = inv.panel || defaultRuntimeInventoryPanel();
     if (inv.background && inv.background.complete && inv.background.naturalWidth > 0) {
@@ -2080,8 +2183,10 @@
       }
     }
 
+    const carriedSlot = inv.carriedItem ? inv.carriedItem.sourceSlotIndex : -1;
     const contents = getInventoryContentsList();
     inv.slots.forEach((slot, index) => {
+      if (index === carriedSlot) return;
       const entry = contents[index];
       if (!entry || !entry.def || !entry.def.image) return;
       const img = entry.def.image;
@@ -2092,6 +2197,22 @@
         log(`[Runtime] Error rendering item inventario: ${error.message}`, 'warning');
       }
     });
+  }
+
+  function renderInventoryCarriedItem(ctx) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.carriedItem || !inv.carriedItem.def) return;
+    const img = inv.carriedItem.def.image;
+    if (!img || !img.complete || img.naturalWidth <= 0) return;
+    const slotW = inv.carriedItem.slotW || 48;
+    const slotH = inv.carriedItem.slotH || 48;
+    const x = inv.pointerX - slotW / 2;
+    const y = inv.pointerY - slotH / 2;
+    try {
+      drawImageContainedInRect(ctx, img, x, y, slotW, slotH);
+    } catch (error) {
+      log(`[Runtime] Error rendering cursore inventario: ${error.message}`, 'warning');
+    }
   }
 
   function renderInventoryToggleIcon(ctx) {
@@ -2111,6 +2232,31 @@
   function renderInventory(ctx) {
     renderInventoryPanel(ctx);
     renderInventoryToggleIcon(ctx);
+    renderInventoryCarriedItem(ctx);
+  }
+
+  function handleInventorySlotClick(x, y) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled || !inv.visible) return false;
+
+    updateInventoryCarriedPointer(x, y);
+    const slotIndex = findInventorySlotIndexAt(x, y);
+
+    if (inv.carriedItem) {
+      if (slotIndex < 0) return false;
+      const entry = getInventorySlotEntry(slotIndex);
+      if (!entry || slotIndex === inv.carriedItem.sourceSlotIndex) {
+        clearCarriedInventoryItem();
+        return true;
+      }
+      return true;
+    }
+
+    if (slotIndex < 0) return false;
+    const entry = getInventorySlotEntry(slotIndex);
+    if (!entry || !entry.def) return false;
+    startCarryingInventoryItem(slotIndex, entry, x, y);
+    return true;
   }
 
   function handleInventoryToggleClick(x, y) {
@@ -2119,6 +2265,9 @@
     const r = inv.toggleIconRect;
     if (!r) return false;
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+      if (inv.carriedItem && inv.suppressPanelUntilDrop) {
+        return true;
+      }
       inv.visible = !inv.visible;
       return true;
     }
@@ -5094,7 +5243,8 @@
     inventoryPointerHandler = function(e) {
       if (!gameState.isRunning || !gameState.inventory || !gameState.inventory.enabled) return;
       const coords = canvasCoordsFromClientEvent(e);
-      updateInventoryVisibilityFromPointer(coords.y, coords.inCanvas);
+      updateInventoryCarriedPointer(coords.x, coords.y);
+      updateInventoryVisibilityFromPointer(coords.x, coords.y, coords.inCanvas);
     };
     inventoryLeaveHandler = function() {
       const inv = gameState.inventory;
@@ -5130,6 +5280,12 @@
       canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
       inventoryLeaveHandler = null;
     }
+    const inv = gameState.inventory;
+    if (inv) {
+      inv.carriedItem = null;
+      inv.suppressPanelUntilDrop = false;
+      updateInventoryCursorStyle();
+    }
   }
   
   // Funzione dispatch centralizzata
@@ -5153,6 +5309,10 @@
     log(`[Runtime] handleClick: Click rilevato alle coordinate canvas (${Math.round(x)}, ${Math.round(y)})`, 'info');
 
     if (handleInventoryToggleClick(x, y)) {
+      return;
+    }
+
+    if (handleInventorySlotClick(x, y)) {
       return;
     }
 
@@ -5306,6 +5466,15 @@
           }
         }
       }
+    }
+
+    // Oggetto in mano: click su punto vuoto (nessun target sopra) → rilascia
+    const inv = gameState.inventory;
+    if (inv && inv.carriedItem) {
+      updateInventoryCarriedPointer(x, y);
+      clearCarriedInventoryItem();
+      log('[Runtime] Inventario: oggetto rilasciato (click su punto vuoto)', 'info');
+      return;
     }
 
     // Pathfinding: se non c'è stato click su hotspot/object/character/GUI, prova a muovere il player
