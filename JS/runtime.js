@@ -1952,10 +1952,12 @@
         defaultRuntimeToggleIconBounds()
       );
       if (invData.background && typeof invData.background === 'string') {
-        inv.background = AssetRegistry.images.get(invData.background) || null;
+        inv.backgroundRef = invData.background;
+        inv.background = resolveInventoryItemImageFromRef(invData.background);
       }
       if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
-        inv.toggleIcon = AssetRegistry.images.get(invData.toggleIcon) || null;
+        inv.toggleIconRef = invData.toggleIcon;
+        inv.toggleIcon = resolveInventoryItemImageFromRef(invData.toggleIcon);
       }
       if (Array.isArray(invData.slots)) {
         inv.slots = invData.slots.map(s => ({
@@ -1978,16 +1980,15 @@
       if (!item) return;
       const id = String(item.id || item.name || '').trim();
       if (!id) return;
-      let image = null;
-      if (item.image && typeof item.image === 'string') {
-        image = AssetRegistry.images.get(item.image) || null;
-      }
-      inv.itemDefs.set(id, {
+      const imageRef = (item.image && typeof item.image === 'string') ? item.image : null;
+      const def = {
         id,
         name: item.name || id,
         scriptName: item.scriptName || item.name || id,
-        image
-      });
+        imageRef,
+        image: resolveInventoryItemImageFromRef(imageRef)
+      };
+      inv.itemDefs.set(id, def);
       if (item.name && item.name !== id) {
         inv.itemDefs.set(String(item.name), inv.itemDefs.get(id));
       }
@@ -2032,7 +2033,9 @@
       const edge = inv.popupEdgeHeight || 48;
       const panel = getInventoryPanelRect();
       const inBottomEdge = inCanvas && canvasY >= canvas.height - edge;
-      const inPanel = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
+      const inPanelRect = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
+      const inSlot = inCanvas && findInventorySlotIndexAt(canvasX, canvasY, false) >= 0;
+      const inPanel = inPanelRect || inSlot;
 
       if (inBottomEdge) {
         inv.popupPanelEngaged = true;
@@ -2045,6 +2048,8 @@
         }
         inv.visible = false;
       }
+    } else if (inv.displayMode === 'toggle') {
+      // visibility gestita dal click sull'icona toggle
     }
   }
 
@@ -2083,8 +2088,42 @@
     return list;
   }
 
+  function resolveInventoryItemImageFromRef(imageRef) {
+    if (!imageRef || typeof imageRef !== 'string') return null;
+    return AssetRegistry.images.get(imageRef) || loadedImages.get(imageRef) || null;
+  }
+
+  /** Ricollega immagini item da AssetRegistry (utile se il preload termina dopo loadInventory). */
+  function refreshInventoryItemImages() {
+    const inv = gameState.inventory;
+    if (!inv || !inv.itemDefs) return;
+    const seen = new Set();
+    inv.itemDefs.forEach(def => {
+      if (!def || seen.has(def.id)) return;
+      seen.add(def.id);
+      if (def.imageRef) {
+        const resolved = resolveInventoryItemImageFromRef(def.imageRef);
+        if (resolved) def.image = resolved;
+      }
+    });
+    if (inv.backgroundRef && !inv.background) {
+      inv.background = resolveInventoryItemImageFromRef(inv.backgroundRef);
+    }
+    if (inv.toggleIconRef && !inv.toggleIcon) {
+      inv.toggleIcon = resolveInventoryItemImageFromRef(inv.toggleIconRef);
+    }
+  }
+
+  function isDrawableInventoryImage(img) {
+    if (!img) return false;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    return w > 0 && h > 0;
+  }
+
   /** Disegna l'immagine nello slot mantenendo le proporzioni (fit contain, centrata). */
   function drawImageContainedInRect(ctx, img, x, y, maxW, maxH) {
+    if (!isDrawableInventoryImage(img)) return;
     const imgW = img.naturalWidth || img.width;
     const imgH = img.naturalHeight || img.height;
     if (imgW <= 0 || imgH <= 0) return;
@@ -2115,9 +2154,10 @@
     return true;
   }
 
-  function findInventorySlotIndexAt(x, y) {
+  function findInventorySlotIndexAt(x, y, requireVisible) {
     const inv = gameState.inventory;
-    if (!inv || !inv.enabled || !inv.visible) return -1;
+    if (!inv || !inv.enabled) return -1;
+    if (requireVisible !== false && !inv.visible) return -1;
     for (let i = 0; i < inv.slots.length; i++) {
       const slot = inv.slots[i];
       if (isPointInInventoryRect(x, y, slot)) return i;
@@ -2154,6 +2194,9 @@
     const name = inv.carriedItem.def && inv.carriedItem.def.name;
     inv.carriedItem = null;
     inv.suppressPanelUntilDrop = false;
+    if (inv.displayMode === 'always') {
+      inv.visible = true;
+    }
     updateInventoryCursorStyle();
     log(`[Runtime] Inventario: oggetto rilasciato${name ? ` ("${name}")` : ''}`, 'info');
   }
@@ -2187,8 +2230,10 @@
     if (!inv || !inv.enabled || !inv.visible) return;
     if (!shouldDrawInventoryPanel()) return;
 
+    refreshInventoryItemImages();
+
     const panel = inv.panel || defaultRuntimeInventoryPanel();
-    if (inv.background && inv.background.complete && inv.background.naturalWidth > 0) {
+    if (isDrawableInventoryImage(inv.background)) {
       try {
         ctx.drawImage(inv.background, panel.x, panel.y, panel.w, panel.h);
       } catch (error) {
@@ -2201,9 +2246,9 @@
     inv.slots.forEach((slot, index) => {
       if (index === carriedSlot) return;
       const entry = contents[index];
-      if (!entry || !entry.def || !entry.def.image) return;
+      if (!entry || !entry.def) return;
       const img = entry.def.image;
-      if (!img.complete || img.naturalWidth <= 0) return;
+      if (!isDrawableInventoryImage(img)) return;
       try {
         drawImageContainedInRect(ctx, img, slot.x, slot.y, slot.w, slot.h);
       } catch (error) {
@@ -2215,8 +2260,9 @@
   function renderInventoryCarriedItem(ctx) {
     const inv = gameState.inventory;
     if (!inv || !inv.carriedItem || !inv.carriedItem.def) return;
+    refreshInventoryItemImages();
     const img = inv.carriedItem.def.image;
-    if (!img || !img.complete || img.naturalWidth <= 0) return;
+    if (!isDrawableInventoryImage(img)) return;
     const slotW = inv.carriedItem.slotW || 48;
     const slotH = inv.carriedItem.slotH || 48;
     const x = inv.pointerX - slotW / 2;
@@ -2248,7 +2294,219 @@
     renderInventoryCarriedItem(ctx);
   }
 
-  function handleInventorySlotClick(x, y) {
+  function resolveInventoryItemScriptName(itemKey) {
+    const def = resolveInventoryItemDef(itemKey);
+    const invScripts = gameState.attachments.inventoryScripts || {};
+    if (def) {
+      if (def.name && invScripts[def.name]) return invScripts[def.name];
+      if (def.id && invScripts[def.id]) return invScripts[def.id];
+      if (def.scriptName && gameState.scripts[def.scriptName]) return def.scriptName;
+    }
+    const key = String(itemKey || '').trim();
+    if (key && invScripts[key]) return invScripts[key];
+    return null;
+  }
+
+  /**
+   * Esegue un handler se presente nello script; restituisce { found, result }.
+   * result === true indica combinazione/use-with gestita con successo.
+   */
+  async function tryExecuteScriptHandler(scriptContent, handlerName, argsArray = [], scriptName = null) {
+    if (!scriptContent || !handlerName) {
+      return { found: false, result: undefined };
+    }
+
+    if (!scriptName) {
+      let hash = 0;
+      for (let i = 0; i < scriptContent.length; i++) {
+        const char = scriptContent.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      scriptName = `script_${Math.abs(hash)}`;
+    }
+
+    try {
+      const handlerFunction = getCompiledHandler(scriptName, scriptContent, handlerName);
+      if (!handlerFunction || typeof handlerFunction !== 'function') {
+        return { found: false, result: undefined };
+      }
+      const result = handlerFunction.apply(null, argsArray);
+      if (result && typeof result.then === 'function') {
+        return { found: true, result: await result };
+      }
+      return { found: true, result };
+    } catch (error) {
+      log(`[Runtime] tryExecuteScriptHandler: Error executing handler '${handlerName}': ${error.message}`, 'error');
+      console.error(error);
+      return { found: true, result: false };
+    }
+  }
+
+  async function executeCharacterClickScripts(characterId, x, y, usedItemId) {
+    const characterScripts = gameState.attachments.characterScripts || {};
+    const useWithMode = usedItemId !== undefined && usedItemId !== null;
+    const args = useWithMode
+      ? [characterId, x, y, usedItemId]
+      : [characterId, x, y];
+    let handled = false;
+
+    if (typeof characterScripts === 'object' && characterScripts[characterId]) {
+      const scriptName = characterScripts[characterId];
+      if (gameState.scripts[scriptName]) {
+        if (useWithMode) {
+          const outcome = await tryExecuteScriptHandler(
+            gameState.scripts[scriptName],
+            'on_character_click',
+            args,
+            scriptName
+          );
+          handled = outcome.found && outcome.result === true;
+        } else {
+          await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', args, scriptName);
+        }
+      }
+    }
+
+    if (!useWithMode) {
+      for (const handler of eventHandlers.character_click) {
+        try {
+          handler(characterId, x, y);
+        } catch (error) {
+          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        }
+      }
+      return;
+    }
+
+    if (!handled) {
+      for (const handler of eventHandlers.character_click) {
+        try {
+          const result = handler(characterId, x, y, usedItemId);
+          const resolved = result && typeof result.then === 'function' ? await result : result;
+          if (resolved === true) {
+            handled = true;
+            break;
+          }
+        } catch (error) {
+          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        }
+      }
+    }
+
+    return handled;
+  }
+
+  async function executeTargetUseWithScript(itemKey, targetType, targetId, x, y) {
+    if (targetType === 'hotspot') {
+      if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.hotspots)) return false;
+      const hotspot = gameState.currentRoom.hotspots.find(h => String(h.id) === String(targetId));
+      if (!hotspot) return false;
+      return await executeHotspotScript(targetId, hotspot, x, y, itemKey);
+    }
+    if (targetType === 'object') {
+      return await executeObjectClickScripts(targetId, x, y, itemKey);
+    }
+    if (targetType === 'character') {
+      return await executeCharacterClickScripts(targetId, x, y, itemKey);
+    }
+    if (targetType === 'inventory') {
+      const targetScriptName = resolveInventoryItemScriptName(targetId);
+      if (!targetScriptName || !gameState.scripts[targetScriptName]) return false;
+      const outcome = await tryExecuteScriptHandler(
+        gameState.scripts[targetScriptName],
+        'on_use_with',
+        ['inventory', itemKey, x, y],
+        targetScriptName
+      );
+      return outcome.found && outcome.result === true;
+    }
+    return false;
+  }
+
+  async function tryExecuteItemScriptUseWith(itemKey, scriptName, scriptContent, targetType, targetId, x, y) {
+    const useWith = await tryExecuteScriptHandler(
+      scriptContent,
+      'on_use_with',
+      [targetType, targetId, x, y],
+      scriptName
+    );
+    if (useWith.found && useWith.result === true) {
+      return true;
+    }
+
+    // Alias: accetta on_inventory_use_with anche nello script dell'item (itemId = oggetto in mano)
+    const invUseWith = await tryExecuteScriptHandler(
+      scriptContent,
+      'on_inventory_use_with',
+      [itemKey, targetType, targetId, x, y],
+      scriptName
+    );
+    return invUseWith.found && invUseWith.result === true;
+  }
+
+  async function dispatchInventoryUseWith(itemKey, targetType, targetId, x, y) {
+    log(`[Runtime] dispatchInventoryUseWith: "${itemKey}" → ${targetType}:${targetId}`, 'info');
+    let handled = false;
+
+    const itemScriptName = resolveInventoryItemScriptName(itemKey);
+    if (itemScriptName && gameState.scripts[itemScriptName]) {
+      handled = await tryExecuteItemScriptUseWith(
+        itemKey,
+        itemScriptName,
+        gameState.scripts[itemScriptName],
+        targetType,
+        targetId,
+        x,
+        y
+      );
+    }
+
+    if (!handled) {
+      const globalScripts = gameState.attachments.globalScripts || {};
+      const globalScriptName = globalScripts.on_inventory_use_with;
+      if (globalScriptName && gameState.scripts[globalScriptName]) {
+        const outcome = await tryExecuteScriptHandler(
+          gameState.scripts[globalScriptName],
+          'on_inventory_use_with',
+          [itemKey, targetType, targetId, x, y],
+          globalScriptName
+        );
+        if (outcome.found && outcome.result === true) {
+          handled = true;
+        }
+      }
+    }
+
+    if (!handled) {
+      for (const handler of eventHandlers.inventory_use_with) {
+        try {
+          const result = handler(itemKey, targetType, targetId, x, y);
+          const resolved = result && typeof result.then === 'function' ? await result : result;
+          if (resolved === true) {
+            handled = true;
+            break;
+          }
+        } catch (error) {
+          log(`Errore handler on_inventory_use_with: ${error.message}`, 'error');
+        }
+      }
+    }
+
+    if (!handled) {
+      handled = await executeTargetUseWithScript(itemKey, targetType, targetId, x, y);
+    }
+
+    if (handled) {
+      clearCarriedInventoryItem();
+      log('[Runtime] dispatchInventoryUseWith: combinazione riuscita', 'success');
+    } else {
+      showGameMessage("That doesn't work.");
+      log('[Runtime] dispatchInventoryUseWith: combinazione non gestita', 'info');
+    }
+  }
+
+  async function handleInventorySlotClick(x, y) {
     const inv = gameState.inventory;
     if (!inv || !inv.enabled || !inv.visible) return false;
 
@@ -2262,6 +2520,7 @@
         clearCarriedInventoryItem();
         return true;
       }
+      await dispatchInventoryUseWith(inv.carriedItem.key, 'inventory', entry.key, x, y);
       return true;
     }
 
@@ -2363,7 +2622,9 @@
     'on_object_click',
     'on_character_click',
     'on_hotspot_click',
-    'on_gui_click'
+    'on_gui_click',
+    'on_use_with',
+    'on_inventory_use_with'
   ];
 
   /**
@@ -2909,29 +3170,36 @@
     }
   }
 
-  async function executeObjectClickScripts(objectId, x, y) {
-    // ⚠️ MODIFICATO: Esegui SOLO lo script specifico dell'object cliccato
-    // Non eseguire script generici o script di altri oggetti
-    
-    // Esegui SOLO lo script collegato esplicitamente to object tramite attachments
-    // Questo garantisce che ogni object esegua solo il proprio script, non quello di altri oggetti
+  async function executeObjectClickScripts(objectId, x, y, usedItemId) {
+    const useWithMode = usedItemId !== undefined && usedItemId !== null;
+    const args = useWithMode
+      ? [objectId, x, y, usedItemId]
+      : [objectId, x, y];
+
     const objectScripts = gameState.attachments.objectScripts || {};
     if (typeof objectScripts === 'object' && objectScripts[objectId]) {
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
-        // ⚠️ Passa scriptName per garantire cache corretta
-        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y], scriptName);
-        return; // Esegui SOLO lo script specifico dell'object, poi esci
-      } else {
-        log(`[executeObjectClickScripts] Script "${scriptName}" associato to object "${objectId}" not found`, 'warning');
+        if (useWithMode) {
+          const outcome = await tryExecuteScriptHandler(
+            gameState.scripts[scriptName],
+            'on_object_click',
+            args,
+            scriptName
+          );
+          return outcome.found && outcome.result === true;
+        }
+        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', args, scriptName);
+        return;
       }
+      log(`[executeObjectClickScripts] Script "${scriptName}" associato to object "${objectId}" not found`, 'warning');
     } else {
       log(`[executeObjectClickScripts] No script associato to object "${objectId}"`, 'info');
     }
-    
-    // ⚠️ PRIORITÀ 2, 3 e 4 RIMOSSE: Non eseguire più script generici, scansioni o handler dinamici
-    // Questo previene che script di altri oggetti vengano eseguiti quando si clicca su un object specifico
-    // Ogni object deve avere il proprio script associato tramite attachments.objectScripts
+
+    if (useWithMode) {
+      return false;
+    }
   }
 
   // Verifica se un punto è dentro un poligono (ray casting algorithm)
@@ -3524,16 +3792,17 @@
    * - Log script eseguito
    * - Errore se più di uno script viene eseguito
    */
-  async function executeHotspotScript(hotspotId, hotspot, x, y) {
+  async function executeHotspotScript(hotspotId, hotspot, x, y, usedItemId) {
     log(`[Runtime] [DEBUG] executeHotspotScript: INIZIO esecuzione script hotspot ${hotspotId}`, 'info');
     log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot name: ${hotspot.name || 'unnamed'}`, 'info');
     log(`[Runtime] [DEBUG] executeHotspotScript: Coordinate click: (${Math.round(x)}, ${Math.round(y)})`, 'info');
+    const useWithMode = usedItemId !== undefined && usedItemId !== null;
     
     // Verifica che l'hotspot abbia la struttura scripts.onClick
     if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
       log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ Hotspot ${hotspotId} non ha struttura scripts.onClick`, 'warning');
       log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot structure: ${JSON.stringify({ id: hotspot?.id, hasScripts: !!hotspot?.scripts, hasOnClick: !!hotspot?.scripts?.onClick })}`, 'info');
-      return;
+      return useWithMode ? false : undefined;
     }
     
     const onClickScript = hotspot.scripts.onClick;
@@ -3547,7 +3816,7 @@
     // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
     if (!hasCode) {
       log(`[Runtime] [DEBUG] executeHotspotScript: Script onClick dell'hotspot ${hotspotId} è vuoto o non valido`, 'info');
-      return;
+      return useWithMode ? false : undefined;
     }
     
     // Se c'è codice, esegui sempre (ignorando enabled=false)
@@ -3568,10 +3837,13 @@
     if (window._hotspotScriptExecutions.has(hotspotId)) {
       log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ ERRORE: Script per hotspot ${hotspotId} già in esecuzione!`, 'error');
       log(`[Runtime] [DEBUG] executeHotspotScript: Questo NON dovrebbe mai accadere con la nuova struttura`, 'error');
-      return;
+      return useWithMode ? false : undefined;
     }
     
     window._hotspotScriptExecutions.add(hotspotId);
+    const args = useWithMode
+      ? [hotspotId, x, y, usedItemId]
+      : [hotspotId, x, y];
     
     try {
       // Log di conferma esecuzione come richiesto
@@ -3584,12 +3856,21 @@
       const scriptName = `hotspot_${hotspotId}_onClick`;
       log(`[Runtime] [DEBUG] executeHotspotScript: Script name: ${scriptName}`, 'info');
       
-      await executeScriptHandler(onClickScript.code, 'on_hotspot_click', [hotspotId, x, y], scriptName);
+      if (useWithMode) {
+        const outcome = await tryExecuteScriptHandler(onClickScript.code, 'on_hotspot_click', args, scriptName);
+        log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato per hotspot ${hotspotId}`, 'success');
+        return outcome.found && outcome.result === true;
+      }
+
+      await executeScriptHandler(onClickScript.code, 'on_hotspot_click', args, scriptName);
       
       log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato con successo per hotspot ${hotspotId}`, 'success');
     } catch (error) {
       log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Error executing script per hotspot ${hotspotId}: ${error.message}`, 'error');
       console.error('[Runtime] executeHotspotScript error:', error);
+      if (useWithMode) {
+        return false;
+      }
     } finally {
       // Rimuovi dal set dopo un breve delay per permettere eventuali callback asincroni
       setTimeout(() => {
@@ -3608,7 +3889,8 @@
     object_click: [],
     character_click: [],
     hotspot_click: [],
-    gui_click: []
+    gui_click: [],
+    inventory_use_with: []
   };
 
   // ⚠️ PROTEZIONE ANTI-DOPPIA-ESECUZIONE PER PRINT:
@@ -3957,6 +4239,7 @@
         return 0;
       }
       const inv = ensureInventoryState();
+      refreshInventoryItemImages();
       const current = Number(inv.contents.get(key) || 0);
       const next = current + q;
       inv.contents.set(key, next);
@@ -4002,7 +4285,41 @@
     clear_inventory: function() {
       const inv = ensureInventoryState();
       inv.contents.clear();
+      clearCarriedInventoryItem();
       log('[Runtime] clear_inventory: inventario svuotato', 'info');
+      return true;
+    },
+
+    get_carried_item: function() {
+      const inv = gameState.inventory;
+      if (!inv || !inv.carriedItem) return null;
+      const def = inv.carriedItem.def;
+      return (def && def.id) || inv.carriedItem.key || null;
+    },
+
+    clear_carried_item: function() {
+      clearCarriedInventoryItem();
+    },
+
+    set_carried_item: function(itemId) {
+      const key = resolveInventoryContentKey(itemId);
+      if (!key || !GameAPI.has_item(key)) return false;
+      const def = resolveInventoryItemDef(itemId);
+      if (!def) return false;
+      const inv = ensureInventoryState();
+      inv.carriedItem = {
+        key,
+        def,
+        sourceSlotIndex: -1,
+        slotW: 48,
+        slotH: 48
+      };
+      inv.suppressPanelUntilDrop = true;
+      if (inv.displayMode === 'toggle' || inv.displayMode === 'popup') {
+        inv.visible = false;
+      }
+      updateInventoryCursorStyle();
+      log(`[Runtime] set_carried_item: "${def.name || key}" preso in mano`, 'info');
       return true;
     },
 
@@ -4545,6 +4862,13 @@
         eventHandlers.gui_click.push(handler);
         log('Handler on_gui_click registrato', 'info');
       }
+    },
+
+    on_inventory_use_with: function(handler) {
+      if (typeof handler === 'function') {
+        eventHandlers.inventory_use_with.push(handler);
+        log('Handler on_inventory_use_with registrato', 'info');
+      }
     }
   };
 
@@ -4588,6 +4912,9 @@
       { name: 'has_item', value: bindGameApiMethod(api, 'has_item') },
       { name: 'get_item_count', value: bindGameApiMethod(api, 'get_item_count') },
       { name: 'clear_inventory', value: bindGameApiMethod(api, 'clear_inventory') },
+      { name: 'get_carried_item', value: bindGameApiMethod(api, 'get_carried_item') },
+      { name: 'clear_carried_item', value: bindGameApiMethod(api, 'clear_carried_item') },
+      { name: 'set_carried_item', value: bindGameApiMethod(api, 'set_carried_item') },
       { name: 'spawn_object', value: bindGameApiMethod(api, 'spawn_object') },
       { name: 'despawn_object', value: bindGameApiMethod(api, 'despawn_object') },
       { name: 'rotate_object', value: bindGameApiMethod(api, 'rotate_object') },
@@ -5138,6 +5465,8 @@
   let clickHandlerFunction = null; // Riferimento alla funzione per cleanup
   let inventoryPointerHandler = null;
   let inventoryLeaveHandler = null;
+  let inventoryCancelKeyHandler = null;
+  let inventoryCancelContextHandler = null;
   let clickHandledThisFrame = false; // Flag anti-double-fire per frame
   let lastClickTime = 0; // Timestamp ultimo click per debounce
   const CLICK_DEBOUNCE_MS = 50; // Debounce di 50ms tra click
@@ -5268,6 +5597,29 @@
     canvas.addEventListener('mousemove', inventoryPointerHandler, { passive: true });
     canvas.addEventListener('mouseleave', inventoryLeaveHandler, { passive: true });
 
+    if (inventoryCancelKeyHandler) {
+      window.removeEventListener('keydown', inventoryCancelKeyHandler);
+    }
+    inventoryCancelKeyHandler = function(e) {
+      if (!gameState.isRunning || !gameState.inventory || !gameState.inventory.carriedItem) return;
+      if (e.key === 'Escape') {
+        clearCarriedInventoryItem();
+        log('[Runtime] Inventario: oggetto rilasciato (Esc)', 'info');
+      }
+    };
+    window.addEventListener('keydown', inventoryCancelKeyHandler);
+
+    if (inventoryCancelContextHandler) {
+      canvas.removeEventListener('contextmenu', inventoryCancelContextHandler);
+    }
+    inventoryCancelContextHandler = function(e) {
+      if (!gameState.isRunning || !gameState.inventory || !gameState.inventory.carriedItem) return;
+      e.preventDefault();
+      clearCarriedInventoryItem();
+      log('[Runtime] Inventario: oggetto rilasciato (click destro)', 'info');
+    };
+    canvas.addEventListener('contextmenu', inventoryCancelContextHandler);
+
     canvas.style.cursor = 'pointer';
     clickListenerAttached = true;
     runtime.eventsBound = true; // ⚠️ Marca eventi come bindati
@@ -5293,6 +5645,14 @@
     if (canvas && inventoryLeaveHandler) {
       canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
       inventoryLeaveHandler = null;
+    }
+    if (inventoryCancelKeyHandler) {
+      window.removeEventListener('keydown', inventoryCancelKeyHandler);
+      inventoryCancelKeyHandler = null;
+    }
+    if (canvas && inventoryCancelContextHandler) {
+      canvas.removeEventListener('contextmenu', inventoryCancelContextHandler);
+      inventoryCancelContextHandler = null;
     }
     const inv = gameState.inventory;
     if (inv) {
@@ -5327,9 +5687,13 @@
       return;
     }
 
-    if (handleInventorySlotClick(x, y)) {
+    if (await handleInventorySlotClick(x, y)) {
       return;
     }
+
+    const carriedItemKey = gameState.inventory && gameState.inventory.carriedItem
+      ? gameState.inventory.carriedItem.key
+      : null;
 
     // ⚠️ NUOVA LOGICA: Usa find() invece di forEach per trovare UN SOLO hotspot
     // Questo garantisce che venga eseguito SOLO lo script dell'hotspot cliccato
@@ -5356,8 +5720,12 @@
       
       if (clickedHotspot) {
         log(`[Runtime] [DEBUG] handleClick: ✓ Hotspot rilevato: ${clickedHotspot.name} (ID: ${clickedHotspot.id})`, 'success');
-        log(`[Runtime] [DEBUG] handleClick: Esecuzione script per hotspot ${clickedHotspot.id}`, 'info');
-        await executeHotspotScript(clickedHotspot.id, clickedHotspot, x, y);
+        if (carriedItemKey) {
+          await dispatchInventoryUseWith(carriedItemKey, 'hotspot', clickedHotspot.id, x, y);
+        } else {
+          log(`[Runtime] [DEBUG] handleClick: Esecuzione script per hotspot ${clickedHotspot.id}`, 'info');
+          await executeHotspotScript(clickedHotspot.id, clickedHotspot, x, y);
+        }
         log(`[Runtime] [DEBUG] handleClick: ✓ Script completato per hotspot ${clickedHotspot.id}, uscita da handleClick`, 'success');
         return; // Hotspot ha priorità, esci subito
       }
@@ -5383,7 +5751,11 @@
 
         if (isInside) {
           log(`[Runtime] handleClick: ✓ Click su object: ${obj.name} (${obj.id})`, 'success');
-          await executeObjectClickScripts(obj.id, x, y);
+          if (carriedItemKey) {
+            await dispatchInventoryUseWith(carriedItemKey, 'object', obj.id, x, y);
+          } else {
+            await executeObjectClickScripts(obj.id, x, y);
+          }
           return;
         }
       }
@@ -5428,29 +5800,17 @@
         // Non ritornare, continua con il pathfinding
       } else {
         log(`[Runtime] handleClick: ✓ Click su character: ${clickedCharacter.name} (${clickedCharacter.id})`, 'success');
-        
-        // Esegui script del character se presente
-        const characterScripts = gameState.attachments.characterScripts || {};
-        if (typeof characterScripts === 'object' && characterScripts[clickedCharacter.id]) {
-          const scriptName = characterScripts[clickedCharacter.id];
-          if (gameState.scripts[scriptName]) {
-            await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', [clickedCharacter.id, x, y], scriptName);
-          }
-        }
-
-        // Esegui handler registrati tramite on_character_click(function() {...})
-        for (const handler of eventHandlers.character_click) {
-          try {
-            handler(clickedCharacter.id, x, y);
-          } catch (error) {
-            log(`Errore handler on_character_click: ${error.message}`, 'error');
-          }
+        if (carriedItemKey) {
+          await dispatchInventoryUseWith(carriedItemKey, 'character', clickedCharacter.id, x, y);
+        } else {
+          await executeCharacterClickScripts(clickedCharacter.id, x, y);
         }
         return;
       }
     }
 
-    // Controlla click su pulsanti GUI
+    // Controlla click su pulsanti GUI (disabilitato mentre un oggetto è in mano)
+    if (!carriedItemKey) {
     for (const gui of gameState.guis.values()) {
       if (gui.buttons && Array.isArray(gui.buttons)) {
         for (const btn of gui.buttons) {
@@ -5481,6 +5841,7 @@
           }
         }
       }
+    }
     }
 
     // Oggetto in mano: click su punto vuoto (nessun target sopra) → rilascia

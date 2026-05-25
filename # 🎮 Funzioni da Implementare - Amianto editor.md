@@ -41,10 +41,12 @@
 // ✅ Runtime
 on_game_start()                    // All'avvio del gioco
 on_room_change(oldRoom, newRoom)   // Cambio di stanza (nome handler ufficiale)
-on_object_click(objectId, x, y)    // Click su oggetto
-on_character_click(characterId)    // Click su personaggio
-on_hotspot_click(hotspotId)        // Click su hotspot
+on_object_click(objectId, x, y, usedItemId?) // Click su oggetto (+ 4° arg se use-with)
+on_character_click(characterId, x, y, usedItemId?) // Click su personaggio (+ 4° arg se use-with)
+on_hotspot_click(hotspotId, x, y, usedItemId?)   // Click su hotspot (+ 4° arg se use-with)
 on_gui_click(buttonId)             // Click su pulsante GUI (non on_gui_button_click)
+on_use_with(targetType, targetId, x, y) // Script oggetto inventario: combinazione (return true se ok)
+on_inventory_use_with(itemId, targetType, targetId, x, y) // Fallback globale use-with (return true se ok)
 
 // ❌ Non implementati
 on_game_end()                      // Alla fine del gioco
@@ -57,8 +59,7 @@ on_object_drag(objectId, x, y)     // Trascinamento oggetto
 on_character_talk(characterId)     // Dialogo con personaggio
 on_hotspot_hover(hotspotId)        // Hover su hotspot
 on_gui_button_click(buttonId)      // Alias non usato; usare on_gui_click
-on_inventory_item_use(itemId)      // Uso oggetto inventario
-on_inventory_item_click(itemId)    // Click su oggetto inventario
+on_inventory_item_click(itemId)    // Click su slot inventario (selezione visuale, no handler dedicato)
 on_cursor_change(cursorType)       // Cambio cursore
 ```
 
@@ -66,12 +67,15 @@ on_cursor_change(cursorType)       // Cambio cursore
 
 #### Gestione Inventario
 ```javascript
-// 🟡 Solo in main.js sandboxApi (NON runtime) — prossimo: Fase B.1
+// ✅ Runtime (GameAPI)
 add_to_inventory(itemId, quantity) // Aggiungi oggetto all'inventario
 remove_from_inventory(itemId, quantity) // Rimuovi oggetto dall'inventario
 has_item(itemId)                   // Verifica se l'oggetto è nell'inventario
 get_item_count(itemId)             // Ottieni quantità oggetto
 clear_inventory()                  // Svuota inventario
+get_carried_item()                 // Oggetto attualmente in mano (use-with) o null
+set_carried_item(itemId)           // Seleziona oggetto per use-with
+clear_carried_item()               // Deseleziona oggetto in mano
 
 // ❌ Backlog
 get_inventory_items()              // Ottieni lista completa inventario

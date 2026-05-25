@@ -83,7 +83,7 @@ function on_game_start() {
     <h3>Creating a script</h3>
     <ol>
       <li>Go to <strong>Scripts</strong>.</li>
-      <li>Choose <strong>Scope</strong>: Global, Room, Object, Character, Hotspot, or GUI.</li>
+      <li>Choose <strong>Scope</strong>: Global, Room, Object, Character, <strong>Inventory</strong>, Hotspot, or GUI.</li>
       <li>Choose <strong>Target</strong> (room name, object id, etc.) — Global uses project-wide scope.</li>
       <li>Choose <strong>Event</strong> (e.g. <code>on_game_start</code>, <code>on_object_click</code>).</li>
       <li>Click <strong>Create Script</strong>, write code, <strong>Save</strong> (<kbd>Ctrl</kbd>+<kbd>S</kbd>).</li>
@@ -124,13 +124,15 @@ if (Game.getVar("door_open")) {
       <tbody>
         <tr><td><code>on_game_start</code></td><td>Game / play test starts</td><td>none</td></tr>
         <tr><td><code>on_room_change</code></td><td>After changing room</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
-        <tr><td><code>on_object_click</code></td><td>Scene object clicked</td><td><code>objectId</code>, <code>x</code>, <code>y</code></td></tr>
-        <tr><td><code>on_character_click</code></td><td>Character clicked</td><td><code>characterId</code></td></tr>
-        <tr><td><code>on_hotspot_click</code></td><td>Hotspot clicked</td><td><code>hotspotId</code></td></tr>
+        <tr><td><code>on_object_click</code></td><td>Scene object clicked</td><td><code>objectId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
+        <tr><td><code>on_character_click</code></td><td>Character clicked</td><td><code>characterId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
+        <tr><td><code>on_hotspot_click</code></td><td>Hotspot clicked</td><td><code>hotspotId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_gui_click</code></td><td>GUI button clicked</td><td><code>buttonId</code>, <code>x</code>, <code>y</code></td></tr>
+        <tr><td><code>on_use_with</code></td><td><strong>Inventory item script</strong> — use on a target</td><td><code>targetType</code>, <code>targetId</code>, <code>x</code>, <code>y</code> — return <code>true</code> if handled</td></tr>
+        <tr><td><code>on_inventory_use_with</code></td><td><strong>Global</strong> fallback (any item); also accepted as alias on item scripts</td><td><code>itemId</code>, <code>targetType</code>, <code>targetId</code>, <code>x</code>, <code>y</code></td></tr>
       </tbody>
     </table>
-    <p><strong>Scope tips:</strong> Global scripts suit <code>on_game_start</code> and global <code>on_room_change</code>. Per-object scripts should define <code>on_object_click</code> only for that object. Hotspot scripts use hotspot scope + <code>on_hotspot_click</code>.</p>
+    <p><strong>Scope tips:</strong> <strong>Inventory</strong> item scripts must define <code>on_use_with</code> (not <code>on_inventory_use_with</code>, except as legacy alias). Global scripts use <code>on_inventory_use_with</code> for all items. Always <code>return true</code> on success.</p>
   </section>
 
   <section id="doc-api" class="docs-section">
@@ -151,7 +153,12 @@ if (Game.getVar("door_open")) {
       <li><code>has_item(itemId)</code> → boolean</li>
       <li><code>get_item_count(itemId)</code> → number</li>
       <li><code>clear_inventory()</code></li>
+      <li><code>get_carried_item()</code> → item id in hand, or <code>null</code></li>
+      <li><code>set_carried_item(itemId)</code> → select item for use-with (returns boolean)</li>
+      <li><code>clear_carried_item()</code> — deselect item in hand</li>
     </ul>
+    <p><strong>Use-with flow:</strong> click an inventory slot to pick up an item, then click a hotspot, scene object, character, or another inventory item. Handlers run in order: (1) item script <code>on_use_with</code>, (2) global <code>on_inventory_use_with</code>, (3) target script with optional 4th arg <code>usedItemId</code>. Return <code>true</code> from a handler to confirm the combination (item is deselected). Failed combinations show <em>That doesn't work.</em> and keep the item selected. Press <kbd>Esc</kbd>, right-click, click empty space, or click the same slot to cancel.</p>
+    <p><code>targetType</code> values: <code>hotspot</code>, <code>object</code>, <code>character</code>, <code>inventory</code>.</p>
 
     <h3>Scene objects</h3>
     <ul>
@@ -290,7 +297,43 @@ function on_gui_click(button_id, x, y) {
   }
 }</code></pre>
 
-    <h3>8 — Puzzle with variables</h3>
+    <h3>8 — Use key on door (inventory item script)</h3>
+    <p>Create the item in <strong>Inventory</strong>, then <strong>Scripts</strong> → Scope <strong>Inventory</strong> → Target <em>brass_key</em> → Event <em>onUseWith</em> → <strong>Create Script</strong>.</p>
+    <pre class="docs-code"><code>function on_use_with(targetType, targetId, x, y) {
+  if (targetType !== "hotspot" || targetId !== "door_exit") return false;
+  remove_from_inventory("brass_key", 1);
+  enableHotspot("door_exit");
+  show_message("The door unlocks.");
+  return true;
+}</code></pre>
+
+    <h3>9 — Door hotspot (usedItemId fallback)</h3>
+    <pre class="docs-code"><code>function on_hotspot_click(hotspot_id, x, y, usedItemId) {
+  if (hotspot_id !== "door_exit") return;
+  if (usedItemId === "brass_key") {
+    remove_from_inventory("brass_key", 1);
+    load_room("garden", 400, 300, 2);
+    return true;
+  }
+  if (!usedItemId) {
+    show_message("The door is locked.");
+    return;
+  }
+  return false;
+}</code></pre>
+
+    <h3>10 — Combine two inventory items</h3>
+    <pre class="docs-code"><code>// Script on item "rope"
+function on_use_with(targetType, targetId) {
+  if (targetType !== "inventory" || targetId !== "metal_hook") return false;
+  remove_from_inventory("rope", 1);
+  remove_from_inventory("metal_hook", 1);
+  add_to_inventory("grappling_hook", 1);
+  show_message("You tie the rope to the hook.");
+  return true;
+}</code></pre>
+
+    <h3>11 — Puzzle with variables</h3>
     <pre class="docs-code"><code>function on_object_click(object_id) {
   if (object_id === "lever_a") {
     Game.setVar("lever_a", !Game.getVar("lever_a"));

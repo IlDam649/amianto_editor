@@ -90,8 +90,10 @@
 #### ❌ **Mancante**
 - **Sistema di dialogo GUI**: Nessun sistema per mostrare dialoghi
   - **Prossimo passo**: Implementare DialogBox GUI con testo, scelte, callback
-- **Sistema inventario GUI**: Inventory GUI non funzionale
-  - **Prossimo passo**: Rendering inventario con drag&drop, tooltip, combinazioni
+- **Sistema inventario GUI**: Inventory GUI parziale
+  - ✅ Rendering pannello, slot, oggetto in mano (carriedItem)
+  - ✅ Combinazioni use-with (hotspot, object, character, inventory)
+  - **Prossimo passo**: drag&drop slot, tooltip
 - **Animazioni GUI**: Nessun sistema di animazioni per elementi GUI
   - **Prossimo passo**: Fade in/out, slide, scale per elementi GUI
 - **Stili GUI**: Nessun sistema di temi/stili per GUI
@@ -104,7 +106,7 @@
 #### ✅ **Runtime (`JS/runtime.js`) — Play Test e standalone**
 - Editor CodeMirror + attach script a rooms, objects, characters, hotspots, GUI, cursors
 - **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
-- **Eventi (6):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
+- **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with`
 - **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
 - **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
 - **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
@@ -188,7 +190,7 @@
 - **Sistema inventario runtime**
   - ❌ API inventario **non** in `runtime.js` (solo codice legacy in `main.js`, non collegato al Play Test)
   - ❌ Rendering inventario GUI non implementato
-  - **Prossimo passo (Fase B.1):** `gameState.inventory` + 5 API in `GameAPI` + binding; poi GUI Inventory visuale
+  - **Completato (Fase B.1):** `gameState.inventory` + API inventario + use-with; GUI inventario parziale
 
 #### ❌ **Mancante**
 - **Sistema cursori contestuali**: Cursori definiti ma cambio dinamico non implementato
@@ -365,9 +367,9 @@
   - API personaggio incluse nei parametri di compilazione (prima solo su `window`)
 
 #### 1.6 Sistema Inventario Runtime — API ✅ / GUI 🟡
-- **Stato API**: ✅ 5 API in `GameAPI` + `gameState.inventory`
-- **Stato GUI**: 🟡 rendering parziale; mancano drag&drop, tooltip, combinazioni
-- **Tempo stimato GUI**: 5-6 giorni
+- **Stato API**: ✅ 8 API inventario in `GameAPI` + use-with (`on_use_with`, `on_inventory_use_with`)
+- **Stato GUI**: 🟡 rendering parziale; combinazioni ✅; mancano drag&drop, tooltip
+- **Tempo stimato GUI**: 3-4 giorni
 
 **Totale Fase 1**: runtime scripting unificato; prossimo focus GUI inventario + Fase E test
 
@@ -602,7 +604,7 @@
 
 ### **Immediato — Unificazione API (Fase B)**
 1. ✅ Fase A infrastruttura scripting — COMPLETATO
-2. ⏳ **Fase B.1:** inventario in `runtime.js` (5 API + `gameState.inventory`)
+2. ✅ **Fase B.1:** inventario in `runtime.js` (API + use-with + `gameState.inventory`)
 3. ⏳ **Fase B.2:** oggetti dinamici (`spawn_object`, …)
 4. ⏳ **Fase B.3:** `get_room_objects`, `set_room_background`, alias variabili
 5. ⏳ Pulizia `sandboxApi` morto in `main.js` + fix `on_room_enter` → `on_room_change` (Play Test)

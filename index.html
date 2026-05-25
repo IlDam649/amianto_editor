@@ -680,8 +680,9 @@
               </div>
               <div class="mb-2">
                 <label class="form-label text-light mb-1">Script name</label>
-                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="red_key">
+                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="Inventory:brass_key">
               </div>
+              <small class="text-muted d-block mb-2">Item script: <code>on_use_with(targetType, targetId, x, y)</code> — create in <strong>Scripts</strong> → Scope <strong>Inventory</strong> → Event <strong>onUseWith</strong>. Return <code>true</code> on success.</small>
               <div class="mb-2">
                 <label class="form-label text-light mb-1">Item image</label>
                 <div class="input-group input-group-sm">
@@ -1012,6 +1013,7 @@
                     <option value="Room">Room</option>
                     <option value="Object">Object</option>
                     <option value="Character">Character</option>
+                    <option value="Inventory">Inventory</option>
                     <option value="Hotspot">Hotspot</option>
                     <option value="GUI">GUI</option>
                   </select>

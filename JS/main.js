@@ -1181,6 +1181,26 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
+      const previewSlots = inventoryDefinition.slots.filter(s => s && s.id !== '__drawing__');
+      inventoryItems.forEach((item, index) => {
+        const slot = previewSlots[index];
+        const img = item && item.image;
+        if (!slot || !img) return;
+        const imgW = img.naturalWidth || img.width || 0;
+        const imgH = img.naturalHeight || img.height || 0;
+        if (imgW <= 0 || imgH <= 0) return;
+        const maxW = Math.max(1, slot.w);
+        const maxH = Math.max(1, slot.h);
+        const scale = Math.min(maxW / imgW, maxH / imgH);
+        const drawW = imgW * scale;
+        const drawH = imgH * scale;
+        const drawX = slot.x + (maxW - drawW) / 2;
+        const drawY = slot.y + (maxH - drawH) / 2;
+        try {
+          ctx.drawImage(img, drawX, drawY, drawW, drawH);
+        } catch (_) {}
+      });
+
       ctx.strokeStyle = '#39ff14';
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
@@ -2431,6 +2451,49 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const name = document.createElement('div');
       name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>`;
+      const idRow = document.createElement('div');
+      idRow.className = 'd-flex align-items-center gap-1 mt-1 hotspot-id-row';
+      const idInput = document.createElement('input');
+      idInput.type = 'text';
+      idInput.readOnly = true;
+      idInput.className = 'form-control form-control-sm hotspot-id-input';
+      idInput.value = hs.id;
+      idInput.title = 'Hotspot ID — select and copy';
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn btn-outline-secondary btn-sm btn-copy-hotspot-id py-0 px-1';
+      copyBtn.title = 'Copy ID';
+      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const text = hs.id;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            showNotification('Hotspot ID copied!', 'success');
+          }).catch(() => {
+            idInput.select();
+            idInput.setSelectionRange(0, text.length);
+            try {
+              document.execCommand('copy');
+              showNotification('Hotspot ID copied!', 'success');
+            } catch (_) {
+              showNotification('Failed to copy Hotspot ID', 'error');
+            }
+          });
+        } else {
+          idInput.select();
+          idInput.setSelectionRange(0, text.length);
+          try {
+            document.execCommand('copy');
+            showNotification('Hotspot ID copied!', 'success');
+          } catch (_) {
+            showNotification('Failed to copy Hotspot ID', 'error');
+          }
+        }
+      });
+      idRow.appendChild(idInput);
+      idRow.appendChild(copyBtn);
+      name.appendChild(idRow);
 
       const activeWrap = document.createElement('div');
       activeWrap.className = 'form-check form-check-inline small mt-1';
@@ -2547,6 +2610,8 @@ document.addEventListener("DOMContentLoaded", () => {
       Sortable.create(hotspotsListContainer, {
         animation: 150,
         ghostClass: 'sortable-ghost',
+        filter: 'input,button,label,.form-check',
+        preventOnFilter: false,
         onEnd: (evt) => {
           const oldI = evt.oldIndex;
           const newI = evt.newIndex;
@@ -3842,11 +3907,44 @@ window.selectRoom = function(roomId) {
      ============================ */
 
   // ===== Inventory tab =====
+  /** Chiave script effettiva per un item (scriptName utente > attachment > default Inventory:nome). */
+  function getInventoryItemScriptKey(itemOrName) {
+    const name = typeof itemOrName === 'string' ? itemOrName : (itemOrName && itemOrName.name);
+    if (!name) return '';
+    const item = typeof itemOrName === 'object' && itemOrName
+      ? itemOrName
+      : inventoryItems.find(i => i.name === name);
+    const userKey = item && String(item.scriptName || '').trim();
+    if (userKey) {
+      const k = migrateLegacyScriptKey(userKey);
+      return editorScriptExists(k) ? k : '';
+    }
+    if (inventoryScripts.has(name)) {
+      const k = migrateLegacyScriptKey(inventoryScripts.get(name));
+      return editorScriptExists(k) ? k : '';
+    }
+    const defaultKey = migrateLegacyScriptKey(normalizeScriptKey('Inventory', name));
+    return editorScriptExists(defaultKey) ? defaultKey : '';
+  }
+
   function syncInventoryItemScript(item) {
     if (!item) return;
-    const scriptName = (item.scriptName || '').trim();
-    if (scriptName) inventoryScripts.set(item.name, scriptName);
-    else inventoryScripts.delete(item.name);
+    const scriptName = String(item.scriptName || '').trim();
+    if (scriptName) {
+      inventoryScripts.set(item.name, migrateLegacyScriptKey(scriptName));
+    } else {
+      inventoryScripts.delete(item.name);
+    }
+  }
+
+  /** Collega script a item inventario (solo Map attachments; non modifica item.scriptName). */
+  function attachInventoryItemScript(itemName, scriptKey) {
+    const name = String(itemName || '').trim();
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!name || !key) return false;
+    inventoryScripts.set(name, key);
+    refreshInventoryItemsListUI();
+    return true;
   }
 
   function updateInventoryItemFormImageLabel() {
@@ -3903,7 +4001,7 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.itemId = item.id;
       const info = document.createElement('div');
-      const scriptLabel = item.scriptName ? item.scriptName : '(no script)';
+      const scriptLabel = getInventoryItemScriptKey(item) || '(no script)';
       const hasImg = item.image ? 'with image' : 'no image';
       info.innerHTML = '<strong>' + item.name + '</strong><br><small class="text-info">Script: ' + scriptLabel + '</small><br><small class="text-muted">' + hasImg + '</small>';
       const controls = document.createElement('div');
@@ -3969,6 +4067,7 @@ window.selectRoom = function(roomId) {
     inventoryItems = inventoryItems.filter(i => i.id !== itemId);
     if (selectedInventoryItemId === itemId) clearInventoryItemForm();
     else refreshInventoryItemsListUI();
+    redraw();
     showNotification('Inventory item deleted', 'info');
   }
 
@@ -3977,7 +4076,7 @@ window.selectRoom = function(roomId) {
     const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
     if (!name) { showNotification('Enter a name for the item', 'warning'); return; }
     if (inventoryItems.some(i => i.name === name)) { showNotification('Name already in use', 'warning'); return; }
-    const item = { id: uid('invitem'), name, scriptName: scriptName || name, image: pendingInventoryItemImage || null };
+    const item = { id: uid('invitem'), name, scriptName, image: pendingInventoryItemImage || null };
     syncInventoryItemScript(item);
     inventoryItems.push(item);
     pendingInventoryItemImage = null;
@@ -3996,7 +4095,7 @@ window.selectRoom = function(roomId) {
     if (inventoryItems.some(i => i.id !== item.id && i.name === name)) { showNotification('Name already in use', 'warning'); return; }
     if (oldName !== name && inventoryScripts.has(oldName)) inventoryScripts.delete(oldName);
     item.name = name;
-    item.scriptName = scriptName || name;
+    item.scriptName = scriptName;
     if (pendingInventoryItemImage) item.image = pendingInventoryItemImage;
     syncInventoryItemScript(item);
     pendingInventoryItemImage = null;
@@ -4584,7 +4683,9 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.characterName = characterName;
       const info = document.createElement('div');
-      const scriptLabel = characterScripts.has(characterName) ? characterName : '(no script)';
+      const scriptLabel = hasEditorScriptLink('Character', characterName)
+        ? getEditorScriptKey('Character', characterName)
+        : '(no script)';
       info.innerHTML = '<strong>' + characterName + '</strong><br><small class="text-muted">' + totalFrames + ' frame' + (totalFrames !== 1 ? 's' : '') + '</small><br><small class="character-script-name text-info">Script: ' + scriptLabel + '</small>';
       const controls = document.createElement('div');
       const selectBtn = document.createElement('button');
@@ -6227,6 +6328,12 @@ window.selectRoom = function(roomId) {
     if (scope === 'Room' && roomScripts.has(target)) return roomScripts.get(target);
     if (scope === 'Object' && objectScripts.has(target)) return objectScripts.get(target);
     if (scope === 'Character' && characterScripts.has(target)) return characterScripts.get(target);
+    if (scope === 'Inventory') {
+      const item = inventoryItems.find(i => i.name === target);
+      const userKey = item && String(item.scriptName || '').trim();
+      if (userKey) return migrateLegacyScriptKey(userKey);
+      if (inventoryScripts.has(target)) return inventoryScripts.get(target);
+    }
     if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
       return guiScripts.get(target);
     }
@@ -6255,6 +6362,163 @@ window.selectRoom = function(roomId) {
     const key = migrateLegacyScriptKey(String(scriptKey || ''));
     if (!key) return '';
     return jsScripts.get(key) || (() => { try { return localStorage.getItem(`script-${key}`); } catch (_) { return ''; } })() || '';
+  }
+
+  /** Chiave canonica 1:1 per la tab Scripts (Scope:target). */
+  function getEditorScriptKey(scope, target) {
+    return migrateLegacyScriptKey(normalizeScriptKey(scope, target));
+  }
+
+  function editorScriptExists(scriptKey) {
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!key) return false;
+    if (jsScripts.has(key)) return true;
+    try {
+      return localStorage.getItem(`script-${key}`) != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function parseScriptKeyScopeTarget(scriptName) {
+    const key = migrateLegacyScriptKey(String(scriptName || ''));
+    const sep = key.indexOf(':');
+    if (sep <= 0) return null;
+    return { scope: key.slice(0, sep), target: key.slice(sep + 1) };
+  }
+
+  function clearEditorScriptAttachment(scope, target) {
+    if (scope === 'Room') {
+      roomScripts.delete(target);
+      return;
+    }
+    if (scope === 'Object') {
+      objectScripts.delete(target);
+      return;
+    }
+    if (scope === 'Character') {
+      characterScripts.delete(target);
+      return;
+    }
+    if (scope === 'Inventory') {
+      inventoryScripts.delete(target);
+      const item = inventoryItems.find(i => i.name === target);
+      if (item) {
+        const canonical = getEditorScriptKey('Inventory', target);
+        const userKey = migrateLegacyScriptKey(String(item.scriptName || '').trim());
+        if (!userKey || userKey === canonical) {
+          item.scriptName = '';
+        }
+      }
+      refreshInventoryItemsListUI();
+      return;
+    }
+    if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.delete) {
+      guiScripts.delete(target);
+    }
+  }
+
+  function syncEditorScriptAttachment(scope, target, canonicalKey) {
+    const key = migrateLegacyScriptKey(String(canonicalKey || ''));
+    if (!key) return;
+    if (scope === 'Room') roomScripts.set(target, key);
+    else if (scope === 'Object') objectScripts.set(target, key);
+    else if (scope === 'Character') characterScripts.set(target, key);
+    else if (scope === 'Inventory') attachInventoryItemScript(target, key);
+    else if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+  }
+
+  function hasEditorScriptLink(scope, target) {
+    if (scope === 'Room') return roomScripts.has(target);
+    if (scope === 'Object') return objectScripts.has(target);
+    if (scope === 'Character') return characterScripts.has(target);
+    if (scope === 'Inventory') return inventoryScripts.has(target);
+    if (scope === 'GUI') return typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target);
+    if (scope === 'Hotspot') {
+      const hotspotId = String(target || '').replace(/^hotspot:/, '');
+      const key = getEditorScriptKey('Hotspot', hotspotId);
+      if (jsScripts.has(key)) return true;
+      let linked = false;
+      let embedded = false;
+      rooms.forEach((room) => {
+        if (!room.hotspots) return;
+        const hs = room.hotspots.find(h => h.id === hotspotId);
+        if (!hs) return;
+        if (hs._meta && hs._meta.linkedScriptName) linked = true;
+        if (hs.scripts && hs.scripts.onClick && String(hs.scripts.onClick.code || '').trim()) embedded = true;
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hs = hotspots.find(h => h.id === hotspotId);
+        if (hs) {
+          if (hs._meta && hs._meta.linkedScriptName) linked = true;
+          if (hs.scripts && hs.scripts.onClick && String(hs.scripts.onClick.code || '').trim()) embedded = true;
+        }
+      }
+      return linked || embedded;
+    }
+    if (scope === 'Global') {
+      const key = getEditorScriptKey('Global', 'main');
+      return jsScripts.has(key);
+    }
+    return false;
+  }
+
+  function loadEditorScriptContent(scope, target) {
+    const canonicalKey = getEditorScriptKey(scope, target);
+    let content = getScriptContent(canonicalKey);
+
+    if (!String(content || '').trim()) {
+      const legacyKey = migrateLegacyScriptKey(resolveScriptKey(scope, target));
+      if (legacyKey && legacyKey !== canonicalKey) {
+        const legacyContent = getScriptContent(legacyKey);
+        if (String(legacyContent || '').trim()) {
+          content = legacyContent;
+          jsScripts.set(canonicalKey, content);
+          try { localStorage.setItem(`script-${canonicalKey}`, content); } catch (_) {}
+          syncEditorScriptAttachment(scope, target, canonicalKey);
+        }
+      }
+    }
+
+    if (scope === 'Hotspot' && !String(content || '').trim()) {
+      const hotspotId = String(target || '').replace(/^hotspot:/, '');
+      let embedded = '';
+      rooms.forEach((room) => {
+        if (embedded) return;
+        if (!room.hotspots) return;
+        const hs = room.hotspots.find(h => h.id === hotspotId);
+        if (hs && hs.scripts && hs.scripts.onClick && hs.scripts.onClick.code) {
+          embedded = String(hs.scripts.onClick.code);
+        }
+      });
+      if (!embedded && typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hs = hotspots.find(h => h.id === hotspotId);
+        if (hs && hs.scripts && hs.scripts.onClick && hs.scripts.onClick.code) {
+          embedded = String(hs.scripts.onClick.code);
+        }
+      }
+      if (embedded.trim()) {
+        content = embedded;
+        jsScripts.set(canonicalKey, content);
+        try { localStorage.setItem(`script-${canonicalKey}`, content); } catch (_) {}
+      }
+    }
+
+    return { key: canonicalKey, content: String(content || '') };
+  }
+
+  function shouldShowEditorScript(scope, target, content, seenKeys) {
+    const key = getEditorScriptKey(scope, target);
+    if (seenKeys.has(key)) return false;
+    const hasContent = String(content || '').trim().length > 0;
+    if (!hasContent) {
+      if (hasEditorScriptLink(scope, target)) {
+        clearEditorScriptAttachment(scope, target);
+      }
+      return false;
+    }
+    seenKeys.add(key);
+    return true;
   }
 
   // Event conditions storage
@@ -6306,7 +6570,9 @@ window.selectRoom = function(roomId) {
   const GAME_API_COMPLETIONS = [
     'print', 'show_message', 'move_object',
     'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
+    'on_use_with', 'on_inventory_use_with',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
+    'get_carried_item', 'set_carried_item', 'clear_carried_item',
     'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
     'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
     'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
@@ -6360,7 +6626,8 @@ window.selectRoom = function(roomId) {
   const SCRIPT_EVENTS = {
     Global: [
       { id: 'on_game_start', label: 'onGameStart' },
-      { id: 'on_room_change', label: 'onRoomChange' }
+      { id: 'on_room_change', label: 'onRoomChange' },
+      { id: 'on_inventory_use_with', label: 'onInventoryUseWith' }
     ],
     Room: [
       // Anche disponibile a livello globale; mantenuto qui per comodità UI
@@ -6368,6 +6635,7 @@ window.selectRoom = function(roomId) {
     ],
     Object: [{ id: 'on_object_click', label: 'onClick' }],
     Character: [{ id: 'on_character_click', label: 'onClick' }],
+    Inventory: [{ id: 'on_use_with', label: 'onUseWith' }],
     Hotspot: [{ id: 'on_hotspot_click', label: 'onClick' }]
     // Nessun evento GUI: runtime non ancora collegato
   };
@@ -6436,6 +6704,17 @@ window.selectRoom = function(roomId) {
         const opt = document.createElement('option');
         opt.value = name;
         opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Inventory') {
+      addPlaceholder('Select inventory item...');
+      (inventoryItems || []).forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.name;
+        opt.textContent = item.name;
         sel.appendChild(opt);
       });
       return;
@@ -6514,7 +6793,9 @@ window.selectRoom = function(roomId) {
       'on_object_click',
       'on_character_click',
       'on_hotspot_click',
-      'on_gui_click'
+      'on_gui_click',
+      'on_use_with',
+      'on_inventory_use_with'
     ].forEach(h => {
       const re = new RegExp(`function\\s+${h}\\s*\\(`);
       if (re.test(content)) handlers.add(h);
@@ -6529,6 +6810,7 @@ window.selectRoom = function(roomId) {
     tree.innerHTML = '';
 
     const container = document.createElement('div');
+    const seenScriptKeys = new Set();
 
     // Helper per creare un elemento script nella lista
     const createScriptItem = (scriptInfo, onClickHandler) => {
@@ -6689,12 +6971,13 @@ window.selectRoom = function(roomId) {
     };
 
     // Global (single)
-    const globalKey = 'Global:main';
-    let globalContent = getScriptContent(globalKey);
+    const globalKey = getEditorScriptKey('Global', 'main');
+    const { content: globalContent } = loadEditorScriptContent('Global', 'main');
     const globalHandlers = extractHandlersFromScript(globalContent);
     const globalHandlerNames = Array.from(globalHandlers).sort();
 
-    if (globalContent.trim().length > 0) {
+    if (globalContent.trim().length > 0 && !seenScriptKeys.has(globalKey)) {
+      seenScriptKeys.add(globalKey);
       const globalGroup = document.createElement('div');
       globalGroup.className = 'mb-3';
       const h = document.createElement('div');
@@ -6728,10 +7011,8 @@ window.selectRoom = function(roomId) {
       const scriptsInRoom = [];
       
       // Script della stanza
-      const scriptKeyToUse = resolveScriptKey('Room', roomId);
-      const roomContent = getScriptContent(scriptKeyToUse);
-      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
-      if (roomScripts.has(roomId) || roomContent.trim().length > 0) {
+      const { content: roomContent } = loadEditorScriptContent('Room', roomId);
+      if (shouldShowEditorScript('Room', roomId, roomContent, seenScriptKeys)) {
         const handlers = extractHandlersFromScript(roomContent);
         const handlerNames = Array.from(handlers).sort();
         scriptsInRoom.push({
@@ -6747,9 +7028,8 @@ window.selectRoom = function(roomId) {
       // Oggetti nella stanza con script
       if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
         room.sceneObjects.forEach(obj => {
-          const scriptKeyToUse = resolveScriptKey('Object', obj.id);
-          const objContent = getScriptContent(scriptKeyToUse);
-          if (objectScripts.has(obj.id) || objContent.trim().length > 0) {
+          const { content: objContent } = loadEditorScriptContent('Object', obj.id);
+          if (shouldShowEditorScript('Object', obj.id, objContent, seenScriptKeys)) {
             const handlers = extractHandlersFromScript(objContent);
             const handlerNames = Array.from(handlers).sort();
             scriptsInRoom.push({
@@ -6767,24 +7047,20 @@ window.selectRoom = function(roomId) {
       // Hotspot nella stanza con script
       if (room.hotspots && Array.isArray(room.hotspots)) {
         room.hotspots.forEach(hotspot => {
-          const hotspotKey = normalizeScriptKey('Hotspot', hotspot.id);
-          const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
-            ? String(hotspot.scripts.onClick.code) : '';
-          const fromStore = getScriptContent(hotspotKey);
-          const hotspotCode = fromHotspot.trim() ? fromHotspot : fromStore;
-          const linkedName = hotspot._meta && hotspot._meta.linkedScriptName;
-          if (!hotspotCode.trim() && !linkedName) return;
-          const handlers = extractHandlersFromScript(hotspotCode);
-          const handlerNames = Array.from(handlers).sort();
-          scriptsInRoom.push({
-            type: 'hotspot',
-            scope: 'Hotspot',
-            target: hotspot.id,
-            roomId: roomId,
-            label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
-            handlers: handlerNames,
-            hasContent: hotspotCode.trim().length > 0
-          });
+          const { content: hotspotCode } = loadEditorScriptContent('Hotspot', hotspot.id);
+          if (shouldShowEditorScript('Hotspot', hotspot.id, hotspotCode, seenScriptKeys)) {
+            const handlers = extractHandlersFromScript(hotspotCode);
+            const handlerNames = Array.from(handlers).sort();
+            scriptsInRoom.push({
+              type: 'hotspot',
+              scope: 'Hotspot',
+              target: hotspot.id,
+              roomId: roomId,
+              label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
+              handlers: handlerNames,
+              hasContent: hotspotCode.trim().length > 0
+            });
+          }
         });
       }
       
@@ -6841,15 +7117,104 @@ window.selectRoom = function(roomId) {
       container.appendChild(roomGroup);
     });
 
+    // Inventory items with scripts
+    const inventoryScriptItems = [];
+    (inventoryItems || []).forEach(item => {
+      const { content } = loadEditorScriptContent('Inventory', item.name);
+      if (shouldShowEditorScript('Inventory', item.name, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        inventoryScriptItems.push({
+          scope: 'Inventory',
+          target: item.name,
+          label: `🎒 Item: ${item.name}`,
+          handlers: handlerNames,
+          hasContent: content.trim().length > 0
+        });
+      }
+    });
+
+    if (inventoryScriptItems.length > 0) {
+      const invGroup = document.createElement('div');
+      invGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Inventory';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      invGroup.appendChild(h);
+
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+
+      inventoryScriptItems.forEach(scriptInfo => {
+        const scriptItem = createScriptItem(scriptInfo, (handlerId) => {
+          openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
+      });
+
+      invGroup.appendChild(ul);
+      container.appendChild(invGroup);
+    }
+
+    // Characters with scripts
+    const characterScriptItems = [];
+    const characterNames = [];
+    characterFrames.forEach((_, name) => characterNames.push(name));
+    characterNames.sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }));
+    characterNames.forEach(charName => {
+      const { content } = loadEditorScriptContent('Character', charName);
+      if (shouldShowEditorScript('Character', charName, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        characterScriptItems.push({
+          scope: 'Character',
+          target: charName,
+          label: `🧍 Character: ${charName}`,
+          handlers: handlerNames,
+          hasContent: content.trim().length > 0
+        });
+      }
+    });
+
+    if (characterScriptItems.length > 0) {
+      const charGroup = document.createElement('div');
+      charGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Characters';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      charGroup.appendChild(h);
+
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+
+      characterScriptItems.forEach(scriptInfo => {
+        const scriptItem = createScriptItem(scriptInfo, (handlerId) => {
+          openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
+      });
+
+      charGroup.appendChild(ul);
+      container.appendChild(charGroup);
+    }
+
     // GUI attached
     const guiItems = [];
     (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
-      const key = resolveScriptKey('GUI', b.id);
-      const content = getScriptContent(key);
-      if (!guiScripts.has(b.id) && !content.trim()) return;
-      const handlers = extractHandlersFromScript(content);
-      const handlerNames = Array.from(handlers).sort();
-      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
+      const { content } = loadEditorScriptContent('GUI', b.id);
+      if (shouldShowEditorScript('GUI', b.id, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
+      }
     });
     
     if (guiItems.length > 0) {
@@ -6937,6 +7302,21 @@ window.selectRoom = function(roomId) {
           objectScripts.set(objId, currentKey);
         }
       }
+
+      if (currentKey.startsWith('Inventory:')) {
+        const itemName = currentKey.slice('Inventory:'.length);
+        attachInventoryItemScript(itemName, currentKey);
+      }
+      if (currentKey.startsWith('Room:')) {
+        roomScripts.set(currentKey.slice('Room:'.length), currentKey);
+      }
+      if (currentKey.startsWith('Character:')) {
+        characterScripts.set(currentKey.slice('Character:'.length), currentKey);
+      }
+      if (currentKey.startsWith('GUI:')) {
+        const btnId = currentKey.slice('GUI:'.length);
+        if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(btnId, currentKey);
+      }
     }
   }
 
@@ -6946,30 +7326,30 @@ window.selectRoom = function(roomId) {
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
-    const scriptKeyToUse = migrateLegacyScriptKey(resolveScriptKey(scope, target));
-    let content = getScriptContent(scriptKeyToUse);
+    const { key: scriptKeyToUse, content: loadedContent } = loadEditorScriptContent(scope, target);
+    let content = loadedContent;
     // Permetti di aprire script vuoti (potrebbero essere appena creati)
     // Se lo script non esiste affatto, crealo vuoto
     if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
-      // Verifica se c'è un attachment che indica che lo script dovrebbe esistere
-      const hasAttachment = (scope === 'Room' && roomScripts.has(target)) ||
-                            (scope === 'Object' && objectScripts.has(target)) ||
-                            (scope === 'Character' && characterScripts.has(target)) ||
-                            (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target));
-      // Per gli oggetti, permetti sempre di creare uno script vuoto (l'attachment verrà creato quando viene salvato)
-      if (!hasAttachment && scope !== 'Object') {
+      const hasAttachment = hasEditorScriptLink(scope, target);
+      // Per oggetti/inventario/personaggi, permetti sempre di creare uno script vuoto (l'attachment verrà creato al salvataggio)
+      if (!hasAttachment && scope !== 'Object' && scope !== 'Inventory' && scope !== 'Character') {
         showNotification('Script not found', 'warning');
         return;
       }
-      // Crea lo script vuoto se ha un attachment o se è un oggetto
+      // Crea lo script vuoto se ha un attachment o se è un oggetto/inventario/personaggio
       content = '';
       jsScripts.set(scriptKeyToUse, content);
       try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
       
-      // Per gli oggetti, crea subito l'attachment quando si apre lo script per la prima volta
-      // Questo garantisce che lo script sia associato all'oggetto anche prima di essere salvato
       if (scope === 'Object' && !hasAttachment) {
         objectScripts.set(target, scriptKeyToUse);
+      }
+      if (scope === 'Inventory' && !hasAttachment) {
+        attachInventoryItemScript(target, scriptKeyToUse);
+      }
+      if (scope === 'Character' && !hasAttachment) {
+        characterScripts.set(target, scriptKeyToUse);
       }
     }
     currentScriptName = scriptKeyToUse;
@@ -7069,6 +7449,20 @@ window.selectRoom = function(roomId) {
         skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
       } else if (handlerId === 'on_hotspot_click') {
         skeleton += `function on_hotspot_click(hotspotId){\n  // your code here\n}\n`;
+      } else if (handlerId === 'on_use_with') {
+        skeleton += `function on_use_with(targetType, targetId, x, y){\n`;
+        skeleton += `  // Handler per script item inventario (Scope Inventory)\n`;
+        skeleton += `  // targetType: hotspot | object | character | inventory\n`;
+        skeleton += `  // targetId: id dell'hotspot/oggetto/item (non il name, salvo coincidano)\n`;
+        skeleton += `  if (targetType !== "hotspot" || targetId !== "hotspot_id_here") return false;\n`;
+        skeleton += `  show_message("Combinazione riuscita.");\n`;
+        skeleton += `  return true;\n`;
+        skeleton += `}\n`;
+      } else if (handlerId === 'on_inventory_use_with') {
+        skeleton += `function on_inventory_use_with(itemId, targetType, targetId, x, y){\n`;
+        skeleton += `  // Solo script Global (fallback). Sugli item inventario usare on_use_with.\n`;
+        skeleton += `  return false;\n`;
+        skeleton += `}\n`;
       } else {
         skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
       }
@@ -7084,6 +7478,8 @@ window.selectRoom = function(roomId) {
       roomScripts.set(target, key);
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
+    } else if (scope === 'Character') {
+      characterScripts.set(target, key);
     } else if (scope === 'Hotspot') {
       const hotspotId = key.slice('Hotspot:'.length);
       // Salva direttamente nell'hotspot
@@ -7122,6 +7518,13 @@ window.selectRoom = function(roomId) {
       }
     } else if (scope === 'GUI') {
       if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+    } else if (scope === 'Inventory') {
+      const item = inventoryItems.find(i => i.name === target);
+      if (!item) {
+        showNotification(`Inventory item "${target}" not found`, 'warning');
+        return;
+      }
+      attachInventoryItemScript(target, key);
     }
 
     if (largeCodeMirrorEditor) {
@@ -7481,6 +7884,21 @@ window.selectRoom = function(roomId) {
         objectScripts.set(objId, key);
       }
     }
+
+    if (key.startsWith('Inventory:')) {
+      const itemName = key.slice('Inventory:'.length);
+      attachInventoryItemScript(itemName, key);
+    }
+    if (key.startsWith('Room:')) {
+      roomScripts.set(key.slice('Room:'.length), key);
+    }
+    if (key.startsWith('Character:')) {
+      characterScripts.set(key.slice('Character:'.length), key);
+    }
+    if (key.startsWith('GUI:')) {
+      const btnId = key.slice('GUI:'.length);
+      if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(btnId, key);
+    }
     
     // Salva il nuovo contenuto (anche per hotspot, per mantenere sincronizzazione)
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
@@ -7652,6 +8070,17 @@ window.selectRoom = function(roomId) {
         inventoryScripts.delete(itemName);
       }
     }
+    inventoryItems.forEach(item => {
+      const userKey = migrateLegacyScriptKey(String(item.scriptName || '').trim());
+      if (userKey === scriptName) {
+        item.scriptName = '';
+        inventoryScripts.delete(item.name);
+      }
+    });
+    const parsedKey = parseScriptKeyScopeTarget(scriptName);
+    if (parsedKey && parsedKey.scope !== 'Hotspot' && parsedKey.scope !== 'Global') {
+      clearEditorScriptAttachment(parsedKey.scope, parsedKey.target);
+    }
     
     // Hotspot scripts - Rimuovi anche dalla struttura hotspot.scripts.onClick
     // Gli hotspot ora salvano gli script direttamente in hotspot.scripts.onClick
@@ -7723,7 +8152,9 @@ window.selectRoom = function(roomId) {
     
     // Aggiorna l'albero degli script
     rebuildScriptsTree();
-    
+
+    refreshInventoryItemsListUI();
+
     // Aggiorna tutti i target selector
     refreshSceneObjectScriptTargets();
     refreshRoomScriptTargets();
@@ -11602,7 +12033,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       items: inventoryItems.map(item => ({
         id: item.id,
         name: item.name,
-        scriptName: item.scriptName || item.name,
+        scriptName: item.scriptName != null ? String(item.scriptName) : '',
         image: serializeImage(item.image)
       }))
     };
@@ -11909,6 +12340,41 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
     walk(root);
     return count;
+  }
+
+  /** Somma i byte delle stringhe data:…;base64, ancora nel progetto serializzato. */
+  function measureEmbeddedDataUrlBytes(root) {
+    let total = 0;
+    const walk = (v) => {
+      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
+        total += new Blob([v]).size;
+        return;
+      }
+      if (!v || typeof v !== 'object') return;
+      if (Array.isArray(v)) {
+        v.forEach(walk);
+        return;
+      }
+      Object.values(v).forEach(walk);
+    };
+    walk(root);
+    return total;
+  }
+
+  const FIRESTORE_ASSET_REF_PLACEHOLDER = 'asset:estimate00000000000000';
+
+  /** Stima la dimensione del payload Firestore (come dopo upload asset, senza base64). */
+  function estimateFirestorePayloadBytes(projectObj) {
+    const payload = prepareProjectPayloadForFirestore(projectObj);
+    let json = JSON.stringify(payload);
+    json = json.replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/gi, FIRESTORE_ASSET_REF_PLACEHOLDER);
+    return new Blob([json]).size;
+  }
+
+  function formatProjectSizeLabel(bytes) {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${bytes} B`;
   }
 
   function slimResourcesCatalogForFirestore(catalog) {
@@ -14782,7 +15248,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 redraw();
               }
             }
-            refreshHotspotsListUI();
+              refreshHotspotsListUI();
+              scheduleProjectSizeIndicatorRefresh(300);
           });
         }
       } else {
@@ -14975,12 +15442,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const entry = {
             id: item.id || uid('invitem'),
             name: item.name || 'Item',
-            scriptName: item.scriptName || item.name || 'Item',
+            scriptName: item.scriptName != null ? String(item.scriptName) : '',
             image: null,
             _imageRef: item.image || null
           };
           inventoryItems.push(entry);
-          if (item.scriptName) inventoryScripts.set(entry.name, item.scriptName);
         });
         Promise.resolve().then(async () => {
           for (const item of inventoryItems) {
@@ -15135,6 +15601,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
           // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
         }
+        inventoryItems.forEach(item => {
+          if (String(item.scriptName || '').trim()) syncInventoryItemScript(item);
+        });
       } catch(_) {}
       
       // Variables (Game State)
@@ -15290,6 +15759,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
       
       showNotification('Project loaded', 'success');
+      scheduleProjectSizeIndicatorRefresh(600);
     } catch (err) {
       addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
       showNotification('Error loading project', 'danger');
@@ -15426,6 +15896,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Il modale verrà chiuso dal chiamante dopo questa funzione completa
   }
 
+  let projectSizeIndicatorTimer = null;
+
+  function scheduleProjectSizeIndicatorRefresh(delayMs = 400) {
+    if (projectSizeIndicatorTimer) clearTimeout(projectSizeIndicatorTimer);
+    projectSizeIndicatorTimer = setTimeout(() => {
+      projectSizeIndicatorTimer = null;
+      updateProjectSizeIndicator();
+    }, delayMs);
+  }
+
   // Funzione per aggiornare l'indicatore della dimensione del progetto
   async function updateProjectSizeIndicator() {
     try {
@@ -15442,38 +15922,49 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         indicator.style.display = 'none';
         return;
       }
-      
-      // Calcola dimensione Firestore (progetto serializzato)
+
       const projectObj = window.serializeProject();
-      const jsonString = JSON.stringify(projectObj);
-      const dataSizeBytes = new Blob([jsonString]).size;
-      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      const dataSizeKB = (dataSizeBytes / 1024).toFixed(1);
-      
-      // Calcola percentuale rispetto al limite Firestore (1MB)
+      const firestoreBytes = estimateFirestorePayloadBytes(projectObj);
+      const pendingBytes = measureEmbeddedDataUrlBytes(projectObj);
+      const pendingCount = countEmbeddedDataUrls(projectObj);
+
       const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
-      const percentageUsed = ((dataSizeBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1);
-      
-      // Mostra dimensione Firestore in KB o MB
-      let sizeDisplay;
-      if (dataSizeBytes >= 1024 * 1024) {
-        sizeDisplay = `Firestore: ${dataSizeMB} MB (${percentageUsed}%)`;
-      } else {
-        sizeDisplay = `Firestore: ${dataSizeKB} KB (${percentageUsed}%)`;
+      const percentageUsed = parseFloat(((firestoreBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1));
+
+      const parts = [`Firestore: ${formatProjectSizeLabel(firestoreBytes)} (${percentageUsed}%)`];
+      if (pendingBytes > 0) {
+        const assetLabel = pendingCount === 1 ? '1 asset' : `${pendingCount} asset`;
+        parts.push(`da caricare: ${formatProjectSizeLabel(pendingBytes)} (${assetLabel})`);
       }
-      
-      sizeText.textContent = sizeDisplay;
-      
-      // Colore Firestore in base alla percentuale
-      if (percentageUsed >= 90) {
-        sizeText.style.color = '#ff6b6b'; // Rosso per >90%
-      } else if (percentageUsed >= 75) {
-        sizeText.style.color = '#ffa500'; // Arancione per 75-90%
+
+      sizeText.textContent = parts.join(' · ');
+      indicator.title = pendingBytes > 0
+        ? 'Firestore: stima del JSON salvato (senza base64). "Da caricare": immagini/audio ancora in memoria; sparisce dopo Save.'
+        : 'Firestore: dimensione stimata del documento salvato (~1 MB max). Storage: file asset su Supabase.';
+
+      if (percentageUsed >= 90 || pendingBytes > 512 * 1024) {
+        sizeText.style.color = '#ff6b6b';
+      } else if (percentageUsed >= 75 || pendingBytes > 0) {
+        sizeText.style.color = '#ffa500';
       } else {
-        sizeText.style.color = '#aaa'; // Grigio per <75%
+        sizeText.style.color = '#aaa';
       }
-      
+
       indicator.style.display = 'block';
+
+      const projectId = (projectObj.settings && projectObj.settings.id)
+        ? String(projectObj.settings.id)
+        : activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+
+      if (window.supabaseStorage && typeof window.supabaseStorage.getProjectStorageSize === 'function') {
+        const storage = await window.supabaseStorage.getProjectStorageSize(projectId);
+        if (storage && storage.totalBytes > 0) {
+          const storageLabel = formatProjectSizeLabel(storage.totalBytes);
+          const fileLabel = storage.fileCount === 1 ? '1 file' : `${storage.fileCount} file`;
+          sizeText.textContent = `${parts.join(' · ')} · Storage: ${storageLabel} (${fileLabel})`;
+          indicator.title = (indicator.title || '') + ` Storage Supabase: ${storageLabel}, ${fileLabel}.`;
+        }
+      }
     } catch (error) {
       console.warn('[ProjectSize] Errore aggiornamento indicatore:', error);
     }

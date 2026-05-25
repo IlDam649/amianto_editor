@@ -579,6 +579,21 @@ header {
   border: 1px solid rgba(57,255,20,0.15) !important;
 }
 
+.hotspot-id-input {
+  background-color: #2a2a2a !important;
+  color: #39ff14 !important;
+  font-family: monospace;
+  font-size: 0.75rem;
+  cursor: text;
+  max-width: 180px;
+  user-select: text;
+}
+
+.hotspot-id-row .btn-copy-hotspot-id {
+  flex-shrink: 0;
+  line-height: 1;
+}
+
 /* Badges tweak */
 .badge {
   box-shadow: 0 0 8px rgba(57,255,20,0.25);
