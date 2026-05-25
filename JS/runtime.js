@@ -38,6 +38,8 @@
     // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
     // Questo previene riesecuzione di codice JS a ogni evento
     compiledScripts: new Map(),
+    /** Hash contenuto script per invalidare cache compilazione quando il codice cambia (playtest senza chiudere finestra). */
+    compiledScriptHashes: new Map(),
     inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible, carriedItem, pointerX, pointerY }
     resourceFileIndex: null, // Map<filenameLower, "asset:assetId"> — cache Resources per spawn_object
     resourceFileIndexKey: null
@@ -738,6 +740,50 @@
     });
   }
 
+  /** Progetti legacy: script in scripts['Hotspot:id'] → rooms[].hotspots[].scripts.onClick */
+  function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
+    if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
+    for (const [key, content] of Object.entries(projectObj.scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const legacyCode = String(content || '').trim();
+      if (!legacyCode) continue;
+      for (const room of projectObj.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (String(h.id) !== hotspotId) continue;
+          if (!h.scripts) h.scripts = {};
+          if (!h.scripts.onClick) h.scripts.onClick = { code: '', enabled: false };
+          const embedded = String(h.scripts.onClick.code || '').trim();
+          if (!embedded) {
+            h.scripts.onClick.code = legacyCode;
+            h.scripts.onClick.enabled = true;
+          }
+        }
+      }
+    }
+  }
+
+  function resolveHotspotOnClickScript(hotspotId, hotspot) {
+    let code = '';
+    if (hotspot && hotspot.scripts && hotspot.scripts.onClick) {
+      code = String(hotspot.scripts.onClick.code || '');
+    }
+    if (!code.trim()) {
+      const legacyKey = `Hotspot:${hotspotId}`;
+      if (gameState.scripts && gameState.scripts[legacyKey]) {
+        code = String(gameState.scripts[legacyKey]);
+        log(`[Runtime] Hotspot ${hotspotId}: codice da script legacy ${legacyKey}`, 'info');
+      }
+    }
+    const hasCode = code.trim().length > 0;
+    return { code, hasCode };
+  }
+
+  function isUseWithHandlerSuccess(outcome) {
+    return !!(outcome && outcome.found && outcome.result === true);
+  }
+
   // ============================================
   // INIZIALIZZAZIONE RUNTIME
   // ============================================
@@ -753,6 +799,8 @@
       if (projectData.format !== 'amianto-game') {
         throw new Error('Unsupported project format. Expected: amianto-game');
       }
+
+      mergeLegacyHotspotScriptsIntoRooms(projectData);
 
       // Se siamo in iframe, modalità playtest (sandboxed)
       if (isInIframe) {
@@ -804,6 +852,7 @@
       // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati quando viene caricato un nuovo progetto
       // Questo garantisce che gli script vengano ricompilati con il nuovo contenuto
       gameState.compiledScripts.clear();
+      gameState.compiledScriptHashes.clear();
       invalidateResourceFileIndex();
       resetInputLock();
       log('[Runtime] Cache script compilati resettata', 'info');
@@ -2294,16 +2343,45 @@
     renderInventoryCarriedItem(ctx);
   }
 
+  /**
+   * Id usato negli script use-with (nome item, come in Inventory:nome e negli esempi docs).
+   * I contenuti inventario usano def.id interno; senza normalizzazione usedItemId non combacia.
+   */
+  function resolveUseWithItemId(itemKey) {
+    const def = resolveInventoryItemDef(itemKey);
+    if (def) {
+      const name = String(def.name || '').trim();
+      if (name) return name;
+      if (def.id) return String(def.id);
+    }
+    return String(itemKey || '').trim();
+  }
+
+  function isUseWithMode(usedItemId) {
+    return usedItemId !== undefined && usedItemId !== null && String(usedItemId).trim() !== '';
+  }
+
   function resolveInventoryItemScriptName(itemKey) {
     const def = resolveInventoryItemDef(itemKey);
     const invScripts = gameState.attachments.inventoryScripts || {};
     if (def) {
       if (def.name && invScripts[def.name]) return invScripts[def.name];
       if (def.id && invScripts[def.id]) return invScripts[def.id];
-      if (def.scriptName && gameState.scripts[def.scriptName]) return def.scriptName;
+      const scriptName = String(def.scriptName || '').trim();
+      if (scriptName && gameState.scripts[scriptName]) return scriptName;
+      if (def.name) {
+        const byName = `Inventory:${def.name}`;
+        if (gameState.scripts[byName]) return byName;
+      }
+      if (def.id) {
+        const byId = `Inventory:${def.id}`;
+        if (gameState.scripts[byId]) return byId;
+      }
     }
     const key = String(itemKey || '').trim();
     if (key && invScripts[key]) return invScripts[key];
+    const legacyKey = `Inventory:${key}`;
+    if (legacyKey && gameState.scripts[legacyKey]) return legacyKey;
     return null;
   }
 
@@ -2345,7 +2423,7 @@
 
   async function executeCharacterClickScripts(characterId, x, y, usedItemId) {
     const characterScripts = gameState.attachments.characterScripts || {};
-    const useWithMode = usedItemId !== undefined && usedItemId !== null;
+    const useWithMode = isUseWithMode(usedItemId);
     const args = useWithMode
       ? [characterId, x, y, usedItemId]
       : [characterId, x, y];
@@ -2361,7 +2439,7 @@
             args,
             scriptName
           );
-          handled = outcome.found && outcome.result === true;
+          handled = isUseWithHandlerSuccess(outcome);
         } else {
           await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', args, scriptName);
         }
@@ -2398,17 +2476,18 @@
   }
 
   async function executeTargetUseWithScript(itemKey, targetType, targetId, x, y) {
+    const usedItemId = resolveUseWithItemId(itemKey);
     if (targetType === 'hotspot') {
       if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.hotspots)) return false;
       const hotspot = gameState.currentRoom.hotspots.find(h => String(h.id) === String(targetId));
       if (!hotspot) return false;
-      return await executeHotspotScript(targetId, hotspot, x, y, itemKey);
+      return await executeHotspotScript(targetId, hotspot, x, y, usedItemId);
     }
     if (targetType === 'object') {
-      return await executeObjectClickScripts(targetId, x, y, itemKey);
+      return await executeObjectClickScripts(targetId, x, y, usedItemId);
     }
     if (targetType === 'character') {
-      return await executeCharacterClickScripts(targetId, x, y, itemKey);
+      return await executeCharacterClickScripts(targetId, x, y, usedItemId);
     }
     if (targetType === 'inventory') {
       const targetScriptName = resolveInventoryItemScriptName(targetId);
@@ -2416,10 +2495,10 @@
       const outcome = await tryExecuteScriptHandler(
         gameState.scripts[targetScriptName],
         'on_use_with',
-        ['inventory', itemKey, x, y],
+        ['inventory', usedItemId, x, y],
         targetScriptName
       );
-      return outcome.found && outcome.result === true;
+      return isUseWithHandlerSuccess(outcome);
     }
     return false;
   }
@@ -2431,7 +2510,7 @@
       [targetType, targetId, x, y],
       scriptName
     );
-    if (useWith.found && useWith.result === true) {
+    if (isUseWithHandlerSuccess(useWith)) {
       return true;
     }
 
@@ -2442,17 +2521,21 @@
       [itemKey, targetType, targetId, x, y],
       scriptName
     );
-    return invUseWith.found && invUseWith.result === true;
+    return isUseWithHandlerSuccess(invUseWith);
   }
 
   async function dispatchInventoryUseWith(itemKey, targetType, targetId, x, y) {
-    log(`[Runtime] dispatchInventoryUseWith: "${itemKey}" → ${targetType}:${targetId}`, 'info');
+    const normalizedItemId = resolveUseWithItemId(itemKey);
+    log(
+      `[Runtime] dispatchInventoryUseWith: "${normalizedItemId}" (raw: "${itemKey}") → ${targetType}:${targetId}`,
+      'info'
+    );
     let handled = false;
 
     const itemScriptName = resolveInventoryItemScriptName(itemKey);
     if (itemScriptName && gameState.scripts[itemScriptName]) {
       handled = await tryExecuteItemScriptUseWith(
-        itemKey,
+        normalizedItemId,
         itemScriptName,
         gameState.scripts[itemScriptName],
         targetType,
@@ -2469,11 +2552,28 @@
         const outcome = await tryExecuteScriptHandler(
           gameState.scripts[globalScriptName],
           'on_inventory_use_with',
-          [itemKey, targetType, targetId, x, y],
+          [normalizedItemId, targetType, targetId, x, y],
           globalScriptName
         );
-        if (outcome.found && outcome.result === true) {
+        if (isUseWithHandlerSuccess(outcome)) {
           handled = true;
+        }
+      }
+    }
+
+    if (!handled) {
+      const globalCandidates = ['Global:main', 'main'];
+      for (const gKey of globalCandidates) {
+        if (!gameState.scripts[gKey]) continue;
+        const outcome = await tryExecuteScriptHandler(
+          gameState.scripts[gKey],
+          'on_inventory_use_with',
+          [normalizedItemId, targetType, targetId, x, y],
+          gKey
+        );
+        if (isUseWithHandlerSuccess(outcome)) {
+          handled = true;
+          break;
         }
       }
     }
@@ -2481,7 +2581,7 @@
     if (!handled) {
       for (const handler of eventHandlers.inventory_use_with) {
         try {
-          const result = handler(itemKey, targetType, targetId, x, y);
+          const result = handler(normalizedItemId, targetType, targetId, x, y);
           const resolved = result && typeof result.then === 'function' ? await result : result;
           if (resolved === true) {
             handled = true;
@@ -2797,10 +2897,8 @@
 
       const compileBody = `
         try {
-          (async () => {
-            ${processedScriptContent}
-            ${handlerExtractionBlock}
-          })();
+          ${processedScriptContent}
+          ${handlerExtractionBlock}
         } catch (e) {
           GameAPI.error('Script compile error: ' + (e && e.message ? e.message : String(e)));
         }
@@ -2868,9 +2966,26 @@
    * @param {string} handlerName - Nome dell'handler da recuperare (es: 'on_hotspot_click')
    * @returns {Function|null} Funzione handler o null se not found
    */
+  function getScriptContentHash(scriptContent) {
+    const s = String(scriptContent || '');
+    if (!s) return '0';
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = ((h << 5) - h) + s.charCodeAt(i);
+      h |= 0;
+    }
+    return String(h);
+  }
+
   function getCompiledHandler(scriptName, scriptContent, handlerName) {
-    // Compila lo script se non è già in cache
-    if (!gameState.compiledScripts.has(scriptName)) {
+    const contentHash = getScriptContentHash(scriptContent);
+    const cachedHash = gameState.compiledScriptHashes.get(scriptName);
+    if (cachedHash !== contentHash) {
+      gameState.compiledScripts.delete(scriptName);
+      gameState.compiledScriptHashes.set(scriptName, contentHash);
+      compileScript(scriptName, scriptContent);
+    } else if (!gameState.compiledScripts.has(scriptName)) {
+      gameState.compiledScriptHashes.set(scriptName, contentHash);
       compileScript(scriptName, scriptContent);
     }
     
@@ -3171,7 +3286,7 @@
   }
 
   async function executeObjectClickScripts(objectId, x, y, usedItemId) {
-    const useWithMode = usedItemId !== undefined && usedItemId !== null;
+    const useWithMode = isUseWithMode(usedItemId);
     const args = useWithMode
       ? [objectId, x, y, usedItemId]
       : [objectId, x, y];
@@ -3187,7 +3302,7 @@
             args,
             scriptName
           );
-          return outcome.found && outcome.result === true;
+          return isUseWithHandlerSuccess(outcome);
         }
         await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', args, scriptName);
         return;
@@ -3794,88 +3909,44 @@
    */
   async function executeHotspotScript(hotspotId, hotspot, x, y, usedItemId) {
     log(`[Runtime] [DEBUG] executeHotspotScript: INIZIO esecuzione script hotspot ${hotspotId}`, 'info');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot name: ${hotspot.name || 'unnamed'}`, 'info');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Coordinate click: (${Math.round(x)}, ${Math.round(y)})`, 'info');
-    const useWithMode = usedItemId !== undefined && usedItemId !== null;
-    
-    // Verifica che l'hotspot abbia la struttura scripts.onClick
-    if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ Hotspot ${hotspotId} non ha struttura scripts.onClick`, 'warning');
-      log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot structure: ${JSON.stringify({ id: hotspot?.id, hasScripts: !!hotspot?.scripts, hasOnClick: !!hotspot?.scripts?.onClick })}`, 'info');
-      return useWithMode ? false : undefined;
-    }
-    
-    const onClickScript = hotspot.scripts.onClick;
-    
-    // ⚠️ LOG DI SICUREZZA: Logga stato enabled, hotspot id e script info prima dell'esecuzione
-    const enabledStatus = typeof onClickScript.enabled === 'boolean' ? onClickScript.enabled : 'undefined';
-    const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
-    log(`[Runtime] [DEBUG] executeHotspotScript: [SICUREZZA] Hotspot ID: ${hotspotId}, Enabled: ${enabledStatus}, Has Code: ${hasCode}, Code Length: ${onClickScript.code ? onClickScript.code.length : 0}`, 'info');
-    
-    // AUTOMATIZZAZIONE: Se c'è codice, lo script deve essere eseguito (ignorando enabled=false)
-    // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
-    if (!hasCode) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: Script onClick dell'hotspot ${hotspotId} è vuoto o non valido`, 'info');
-      return useWithMode ? false : undefined;
-    }
-    
-    // Se c'è codice, esegui sempre (ignorando enabled=false)
-    // Questo permette agli hotspot di funzionare automaticamente quando hanno codice
-    if (onClickScript.enabled === false) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: [AUTO-ENABLE] Hotspot ${hotspotId} ha codice ma enabled=false, esecuzione forzata per presenza codice`, 'warning');
-    }
-    
-    log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script valido e abilitato per hotspot ${hotspotId}`, 'success');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Script code length: ${onClickScript.code.length} caratteri`, 'info');
-    
-    // ⚠️ CONTROLLO ANTI-DOPPIA ESECUZIONE: Traccia esecuzioni in corso
-    if (!window._hotspotScriptExecutions) {
-      window._hotspotScriptExecutions = new Set();
-    }
-    
-    const executionKey = `${hotspotId}_${Date.now()}`;
-    if (window._hotspotScriptExecutions.has(hotspotId)) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ ERRORE: Script per hotspot ${hotspotId} già in esecuzione!`, 'error');
-      log(`[Runtime] [DEBUG] executeHotspotScript: Questo NON dovrebbe mai accadere con la nuova struttura`, 'error');
-      return useWithMode ? false : undefined;
-    }
-    
-    window._hotspotScriptExecutions.add(hotspotId);
-    const args = useWithMode
-      ? [hotspotId, x, y, usedItemId]
-      : [hotspotId, x, y];
-    
-    try {
-      // Log di conferma esecuzione come richiesto
-      const hotspotName = hotspot.name || hotspotId;
-      log(`[Runtime] Esecuzione script per hotspot: ${hotspotName}`, 'info');
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Esecuzione script onClick per hotspot ${hotspotId} (${hotspot.name})`, 'success');
-      
-      // Esegui SOLO lo script dell'hotspot cliccato
-      // Usa uno scriptName univoco basato sull'hotspotId per la cache
-      const scriptName = `hotspot_${hotspotId}_onClick`;
-      log(`[Runtime] [DEBUG] executeHotspotScript: Script name: ${scriptName}`, 'info');
-      
-      if (useWithMode) {
-        const outcome = await tryExecuteScriptHandler(onClickScript.code, 'on_hotspot_click', args, scriptName);
-        log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato per hotspot ${hotspotId}`, 'success');
-        return outcome.found && outcome.result === true;
-      }
+    const useWithMode = isUseWithMode(usedItemId);
 
-      await executeScriptHandler(onClickScript.code, 'on_hotspot_click', args, scriptName);
-      
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato con successo per hotspot ${hotspotId}`, 'success');
-    } catch (error) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Error executing script per hotspot ${hotspotId}: ${error.message}`, 'error');
-      console.error('[Runtime] executeHotspotScript error:', error);
+    const { code, hasCode } = resolveHotspotOnClickScript(hotspotId, hotspot);
+    if (!hasCode) {
+      log(`[Runtime] executeHotspotScript: nessun codice per hotspot ${hotspotId}`, 'info');
+      return useWithMode ? false : undefined;
+    }
+
+    const onClick = hotspot && hotspot.scripts && hotspot.scripts.onClick;
+    if (!useWithMode && onClick && onClick.enabled === false) {
+      log(`[Runtime] executeHotspotScript: hotspot ${hotspotId} disabilitato (click normale)`, 'info');
+      return undefined;
+    }
+
+    const normalizedUsedItemId = useWithMode ? resolveUseWithItemId(usedItemId) : usedItemId;
+    const args = useWithMode
+      ? [hotspotId, x, y, normalizedUsedItemId]
+      : [hotspotId, x, y];
+    const scriptName = `hotspot_${hotspotId}_onClick`;
+
+    try {
       if (useWithMode) {
-        return false;
+        const outcome = await tryExecuteScriptHandler(code, 'on_hotspot_click', args, scriptName);
+        if (!outcome.found) {
+          log(`[Runtime] executeHotspotScript: on_hotspot_click non trovato per ${hotspotId}`, 'warning');
+          return false;
+        }
+        if (!isUseWithHandlerSuccess(outcome)) {
+          log(`[Runtime] executeHotspotScript: combinazione non gestita su ${hotspotId} (item: ${normalizedUsedItemId})`, 'info');
+          return false;
+        }
+        return true;
       }
-    } finally {
-      // Rimuovi dal set dopo un breve delay per permettere eventuali callback asincroni
-      setTimeout(() => {
-        window._hotspotScriptExecutions.delete(hotspotId);
-      }, 100);
+      await executeScriptHandler(code, 'on_hotspot_click', args, scriptName);
+    } catch (error) {
+      log(`[Runtime] executeHotspotScript: errore ${hotspotId}: ${error.message}`, 'error');
+      console.error('[Runtime] executeHotspotScript error:', error);
+      if (useWithMode) return false;
     }
   }
 
@@ -4293,8 +4364,7 @@
     get_carried_item: function() {
       const inv = gameState.inventory;
       if (!inv || !inv.carriedItem) return null;
-      const def = inv.carriedItem.def;
-      return (def && def.id) || inv.carriedItem.key || null;
+      return resolveUseWithItemId(inv.carriedItem.key) || null;
     },
 
     clear_carried_item: function() {
@@ -6118,6 +6188,7 @@
         
         // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati durante il reset
         gameState.compiledScripts.clear();
+        gameState.compiledScriptHashes.clear();
         invalidateResourceFileIndex();
         
         // Reset AssetRegistry

@@ -4001,7 +4001,7 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.itemId = item.id;
       const info = document.createElement('div');
-      const scriptLabel = getInventoryItemScriptKey(item) || '(no script)';
+      const scriptLabel = getDisplayScriptLabel('Inventory', item.name, item);
       const hasImg = item.image ? 'with image' : 'no image';
       info.innerHTML = '<strong>' + item.name + '</strong><br><small class="text-info">Script: ' + scriptLabel + '</small><br><small class="text-muted">' + hasImg + '</small>';
       const controls = document.createElement('div');
@@ -4683,9 +4683,7 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.characterName = characterName;
       const info = document.createElement('div');
-      const scriptLabel = hasEditorScriptLink('Character', characterName)
-        ? getEditorScriptKey('Character', characterName)
-        : '(no script)';
+      const scriptLabel = getDisplayScriptLabel('Character', characterName);
       info.innerHTML = '<strong>' + characterName + '</strong><br><small class="text-muted">' + totalFrames + ' frame' + (totalFrames !== 1 ? 's' : '') + '</small><br><small class="character-script-name text-info">Script: ' + scriptLabel + '</small>';
       const controls = document.createElement('div');
       const selectBtn = document.createElement('button');
@@ -4739,7 +4737,7 @@ window.selectRoom = function(roomId) {
             nameElement.insertAdjacentElement('afterend', scriptNameDisplay);
           }
         }
-        scriptNameDisplay.textContent = `Script name: "${characterName}"`;
+        scriptNameDisplay.textContent = 'Script: ' + getDisplayScriptLabel('Character', characterName);
         scriptNameDisplay.style.display = 'block';
       }
     });
@@ -6369,6 +6367,22 @@ window.selectRoom = function(roomId) {
     return migrateLegacyScriptKey(normalizeScriptKey(scope, target));
   }
 
+  /** Nome script da mostrare in liste UI (sempre visibile, mai "(no script)"). */
+  function getDisplayScriptLabel(scope, target, itemOrName) {
+    if (scope === 'Inventory') {
+      const name = typeof itemOrName === 'string' ? itemOrName : (itemOrName && itemOrName.name);
+      if (!name) return '';
+      const item = typeof itemOrName === 'object' && itemOrName
+        ? itemOrName
+        : inventoryItems.find(i => i.name === name);
+      const userKey = item && String(item.scriptName || '').trim();
+      if (userKey) return migrateLegacyScriptKey(userKey);
+      if (inventoryScripts.has(name)) return migrateLegacyScriptKey(inventoryScripts.get(name));
+      return getEditorScriptKey('Inventory', name);
+    }
+    return migrateLegacyScriptKey(resolveScriptKey(scope, target));
+  }
+
   function editorScriptExists(scriptKey) {
     const key = migrateLegacyScriptKey(String(scriptKey || ''));
     if (!key) return false;
@@ -7272,18 +7286,8 @@ window.selectRoom = function(roomId) {
       
       if (currentKey.startsWith('Hotspot:')) {
         const hotspotId = currentKey.slice('Hotspot:'.length);
-        rooms.forEach((room, roomId) => {
-          if (room.hotspots && Array.isArray(room.hotspots)) {
-            const hotspot = room.hotspots.find(h => h.id === hotspotId);
-            if (hotspot) {
-              if (!hotspot.scripts) hotspot.scripts = {};
-              hotspot.scripts.onClick = {
-                code: String(currentContent),
-                enabled: true
-              };
-            }
-          }
-        });
+        syncHotspotScriptToAllRooms(hotspotId, currentContent, currentKey);
+        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
       }
       
       // Se è uno script oggetto, mantieni l'attachment in objectScripts
@@ -7448,7 +7452,9 @@ window.selectRoom = function(roomId) {
       } else if (handlerId === 'on_character_click') {
         skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
       } else if (handlerId === 'on_hotspot_click') {
-        skeleton += `function on_hotspot_click(hotspotId){\n  // your code here\n}\n`;
+        skeleton += `function on_hotspot_click(hotspotId, x, y, usedItemId){\n`;
+        skeleton += `  // usedItemId valorizzato solo con combinazione inventario; return true se gestita\n`;
+        skeleton += `  return false;\n}\n`;
       } else if (handlerId === 'on_use_with') {
         skeleton += `function on_use_with(targetType, targetId, x, y){\n`;
         skeleton += `  // Handler per script item inventario (Scope Inventory)\n`;
@@ -7482,40 +7488,8 @@ window.selectRoom = function(roomId) {
       characterScripts.set(target, key);
     } else if (scope === 'Hotspot') {
       const hotspotId = key.slice('Hotspot:'.length);
-      // Salva direttamente nell'hotspot
-      let hotspotFound = false;
-      rooms.forEach((room, roomId) => {
-        if (room.hotspots && Array.isArray(room.hotspots)) {
-          const hotspot = room.hotspots.find(h => h.id === hotspotId);
-          if (hotspot) {
-            if (!hotspot.scripts) hotspot.scripts = {};
-            hotspot.scripts.onClick = {
-              code: String(content),
-              enabled: true
-            };
-            // Aggiungi metadata per tracciare lo script
-            if (!hotspot._meta) hotspot._meta = {};
-            hotspot._meta.linkedScriptName = key;
-            hotspotFound = true;
-          }
-        }
-      });
-      // Aggiorna anche l'hotspot globale se esiste
-      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
-        const globalHotspot = hotspots.find(h => h.id === hotspotId);
-        if (globalHotspot) {
-          if (!globalHotspot.scripts) globalHotspot.scripts = {};
-          globalHotspot.scripts.onClick = {
-            code: String(content),
-            enabled: true
-          };
-          if (!globalHotspot._meta) globalHotspot._meta = {};
-          globalHotspot._meta.linkedScriptName = key;
-        }
-      }
-      if (!hotspotFound) {
-        console.warn(`[createScriptFromDropdown] Hotspot ${hotspotId} non trovato`);
-      }
+      syncHotspotScriptToAllRooms(hotspotId, content, key);
+      if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
     } else if (scope === 'GUI') {
       if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
     } else if (scope === 'Inventory') {
@@ -7830,34 +7804,7 @@ window.selectRoom = function(roomId) {
     // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
     if (key.startsWith('Hotspot:')) {
       const hotspotId = key.replace('Hotspot:', '');
-      // Trova l'hotspot in tutte le stanze
-      let hotspotFound = false;
-      rooms.forEach((room, roomId) => {
-        if (room.hotspots && Array.isArray(room.hotspots)) {
-          const hotspot = room.hotspots.find(h => h.id === hotspotId);
-          if (hotspot) {
-            if (!hotspot.scripts) hotspot.scripts = {};
-            hotspot.scripts.onClick = {
-              code: String(content),
-              enabled: true
-            };
-            hotspotFound = true;
-            
-            // Aggiorna anche l'hotspot globale se esiste
-            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspotId) : null;
-            if (globalHotspot) {
-              if (!globalHotspot.scripts) globalHotspot.scripts = {};
-              globalHotspot.scripts.onClick = {
-                code: String(content),
-                enabled: true
-              };
-            }
-          }
-        }
-      });
-      if (!hotspotFound) {
-        console.warn(`[saveScript] Hotspot ${hotspotId} non trovato in nessuna stanza`);
-      }
+      syncHotspotScriptToAllRooms(hotspotId, content, key);
     }
     
     // ⚠️ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se è uno script oggetto
@@ -7903,42 +7850,31 @@ window.selectRoom = function(roomId) {
     // Salva il nuovo contenuto (anche per hotspot, per mantenere sincronizzazione)
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
-    
-    // Sincronizza solo hotspot collegati esplicitamente a questo script (mai per confronto sul codice)
-    if (content.trim() !== '') {
-      const hotspotIdFromKey = key.startsWith('Hotspot:') ? key.slice('Hotspot:'.length) : null;
-      const syncedHotspotIds = new Set();
 
+    if (key.startsWith('Hotspot:')) {
+      syncHotspotScriptToAllRooms(key.slice('Hotspot:'.length), content, key);
+    } else if (content.trim() !== '') {
+      const syncedHotspotIds = new Set();
       const syncHotspotIfLinked = (hotspot, source) => {
         if (!hotspot || syncedHotspotIds.has(hotspot.id)) return false;
         const linkedRaw = hotspot._meta && hotspot._meta.linkedScriptName;
         const linked = linkedRaw ? migrateLegacyScriptKey(String(linkedRaw)) : '';
-        const isDirect = hotspotIdFromKey && hotspot.id === hotspotIdFromKey;
-        const isLinked = linked === key;
-        if (!isDirect && !isLinked) return false;
-
-        if (!hotspot.scripts) hotspot.scripts = {};
-        hotspot.scripts.onClick = { code: String(content), enabled: true };
-        if (!hotspot._meta) hotspot._meta = {};
-        hotspot._meta.linkedScriptName = key;
+        if (linked !== key) return false;
+        syncHotspotScriptToAllRooms(hotspot.id, content, key);
         syncedHotspotIds.add(hotspot.id);
         console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} ← "${key}" [${source}]`);
         return true;
       };
-
       rooms.forEach((room, roomId) => {
         if (!room.hotspots) return;
-        room.hotspots.forEach(hotspot => {
-          if (syncHotspotIfLinked(hotspot, `room:${roomId}`)) {
-            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspot.id) : null;
-            if (globalHotspot) syncHotspotIfLinked(globalHotspot, 'global');
-          }
-        });
+        room.hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, `room:${roomId}`));
       });
       if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
         hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, 'global-only'));
       }
     }
+
+    if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
     
     showNotification(`Script "${key}" saved!`, 'success');
 
@@ -7948,6 +7884,7 @@ window.selectRoom = function(roomId) {
     
     // Aggiorna sempre l'albero degli script per riflettere le modifiche
     rebuildScriptsTree();
+    scheduleProjectSizeIndicatorRefresh(250);
   };
 
   window.runScript = function() {
@@ -8631,38 +8568,11 @@ window.selectRoom = function(roomId) {
       hotspot.scripts = {};
     }
     
-    // Salva script direttamente nell'hotspot
-    hotspot.scripts.onClick = {
-      code: String(scriptContent),
-      enabled: true
-    };
-    
-    // Aggiorna anche nella room
-    const r = rooms.get(currentRoomId);
-    if (r && r.hotspots) {
-      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
-      if (roomHotspot) {
-        if (!roomHotspot.scripts) roomHotspot.scripts = {};
-        roomHotspot.scripts.onClick = {
-          code: String(scriptContent),
-          enabled: true
-        };
-      }
-    }
-    
-    // ⚠️ SINCRONIZZAZIONE: Salva anche il nome dello script in un campo meta per tracciamento futuro
-    // Questo ci permette di sapere quale script è collegato all'hotspot per sincronizzazioni future
-    // (nota: questo campo non viene serializzato, è solo per uso interno)
-    if (!hotspot._meta) hotspot._meta = {};
-    hotspot._meta.linkedScriptName = scriptName;
-    if (r && r.hotspots) {
-      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
-      if (roomHotspot) {
-        if (!roomHotspot._meta) roomHotspot._meta = {};
-        roomHotspot._meta.linkedScriptName = scriptName;
-      }
-    }
-    
+    syncHotspotScriptToAllRooms(hotspotId, scriptContent, scriptName);
+    jsScripts.set(scriptName, String(scriptContent));
+    try { localStorage.setItem(`script-${scriptName}`, String(scriptContent)); } catch (_) {}
+    if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
     
     // Aggiorna l'albero degli script per mostrare il nuovo script associato
@@ -9656,79 +9566,52 @@ window.selectRoom = function(roomId) {
   };
 
   window.startPlayTest = async function() {
-    if (playTestState.isRunning) {
-      // Se già in esecuzione, porta la finestra in primo piano
-      if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
-        playTestState.runtimeWindow.focus();
-        return;
-      } else {
-        // Finestra chiusa, riavvia
-        playTestState.isRunning = false;
-      }
+    const runtimeWasAlreadyOpen = playTestState.isRunning
+      && playTestState.runtimeWindow
+      && !playTestState.runtimeWindow.closed;
+
+    if (playTestState.isRunning && playTestState.runtimeWindow && playTestState.runtimeWindow.closed) {
+      playTestState.isRunning = false;
+      playTestState.runtimeWindow = null;
     }
 
-    // Verifica se c'è un progetto attivo e se è stato caricato da Firebase
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
     const currentUser = AppState.user;
-    
     let projectObj = null;
     let jsonString = null;
 
-    // Se c'è un progetto attivo e un utente autenticato, prova a ricaricarlo da Firebase
-    if (activeProjectName && currentUser && currentUser.uid && window.firebaseDB) {
+    // Playtest usa sempre lo stato LIVE dell'editor (non Firebase: snapshot obsoleto senza script in stanze)
+    if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
       try {
-        addDebugMessage('Loading project from Firebase for playtest...', 'info');
-        
-        // Cerca il progetto nella lista progetti per ottenere l'ID
-        const projects = AppState.projects || [];
-        const projectInfo = projects.find(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : p.name || '';
-          return name === activeProjectName;
-        });
-
-        if (projectInfo && projectInfo.id) {
-          // Carica il progetto completo da Firebase
-          const firebaseProject = await loadProjectFromFirestore(currentUser.uid, projectInfo.id);
-          
-          if (firebaseProject) {
-            projectObj = firebaseProject;
-            
-            // Aggiungi metadata per il runtime (userId, projectId per risolvere assetId)
-            if (!projectObj._meta) {
-              projectObj._meta = {};
-            }
-            projectObj._meta.userId = currentUser.uid;
-            projectObj._meta.projectId = projectInfo.id;
-            
-            jsonString = JSON.stringify(projectObj, null, 2);
-            addDebugMessage('Project loaded from Firebase for playtest', 'success');
-          }
-        }
-      } catch (error) {
-        console.error('[PlayTest] Errore caricamento da Firebase:', error);
-        addDebugMessage('Firebase load error, using current project', 'warning');
+        await window.amiantoResources.refresh();
+      } catch (e) {
+        console.warn('[PlayTest] Resources refresh before serialize:', e);
       }
     }
 
-    // Fallback: serializza il progetto corrente
-    if (!projectObj || !jsonString) {
-      if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
-        try {
-          await window.amiantoResources.refresh();
-        } catch (e) {
-          console.warn('[PlayTest] Resources refresh before serialize:', e);
-        }
+    projectObj = buildPlaytestProjectPayload();
+    if (currentUser && currentUser.uid) {
+      if (!projectObj._meta) projectObj._meta = {};
+      projectObj._meta.userId = currentUser.uid;
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!projectObj._meta.projectId && activeProjectName) {
+        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
       }
-      jsonString = window.serializeProjectToJsonString(true);
-      projectObj = window.serializeProject();
-      addDebugMessage('Using serialized current project', 'info');
-    } else if (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function') {
+    }
+    jsonString = JSON.stringify(projectObj, null, 2);
+    addDebugMessage('Playtest: progetto serializzato dallo stato corrente in editor', 'info');
+
+    if (runtimeWasAlreadyOpen) {
       try {
-        await window.amiantoResources.refresh();
-        projectObj.resourcesCatalog = window.amiantoResources.getCatalog();
-        jsonString = JSON.stringify(projectObj, null, 2);
-      } catch (e) {
-        console.warn('[PlayTest] Resources catalog merge:', e);
+        localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+        playTestState.runtimeWindow.postMessage({ type: 'RELOAD_PLAYTEST_PROJECT' }, '*');
+        playTestState.runtimeWindow.focus();
+        addDebugMessage('Playtest: progetto ricaricato nella finestra runtime (script ricompilati)', 'success');
+        updateGameStatus('Test running...');
+        return;
+      } catch (reloadErr) {
+        console.warn('[PlayTest] Ricarica finestra esistente fallita, apro nuova finestra:', reloadErr);
+        playTestState.isRunning = false;
+        playTestState.runtimeWindow = null;
       }
     }
 
@@ -12040,6 +11923,165 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
 
+  /** Raccoglie codice hotspot embedded da un oggetto progetto serializzato. */
+  function collectEmbeddedHotspotScriptCodesFromProject(projectObj) {
+    const embeddedById = new Map();
+    if (!projectObj || !Array.isArray(projectObj.rooms)) return embeddedById;
+    for (const room of projectObj.rooms) {
+      if (!Array.isArray(room.hotspots)) continue;
+      for (const h of room.hotspots) {
+        const code = h && h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+        if (code && String(code).trim()) {
+          embeddedById.set(String(h.id), String(code).trim());
+        }
+      }
+    }
+    return embeddedById;
+  }
+
+  /** Raccoglie codice hotspot già embedded nelle stanze live (chiave = hotspot id). */
+  function collectEmbeddedHotspotScriptCodes() {
+    return collectEmbeddedHotspotScriptCodesFromProject({ rooms: Array.from(rooms.values()) });
+  }
+
+  /**
+   * Sincronizza scripts.onClick su tutte le stanze (e hotspot globali) con lo stesso id.
+   */
+  function syncHotspotScriptToAllRooms(hotspotId, content, linkedScriptName) {
+    const id = String(hotspotId || '');
+    if (!id) return;
+    const code = String(content || '');
+    const onClick = { code, enabled: code.trim().length > 0 };
+    const linked = linkedScriptName ? migrateLegacyScriptKey(String(linkedScriptName)) : null;
+
+    const applyTo = (hotspot) => {
+      if (!hotspot || String(hotspot.id) !== id) return;
+      if (!hotspot.scripts) hotspot.scripts = {};
+      hotspot.scripts.onClick = { code: onClick.code, enabled: onClick.enabled };
+      if (linked) {
+        if (!hotspot._meta) hotspot._meta = {};
+        hotspot._meta.linkedScriptName = linked;
+      }
+    };
+
+    try {
+      rooms.forEach((room) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          room.hotspots.forEach(applyTo);
+        }
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        hotspots.forEach(applyTo);
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Prima di serializzare/playtest: copia jsScripts negli hotspot embedded nelle stanze.
+   * Senza questo passaggio il runtime vede rooms[].hotspots[].scripts.onClick vuoti
+   * finché non si fa Save progetto (che prima era l'unico momento di sync).
+   */
+  function syncEditorScriptsToRoomsBeforeSerialize() {
+    try {
+      if (jsScripts && jsScripts.forEach) {
+        jsScripts.forEach((content, key) => {
+          if (!key || !String(content || '').trim()) return;
+          const canonical = migrateLegacyScriptKey(String(key));
+          if (canonical.startsWith('Hotspot:')) {
+            syncHotspotScriptToAllRooms(canonical.slice('Hotspot:'.length), content, canonical);
+          }
+        });
+      }
+      rooms.forEach((room) => {
+        if (!room.hotspots || !Array.isArray(room.hotspots)) return;
+        room.hotspots.forEach((h) => {
+          const code = h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+          if (!code || !String(code).trim()) return;
+          const linked = h._meta && h._meta.linkedScriptName;
+          const scriptKey = linked
+            ? migrateLegacyScriptKey(String(linked))
+            : `Hotspot:${h.id}`;
+          const prev = jsScripts.has(scriptKey) ? String(jsScripts.get(scriptKey)) : '';
+          if (prev !== String(code)) {
+            jsScripts.set(scriptKey, String(code));
+            try { localStorage.setItem(`script-${scriptKey}`, String(code)); } catch (_) {}
+          }
+        });
+      });
+    } catch (e) {
+      console.warn('[Serialize] syncEditorScriptsToRoomsBeforeSerialize:', e);
+    }
+  }
+
+  /** Allinea inventoryScripts dagli script Inventory:* in jsScripts (non modifica item.scriptName). */
+  function syncInventoryScriptAttachments() {
+    try {
+      if (!jsScripts || !jsScripts.forEach) return;
+      jsScripts.forEach((content, key) => {
+        const k = migrateLegacyScriptKey(String(key));
+        if (!k.startsWith('Inventory:') || !String(content || '').trim()) return;
+        const itemName = k.slice('Inventory:'.length);
+        const item = inventoryItems.find(i => i.name === itemName || i.id === itemName);
+        if (!item) return;
+        const userKey = String(item.scriptName || '').trim();
+        if (userKey && editorScriptExists(migrateLegacyScriptKey(userKey))) return;
+        attachInventoryItemScript(item.name, k);
+      });
+    } catch (e) {
+      console.warn('[Serialize] syncInventoryScriptAttachments:', e);
+    }
+  }
+
+  /**
+   * Dopo serializeProject, reinserisce script Hotspot/Inventory in scripts{} per il runtime
+   * (serializeScripts li rimuove se già embedded) e riallinea rooms via mergeLegacy.
+   */
+  function reinjectHotspotScriptsForPlaytest(projectObj) {
+    if (!projectObj.scripts || typeof projectObj.scripts !== 'object') {
+      projectObj.scripts = {};
+    }
+    if (jsScripts && jsScripts.forEach) {
+      jsScripts.forEach((content, key) => {
+        const k = migrateLegacyScriptKey(String(key));
+        if (!String(content || '').trim()) return;
+        if (k.startsWith('Hotspot:') || k.startsWith('Inventory:')) {
+          projectObj.scripts[k] = String(content);
+        }
+      });
+    }
+    mergeLegacyHotspotScriptsIntoRooms(projectObj);
+  }
+
+  /** Payload progetto pronto per runtime / playtest (stato live editor, non snapshot Firebase obsoleto). */
+  function buildPlaytestProjectPayload() {
+    saveCurrentScriptIfNeeded();
+    syncEditorScriptsToRoomsBeforeSerialize();
+    syncInventoryScriptAttachments();
+    const projectObj = window.serializeProject();
+    reinjectHotspotScriptsForPlaytest(projectObj);
+    projectObj.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
+    return projectObj;
+  }
+
+  /**
+   * Gli script hotspot vivono in rooms[].hotspots[].scripts.onClick.
+   * Rimuove Hotspot:* duplicati da scripts{} quando il codice è già embedded.
+   */
+  function pruneDuplicateHotspotScriptsFromScriptsObject(scriptsObj, projectObjForEmbedded) {
+    if (!scriptsObj || typeof scriptsObj !== 'object') return scriptsObj;
+    const embeddedById = projectObjForEmbedded
+      ? collectEmbeddedHotspotScriptCodesFromProject(projectObjForEmbedded)
+      : collectEmbeddedHotspotScriptCodes();
+    for (const key of Object.keys(scriptsObj)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      if (embeddedById.has(hotspotId)) {
+        delete scriptsObj[key];
+      }
+    }
+    return scriptsObj;
+  }
+
   function serializeScripts() {
     const scriptsObj = {};
     try {
@@ -12047,17 +12089,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         jsScripts.forEach((content, name) => { if (name) scriptsObj[name] = String(content || ''); });
       }
     } catch (_) {}
-    // Include any saved in localStorage (prefix: script-)
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('script-')) {
-          const name = key.slice('script-'.length);
-          if (!(name in scriptsObj)) scriptsObj[name] = String(localStorage.getItem(key) || '');
-        }
-      }
-    } catch (_) {}
-    return scriptsObj;
+    return pruneDuplicateHotspotScriptsFromScriptsObject(scriptsObj);
   }
 
   function mapToObject(mapInstance) {
@@ -12151,6 +12183,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   window.serializeProject = function() {
+    syncEditorScriptsToRoomsBeforeSerialize();
     const projectObj = {
       format: 'amianto-game',
       version: 1,
@@ -12361,14 +12394,46 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return total;
   }
 
+  /** Conta base64 solo nei campi asset (esclude scripts/eventConditions dove il testo può contenere "data:"). */
+  function measurePendingAssetDataUrlBytes(projectObj) {
+    if (!projectObj || typeof projectObj !== 'object') return 0;
+    let total = 0;
+    const assetRoots = [
+      projectObj.rooms,
+      projectObj.guis,
+      projectObj.characters,
+      projectObj.inventory,
+      projectObj.cursors,
+      projectObj.resourcesCatalog
+    ];
+    for (const root of assetRoots) {
+      if (root) total += measureEmbeddedDataUrlBytes(root);
+    }
+    return total;
+  }
+
+  function countPendingAssetDataUrls(projectObj) {
+    if (!projectObj || typeof projectObj !== 'object') return 0;
+    let count = 0;
+    const assetRoots = [
+      projectObj.rooms,
+      projectObj.guis,
+      projectObj.characters,
+      projectObj.inventory,
+      projectObj.cursors,
+      projectObj.resourcesCatalog
+    ];
+    for (const root of assetRoots) {
+      if (root) count += countEmbeddedDataUrls(root);
+    }
+    return count;
+  }
+
   const FIRESTORE_ASSET_REF_PLACEHOLDER = 'asset:estimate00000000000000';
 
   /** Stima la dimensione del payload Firestore (come dopo upload asset, senza base64). */
   function estimateFirestorePayloadBytes(projectObj) {
-    const payload = prepareProjectPayloadForFirestore(projectObj);
-    let json = JSON.stringify(payload);
-    json = json.replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/gi, FIRESTORE_ASSET_REF_PLACEHOLDER);
-    return new Blob([json]).size;
+    return measureFirestorePayloadBytes(projectObj);
   }
 
   function formatProjectSizeLabel(bytes) {
@@ -12409,18 +12474,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   function dedupeHotspotScriptsForFirestore(projectObj) {
     const clone = JSON.parse(JSON.stringify(projectObj));
     if (!clone.scripts || typeof clone.scripts !== 'object') return clone;
-    const embeddedById = collectHotspotOnClickCodesById(clone);
-    const scripts = { ...clone.scripts };
-    for (const key of Object.keys(scripts)) {
-      if (!key.startsWith('Hotspot:')) continue;
-      const hotspotId = key.slice('Hotspot:'.length);
-      const embedded = embeddedById.get(hotspotId);
-      const legacy = String(scripts[key] || '').trim();
-      if (embedded && legacy && embedded === legacy) {
-        delete scripts[key];
-      }
-    }
-    clone.scripts = scripts;
+    clone.scripts = pruneDuplicateHotspotScriptsFromScriptsObject({ ...clone.scripts }, clone);
     return clone;
   }
 
@@ -12429,6 +12483,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     payload.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
     return payload;
   }
+
+  function measureFirestorePayloadBytes(projectObj) {
+    const payload = prepareProjectPayloadForFirestore(projectObj);
+    let json = JSON.stringify(payload);
+    json = json.replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/gi, FIRESTORE_ASSET_REF_PLACEHOLDER);
+    return new Blob([json]).size;
+  }
+
+  window.prepareProjectPayloadForFirestore = prepareProjectPayloadForFirestore;
+  window.measureFirestorePayloadBytes = measureFirestorePayloadBytes;
+  window.markAmiantoProjectDirty = function() {
+    window.__amiantoProjectDirty = true;
+  };
 
   /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
   function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
@@ -12453,6 +12520,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
   }
+  window.mergeLegacyHotspotScriptsIntoRooms = mergeLegacyHotspotScriptsIntoRooms;
 
   // ================================
   // FIRESTORE PERSISTENCE SYSTEM
@@ -12520,7 +12588,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
       const jsonString = JSON.stringify(projectData);
-      const dataSizeBytes = new Blob([jsonString]).size;
+      const dataSizeBytes = measureFirestorePayloadBytes(projectData);
       const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
       const dataURLCount = countEmbeddedDataUrls(projectData);
       console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB`, dataURLCount });
@@ -12582,6 +12650,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         documentExists: documentExists ? 'aggiornato' : 'creato'
       });
       addDebugMessage(`[Firestore] Project saved: ${projectName}`, 'success');
+
+      window.__amiantoLastFirestorePayloadBytes = dataSizeBytes;
+      window.__amiantoProjectDirty = false;
       
       // Aggiorna i counter dopo salvataggio progetto
       if (typeof updateProjectSizeIndicator === 'function') {
@@ -14134,9 +14205,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
     }
 
-    // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
-    // Usa il progetto aggiornato con assetId invece di dataURL
-    const jsonString = JSON.stringify(projectObj, null, 2);
+    // 2. CACHE LOCALE (backup temporaneo) - payload slim come Firestore (no Hotspot:* duplicati)
+    const savePayload = prepareProjectPayloadForFirestore(projectObj);
+    const jsonString = JSON.stringify(savePayload, null, 2);
+    window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(projectObj);
+    window.__amiantoProjectDirty = false;
     autosaveToCache(projectName, jsonString);
 
     // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
@@ -15871,8 +15944,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       addDebugMessage('Created new empty project', 'info');
     }
 
+    mergeLegacyHotspotScriptsIntoRooms(projectObj);
+
     // Applica il progetto caricato
     await applyProjectObject(projectObj);
+
+    try {
+      window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(window.serializeProject());
+      window.__amiantoProjectDirty = false;
+    } catch (_) {}
 
     // IMPORTANTE: Salva il progetto attivo PRIMA di qualsiasi altra operazione
     // Questo assicura che il listener hide.bs.modal possa rilevarlo
@@ -15924,14 +16004,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
 
       const projectObj = window.serializeProject();
-      const firestoreBytes = estimateFirestorePayloadBytes(projectObj);
-      const pendingBytes = measureEmbeddedDataUrlBytes(projectObj);
-      const pendingCount = countEmbeddedDataUrls(projectObj);
+      let firestoreBytes;
+      const isDirty = !!window.__amiantoProjectDirty;
+      if (!isDirty && typeof window.__amiantoLastFirestorePayloadBytes === 'number') {
+        firestoreBytes = window.__amiantoLastFirestorePayloadBytes;
+      } else {
+        firestoreBytes = estimateFirestorePayloadBytes(projectObj);
+      }
+      const pendingBytes = measurePendingAssetDataUrlBytes(projectObj);
+      const pendingCount = countPendingAssetDataUrls(projectObj);
 
       const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
       const percentageUsed = parseFloat(((firestoreBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1));
 
-      const parts = [`Firestore: ${formatProjectSizeLabel(firestoreBytes)} (${percentageUsed}%)`];
+      const dirtySuffix = isDirty ? ' *' : '';
+      const parts = [`Firestore: ${formatProjectSizeLabel(firestoreBytes)} (${percentageUsed}%)${dirtySuffix}`];
       if (pendingBytes > 0) {
         const assetLabel = pendingCount === 1 ? '1 asset' : `${pendingCount} asset`;
         parts.push(`da caricare: ${formatProjectSizeLabel(pendingBytes)} (${assetLabel})`);
@@ -15939,8 +16026,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       sizeText.textContent = parts.join(' · ');
       indicator.title = pendingBytes > 0
-        ? 'Firestore: stima del JSON salvato (senza base64). "Da caricare": immagini/audio ancora in memoria; sparisce dopo Save.'
-        : 'Firestore: dimensione stimata del documento salvato (~1 MB max). Storage: file asset su Supabase.';
+        ? 'Firestore: stima del JSON salvato (senza base64, script hotspot non duplicati). * = modifiche non salvate con Save progetto. "Da caricare": solo asset grafici/audio.'
+        : (isDirty
+          ? 'Firestore: stima corrente (* modifiche non salvate). Dopo Save progetto il valore si allinea al documento Firestore.'
+          : 'Firestore: dimensione dell\'ultimo Save progetto (~1 MB max). Storage: file su Supabase.');
 
       if (percentageUsed >= 90 || pendingBytes > 512 * 1024) {
         sizeText.style.color = '#ff6b6b';

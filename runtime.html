@@ -449,6 +449,11 @@
 
     // Ascolta messaggi dall'editor per caricare progetti
     window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'RELOAD_PLAYTEST_PROJECT') {
+        addRuntimeLog('Reload playtest da editor (script aggiornati)...', 'info');
+        loadLastSavedProject();
+        return;
+      }
       // Accetta messaggi da qualsiasi origine (in sviluppo locale)
       if (event.data && event.data.type === 'LOAD_PROJECT' && event.data.projectData) {
         addRuntimeLog('Received project from editor (postMessage)', 'info');
