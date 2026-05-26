@@ -26,7 +26,7 @@
 | Personaggi | 5 API movimento/spawn | AI patrol/follow | health, talk state |
 | Inventario | — | 5 API base | slot, peso, sort |
 | Oggetti scena | enable/disable, `move_object` | spawn/despawn/rotate/scale | proprietà custom |
-| Dialoghi / audio / save | — | — | tutta la sezione |
+| Dialoghi | `show_dialogue`, `show_dialogue_text`, `end_dialogue` | scelte, mood, `start_dialogue` | audio, save |
 
 **Infrastruttura ✅ (Fase A):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`.
 
@@ -90,14 +90,19 @@ get_item_in_slot(slotIndex)        // Ottieni oggetto in slot specifico
 move_item_to_slot(itemId, slot)    // Sposta oggetto in slot specifico
 ```
 
-### 🗣️ **Sistema Dialoghi** — ❌ Non implementato (Fase 2.4 roadmap)
+### 🗣️ **Sistema Dialoghi** — 🟡 Parziale (runtime maggio 2026)
+
+Richiede una GUI di tipo **DialogBox** nel progetto (colori, balloon opzionale, effetto `appear`). Il balloon segue il personaggio in play test.
 
 #### Dialoghi Base
 ```javascript
-// ❌ Tutti in backlog
-start_dialogue(characterId)        // Inizia dialogo con personaggio
-end_dialogue()                     // Termina dialogo corrente
-show_dialogue_text(text, speaker)  // Mostra testo dialogo
+// ✅ Runtime (GameAPI + getScriptApiBindings)
+show_dialogue(characterIdOrName, text)  // Balloon sul personaggio; click per chiudere; coda comandi
+show_dialogue_text(text, speaker)       // Alias roadmap (ordine invertito)
+end_dialogue()                          // Chiude subito il dialogo attivo
+
+// ❌ Backlog
+start_dialogue(characterId)        // Sessione dialogo ramificata
 show_dialogue_choices(choices)     // Mostra scelte dialogo
 get_dialogue_response()             // Ottieni risposta del giocatore
 
@@ -329,6 +334,9 @@ format_time(seconds)                 // Formatta tempo
 ```javascript
 // ✅ Runtime
 show_message(text)                    // Overlay messaggio (coda comandi)
+show_dialogue(character, text)        // Balloon DialogBox sul personaggio (click per chiudere)
+show_dialogue_text(text, speaker)     // Alias (testo, personaggio)
+end_dialogue()                        // Chiude dialogo attivo
 print(...)                            // Log script
 
 // ❌ Backlog
@@ -450,7 +458,7 @@ if_loading_complete(action)                       // Se caricamento è completat
    - Oggetti dinamici (spawn, despawn, rotate, scale, visible)
    - `get_room_objects`, `set_room_background`
    - Alias `get_var` / `Game.getVar`
-2. **Alta — Gameplay:** cursori contestuali, inventario GUI visuale, dialoghi base
+2. **Alta — Gameplay:** cursori contestuali, inventario GUI visuale, scelte dialogo ramificate (`show_dialogue_choices`)
 3. **Media:** audio, transizioni, salvataggi gioco
 4. **Bassa:** utility math, debug avanzato, condizionali helper, particelle
 
@@ -472,4 +480,4 @@ GameAPI.add_to_inventory = function(itemId, quantity) { /* gameState.inventory *
 
 ---
 
-*Ultimo aggiornamento: Maggio 2026 — allineato a Fase A unificazione API e stato reale `runtime.js`.*
+*Ultimo aggiornamento: Maggio 2026 — dialoghi base (`show_dialogue`, `end_dialogue`); Fase A–B unificazione API; stato reale `runtime.js`.*

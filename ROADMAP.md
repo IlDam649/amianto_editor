@@ -12,7 +12,7 @@
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**✅ Nota API (maggio 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/variabili, scope handler Fase C). Prossimi step: **Fase E** (test manuali), GUI inventario giocabile, cursori contestuali, dialoghi.
+**✅ Nota API (maggio 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/variabili, scope handler Fase C). **Dialoghi base ✅:** `show_dialogue`, `show_dialogue_text`, `end_dialogue` (balloon DialogBox). Prossimi step: scelte ramificate, audio, cursori contestuali.
 
 ---
 
@@ -87,9 +87,11 @@
 - **Layout responsive**: GUI non si adatta a dimensioni canvas diverse
   - **Prossimo passo**: Sistema di scaling/anchoring per GUI responsive
 
-#### ❌ **Mancante**
-- **Sistema di dialogo GUI**: Nessun sistema per mostrare dialoghi
-  - **Prossimo passo**: Implementare DialogBox GUI con testo, scelte, callback
+#### 🟡 **Parzialmente Implementato**
+- **Sistema di dialogo GUI**: Balloon su personaggio via script (`show_dialogue`)
+  - ✅ Rendering balloon (testo, colori, immagine opzionale da GUI DialogBox)
+  - ✅ Balloon segue il personaggio; chiusura con click
+  - **Prossimo passo**: Scelte ramificate (`show_dialogue_choices`), `start_dialogue` session
 - **Sistema inventario GUI**: Inventory GUI parziale
   - ✅ Rendering pannello, slot, oggetto in mano (carriedItem)
   - ✅ Combinazioni use-with (hotspot, object, character, inventory)
@@ -108,6 +110,7 @@
 - **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
 - **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with`
 - **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
+- **Dialoghi (base):** `show_dialogue`, `show_dialogue_text`, `end_dialogue`
 - **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
 - **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
 - **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
@@ -122,7 +125,7 @@
 - Test manuali checklist Fase E (`await` + inventario nello stesso handler)
 
 #### ❌ **Mancante (backlog)**
-- Dialoghi: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`
+- Dialoghi avanzati: `start_dialogue()`, `show_dialogue_choices()`, mood/relazioni
 - Audio: `play_music()`, `play_sound()`, volumi, ambient
 - Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 - Salvataggio gioco: `save_game()`, `load_game()`, slot, metadata
@@ -199,8 +202,8 @@
   - **Prossimo passo**: Sistema hover detection e cambio cursore dinamico con action text
 - **Sistema inventario visuale**: Inventario non visibile nel runtime
   - **Prossimo passo**: Rendering inventario GUI con drag&drop, tooltip
-- **Sistema dialogo visuale**: Nessun rendering dialoghi
-  - **Prossimo passo**: Rendering DialogBox GUI con testo, scelte, animazioni
+- **Sistema dialogo visuale**: 🟡 Balloon base implementato (`show_dialogue`)
+  - **Prossimo passo**: Scelte ramificate, animazioni GUI dialogo avanzate
 - **Sistema audio runtime**: Nessun sistema audio
   - **Prossimo passo**: Audio context, gestione musica/SFX, mixer volumi
 - **Sistema transizioni**: Nessun sistema di transizioni tra stanze
@@ -418,14 +421,15 @@
 - **Tempo stimato**: 3-4 giorni
 
 #### 2.4 Sistema Dialoghi Base
-- **Stato**: ❌ Mancante
-- **Problema**: Nessun sistema per dialoghi
-- **Soluzione**:
-  - API scripting: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`
-  - Rendering DialogBox GUI
-  - Sistema di scelte ramificate
-  - Integrazione con personaggi
-- **Tempo stimato**: 6-8 giorni
+- **Stato**: 🟡 Parziale (maggio 2026)
+- **Completato**:
+  - API scripting: `show_dialogue(character, text)`, `show_dialogue_text(text, speaker)`, `end_dialogue()`
+  - Rendering balloon DialogBox (colori, immagine balloon, `appear`: instant/fade/slide)
+  - Balloon segue il personaggio in play test; chiusura con click; coda comandi
+- **Mancante**:
+  - `start_dialogue()`, `show_dialogue_choices()`, risposta giocatore
+  - Sistema di scelte ramificate e mood/relazioni
+- **Tempo stimato residuo**: 4-6 giorni
 
 **Totale Fase 2**: ~20-27 giorni lavorativi
 
@@ -612,10 +616,10 @@
 ### **Breve Termine**
 6. Inventario GUI visuale (rendering + drag&drop) — dopo Fase B.1
 7. Sistema cursori contestuali (Fase 2.3)
-8. Dialoghi base (Fase 2.4)
+8. ~~Dialoghi base (Fase 2.4)~~ ✅ balloon + `show_dialogue`
 
 ### **Medio Termine (Settimane 9-16)**
-9. Sistema dialoghi base (Fase 2.4)
+9. Scelte dialogo ramificate (Fase 2.4 resto)
 10. Sistema audio (Fase 3.1)
 11. Sistema effetti visivi (Fase 3.2)
 12. Sistema salvataggi gioco (Fase 3.4)
@@ -640,5 +644,5 @@
 
 *Roadmap aggiornata il: Maggio 2026*
 *Versione progetto: 0.4+*
-*Ultimo aggiornamento: Fase A unificazione API (`getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`); correzione stato inventario/24 API; riferimento a `API_UNIFICATION_CHECKLIST.md`*
+*Ultimo aggiornamento: dialoghi base (`show_dialogue`, `end_dialogue`); Fase A unificazione API; riferimento a `API_UNIFICATION_CHECKLIST.md`*
 

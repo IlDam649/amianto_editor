@@ -43,7 +43,7 @@ function on_game_start() {
         <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, scene objects, walkable area, hotspots.</td></tr>
         <tr><td><strong>Inventory</strong></td><td>Inventory items and slot grid for the player UI.</td></tr>
         <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
-        <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), buttons with optional scripts.</td></tr>
+        <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), <strong>DialogBox</strong> (speech balloon style), buttons with optional scripts.</td></tr>
         <tr><td><strong>Scripts</strong></td><td>CodeMirror editor, script tree, game variables, Run/Stop sandbox.</td></tr>
         <tr><td><strong>Docs</strong></td><td>This guide.</td></tr>
         <tr><td><strong>PLAY</strong></td><td>Live play test with script console and debug tools.</td></tr>
@@ -74,7 +74,7 @@ function on_game_start() {
     <p><strong>Custom animations:</strong> in the <strong>Animation</strong> dropdown choose <strong>+</strong> and enter a name (e.g. <code>wave</code>, <code>talk</code> — do not use <code>walking</code>, it is reserved). Assign frames per direction the same way as walking. Play them in scripts with <code>play_character_animation</code>.</p>
     <p>Set FPS for preview. Configure <strong>game start</strong>: starting character, room, and coordinates.</p>
     <h3>GUI &amp; cursors</h3>
-    <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Contextual cursors change when hovering hotspots, objects, or characters.</p>
+    <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Create a <strong>DialogBox</strong> GUI to configure speech balloons (colors, optional balloon image, appear effect). In scripts use <code>show_dialogue(character, text)</code> — the balloon follows the speaking character. Contextual cursors change when hovering hotspots, objects, or characters.</p>
   </section>
 
   <section id="doc-scripting" class="docs-section">
@@ -113,6 +113,7 @@ if (Game.getVar("door_open")) {
       <li><code>print(...)</code> — script log (Play Test / runtime console)</li>
       <li><code>GameAPI.error(...)</code> — error level log</li>
       <li><code>show_message(text)</code> — on-screen notification overlay</li>
+      <li><code>show_dialogue(character, text)</code> — speech balloon on character (click to close)</li>
       <li><strong>Test Game Start</strong> (PLAY tab) — runs <code>on_game_start</code> without full runtime UI</li>
     </ul>
   </section>
@@ -143,7 +144,10 @@ if (Game.getVar("door_open")) {
     <ul>
       <li><code>print(...)</code> — log to script console</li>
       <li><code>GameAPI.print(...)</code> / <code>GameAPI.error(...)</code></li>
-      <li><code>show_message(text)</code> — player-facing message</li>
+      <li><code>show_message(text)</code> — fixed notification overlay (~3s)</li>
+      <li><code>show_dialogue(characterIdOrName, text)</code> — speech balloon above a character; uses the first <strong>DialogBox</strong> GUI in the project (colors, optional balloon image). Follows the character while moving. Click anywhere to dismiss. Queued like <code>show_message</code>.</li>
+      <li><code>show_dialogue_text(text, speaker)</code> — same as <code>show_dialogue(speaker, text)</code></li>
+      <li><code>end_dialogue()</code> — close the active balloon immediately</li>
     </ul>
 
     <h3>Inventory</h3>
@@ -261,8 +265,20 @@ function on_object_click(object_id) {
   const playerId = Game.getVar("playerId");
   if (!playerId) return;
   walk_character(playerId, 320, 240, true).then(function() {
-    show_message("Hello, traveler!");
+    show_dialogue(character_id, "Hello, traveler!");
   });
+}</code></pre>
+
+    <h3>5a — NPC dialogue line</h3>
+    <p>Add a <strong>DialogBox</strong> GUI in the GUI tab (balloon image optional). Character must exist in the current room (spawned or placed).</p>
+    <pre class="docs-code"><code>function on_character_click(character_id) {
+  show_dialogue(character_id, "I have been waiting for you.");
+}
+
+// Multiple lines (sequential queue):
+function on_character_click(character_id) {
+  show_dialogue(character_id, "First line.");
+  show_dialogue(character_id, "Second line — click after each.");
 }</code></pre>
 
     <h3>5b — Custom animation (e.g. wave)</h3>
@@ -369,7 +385,8 @@ function on_use_with(targetType, targetId) {
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
       <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
-      <li>Features on roadmap (not in runtime yet): dialogue system, audio API, save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
+      <li>Dialogue: use <code>show_dialogue</code> (balloon on character). Branching choices (<code>show_dialogue_choices</code>) not implemented yet — see <code>ROADMAP.md</code>.</li>
+      <li>Features on roadmap (not in runtime yet): audio API, save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
     </ul>
   </section>
 </article>`;

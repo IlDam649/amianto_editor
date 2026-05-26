@@ -3514,8 +3514,26 @@ window.selectRoom = function(roomId) {
   const guiTypeSelect = document.getElementById('gui-type-select');
   const guiSettingsContainer = document.getElementById('gui-settings-container');
 
+  function cancelGuiButtonDrawing() {
+    if (!isDrawingGuiButton) return;
+    isDrawingGuiButton = false;
+    guiDrawStart = null;
+    if (guiButtons.length && guiButtons[guiButtons.length - 1].id === '__drawing__') {
+      guiButtons.pop();
+    }
+  }
+
+  function updateGuiToolbarForType(guiType) {
+    const isDialogBox = guiType === 'DialogBox';
+    [btnAddGuiBg, btnNewGuiButton, btnDeleteGuiButton].forEach((btn) => {
+      if (btn) btn.disabled = isDialogBox;
+    });
+    if (isDialogBox) cancelGuiButtonDrawing();
+  }
+
   if (btnAddGuiBg) {
     btnAddGuiBg.addEventListener('click', async () => {
+        if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
         if (!currentUser) {
           showNotification('Please log in to select images', 'warning');
           return;
@@ -3546,6 +3564,7 @@ window.selectRoom = function(roomId) {
 
   if (btnNewGuiButton) {
     btnNewGuiButton.addEventListener('click', () => {
+      if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
       // start drawing mode
       isDrawingGuiButton = true;
       guiDrawStart = null;
@@ -3565,6 +3584,7 @@ window.selectRoom = function(roomId) {
         gui.settings = collectGuiSettingsFromUI(newType);
         saveCurrentGUI();
       }
+      updateGuiToolbarForType(newType);
     });
   }
   if (guiSettingsContainer) {
@@ -3579,6 +3599,109 @@ window.selectRoom = function(roomId) {
     };
     guiSettingsContainer.addEventListener('input', onChange);
     guiSettingsContainer.addEventListener('change', onChange);
+  }
+
+  const DIALOG_FONT_SIZE_MIN = 8;
+  const DIALOG_FONT_SIZE_MAX = 96;
+  const DIALOG_FONT_ACCEPT = '.ttf,.otf,.woff,.woff2';
+
+  function clampDialogFontSize(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n)) return 16;
+    return Math.max(DIALOG_FONT_SIZE_MIN, Math.min(DIALOG_FONT_SIZE_MAX, Math.round(n)));
+  }
+
+  function fontFamilyFromFileName(fileName) {
+    const base = String(fileName || 'CustomFont').replace(/\.[^.]+$/, '');
+    const safe = base.replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_') || 'CustomFont';
+    return `Amianto_${safe}`;
+  }
+
+  const dialogFontFaceRegistry = new Set();
+
+  async function resolveDialogFontUrl(fontRef, projectId) {
+    if (!fontRef || typeof fontRef !== 'string') return null;
+    if (fontRef.startsWith('data:') || fontRef.startsWith('http')) return fontRef;
+    if (fontRef.startsWith('asset:')) {
+      const assetId = fontRef.replace('asset:', '');
+      return await resolveAssetUrl(projectId, assetId);
+    }
+    return fontRef;
+  }
+
+  async function registerDialogFontFace(fontFamily, fontUrl) {
+    if (!fontFamily || !fontUrl) return false;
+    const regKey = `${fontFamily}|${fontUrl}`;
+    if (dialogFontFaceRegistry.has(regKey)) return true;
+    try {
+      if (typeof FontFace !== 'undefined' && document.fonts) {
+        const face = new FontFace(fontFamily, `url(${fontUrl})`);
+        await face.load();
+        document.fonts.add(face);
+        dialogFontFaceRegistry.add(regKey);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[GUI] Dialog font load failed:', err);
+    }
+    return false;
+  }
+
+  async function hydrateDialogBoxFont(settings, projectId) {
+    if (!settings || !settings.customFont || !settings.fontFamily) return;
+    const url = await resolveDialogFontUrl(settings.customFont, projectId);
+    if (url) await registerDialogFontFace(settings.fontFamily, url);
+  }
+
+  function normalizeDialogBoxSettings(settings) {
+    const s = settings || {};
+    const legacyBg = s.background || s.backgroundColor;
+    return {
+      balloon: s.balloon || '',
+      balloonImage: s.balloonImage || null,
+      backgroundColor: s.backgroundColor || cssColorToHex(legacyBg, '#1a1a2e'),
+      textColor: s.textColor || '#ffffff',
+      boxBorderColor: s.boxBorderColor || '#39ff14',
+      fontSize: clampDialogFontSize(s.fontSize),
+      fontFamily: (typeof s.fontFamily === 'string' && s.fontFamily.trim()) ? s.fontFamily.trim() : '',
+      customFont: (typeof s.customFont === 'string' && s.customFont.trim()) ? s.customFont.trim() : '',
+      appear: s.appear || 'instant'
+    };
+  }
+
+  function cssColorToHex(color, fallback = '#000000') {
+    if (!color || typeof color !== 'string') return fallback;
+    const trimmed = color.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+    if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+      const r = trimmed[1], g = trimmed[2], b = trimmed[3];
+      return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    const rgbMatch = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (rgbMatch) {
+      const toHex = (n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, '0');
+      return `#${toHex(rgbMatch[1])}${toHex(rgbMatch[2])}${toHex(rgbMatch[3])}`;
+    }
+    return fallback;
+  }
+
+  function bindColorPickerSync(colorInput, hexInput) {
+    if (!colorInput || !hexInput) return;
+    const applyFromColor = () => {
+      hexInput.value = colorInput.value;
+      hexInput.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const applyFromHex = () => {
+      const v = hexInput.value.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+        colorInput.value = v;
+        colorInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    };
+    colorInput.addEventListener('input', applyFromColor);
+    colorInput.addEventListener('change', applyFromColor);
+    hexInput.addEventListener('change', applyFromHex);
+    hexInput.addEventListener('input', applyFromHex);
   }
 
   function renderGuiSettingsPanel(type, settings) {
@@ -3636,21 +3759,216 @@ window.selectRoom = function(roomId) {
       wrap.appendChild(sel);
       return wrap;
     };
+    const makeColorPicker = (label, id, value, fallback = '#ffffff') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const group = document.createElement('div');
+      group.className = 'input-group input-group-sm';
+      const colorInp = document.createElement('input');
+      colorInp.type = 'color';
+      colorInp.className = 'form-control form-control-color';
+      colorInp.id = id;
+      colorInp.title = label;
+      const hexVal = cssColorToHex(value, fallback);
+      colorInp.value = hexVal;
+      const hexInp = document.createElement('input');
+      hexInp.type = 'text';
+      hexInp.className = 'form-control';
+      hexInp.id = `${id}-hex`;
+      hexInp.value = hexVal;
+      hexInp.spellcheck = false;
+      bindColorPickerSync(colorInp, hexInp);
+      group.appendChild(colorInp);
+      group.appendChild(hexInp);
+      wrap.appendChild(lab);
+      wrap.appendChild(group);
+      return wrap;
+    };
+    const makeBalloonPicker = (dialogSettings) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = 'Dialog balloon (image)';
+      const row = document.createElement('div');
+      row.className = 'd-flex gap-1 flex-wrap align-items-center';
+      const btnBrowse = document.createElement('button');
+      btnBrowse.type = 'button';
+      btnBrowse.className = 'btn btn-outline-info btn-sm';
+      btnBrowse.textContent = 'Browse…';
+      const btnClear = document.createElement('button');
+      btnClear.type = 'button';
+      btnClear.className = 'btn btn-outline-secondary btn-sm';
+      btnClear.textContent = 'Clear';
+      const status = document.createElement('small');
+      status.className = 'text-muted';
+      status.id = 'gui-set-balloon-label';
+      const updateLabel = () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const img = (gui && gui.settings && gui.settings.balloonImage) || dialogSettings.balloonImage;
+        status.textContent = img ? 'Balloon image set' : 'No balloon (uses colored box)';
+      };
+      updateLabel();
+      btnBrowse.addEventListener('click', async () => {
+        if (!currentUser) {
+          showNotification('Please log in to select images', 'warning');
+          return;
+        }
+        if (!getActiveProjectId()) {
+          showNotification('No project is open', 'warning');
+          return;
+        }
+        const resource = await pickResourceImage({ title: 'Dialog balloon from Resources' });
+        if (!resource) return;
+        try {
+          const img = await loadImageFromResourceEntry(resource);
+          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+          if (!gui) return;
+          const collected = collectGuiSettingsFromUI('DialogBox');
+          collected.balloonImage = img;
+          gui.settings = collected;
+          updateLabel();
+          saveCurrentGUI();
+          showNotification('Dialog balloon set', 'success');
+        } catch (err) {
+          showNotification('Balloon error: ' + err.message, 'error');
+        }
+      });
+      btnClear.addEventListener('click', () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        if (!gui) return;
+        const collected = collectGuiSettingsFromUI('DialogBox');
+        collected.balloonImage = null;
+        collected.balloon = '';
+        gui.settings = collected;
+        updateLabel();
+        saveCurrentGUI();
+        showNotification('Dialog balloon removed', 'info');
+      });
+      row.appendChild(btnBrowse);
+      row.appendChild(btnClear);
+      row.appendChild(status);
+      wrap.appendChild(lab);
+      wrap.appendChild(row);
+      return wrap;
+    };
+    const makeCustomFontPicker = (dialogSettings) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = 'Custom font';
+      const row = document.createElement('div');
+      row.className = 'd-flex gap-1 flex-wrap align-items-center mb-1';
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = DIALOG_FONT_ACCEPT;
+      fileInput.className = 'd-none';
+      fileInput.id = 'gui-set-font-file';
+      const btnImport = document.createElement('button');
+      btnImport.type = 'button';
+      btnImport.className = 'btn btn-outline-info btn-sm';
+      btnImport.textContent = 'Import font…';
+      const btnClear = document.createElement('button');
+      btnClear.type = 'button';
+      btnClear.className = 'btn btn-outline-secondary btn-sm';
+      btnClear.textContent = 'Clear';
+      const status = document.createElement('small');
+      status.className = 'text-muted';
+      status.id = 'gui-set-font-label';
+      const updateLabel = () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const cf = (gui && gui.settings && gui.settings.customFont) || dialogSettings.customFont;
+        const ff = (gui && gui.settings && gui.settings.fontFamily) || dialogSettings.fontFamily;
+        status.textContent = cf ? `Font: ${ff || 'custom'}` : 'Default font (Arial)';
+      };
+      updateLabel();
+      btnImport.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        fileInput.value = '';
+        if (!file) return;
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!['ttf', 'otf', 'woff', 'woff2'].includes(ext)) {
+          showNotification('Unsupported font format. Use .ttf, .otf, .woff or .woff2', 'warning');
+          return;
+        }
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('Read failed'));
+            reader.readAsDataURL(file);
+          });
+          const familyInput = document.getElementById('gui-set-font-family');
+          const fontFamily = (familyInput && familyInput.value.trim())
+            ? familyInput.value.trim()
+            : fontFamilyFromFileName(file.name);
+          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+          if (!gui) return;
+          const collected = collectGuiSettingsFromUI('DialogBox');
+          collected.customFont = dataUrl;
+          collected.fontFamily = fontFamily;
+          gui.settings = collected;
+          await registerDialogFontFace(fontFamily, dataUrl);
+          if (familyInput) familyInput.value = fontFamily;
+          updateLabel();
+          saveCurrentGUI();
+          showNotification('Custom font imported', 'success');
+        } catch (err) {
+          showNotification('Font import error: ' + err.message, 'error');
+        }
+      });
+      btnClear.addEventListener('click', () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        if (!gui) return;
+        const collected = collectGuiSettingsFromUI('DialogBox');
+        collected.customFont = '';
+        collected.fontFamily = '';
+        gui.settings = collected;
+        const familyInput = document.getElementById('gui-set-font-family');
+        if (familyInput) familyInput.value = '';
+        updateLabel();
+        saveCurrentGUI();
+        showNotification('Custom font removed', 'info');
+      });
+      row.appendChild(fileInput);
+      row.appendChild(btnImport);
+      row.appendChild(btnClear);
+      row.appendChild(status);
+      wrap.appendChild(lab);
+      wrap.appendChild(row);
+      wrap.appendChild(makeInput('Font family name (optional)', 'gui-set-font-family', 'text', dialogSettings.fontFamily || '', {
+        placeholder: 'Auto from file name if empty'
+      }));
+      return wrap;
+    };
 
     switch(type) {
       case 'DialogBox': {
-        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
-        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
-        frag.appendChild(makeInput('Width', 'gui-set-w', 'number', settings.w ?? 300));
-        frag.appendChild(makeInput('Height', 'gui-set-h', 'number', settings.h ?? 150));
-        frag.appendChild(makeInput('Background (CSS color or data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
-        frag.appendChild(makeInput('Font CSS', 'gui-set-font', 'text', settings.font || '16px Arial'));
-        frag.appendChild(makeInput('Portrait (optional data URL)', 'gui-set-portrait', 'text', settings.portrait || ''));
+        const dlg = normalizeDialogBoxSettings(settings);
+        frag.appendChild(makeBalloonPicker(dlg));
+        frag.appendChild(makeInput('Font size (px)', 'gui-set-font-size', 'number', dlg.fontSize, {
+          min: DIALOG_FONT_SIZE_MIN,
+          max: DIALOG_FONT_SIZE_MAX,
+          step: 1
+        }));
+        frag.appendChild(makeCustomFontPicker(dlg));
+        frag.appendChild(makeColorPicker('Background color', 'gui-set-bg-color', dlg.backgroundColor, '#1a1a2e'));
+        frag.appendChild(makeColorPicker('Text color', 'gui-set-text-color', dlg.textColor, '#ffffff'));
+        frag.appendChild(makeColorPicker('Box border color', 'gui-set-border-color', dlg.boxBorderColor, '#39ff14'));
         frag.appendChild(makeSelect('Appear behavior', 'gui-set-appear', [
           {value:'instant', label:'Instant'},
           {value:'fade', label:'Fade'},
           {value:'slide', label:'Slide'}
-        ], settings.appear || 'instant'));
+        ], dlg.appear));
+        const hint = document.createElement('p');
+        hint.className = 'text-muted small mb-0';
+        hint.textContent = 'In game the balloon follows the speaking character and sizes to the text. Without a custom font, Arial is used.';
+        frag.appendChild(hint);
         break;
       }
       case 'VerbGUI': {
@@ -3701,17 +4019,26 @@ window.selectRoom = function(roomId) {
       return el ? (el.type === 'number' ? Number(el.value || 0) : el.value) : undefined;
     };
     switch(type) {
-      case 'DialogBox':
+      case 'DialogBox': {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const existing = (gui && gui.settings) ? gui.settings : {};
+        const bgHex = get('gui-set-bg-color-hex') || get('gui-set-bg-color') || '#1a1a2e';
+        const textHex = get('gui-set-text-color-hex') || get('gui-set-text-color') || '#ffffff';
+        const borderHex = get('gui-set-border-color-hex') || get('gui-set-border-color') || '#39ff14';
+        const fontFamilyEl = document.getElementById('gui-set-font-family');
+        const fontFamilyVal = fontFamilyEl ? fontFamilyEl.value.trim() : (existing.fontFamily || '');
         return {
-          x: get('gui-set-x') || 0,
-          y: get('gui-set-y') || 0,
-          w: get('gui-set-w') || 300,
-          h: get('gui-set-h') || 150,
-          background: get('gui-set-bg') || 'rgba(0,0,0,0.6)',
-          font: get('gui-set-font') || '16px Arial',
-          portrait: get('gui-set-portrait') || '',
+          balloon: existing.balloon || '',
+          balloonImage: existing.balloonImage || null,
+          backgroundColor: cssColorToHex(bgHex, '#1a1a2e'),
+          textColor: cssColorToHex(textHex, '#ffffff'),
+          boxBorderColor: cssColorToHex(borderHex, '#39ff14'),
+          fontSize: clampDialogFontSize(get('gui-set-font-size')),
+          fontFamily: fontFamilyVal,
+          customFont: existing.customFont || '',
           appear: get('gui-set-appear') || 'instant'
         };
+      }
       case 'VerbGUI': {
         const verbsStr = get('gui-set-verbs') || '';
         const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
@@ -3746,6 +4073,7 @@ window.selectRoom = function(roomId) {
 
   if (btnDeleteGuiButton) {
     btnDeleteGuiButton.addEventListener('click', () => {
+      if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
       if (!selectedGuiButtonId) { showNotification('No GUI button selected', 'warning'); return; }
       guiButtons = guiButtons.filter(b => b.id !== selectedGuiButtonId);
       selectedGuiButtonId = null;
@@ -4676,6 +5004,7 @@ window.selectRoom = function(roomId) {
     charactersList.innerHTML = '';
     names.forEach((characterName) => {
       const charData = characterFrames.get(characterName);
+      ensureCharacterSpawnSettings(charData);
       const totalFrames = getCharacterFrameCount(charData);
       const isSelected = characterName === selectedName;
       const el = document.createElement('div');
@@ -4743,6 +5072,47 @@ window.selectRoom = function(roomId) {
     });
   }
 
+  function getDefaultCharacterSpawnSettings() {
+    const firstRoom = rooms && rooms.length > 0 ? rooms[0] : null;
+    return {
+      isPlayer: false,
+      autoSpawn: false,
+      roomId: firstRoom ? firstRoom.id : null,
+      x: 0,
+      y: 0,
+      direction: 'south',
+      moveSpeed: 100
+    };
+  }
+
+  function normalizeCharacterSpawnSettings(spawn) {
+    const defaults = getDefaultCharacterSpawnSettings();
+    if (!spawn || typeof spawn !== 'object') return { ...defaults };
+    return {
+      isPlayer: spawn.isPlayer === true,
+      autoSpawn: spawn.autoSpawn === true,
+      roomId: spawn.roomId != null ? spawn.roomId : defaults.roomId,
+      x: typeof spawn.x === 'number' && !isNaN(spawn.x) ? spawn.x : defaults.x,
+      y: typeof spawn.y === 'number' && !isNaN(spawn.y) ? spawn.y : defaults.y,
+      direction: spawn.direction || defaults.direction,
+      moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : defaults.moveSpeed
+    };
+  }
+
+  function createEmptyCharacterData() {
+    return {
+      directions: {},
+      animations: {},
+      currentFrame: 0,
+      spawnSettings: getDefaultCharacterSpawnSettings()
+    };
+  }
+
+  function ensureCharacterSpawnSettings(charData) {
+    if (!charData) return;
+    charData.spawnSettings = normalizeCharacterSpawnSettings(charData.spawnSettings);
+  }
+
   window.addCharacter = function() {
     const name = (prompt('Character name:') || '').trim();
     if (!name) return;
@@ -4750,7 +5120,7 @@ window.selectRoom = function(roomId) {
       showNotification('Character name already in use', 'warning');
       return;
     }
-    characterFrames.set(name, { directions: {}, animations: {}, currentFrame: 0 });
+    characterFrames.set(name, createEmptyCharacterData());
     selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
   };
@@ -4999,7 +5369,7 @@ window.selectRoom = function(roomId) {
     }
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData();
       characterFrames.set(who, charData);
     }
     if (!charData.animations) charData.animations = {};
@@ -5268,7 +5638,8 @@ window.selectRoom = function(roomId) {
     }
     
     const charData = characterFrames.get(characterName);
-    const spawnData = charData && charData.spawnSettings ? charData.spawnSettings : {};
+    ensureCharacterSpawnSettings(charData);
+    const spawnData = charData ? charData.spawnSettings : getDefaultCharacterSpawnSettings();
     
     // Debug: log per verificare il caricamento
     console.log(`[Character] Caricamento spawnSettings per "${characterName}":`, spawnData);
@@ -5351,10 +5722,7 @@ window.selectRoom = function(roomId) {
     const charData = characterFrames.get(characterName);
     if (!charData) return;
     
-    // Inizializza spawnSettings se non esiste
-    if (!charData.spawnSettings) {
-      charData.spawnSettings = {};
-    }
+    ensureCharacterSpawnSettings(charData);
     
     // Leggi i valori dall'UI
     const isPlayerCheck = document.getElementById('character-spawn-is-player');
@@ -5373,8 +5741,7 @@ window.selectRoom = function(roomId) {
       console.log(`[Character] Salvataggio autoSpawn per "${characterName}": ${autoSpawnCheck.checked}`);
     }
     
-    // Salva roomId se autoSpawn è true O se isPlayer è true (il player può avere una room iniziale)
-    if (roomSelect && ((autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked))) {
+    if (roomSelect) {
       charData.spawnSettings.roomId = roomSelect.value || null;
     }
     
@@ -5404,29 +5771,17 @@ window.selectRoom = function(roomId) {
     characterFrames.set(characterName, charData);
   }
 
-  // Aggiorna la visibilità dei campi spawn in base alle checkbox
+  // Aggiorna la visibilità dei campi spawn (Starting Room, posizione, direzione e velocità sempre visibili)
   function updateSpawnSettingsVisibility() {
-    const autoSpawnCheck = document.getElementById('character-spawn-auto');
-    const isPlayerCheck = document.getElementById('character-spawn-is-player');
     const roomContainer = document.getElementById('character-spawn-room-container');
     const positionContainer = document.getElementById('character-spawn-position-container');
     const directionContainer = document.getElementById('character-spawn-direction-container');
     const speedContainer = document.getElementById('character-spawn-speed-container');
     
-    const showFields = (autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked);
-    
-    if (roomContainer) {
-      roomContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (positionContainer) {
-      positionContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (directionContainer) {
-      directionContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (speedContainer) {
-      speedContainer.style.display = showFields ? 'block' : 'none';
-    }
+    if (roomContainer) roomContainer.style.display = 'block';
+    if (positionContainer) positionContainer.style.display = 'block';
+    if (directionContainer) directionContainer.style.display = 'block';
+    if (speedContainer) speedContainer.style.display = 'block';
   }
 
   // Add event listener for character selection change
@@ -5553,7 +5908,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData();
       characterFrames.set(who, charData);
     }
 
@@ -5803,8 +6158,11 @@ window.selectRoom = function(roomId) {
           if (dirData.frames) dirData.frames = [];
         }
         if (charData) characterFrames.set(who, charData);
+      } else if (charData) {
+        ensureCharacterSpawnSettings(charData);
+        characterFrames.set(who, charData);
       } else {
-        characterFrames.set(who, { directions: {}, animations: {}, currentFrame: 0 });
+        characterFrames.set(who, createEmptyCharacterData());
       }
       
       // Reset dell'indice della preview
@@ -6054,7 +6412,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData();
       characterFrames.set(who, charData);
     }
 
@@ -6582,7 +6940,7 @@ window.selectRoom = function(roomId) {
 
   // Game API completions for CodeMirror
   const GAME_API_COMPLETIONS = [
-    'print', 'show_message', 'move_object',
+    'print', 'show_message', 'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'move_object',
     'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
     'on_use_with', 'on_inventory_use_with',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
@@ -11817,8 +12175,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   function serializeGuiSettings(settings, type) {
     try {
-      // Ensure JSON-safe clone
-      return JSON.parse(JSON.stringify(settings || {}));
+      const src = settings || {};
+      const out = { ...src };
+      if (type === 'DialogBox') {
+        if (out.balloonImage) {
+          out.balloon = serializeImage(out.balloonImage) || out.balloon || '';
+        }
+        delete out.balloonImage;
+        delete out.x;
+        delete out.y;
+        delete out.w;
+        delete out.h;
+        delete out.portrait;
+        delete out.background;
+        delete out.previewText;
+        if (!out.customFont) {
+          delete out.fontFamily;
+        }
+      }
+      return JSON.parse(JSON.stringify(out));
     } catch (_) {
       return {};
     }
@@ -11855,20 +12230,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         out.pivotX = Number(charData.pivotX) || 0;
         out.pivotY = Number(charData.pivotY) || 0;
       }
-      // Include spawnSettings if it exists
-      if (charData && charData.spawnSettings) {
-        const spawn = charData.spawnSettings;
-        out.spawnSettings = {
-          isPlayer: spawn.isPlayer === true,
-          autoSpawn: spawn.autoSpawn === true,
-          roomId: spawn.roomId || null,
-          x: typeof spawn.x === 'number' ? spawn.x : 0,
-          y: typeof spawn.y === 'number' ? spawn.y : 0,
-          direction: spawn.direction || 'south',
-          moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
-        };
-        console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
-      }
+      ensureCharacterSpawnSettings(charData);
+      const spawn = charData.spawnSettings;
+      out.spawnSettings = {
+        isPlayer: spawn.isPlayer === true,
+        autoSpawn: spawn.autoSpawn === true,
+        roomId: spawn.roomId || null,
+        x: typeof spawn.x === 'number' ? spawn.x : 0,
+        y: typeof spawn.y === 'number' ? spawn.y : 0,
+        direction: spawn.direction || 'south',
+        moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
+      };
       out.directions = serializeDirectionsMap(charData ? charData.directions : null);
       if (charData && charData.animations && Object.keys(charData.animations).length > 0) {
         out.animations = {};
@@ -12356,42 +12728,62 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
+  const EMBEDDED_DATA_URL_RE = /^data:[^;]+;base64,/i;
+  const FIRESTORE_ASSET_FIELD_KEYS = new Set([
+    'background', 'image', 'toggleIcon', 'backgroundImage', 'balloon', 'balloonImage',
+    'cursorImage', 'customFont', 'backgroundRef', 'imageRef', 'toggleIconRef'
+  ]);
+
+  function isEmbeddedDataUrl(value) {
+    return typeof value === 'string' && EMBEDDED_DATA_URL_RE.test(value);
+  }
+
+  function isAssetRefString(value) {
+    return typeof value === 'string' && value.startsWith('asset:');
+  }
+
   /** Conta stringhe data:…;base64, nel progetto (immagini, audio, ecc.). */
   function countEmbeddedDataUrls(root) {
-    let count = 0;
-    const walk = (v) => {
-      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
-        count++;
-        return;
-      }
-      if (!v || typeof v !== 'object') return;
-      if (Array.isArray(v)) {
-        v.forEach(walk);
-        return;
-      }
-      Object.values(v).forEach(walk);
-    };
-    walk(root);
-    return count;
+    return collectEmbeddedDataUrlStats(root).embeddedAssetCount;
   }
 
   /** Somma i byte delle stringhe data:…;base64, ancora nel progetto serializzato. */
   function measureEmbeddedDataUrlBytes(root) {
-    let total = 0;
-    const walk = (v) => {
-      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
-        total += new Blob([v]).size;
+    return collectEmbeddedDataUrlStats(root).embeddedBytes;
+  }
+
+  /**
+   * Statistiche asset embedded (path, byte, top offenders).
+   * @param {*} root
+   * @returns {{ embeddedAssetCount: number, embeddedBytes: number, offenders: Array<{path:string,bytes:number}>, largestEmbeddedAsset: {path:string,bytes:number}|null }}
+   */
+  function collectEmbeddedDataUrlStats(root) {
+    const offenders = [];
+    const walk = (v, path) => {
+      if (typeof v === 'string' && EMBEDDED_DATA_URL_RE.test(v)) {
+        const bytes = new Blob([v]).size;
+        offenders.push({ path: path || '(root)', bytes });
         return;
       }
       if (!v || typeof v !== 'object') return;
       if (Array.isArray(v)) {
-        v.forEach(walk);
+        v.forEach((item, i) => walk(item, `${path}[${i}]`));
         return;
       }
-      Object.values(v).forEach(walk);
+      for (const [k, child] of Object.entries(v)) {
+        const childPath = path ? `${path}.${k}` : k;
+        walk(child, childPath);
+      }
     };
-    walk(root);
-    return total;
+    walk(root, '');
+    offenders.sort((a, b) => b.bytes - a.bytes);
+    const embeddedBytes = offenders.reduce((sum, o) => sum + o.bytes, 0);
+    return {
+      embeddedAssetCount: offenders.length,
+      embeddedBytes,
+      offenders,
+      largestEmbeddedAsset: offenders[0] || null
+    };
   }
 
   /** Conta base64 solo nei campi asset (esclude scripts/eventConditions dove il testo può contenere "data:"). */
@@ -12429,9 +12821,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return count;
   }
 
-  const FIRESTORE_ASSET_REF_PLACEHOLDER = 'asset:estimate00000000000000';
-
-  /** Stima la dimensione del payload Firestore (come dopo upload asset, senza base64). */
+  /** Stima = payload Firestore canonico (stesso oggetto del salvataggio). */
   function estimateFirestorePayloadBytes(projectObj) {
     return measureFirestorePayloadBytes(projectObj);
   }
@@ -12470,31 +12860,328 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return codes;
   }
 
-  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
-  function dedupeHotspotScriptsForFirestore(projectObj) {
-    const clone = JSON.parse(JSON.stringify(projectObj));
-    if (!clone.scripts || typeof clone.scripts !== 'object') return clone;
-    clone.scripts = pruneDuplicateHotspotScriptsFromScriptsObject({ ...clone.scripts }, clone);
-    return clone;
+  function sanitizeUndefinedDeep(value) {
+    if (value === undefined) return null;
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(sanitizeUndefinedDeep);
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v === undefined) continue;
+      out[k] = sanitizeUndefinedDeep(v);
+    }
+    return out;
   }
 
+  function normalizeScriptKeysInFirestorePayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.scripts && typeof payload.scripts === 'object') {
+      const next = {};
+      for (const [key, content] of Object.entries(payload.scripts)) {
+        next[migrateLegacyScriptKey(key)] = String(content || '');
+      }
+      payload.scripts = next;
+    }
+    if (payload.attachments && typeof payload.attachments === 'object') {
+      const mapNames = ['roomScripts', 'objectScripts', 'characterScripts', 'inventoryScripts', 'guiScripts'];
+      for (const mapName of mapNames) {
+        const m = payload.attachments[mapName];
+        if (!m || typeof m !== 'object') continue;
+        const next = {};
+        for (const [k, v] of Object.entries(m)) {
+          next[migrateLegacyScriptKey(k)] = String(v || '');
+        }
+        payload.attachments[mapName] = next;
+      }
+    }
+    if (Array.isArray(payload.cursors)) {
+      payload.cursors.forEach(c => {
+        if (c && c.scriptName) c.scriptName = migrateLegacyScriptKey(String(c.scriptName));
+      });
+    }
+    const inv = payload.inventory;
+    if (inv && typeof inv === 'object' && Array.isArray(inv.items)) {
+      inv.items.forEach(item => {
+        if (item && item.scriptName != null && String(item.scriptName).trim()) {
+          item.scriptName = migrateLegacyScriptKey(String(item.scriptName));
+        }
+      });
+    }
+  }
+
+  /** Inventario Firestore: solo *Ref (asset:), mai base64 nei campi legacy. */
+  function normalizeInventoryAssetRefsForFirestore(inv) {
+    if (!inv || typeof inv !== 'object') return;
+    const promoteRef = (legacyKey, refKey) => {
+      const legacy = inv[legacyKey];
+      const existing = inv[refKey];
+      const src = existing != null && existing !== '' ? existing : legacy;
+      if (src == null || src === '') {
+        delete inv[legacyKey];
+        delete inv[refKey];
+        return;
+      }
+      if (typeof src !== 'string') {
+        delete inv[legacyKey];
+        delete inv[refKey];
+        return;
+      }
+      if (isAssetRefString(src)) {
+        inv[refKey] = src;
+      } else if (isEmbeddedDataUrl(src)) {
+        delete inv[refKey];
+      } else if (!src.startsWith('data:')) {
+        inv[refKey] = src;
+      }
+      delete inv[legacyKey];
+    };
+    promoteRef('background', 'backgroundRef');
+    promoteRef('toggleIcon', 'toggleIconRef');
+    if (Array.isArray(inv.items)) {
+      inv.items = inv.items.map(item => {
+        if (!item || typeof item !== 'object') return item;
+        const next = { ...item };
+        const src = next.imageRef != null && next.imageRef !== '' ? next.imageRef : next.image;
+        if (typeof src === 'string' && isAssetRefString(src)) {
+          next.imageRef = src;
+        } else if (typeof src === 'string' && isEmbeddedDataUrl(src)) {
+          delete next.imageRef;
+        } else if (typeof src === 'string' && src && !src.startsWith('data:')) {
+          next.imageRef = src;
+        } else {
+          delete next.imageRef;
+        }
+        delete next.image;
+        if (next.scriptName != null) next.scriptName = String(next.scriptName);
+        return next;
+      });
+    }
+    if (Array.isArray(inv.slots)) {
+      inv.slots = inv.slots.filter(s => s && s.id !== '__drawing__');
+    }
+  }
+
+  function normalizeAssetRefFieldsForFirestore(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    normalizeInventoryAssetRefsForFirestore(payload.inventory);
+    const walk = (node, path) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((item, i) => walk(item, `${path}[${i}]`));
+        return;
+      }
+      for (const [key, val] of Object.entries(node)) {
+        const childPath = path ? `${path}.${key}` : key;
+        if (FIRESTORE_ASSET_FIELD_KEYS.has(key) && typeof val === 'string') {
+          if (isEmbeddedDataUrl(val)) {
+            node[key] = null;
+          } else if (isAssetRefString(val)) {
+            node[key] = val;
+          }
+        } else if (val && typeof val === 'object') {
+          walk(val, childPath);
+        }
+      }
+    };
+    walk(payload, '');
+  }
+
+  function removeEditorTransientFieldsFromFirestorePayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (Array.isArray(payload.rooms)) {
+      for (const room of payload.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (h && h._meta) delete h._meta;
+        }
+      }
+    }
+    delete payload._editorCache;
+    delete payload._playtestSnapshot;
+  }
+
+  function detectDuplicateScriptBodies(scriptsObj) {
+    const byBody = new Map();
+    const duplicates = [];
+    if (!scriptsObj || typeof scriptsObj !== 'object') return duplicates;
+    for (const [key, code] of Object.entries(scriptsObj)) {
+      const body = String(code || '').trim();
+      if (!body) continue;
+      if (byBody.has(body)) {
+        duplicates.push({ keys: [byBody.get(body), key], bytes: new Blob([body]).size });
+      } else {
+        byBody.set(body, key);
+      }
+    }
+    return duplicates;
+  }
+
+  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
+  function dedupeHotspotScriptsInPayload(payload) {
+    if (!payload || typeof payload !== 'object') return payload;
+    if (!payload.scripts || typeof payload.scripts !== 'object') return payload;
+    payload.scripts = pruneDuplicateHotspotScriptsFromScriptsObject({ ...payload.scripts }, payload);
+    return payload;
+  }
+
+  /**
+   * Unica sorgente di verità per payload Firestore, stima dimensione ed export slim.
+   * @param {Object} projectObj - Progetto da serializeProject() (o equivalente)
+   * @returns {Object} Clone normalizzato pronto per JSON.stringify → Firestore
+   */
   function prepareProjectPayloadForFirestore(projectObj) {
-    let payload = dedupeHotspotScriptsForFirestore(projectObj);
+    if (!projectObj || typeof projectObj !== 'object') {
+      return projectObj;
+    }
+    const payload = sanitizeUndefinedDeep(JSON.parse(JSON.stringify(projectObj)));
+    mergeLegacyHotspotScriptsIntoRooms(payload);
+    dedupeHotspotScriptsInPayload(payload);
+    normalizeScriptKeysInFirestorePayload(payload);
+    normalizeAssetRefFieldsForFirestore(payload);
+    removeEditorTransientFieldsFromFirestorePayload(payload);
     payload.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
     return payload;
   }
 
   function measureFirestorePayloadBytes(projectObj) {
     const payload = prepareProjectPayloadForFirestore(projectObj);
-    let json = JSON.stringify(payload);
-    json = json.replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/gi, FIRESTORE_ASSET_REF_PLACEHOLDER);
-    return new Blob([json]).size;
+    return new Blob([JSON.stringify(payload)]).size;
+  }
+
+  /**
+   * @param {Object} payload - Payload già preparato o grezzo
+   * @param {{ autoStrip?: boolean, warn?: boolean }} [options]
+   */
+  function assertNoEmbeddedDataUrls(payload, options = {}) {
+    const prepared = payload && payload.format === 'amianto-game'
+      ? prepareProjectPayloadForFirestore(payload)
+      : payload;
+    const stats = collectEmbeddedDataUrlStats(prepared);
+    const warn = options.warn !== false;
+    if (stats.embeddedAssetCount > 0 && warn) {
+      const top = stats.offenders.slice(0, 5).map(o => `${o.path} (${formatProjectSizeLabel(o.bytes)})`).join(', ');
+      const msg = `[Firestore] ${stats.embeddedAssetCount} asset embedded (base64) nel payload (${formatProjectSizeLabel(stats.embeddedBytes)}). Carica su storage prima del salvataggio. Top: ${top}`;
+      console.warn(msg, stats);
+      addDebugMessage(msg, 'warning');
+    }
+    if (options.autoStrip && stats.embeddedAssetCount > 0) {
+      normalizeAssetRefFieldsForFirestore(prepared.inventory);
+      const walk = (node) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+          node.forEach(walk);
+          return;
+        }
+        for (const [key, val] of Object.entries(node)) {
+          if (typeof val === 'string' && isEmbeddedDataUrl(val) && FIRESTORE_ASSET_FIELD_KEYS.has(key)) {
+            node[key] = null;
+          } else if (val && typeof val === 'object') {
+            walk(val);
+          }
+        }
+      };
+      walk(prepared);
+    }
+    return stats;
+  }
+
+  function getPayloadSectionByteBreakdown(payload) {
+    const sections = {};
+    if (!payload || typeof payload !== 'object') return sections;
+    for (const key of Object.keys(payload)) {
+      try {
+        sections[key] = new Blob([JSON.stringify(payload[key])]).size;
+      } catch (_) {
+        sections[key] = 0;
+      }
+    }
+    return sections;
+  }
+
+  function debugProjectPayloadSize() {
+    const raw = typeof window.serializeProject === 'function' ? window.serializeProject() : null;
+    if (!raw) {
+      console.warn('[PayloadDebug] serializeProject non disponibile');
+      return null;
+    }
+    const prepared = prepareProjectPayloadForFirestore(raw);
+    const jsonString = JSON.stringify(prepared);
+    const totalBytes = new Blob([jsonString]).size;
+    const embedded = collectEmbeddedDataUrlStats(prepared);
+    const pendingEmbedded = collectEmbeddedDataUrlStats({
+      rooms: raw.rooms,
+      guis: raw.guis,
+      characters: raw.characters,
+      inventory: raw.inventory,
+      cursors: raw.cursors,
+      resourcesCatalog: raw.resourcesCatalog
+    });
+    const breakdown = getPayloadSectionByteBreakdown(prepared);
+    const scriptDupes = detectDuplicateScriptBodies(prepared.scripts);
+    const report = {
+      totalBytes,
+      totalLabel: formatProjectSizeLabel(totalBytes),
+      embeddedAssetCount: embedded.embeddedAssetCount,
+      embeddedBytes: embedded.embeddedBytes,
+      largestEmbeddedAsset: embedded.largestEmbeddedAsset,
+      topEmbeddedOffenders: embedded.offenders.slice(0, 10),
+      pendingBeforePrepare: pendingEmbedded,
+      sectionBreakdown: breakdown,
+      duplicateScriptBodies: scriptDupes
+    };
+    console.group('[PayloadDebug] Firestore payload');
+    console.log('Dimensione serializzata (prepared):', report.totalLabel, `(${totalBytes} B)`);
+    console.log('Embedded nel payload prepared:', embedded);
+    console.log('Embedded negli asset live (pre-prepare):', pendingEmbedded);
+    console.log('Breakdown sezioni (byte):', breakdown);
+    if (scriptDupes.length) console.warn('Script duplicati (stesso corpo):', scriptDupes);
+    console.groupEnd();
+    return report;
+  }
+
+  /** Allinea nomi ref inventario legacy → campi editor (background, image, …). */
+  function migrateLegacyInventoryRefsOnLoad(projectObj) {
+    const inv = projectObj && projectObj.inventory;
+    if (!inv || typeof inv !== 'object') return;
+    if (inv.backgroundRef && !inv.background) inv.background = inv.backgroundRef;
+    if (inv.toggleIconRef && !inv.toggleIcon) inv.toggleIcon = inv.toggleIconRef;
+    if (Array.isArray(inv.items)) {
+      inv.items.forEach(item => {
+        if (item && item.imageRef && !item.image) item.image = item.imageRef;
+      });
+    }
+  }
+
+  function migrateEmbeddedAssetsOnProjectLoad(projectObj) {
+    if (!projectObj) return { embeddedCount: 0, embeddedBytes: 0 };
+    migrateLegacyInventoryRefsOnLoad(projectObj);
+    const stats = collectEmbeddedDataUrlStats({
+      rooms: projectObj.rooms,
+      guis: projectObj.guis,
+      characters: projectObj.characters,
+      inventory: projectObj.inventory,
+      cursors: projectObj.cursors,
+      resourcesCatalog: projectObj.resourcesCatalog
+    });
+    if (stats.embeddedAssetCount > 0) {
+      console.warn(
+        `[Load] Progetto con ${stats.embeddedAssetCount} asset embedded (${formatProjectSizeLabel(stats.embeddedBytes)}). ` +
+        'Usa Save progetto per migrarli su storage.'
+      );
+      window.__amiantoEmbeddedAssetsOnLoad = stats;
+    } else {
+      window.__amiantoEmbeddedAssetsOnLoad = null;
+    }
+    return stats;
   }
 
   window.prepareProjectPayloadForFirestore = prepareProjectPayloadForFirestore;
   window.measureFirestorePayloadBytes = measureFirestorePayloadBytes;
+  window.collectEmbeddedDataUrlStats = collectEmbeddedDataUrlStats;
+  window.assertNoEmbeddedDataUrls = assertNoEmbeddedDataUrls;
+  window.debugProjectPayloadSize = debugProjectPayloadSize;
   window.markAmiantoProjectDirty = function() {
     window.__amiantoProjectDirty = true;
+    scheduleProjectSizeIndicatorRefresh(350);
   };
 
   /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
@@ -12587,11 +13274,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
 
       const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
-      const jsonString = JSON.stringify(projectData);
-      const dataSizeBytes = measureFirestorePayloadBytes(projectData);
+      const firestorePayload = prepareProjectPayloadForFirestore(projectData);
+      const jsonString = JSON.stringify(firestorePayload);
+      const dataSizeBytes = new Blob([jsonString]).size;
       const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      const dataURLCount = countEmbeddedDataUrls(projectData);
-      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB`, dataURLCount });
+      const embeddedStats = assertNoEmbeddedDataUrls(firestorePayload, { warn: false });
+      const dataURLCount = embeddedStats.embeddedAssetCount;
+      console.log('[Firestore] Dati progetto preparati:', {
+        projectName,
+        dataSize: jsonString.length,
+        dataSizeBytes,
+        dataSizeMB: `${dataSizeMB} MB`,
+        dataURLCount,
+        embeddedBytes: embeddedStats.embeddedBytes
+      });
 
       if (dataURLCount > 0) {
         const errorMsg = `Salvataggio Firestore bloccato: ${dataURLCount} asset ancora in base64 (data:…). Carica tutti gli asset su storage prima di salvare.`;
@@ -13863,6 +14559,35 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         }
+
+        if (gui.type === 'DialogBox' && gui.settings && typeof gui.settings === 'object') {
+          const st = gui.settings;
+          if (st.balloon && typeof st.balloon === 'string' && st.balloon.startsWith('data:image/')) {
+            st.balloon = await processAsset(st.balloon, 'gui', `gui_${gui.id}_dialog_balloon`);
+          }
+          const cf = st.customFont;
+          if (cf && typeof cf === 'string' && cf.startsWith('data:') && !cf.startsWith('data:image/')) {
+            let ext = 'ttf';
+            if (cf.includes('woff2') || cf.includes('font/woff2')) ext = 'woff2';
+            else if (cf.includes('woff') || cf.includes('font/woff')) ext = 'woff';
+            else if (cf.includes('otf') || cf.includes('font/otf')) ext = 'otf';
+            try {
+              const file = await dataURLtoFile(cf, `gui_${gui.id}_dialog_font.${ext}`);
+              if (file) {
+                const existingId = (typeof cf === 'string' && cf.startsWith('asset:'))
+                  ? cf.replace('asset:', '')
+                  : null;
+                const { assetId } = await uploadImage(file, projectId, 'gui', {
+                  assetId: existingId,
+                  overwriteExisting: true
+                });
+                st.customFont = `asset:${assetId}`;
+              }
+            } catch (fontErr) {
+              console.error('[Asset] Dialog font upload failed:', fontErr);
+            }
+          }
+        }
       }
     }
 
@@ -13985,12 +14710,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
+    // Processa inventory (background, toggle icon, item images)
+    const inv = updatedProject.inventory;
+    if (inv && typeof inv === 'object' && !Array.isArray(inv)) {
+      const invFolder = 'inventory';
+      if (inv.background || inv.backgroundRef) {
+        const converted = await processAsset(
+          inv.background || inv.backgroundRef,
+          'inventory',
+          'inventory_background',
+          invFolder
+        );
+        inv.background = converted;
+        if (typeof converted === 'string' && converted.startsWith('asset:')) inv.backgroundRef = converted;
+      }
+      if (inv.toggleIcon || inv.toggleIconRef) {
+        const converted = await processAsset(
+          inv.toggleIcon || inv.toggleIconRef,
+          'inventory',
+          'inventory_toggle_icon',
+          invFolder
+        );
+        inv.toggleIcon = converted;
+        if (typeof converted === 'string' && converted.startsWith('asset:')) inv.toggleIconRef = converted;
+      }
+      if (Array.isArray(inv.items)) {
+        for (const item of inv.items) {
+          if (!item) continue;
+          const src = item.image || item.imageRef;
+          if (!src) continue;
+          const converted = await processAsset(
+            src,
+            'inventory',
+            `inventory_item_${item.id || item.name || 'unknown'}`,
+            invFolder
+          );
+          item.image = converted;
+          if (typeof converted === 'string' && converted.startsWith('asset:')) item.imageRef = converted;
+        }
+      }
+    }
+
     // Processa cursors
     if (updatedProject.cursors && Array.isArray(updatedProject.cursors)) {
       for (const cursor of updatedProject.cursors) {
-        if (cursor.image) {
-          cursor.image = await processAsset(cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
-        }
+        const src = cursor.cursorImage || cursor.image;
+        if (!src) continue;
+        const converted = await processAsset(cursor.cursorImage || cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
+        cursor.cursorImage = converted;
+        if (cursor.image !== undefined) cursor.image = converted;
       }
     }
 
@@ -14131,28 +14899,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       projectObj = await saveAllAssetsToStorage(projectObj, projectId);
       console.log('[Save] ✅ Tutti gli asset salvati su Supabase');
       
-      // Verifica che non ci siano più dataURL nel progetto (dovrebbero essere tutti convertiti in assetId)
-      const projectJsonString = JSON.stringify(projectObj);
-      const remainingDataURLs = (projectJsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
-      const assetIdCount = (projectJsonString.match(/asset:[^"]+/g) || []).length;
+      const postAssetPayload = prepareProjectPayloadForFirestore(projectObj);
+      const postAssetEmbedded = collectEmbeddedDataUrlStats(postAssetPayload);
+      const assetIdCount = (JSON.stringify(postAssetPayload).match(/asset:[^"]+/g) || []).length;
       
       console.log('[Save] 📊 Statistiche conversione asset:', {
-        dataURLRimanenti: remainingDataURLs,
+        dataURLRimanenti: postAssetEmbedded.embeddedAssetCount,
+        embeddedBytes: postAssetEmbedded.embeddedBytes,
         assetIdTotali: assetIdCount,
-        conversioneCompleta: remainingDataURLs === 0
+        conversioneCompleta: postAssetEmbedded.embeddedAssetCount === 0
       });
       
-      if (remainingDataURLs > 0) {
-        const warnMsg = `Salvataggio Firestore bloccato: ${remainingDataURLs} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
+      if (postAssetEmbedded.embeddedAssetCount > 0) {
+        const warnMsg = `Salvataggio Firestore bloccato: ${postAssetEmbedded.embeddedAssetCount} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
         console.warn(`[Save] ⚠️ ${warnMsg}`);
         addDebugMessage(warnMsg, 'error');
         showNotification(warnMsg, 'warning');
-        const dataURLMatches = projectJsonString.match(/data:[^;]+;base64,[^"]+/g);
-        if (dataURLMatches && dataURLMatches.length > 0) {
-          console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
-        }
+        const top = postAssetEmbedded.offenders.slice(0, 3);
+        if (top.length) console.warn('[Save] DataURL trovati:', top);
       } else {
-        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti in assetId');
+        console.log('[Save] ✅ Nessun dataURL nel payload preparato - asset pronti per Firestore');
       }
       
       // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
@@ -14180,15 +14946,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
     }
 
-    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload slim, no base64
+    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload canonico (prepareProjectPayloadForFirestore)
     let firestoreSuccess = false;
-    const embeddedDataUrls = countEmbeddedDataUrls(projectObj);
+    const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
+    const embeddedStats = assertNoEmbeddedDataUrls(firestorePayload, { warn: true });
+    const embeddedDataUrls = embeddedStats.embeddedAssetCount;
     if (userId && embeddedDataUrls > 0) {
-      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel progetto`);
+      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel payload preparato`);
     } else if (userId) {
       console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
       
-      const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
       const projectJsonPreview = JSON.stringify(firestorePayload);
       const projectSizeBytes = new Blob([projectJsonPreview]).size;
       const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
@@ -14205,10 +14972,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
     }
 
-    // 2. CACHE LOCALE (backup temporaneo) - payload slim come Firestore (no Hotspot:* duplicati)
-    const savePayload = prepareProjectPayloadForFirestore(projectObj);
+    // 2. CACHE LOCALE (backup temporaneo) - stesso payload canonico Firestore
+    const savePayload = firestorePayload;
     const jsonString = JSON.stringify(savePayload, null, 2);
-    window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(projectObj);
+    window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
     window.__amiantoProjectDirty = false;
     autosaveToCache(projectName, jsonString);
 
@@ -15094,6 +15861,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   async function applyProjectObject(projectObj) {
     try {
       mergeLegacyHotspotScriptsIntoRooms(projectObj);
+      migrateLegacyInventoryRefsOnLoad(projectObj);
+      migrateEmbeddedAssetsOnProjectLoad(projectObj);
 
       // Ottieni projectId dal progetto (necessario per risolvere assetId)
       const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
@@ -15370,11 +16139,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
           
           const loadedGuiType = (g.type === 'Inventory') ? 'OverlayCustom' : (g.type || 'MainInterface');
+          const loadedSettings = g.settings ? { ...g.settings } : {};
+          if (loadedGuiType === 'DialogBox') {
+            if (loadedSettings.balloon) {
+              try {
+                const balloonImg = await createImageFromDataUrl(loadedSettings.balloon, projectId);
+                if (balloonImg && loadedSettings.balloon.startsWith('asset:')) {
+                  const assetId = loadedSettings.balloon.replace('asset:', '');
+                  imageAssetMap.set(balloonImg, { assetId, type: 'gui', projectId });
+                }
+                loadedSettings.balloonImage = balloonImg;
+              } catch (e) {
+                console.warn('[GUI] Dialog balloon load failed:', e);
+              }
+            }
+            try {
+              await hydrateDialogBoxFont(loadedSettings, projectId);
+            } catch (e) {
+              console.warn('[GUI] Dialog font hydrate failed:', e);
+            }
+          }
           guis.push({
             id: g.id || uid('gui'),
             name: g.name || 'GUI',
             type: loadedGuiType,
-            settings: g.settings || {},
+            settings: loadedSettings,
             background: guiBg,
             buttons: buttons
           });
@@ -15392,6 +16181,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           typeSel.value = guis[0].type || 'MainInterface';
         }
         renderGuiSettingsPanel(guis[0].type || 'MainInterface', guis[0].settings || {});
+        updateGuiToolbarForType(guis[0].type || 'MainInterface');
         refreshGuiButtonsList();
       } catch(_) {}
 
@@ -15424,18 +16214,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               charData.pivotX = Number(ch.pivotX) || 0;
               charData.pivotY = Number(ch.pivotY) || 0;
             }
-            // Load spawnSettings if it exists
-            if (ch.spawnSettings) {
-              charData.spawnSettings = {
-                isPlayer: ch.spawnSettings.isPlayer === true,
-                autoSpawn: ch.spawnSettings.autoSpawn === true,
-                roomId: ch.spawnSettings.roomId || null,
-                x: typeof ch.spawnSettings.x === 'number' ? ch.spawnSettings.x : 0,
-                y: typeof ch.spawnSettings.y === 'number' ? ch.spawnSettings.y : 0,
-                direction: ch.spawnSettings.direction || 'south',
-                moveSpeed: typeof ch.spawnSettings.moveSpeed === 'number' && ch.spawnSettings.moveSpeed > 0 ? ch.spawnSettings.moveSpeed : 100
-              };
-            }
+            charData.spawnSettings = normalizeCharacterSpawnSettings(ch.spawnSettings);
             characterFrames.set(characterName, charData);
           }
         }
@@ -15483,8 +16262,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               h: Number(s.h) || 0
             }));
           }
-          if (invData.background) {
-            const bgRef = invData.background;
+          const bgRef = invData.backgroundRef || invData.background;
+          if (bgRef) {
             Promise.resolve().then(async () => {
               const img = await createImageFromDataUrl(bgRef, projectId);
               if (img) {
@@ -15496,8 +16275,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             });
           }
-          if (invData.toggleIcon) {
-            const iconRef = invData.toggleIcon;
+          const iconRef = invData.toggleIconRef || invData.toggleIcon;
+          if (iconRef) {
             Promise.resolve().then(async () => {
               const img = await createImageFromDataUrl(iconRef, projectId);
               if (img) {
@@ -15517,7 +16296,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             name: item.name || 'Item',
             scriptName: item.scriptName != null ? String(item.scriptName) : '',
             image: null,
-            _imageRef: item.image || null
+            _imageRef: item.imageRef || item.image || null
           };
           inventoryItems.push(entry);
         });
@@ -15842,7 +16621,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.importProjectFromJson = async function(jsonString) {
     try {
       const obj = JSON.parse(jsonString);
+      migrateLegacyInventoryRefsOnLoad(obj);
       await applyProjectObject(obj);
+      scheduleProjectSizeIndicatorRefresh(400);
     } catch (err) {
       addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
       showNotification('Invalid project JSON', 'danger');
@@ -16004,15 +16785,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
 
       const projectObj = window.serializeProject();
-      let firestoreBytes;
-      const isDirty = !!window.__amiantoProjectDirty;
-      if (!isDirty && typeof window.__amiantoLastFirestorePayloadBytes === 'number') {
-        firestoreBytes = window.__amiantoLastFirestorePayloadBytes;
-      } else {
-        firestoreBytes = estimateFirestorePayloadBytes(projectObj);
-      }
+      const preparedPayload = prepareProjectPayloadForFirestore(projectObj);
+      const firestoreBytes = new Blob([JSON.stringify(preparedPayload)]).size;
+      const embeddedInPayload = collectEmbeddedDataUrlStats(preparedPayload);
       const pendingBytes = measurePendingAssetDataUrlBytes(projectObj);
       const pendingCount = countPendingAssetDataUrls(projectObj);
+      const isDirty = !!window.__amiantoProjectDirty;
 
       const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
       const percentageUsed = parseFloat(((firestoreBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1));
@@ -16023,13 +16801,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const assetLabel = pendingCount === 1 ? '1 asset' : `${pendingCount} asset`;
         parts.push(`da caricare: ${formatProjectSizeLabel(pendingBytes)} (${assetLabel})`);
       }
+      if (embeddedInPayload.embeddedAssetCount > 0) {
+        parts.push(`⚠ ${embeddedInPayload.embeddedAssetCount} embedded`);
+      }
 
       sizeText.textContent = parts.join(' · ');
-      indicator.title = pendingBytes > 0
-        ? 'Firestore: stima del JSON salvato (senza base64, script hotspot non duplicati). * = modifiche non salvate con Save progetto. "Da caricare": solo asset grafici/audio.'
-        : (isDirty
-          ? 'Firestore: stima corrente (* modifiche non salvate). Dopo Save progetto il valore si allinea al documento Firestore.'
-          : 'Firestore: dimensione dell\'ultimo Save progetto (~1 MB max). Storage: file su Supabase.');
+      let titleBase = 'Firestore: dimensione del payload canonico (stesso JSON salvato su Firestore). * = modifiche non salvate.';
+      if (pendingBytes > 0) {
+        titleBase += ' "Da caricare": base64 negli asset live non ancora su storage.';
+      }
+      if (embeddedInPayload.embeddedAssetCount > 0) {
+        titleBase += ` ⚠ ${embeddedInPayload.embeddedAssetCount} base64 ancora nel payload preparato (${formatProjectSizeLabel(embeddedInPayload.embeddedBytes)}) — Firestore bloccato finché non fai Save con upload.`;
+      }
+      indicator.title = titleBase;
 
       if (percentageUsed >= 90 || pendingBytes > 512 * 1024) {
         sizeText.style.color = '#ff6b6b';
@@ -16722,9 +17506,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       showNotification('Please login to export projects', 'warning');
       return;
     }
-    const jsonString = window.serializeProjectToJsonString(true);
-    const obj = window.serializeProject();
-    const fileName = (obj.settings && obj.settings.name ? obj.settings.name : 'amianto-project') + '.amianto.json';
+    const raw = window.serializeProject();
+    const prepared = prepareProjectPayloadForFirestore(raw);
+    const embedded = collectEmbeddedDataUrlStats(prepared);
+    if (embedded.embeddedAssetCount > 0) {
+      showNotification(
+        `Export: ${embedded.embeddedAssetCount} asset ancora embedded — salva su storage prima per un export leggero`,
+        'warning'
+      );
+    }
+    const jsonString = JSON.stringify(prepared, null, 2);
+    const fileName = (raw.settings && raw.settings.name ? raw.settings.name : 'amianto-project') + '.amianto.json';
     downloadBlob(jsonString, fileName, 'application/json');
     showNotification('Project exported as JSON', 'success');
   };
@@ -16819,6 +17611,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       guiBackground = null;
       guiButtons = [];
       selectedGuiButtonId = null;
+      updateGuiToolbarForType('MainInterface');
       redraw();
       return;
     }
@@ -16840,9 +17633,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (gui.type === 'Inventory') gui.type = guiType;
     if (typeSel) typeSel.value = guiType;
     renderGuiSettingsPanel(guiType, gui.settings || {});
+    updateGuiToolbarForType(guiType);
     
     redraw();
-    refreshGUIButtonsList();
+    refreshGuiButtonsList();
     showNotification(`Switched to GUI "${gui.name}"`, 'info');
   };
 
@@ -16911,6 +17705,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (g) {
         typeSelInit.value = g.type || 'MainInterface';
         renderGuiSettingsPanel(g.type || 'MainInterface', g.settings || {});
+        updateGuiToolbarForType(g.type || 'MainInterface');
       }
     }
   } catch(_) {}

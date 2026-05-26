@@ -89,6 +89,30 @@ Legenda azione:
 | `play_character_animation` | ❌ (hints ✅) | ✅ | ✅ | ❌ | **Implementato** — `GameAPI.play_character_animation`; coda comandi su `window` come `walk_character` |
 | `enableObject` / `disableObject` | ❌ | ✅ | ❌ | ✅ | Documentare o unificare con `set_object_visible` |
 | `enableHotspot` / `disableHotspot` | ❌ | ✅ | ❌ | ✅ | Campo `visible` hotspot; checkbox editor **Is active?** |
+| `show_dialogue` | ❌ | ✅ | ✅ | ✅ | Balloon DialogBox; `characterIdOrName`, `text`; click dismiss |
+| `show_dialogue_text` | ❌ | ✅ (alias) | ✅ | ✅ | `(text, speaker)` → delega a `show_dialogue` |
+| `end_dialogue` | ❌ | ✅ | ✅ | ✅ | Chiude balloon attivo |
+
+---
+
+## Dialoghi — runtime (maggio 2026)
+
+- [x] `GameAPI.show_dialogue(characterIdOrName, text)` — coda comandi, balloon segue personaggio
+- [x] `show_dialogue_text(text, speaker)` — alias roadmap
+- [x] `end_dialogue()`
+- [x] Rendering da prima GUI `DialogBox` (colori, `balloon` asset, `appear`)
+- [x] `getScriptApiBindings()` + `GAME_API_COMPLETIONS` in `main.js`
+- [ ] `show_dialogue_choices`, `start_dialogue`, mood/relazioni — backlog
+
+**Setup progetto:** tab GUI → tipo **DialogBox** → colori / immagine balloon.
+
+**Esempio:**
+
+```javascript
+function on_character_click(character_id) {
+  show_dialogue(character_id, "Buongiorno!");
+}
+```
 
 ---
 
@@ -275,7 +299,8 @@ Checklist:
 
 #### 2.5 CodeMirror hints (~6040–6047)
 
-- [ ] Aggiornare `GAME_API_COMPLETIONS` solo dopo che le API esistono in `SCRIPT_API_BINDINGS`
+- [x] `GAME_API_COMPLETIONS`: dialoghi (`show_dialogue`, `show_dialogue_text`, `end_dialogue`) — maggio 2026
+- [ ] Allineare elenco completo con ogni nuova API in `getScriptApiBindings()`
 - [ ] Opzionale: generare lista da documentazione conmotion
 
 #### 2.6 Serializzazione progetto (~11881)

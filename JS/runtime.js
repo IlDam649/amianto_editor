@@ -62,6 +62,7 @@
   // Asset Registry centralizzato - memorizza tutte le immagini caricate
   const AssetRegistry = {
     images: new Map(), // key: assetId/URL, value: Image object
+    fonts: new Map(), // key: font ref, value: loaded fontFamily string
     isLoading: false,
     loadComplete: false
   };
@@ -864,6 +865,8 @@
       
       // Reset AssetRegistry
       AssetRegistry.images.clear();
+      AssetRegistry.fonts.clear();
+      dialogFontLoadPromises.clear();
       AssetRegistry.isLoading = false;
       AssetRegistry.loadComplete = false;
 
@@ -945,6 +948,12 @@
         // Continua anche se il preload fallisce parzialmente
       }
 
+      try {
+        await preloadDialogBoxFonts(projectData);
+      } catch (fontErr) {
+        log(`[Runtime] Dialog font preload: ${fontErr.message}`, 'warning');
+      }
+
       // Verifica che il preload sia completato prima di procedere
       if (!AssetRegistry.loadComplete) {
         log('[Runtime] ATTENZIONE: Preload non completato, potrebbe causare problemi di rendering', 'warning');
@@ -954,7 +963,16 @@
       await loadCharacterDefinitions(projectData.characters || []);
 
       updateLoadingMessage('Loading initial room...');
-      const startRoomId = settings.startRoom || settings.startRoomId || (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
+      const playerCharForStartRoom = (projectData.characters || []).find(char =>
+        char.spawnSettings && char.spawnSettings.isPlayer === true
+      );
+      const playerStartRoomId = playerCharForStartRoom &&
+        playerCharForStartRoom.spawnSettings &&
+        playerCharForStartRoom.spawnSettings.roomId
+        ? playerCharForStartRoom.spawnSettings.roomId
+        : null;
+      const startRoomId = settings.startRoom || settings.startRoomId || playerStartRoomId ||
+        (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
       if (startRoomId) {
         await changeRoom(startRoomId);
       } else {
@@ -1175,6 +1193,9 @@
             }
           });
         }
+        if (gui.type === 'DialogBox' && gui.settings && typeof gui.settings.balloon === 'string' && gui.settings.balloon) {
+          assetsWithCategory.set(gui.settings.balloon, { category: 'gui', roomName: null, characterName: null });
+        }
       });
     }
 
@@ -1298,6 +1319,8 @@
     }
 
     log(`[Runtime] Cambio room: ${roomId}`, 'info');
+
+    dismissActiveDialogue();
 
     const oldRoomId = gameState.currentRoomId;
     gameState.currentRoomId = roomId;
@@ -1906,12 +1929,23 @@
         }
       }
 
+      let balloonImage = null;
+      const guiType = guiData.type || 'MainInterface';
+      if (guiType === 'DialogBox' && guiData.settings && typeof guiData.settings.balloon === 'string' && guiData.settings.balloon) {
+        balloonImage = AssetRegistry.images.get(guiData.settings.balloon);
+        if (!balloonImage || !balloonImage.complete) {
+          log(`[Runtime] Dialog balloon not found in registry: ${guiData.id}`, 'warning');
+          balloonImage = null;
+        }
+      }
+
       gameState.guis.set(guiData.id, {
         id: guiData.id,
         name: guiData.name || guiData.id,
-        type: guiData.type || 'MainInterface',
+        type: guiType,
         settings: guiData.settings || {},
         background: backgroundImg,
+        balloonImage,
         buttons
       });
 
@@ -1919,6 +1953,325 @@
     }
 
     log(`[Runtime] GUI loading complete: ${guisData.length} GUI(s) loaded`, 'success');
+  }
+
+  // ============================================
+  // SISTEMA DIALOGHI (DialogBox GUI + balloon)
+  // ============================================
+  const DIALOGUE_MAX_TEXT_WIDTH = 280;
+  const DIALOGUE_PADDING = 14;
+  const DIALOGUE_GAP_ABOVE_CHARACTER = 10;
+  const DIALOGUE_FADE_MS = 250;
+  const DIALOGUE_FONT_SIZE_MIN = 8;
+  const DIALOGUE_FONT_SIZE_MAX = 96;
+
+  let activeDialogue = null;
+  const dialogFontLoadPromises = new Map();
+
+  function clampDialogueFontSize(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n)) return 16;
+    return Math.max(DIALOGUE_FONT_SIZE_MIN, Math.min(DIALOGUE_FONT_SIZE_MAX, Math.round(n)));
+  }
+
+  function normalizeDialogBoxSettings(settings) {
+    const s = settings || {};
+    return {
+      backgroundColor: s.backgroundColor || '#1a1a2e',
+      textColor: s.textColor || '#ffffff',
+      boxBorderColor: s.boxBorderColor || '#39ff14',
+      fontSize: clampDialogueFontSize(s.fontSize),
+      fontFamily: (typeof s.fontFamily === 'string' && s.fontFamily.trim()) ? s.fontFamily.trim() : '',
+      customFont: (typeof s.customFont === 'string' && s.customFont.trim()) ? s.customFont.trim() : '',
+      appear: s.appear || 'instant'
+    };
+  }
+
+  function buildDialogueFontCss(settings) {
+    const size = clampDialogueFontSize(settings && settings.fontSize);
+    const hasCustom = settings && settings.customFont && settings.fontFamily;
+    const family = hasCustom
+      ? `"${settings.fontFamily}", Arial, sans-serif`
+      : 'Arial, sans-serif';
+    return `${size}px ${family}`;
+  }
+
+  function getDialogueLineHeight(fontSize) {
+    return Math.max(12, Math.round(clampDialogueFontSize(fontSize) * 1.25));
+  }
+
+  async function resolveDialogueFontUrl(fontRef) {
+    if (!fontRef || typeof fontRef !== 'string') return null;
+    if (fontRef.startsWith('data:') || fontRef.startsWith('http')) return fontRef;
+    if (fontRef.startsWith('asset:')) {
+      const assetId = fontRef.replace('asset:', '');
+      const url = await resolveAssetId(assetId, 'gui');
+      return url || null;
+    }
+    return fontRef;
+  }
+
+  async function ensureDialogueFontLoaded(fontRef, fontFamily) {
+    if (!fontRef || !fontFamily) return null;
+    const key = `${fontRef}|${fontFamily}`;
+    if (AssetRegistry.fonts.has(key)) {
+      return AssetRegistry.fonts.get(key);
+    }
+    if (dialogFontLoadPromises.has(key)) {
+      return dialogFontLoadPromises.get(key);
+    }
+    const promise = (async () => {
+      try {
+        if (typeof FontFace === 'undefined' || !document.fonts) {
+          return null;
+        }
+        const url = await resolveDialogueFontUrl(fontRef);
+        if (!url) return null;
+        const face = new FontFace(fontFamily, `url(${url})`);
+        await face.load();
+        document.fonts.add(face);
+        AssetRegistry.fonts.set(key, fontFamily);
+        return fontFamily;
+      } catch (err) {
+        log(`[Runtime] Dialog font load failed (${fontFamily}): ${err.message}`, 'warning');
+        return null;
+      } finally {
+        dialogFontLoadPromises.delete(key);
+      }
+    })();
+    dialogFontLoadPromises.set(key, promise);
+    return promise;
+  }
+
+  async function preloadDialogBoxFonts(projectData) {
+    if (!projectData.guis || !Array.isArray(projectData.guis)) return;
+    const tasks = [];
+    projectData.guis.forEach(gui => {
+      if (gui.type !== 'DialogBox' || !gui.settings) return;
+      const st = normalizeDialogBoxSettings(gui.settings);
+      if (st.customFont && st.fontFamily) {
+        tasks.push(ensureDialogueFontLoaded(st.customFont, st.fontFamily));
+      }
+    });
+    if (tasks.length) {
+      await Promise.allSettled(tasks);
+    }
+  }
+
+  function getDialogBoxGui() {
+    for (const gui of gameState.guis.values()) {
+      if (gui.type === 'DialogBox') {
+        return gui;
+      }
+    }
+    return null;
+  }
+
+  function resolveCharacter(characterIdOrName) {
+    let character = gameState.characters.get(characterIdOrName);
+    if (character) {
+      return character;
+    }
+    for (const char of gameState.characters.values()) {
+      if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+        return char;
+      }
+    }
+    return null;
+  }
+
+  function getCharacterSpriteBounds(character) {
+    const room = gameState.currentRoom;
+    if (!room) {
+      return { x: character.renderX, y: character.renderY, width: 0, height: 0 };
+    }
+
+    const charDef = gameState.characterDefinitions.get(character.name);
+    const scale = calculateCharacterScale(character.renderY, room);
+    const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
+    const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
+
+    if (!frame) {
+      return { x: character.renderX, y: character.renderY, width: 32 * scale, height: 64 * scale };
+    }
+
+    const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
+    const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
+    const scaledWidth = frameWidth * scale;
+    const scaledHeight = frameHeight * scale;
+
+    let drawX = character.renderX;
+    let drawY = character.renderY;
+    if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+      drawX = character.renderX - (charDef.pivotX * scale);
+      drawY = character.renderY - (charDef.pivotY * scale);
+    }
+
+    return { x: drawX, y: drawY, width: scaledWidth, height: scaledHeight };
+  }
+
+  function wrapDialogueText(ctx, text, maxWidth) {
+    const words = String(text).replace(/\s+/g, ' ').trim().split(' ');
+    if (!words.length || (words.length === 1 && words[0] === '')) {
+      return [''];
+    }
+
+    const lines = [];
+    let line = '';
+    words.forEach(word => {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width <= maxWidth) {
+        line = test;
+      } else {
+        if (line) {
+          lines.push(line);
+        }
+        line = word;
+      }
+    });
+    if (line) {
+      lines.push(line);
+    }
+    return lines.length ? lines : [''];
+  }
+
+  function dismissActiveDialogue() {
+    if (!activeDialogue) {
+      return;
+    }
+    if (activeDialogue.timeoutId) {
+      clearTimeout(activeDialogue.timeoutId);
+    }
+    const resolve = activeDialogue.dismissResolver;
+    activeDialogue = null;
+    if (typeof resolve === 'function') {
+      resolve();
+    }
+  }
+
+  function showDialogueAndWait(characterIdOrName, text) {
+    const character = resolveCharacter(characterIdOrName);
+    if (!character) {
+      GameAPI.error(`show_dialogue: character "${characterIdOrName}" not found (by ID or name in current room)`);
+      return Promise.resolve();
+    }
+    if (!character.visible || character.roomId !== gameState.currentRoomId) {
+      GameAPI.error(`show_dialogue: character "${characterIdOrName}" is not visible in the current room`);
+      return Promise.resolve();
+    }
+
+    dismissActiveDialogue();
+
+    const dialogGui = getDialogBoxGui();
+    const settings = normalizeDialogBoxSettings(dialogGui ? dialogGui.settings : {});
+    const balloonImage = dialogGui && dialogGui.balloonImage ? dialogGui.balloonImage : null;
+    const messageText = String(text);
+
+    return (async () => {
+      if (settings.customFont && settings.fontFamily) {
+        await ensureDialogueFontLoaded(settings.customFont, settings.fontFamily);
+      }
+      return new Promise(resolve => {
+        activeDialogue = {
+          characterId: character.id,
+          text: messageText,
+          settings,
+          balloonImage,
+          dismissResolver: resolve,
+          appear: settings.appear,
+          opacity: settings.appear === 'fade' ? 0 : 1,
+          slideOffset: settings.appear === 'slide' ? 12 : 0,
+          appearStart: performance.now()
+        };
+        activeDialogue.timeoutId = setTimeout(() => dismissActiveDialogue(), 120000);
+        log(`[Runtime] show_dialogue: "${character.name}" — ${messageText.substring(0, 60)}${messageText.length > 60 ? '…' : ''}`, 'info');
+      });
+    })();
+  }
+
+  function updateDialogueAppear(deltaTime) {
+    if (!activeDialogue) {
+      return;
+    }
+    const elapsed = performance.now() - activeDialogue.appearStart;
+    if (activeDialogue.appear === 'fade') {
+      activeDialogue.opacity = Math.min(1, elapsed / DIALOGUE_FADE_MS);
+    } else if (activeDialogue.appear === 'slide') {
+      const t = Math.min(1, elapsed / DIALOGUE_FADE_MS);
+      activeDialogue.slideOffset = 12 * (1 - t);
+      activeDialogue.opacity = 1;
+    } else {
+      activeDialogue.opacity = 1;
+      activeDialogue.slideOffset = 0;
+    }
+  }
+
+  function renderDialogueBalloon(ctx) {
+    if (!activeDialogue || !gameState.currentRoom) {
+      return;
+    }
+
+    const character = gameState.characters.get(activeDialogue.characterId);
+    if (!character || !character.visible || character.roomId !== gameState.currentRoomId) {
+      return;
+    }
+
+    const bounds = getCharacterSpriteBounds(character);
+    const settings = activeDialogue.settings;
+    const opacity = activeDialogue.opacity != null ? activeDialogue.opacity : 1;
+    const slideOffset = activeDialogue.slideOffset || 0;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+
+    const prevFont = ctx.font;
+    const prevAlign = ctx.textAlign;
+    const prevBaseline = ctx.textBaseline;
+    const lineHeight = getDialogueLineHeight(settings.fontSize);
+    ctx.font = buildDialogueFontCss(settings);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    const innerMaxWidth = DIALOGUE_MAX_TEXT_WIDTH;
+    const lines = wrapDialogueText(ctx, activeDialogue.text, innerMaxWidth);
+    const textWidth = Math.min(innerMaxWidth, Math.max(...lines.map(l => ctx.measureText(l).width), 40));
+    const textHeight = lines.length * lineHeight;
+    const boxWidth = textWidth + DIALOGUE_PADDING * 2;
+    const boxHeight = textHeight + DIALOGUE_PADDING * 2;
+
+    let boxX = bounds.x + bounds.width / 2 - boxWidth / 2;
+    let boxY = bounds.y - boxHeight - DIALOGUE_GAP_ABOVE_CHARACTER - slideOffset;
+
+    boxX = Math.max(4, Math.min(boxX, canvas.width - boxWidth - 4));
+    boxY = Math.max(4, Math.min(boxY, canvas.height - boxHeight - 4));
+
+    const balloonImg = activeDialogue.balloonImage;
+    if (balloonImg && balloonImg.complete && balloonImg.naturalWidth > 0) {
+      try {
+        ctx.drawImage(balloonImg, boxX, boxY, boxWidth, boxHeight);
+      } catch (error) {
+        log(`[Runtime] Error rendering dialog balloon image: ${error.message}`, 'warning');
+      }
+    } else {
+      ctx.fillStyle = settings.backgroundColor;
+      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.strokeStyle = settings.boxBorderColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+    }
+
+    ctx.fillStyle = settings.textColor;
+    const textX = boxX + DIALOGUE_PADDING;
+    let textY = boxY + DIALOGUE_PADDING;
+    lines.forEach(line => {
+      ctx.fillText(line, textX, textY);
+      textY += lineHeight;
+    });
+
+    ctx.font = prevFont;
+    ctx.textAlign = prevAlign;
+    ctx.textBaseline = prevBaseline;
+    ctx.restore();
   }
 
   // ============================================
@@ -2000,13 +2353,19 @@
         invData.toggleIconBounds,
         defaultRuntimeToggleIconBounds()
       );
-      if (invData.background && typeof invData.background === 'string') {
-        inv.backgroundRef = invData.background;
-        inv.background = resolveInventoryItemImageFromRef(invData.background);
+      const bgRef = (invData.backgroundRef && typeof invData.backgroundRef === 'string')
+        ? invData.backgroundRef
+        : (invData.background && typeof invData.background === 'string' ? invData.background : null);
+      if (bgRef) {
+        inv.backgroundRef = bgRef;
+        inv.background = resolveInventoryItemImageFromRef(bgRef);
       }
-      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
-        inv.toggleIconRef = invData.toggleIcon;
-        inv.toggleIcon = resolveInventoryItemImageFromRef(invData.toggleIcon);
+      const toggleRef = (invData.toggleIconRef && typeof invData.toggleIconRef === 'string')
+        ? invData.toggleIconRef
+        : (invData.toggleIcon && typeof invData.toggleIcon === 'string' ? invData.toggleIcon : null);
+      if (toggleRef) {
+        inv.toggleIconRef = toggleRef;
+        inv.toggleIcon = resolveInventoryItemImageFromRef(toggleRef);
       }
       if (Array.isArray(invData.slots)) {
         inv.slots = invData.slots.map(s => ({
@@ -2029,7 +2388,9 @@
       if (!item) return;
       const id = String(item.id || item.name || '').trim();
       if (!id) return;
-      const imageRef = (item.image && typeof item.image === 'string') ? item.image : null;
+      const imageRef = (item.imageRef && typeof item.imageRef === 'string')
+        ? item.imageRef
+        : (item.image && typeof item.image === 'string' ? item.image : null);
       const def = {
         id,
         name: item.name || id,
@@ -4891,6 +5252,29 @@
       GameAPI.showText(text);
     },
 
+    /**
+     * Mostra un balloon di dialogo sul personaggio indicato (ID o nome nella room corrente).
+     * Usa le impostazioni della prima GUI DialogBox del progetto. Il balloon segue il personaggio.
+     * Il giocatore chiude il dialogo con un click.
+     * @param {string} characterIdOrName - ID (da spawn_character) o nome del personaggio
+     * @param {string} text - Testo parlato
+     */
+    show_dialogue: function(characterIdOrName, text) {
+      return queueCommand(async () => {
+        await showDialogueAndWait(characterIdOrName, text);
+      });
+    },
+
+    /** Alias roadmap: show_dialogue_text(testo, personaggio) */
+    show_dialogue_text: function(text, speaker) {
+      return GameAPI.show_dialogue(speaker, text);
+    },
+
+    /** Chiude immediatamente il dialogo attivo */
+    end_dialogue: function() {
+      dismissActiveDialogue();
+    },
+
     // Event System - Funzioni helper per registrare handler
     on_game_start: function(handler) {
       if (typeof handler === 'function') {
@@ -4992,6 +5376,9 @@
       { name: 'set_object_visible', value: bindGameApiMethod(api, 'set_object_visible') },
       { name: 'showText', value: bindGameApiMethod(api, 'showText') },
       { name: 'show_message', value: bindGameApiMethod(api, 'show_message') },
+      { name: 'show_dialogue', value: bindGameApiMethod(api, 'show_dialogue') },
+      { name: 'show_dialogue_text', value: bindGameApiMethod(api, 'show_dialogue_text') },
+      { name: 'end_dialogue', value: bindGameApiMethod(api, 'end_dialogue') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
@@ -5204,8 +5591,13 @@
       });
     }
 
+    renderDialogueBalloon(ctx);
+
     // Renderizza GUI - verifica che le immagini siano caricate e pronte
     gameState.guis.forEach(gui => {
+      if (gui.type === 'DialogBox') {
+        return;
+      }
       // Background GUI
       if (gui.background && gui.background.complete && gui.background.naturalWidth > 0) {
         try {
@@ -5254,6 +5646,8 @@
   // GAME LOOP
   // ============================================
   function update(deltaTime) {
+    updateDialogueAppear(deltaTime);
+
     // Aggiorna movimento e animazioni dei character
     gameState.characters.forEach(character => {
       // Inizializza renderX/renderY se non esistono (retrocompatibilità)
@@ -5493,6 +5887,7 @@
 
   function stopGameLoop() {
     gameState.isRunning = false;
+    dismissActiveDialogue();
     if (gameState.animationFrameId) {
       cancelAnimationFrame(gameState.animationFrameId);
       gameState.animationFrameId = null;
@@ -5741,6 +6136,12 @@
   }
 
   async function handleClick(x, y) {
+    if (activeDialogue) {
+      log('[Runtime] handleClick: Dialogo chiuso (click)', 'info');
+      dismissActiveDialogue();
+      return;
+    }
+
     if (isInputLocked()) {
       log(`[Runtime] handleClick: Click ignorato (input bloccato durante comando await)`, 'info');
       return;
@@ -6173,6 +6574,7 @@
 
       case 'RESET':
         // Reset completo dello stato
+        dismissActiveDialogue();
         gameState.currentRoomId = null;
         gameState.currentRoom = null;
         gameState.objectId = null;
@@ -6193,6 +6595,8 @@
         
         // Reset AssetRegistry
         AssetRegistry.images.clear();
+        AssetRegistry.fonts.clear();
+        dialogFontLoadPromises.clear();
         AssetRegistry.isLoading = false;
         AssetRegistry.loadComplete = false;
         

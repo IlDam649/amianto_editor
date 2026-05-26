@@ -107,6 +107,7 @@ The runtime system provides a complete game execution environment:
 - **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
 - **✅ Character System**: Character rendering with pivot support, dynamic scaling, walking + custom named animations (`play_character_animation`)
 - **✅ GUI System**: GUI rendering with background images and clickable buttons, script execution on button clicks
+- **✅ Dialogue balloons**: `show_dialogue(character, text)` — balloon follows speaking character (DialogBox GUI settings)
 
 ## Current API Status
 
@@ -120,6 +121,9 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`print(...)`** / **`GameAPI.print(...)`** - Outputs messages to the script console (with serialization)
 - **`GameAPI.error(...)`** - Outputs error messages to the script console
 - **`show_message(text)`** - Shows notification messages to the user
+- **`show_dialogue(characterIdOrName, text)`** - Speech balloon on a character (uses first **DialogBox** GUI in project); click to dismiss; sequential command queue
+- **`show_dialogue_text(text, speaker)`** - Roadmap alias (text first, then character name/id)
+- **`end_dialogue()`** - Closes the active dialogue balloon immediately
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
 ### Event System APIs
@@ -245,7 +249,7 @@ on_hotspot_click(async function() {
 });
 ```
 
-**Not yet in runtime (roadmap):** dialogue system, audio, save/load slots, visual transitions (`fade_in`, …). See [ROADMAP.md](ROADMAP.md).
+**Not yet in runtime (roadmap):** branching dialogue choices, audio, save/load slots, visual transitions (`fade_in`, …). Basic speech balloons: `show_dialogue` / `end_dialogue`. See [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -291,7 +295,7 @@ on_hotspot_click(async function() {
 - ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
-- **Dialogue System**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
+- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Audio System**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
 - **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
@@ -339,7 +343,8 @@ window.gameAPI = {
 
 - [ ] **Phase 1**: Core event system and inventory
 - [ ] **Phase 1**: Advanced object and room management  
-- [ ] **Phase 2**: Dialogue and audio systems
+- [x] **Phase 2**: Basic dialogue balloons (`show_dialogue`, `end_dialogue`) ✅
+- [ ] **Phase 2**: Branching dialogue, audio systems
 - [ ] **Phase 2**: Character management and visual effects
 - [ ] **Phase 3**: Complete game system and advanced UI
 - [ ] **Phase 3**: Debug tools and utility functions
@@ -441,6 +446,7 @@ Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
 - **✅ Gestione Stanze**: Sistema completo di cambio stanza (`load_room()`) con caricamento asset, cleanup ed esecuzione script
 - **✅ Sistema Personaggi**: Rendering personaggi con supporto pivot, scaling dinamico basato su posizione Y, movimento fluido sub-pixel
 - **✅ Sistema GUI**: Rendering GUI con immagini di sfondo e pulsanti cliccabili, esecuzione script su click pulsanti
+- **✅ Dialoghi**: `show_dialogue(personaggio, testo)` — balloon che segue il personaggio (impostazioni GUI DialogBox)
 
 ## Stato Corrente delle API
 
@@ -452,6 +458,9 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
 - **`GameAPI.error(...)`** - Invia messaggi di errore alla script console
 - **`show_message(text)`** - Mostra notifiche all'utente
+- **`show_dialogue(characterIdOrName, text)`** - Balloon di dialogo sul personaggio (prima GUI **DialogBox** del progetto); click per chiudere; coda comandi sequenziale
+- **`show_dialogue_text(text, speaker)`** - Alias roadmap (prima il testo, poi nome/id personaggio)
+- **`end_dialogue()`** - Chiude subito il balloon attivo
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
 ### API Sistema Eventi
@@ -551,7 +560,7 @@ on_hotspot_click(async function() {
 });
 ```
 
-**Non ancora nel runtime:** dialoghi, audio, salvataggi, transizioni visive. Vedi [ROADMAP.md](ROADMAP.md).
+**Non ancora nel runtime:** scelte dialogo ramificate, audio, salvataggi, transizioni visive. Dialoghi base: `show_dialogue` / `end_dialogue`. Vedi [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -597,7 +606,7 @@ on_hotspot_click(async function() {
 - ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
-- **Sistema Dialoghi**: `start_dialogue()`, `show_dialogue_text()`, `show_dialogue_choices()`, `get_character_mood()`
+- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
 - **Sistema Audio**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
 - **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
@@ -646,7 +655,8 @@ window.gameAPI = {
 - [x] **Fase 1**: Sistema eventi base e inventario ✅
 - [x] **Fase 1**: Gestione oggetti e stanze avanzata ✅
 - [x] **Fase 1**: Sistema variabili di gioco ✅
-- [ ] **Fase 2**: Sistema dialoghi e audio
+- [x] **Fase 2**: Dialoghi base (balloon su personaggio) ✅
+- [ ] **Fase 2**: Scelte dialogo, audio
 - [ ] **Fase 2**: Gestione personaggi e effetti visivi
 - [ ] **Fase 3**: Sistema gioco completo e UI avanzata
 - [ ] **Fase 3**: Debug tools e funzioni di utilità
