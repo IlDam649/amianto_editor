@@ -459,6 +459,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Rooms state: each room keeps its own layers and walkable
   let rooms = new Map();
   let currentRoomId = null;
+  /** Incrementato a ogni cambio progetto: ignora callback async del caricamento precedente. */
+  let projectLoadGeneration = 0;
   // convenient references to current room data
   let background = null;
   let foregrounds = [];
@@ -653,7 +655,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
@@ -675,6 +677,45 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function isStaleProjectLoad(loadGen) {
+    return loadGen !== projectLoadGeneration;
+  }
+
+  /** Azzera stato canvas stanza (walkable, hotspot, layer) prima di caricare un altro progetto. */
+  function resetEditorRoomGlobals() {
+    background = null;
+    foregrounds = [];
+    sceneObjects = [];
+    selectedForegroundId = null;
+    selectedSceneObjectId = null;
+    walkableArea = [];
+    hotspots = [];
+    activeHotspotId = null;
+    selectedWalkableVertexIndex = -1;
+    selectedHotspotVertexIndex = -1;
+    draggedWalkableVertexIndex = -1;
+    draggedHotspotVertexIndex = -1;
+    scalingForegroundY = null;
+    scalingBackgroundY = null;
+    isDrawingWalkable = false;
+    isDrawingHotspot = false;
+    disableRoomCanvasEditing();
+  }
+
+  async function refreshResourcesForActiveProject() {
+    if (!window.amiantoResources) return;
+    try {
+      if (typeof window.amiantoResources.refresh === 'function') {
+        await window.amiantoResources.refresh();
+      }
+      if (typeof window.amiantoResources.refreshSounds === 'function') {
+        await window.amiantoResources.refreshSounds();
+      }
+    } catch (err) {
+      console.warn('[Project] Resources refresh failed:', err);
+    }
+  }
+
   function bindRoomRefs() {
     try {
       // Safety check: ensure rooms Map is initialized
@@ -692,27 +733,13 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       
-      background = r.background;
+      background = r.background || null;
+      foregrounds = Array.isArray(r.foregrounds) ? r.foregrounds : [];
     
-    // IMPORTANTE: Non sovrascrivere foregrounds se sono già caricati e la room ha foregrounds
-    // Questo previene la perdita di foreground durante il reload
-    if (Array.isArray(r.foregrounds) && r.foregrounds.length > 0) {
-      foregrounds = r.foregrounds;
-      console.log(`[bindRoomRefs] ✓ Foreground ripristinati da room: ${foregrounds.length} layer`);
-    } else if (!Array.isArray(foregrounds) || foregrounds.length === 0) {
-      // Solo se non ci sono foreground nello stato globale, inizializza array vuoto
-      foregrounds = [];
-      console.log(`[bindRoomRefs] Nessun foreground nella room, inizializzato array vuoto`);
-    } else {
-      // Mantieni i foreground esistenti se la room non ne ha
-      console.log(`[bindRoomRefs] Mantenuti foreground esistenti nello stato globale: ${foregrounds.length} layer`);
-    }
-    
-    sceneObjects = r.sceneObjects;
+    sceneObjects = Array.isArray(r.sceneObjects) ? r.sceneObjects : [];
     selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
     selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
-    walkableArea = r.walkableArea;
-    // initialize hotspots container if missing for backward compatibility
+    walkableArea = Array.isArray(r.walkableArea) ? r.walkableArea : [];
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
     // auto select first hotspot if none or if previous selection non valido
@@ -3198,7 +3225,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
     refreshForegroundListUI();
@@ -3316,10 +3343,62 @@ window.selectRoom = function(roomId) {
     return prefix + "-" + Math.random().toString(36).slice(2, 9);
   }
 
+  function normalizeProjectIdFromName(name) {
+    if (!name) return null;
+    return String(name).replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+  }
+
+  function getStableProjectId(settings, fallbackName) {
+    if (settings && settings.id) return String(settings.id);
+    if (fallbackName) return normalizeProjectIdFromName(fallbackName);
+    return null;
+  }
+
+  function findProjectCacheIndex(projects, { name, id }) {
+    if (!Array.isArray(projects)) return -1;
+    return projects.findIndex((p) => {
+      if (!p) return false;
+      const pName = (p.settings && p.settings.name) ? p.settings.name : '';
+      const pId = p.id || (p.settings && p.settings.id) || normalizeProjectIdFromName(pName);
+      if (id && pId === id) return true;
+      if (name && pName === name) return true;
+      return false;
+    });
+  }
+
+  function removeProjectLocalBackup(username, projectName) {
+    if (!username || !projectName) return;
+    const projectKey = `amiantoProject_${username}:${projectName}`;
+    try { localStorage.removeItem(projectKey); } catch (_) {}
+    try { localStorage.removeItem(`${projectKey}_meta`); } catch (_) {}
+  }
+
+  function refreshActiveProjectNameInUi() {
+    const el = document.getElementById('current-project-name');
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    if (el && activeName) el.textContent = activeName;
+  }
+
+  function getProjectIdFromCacheByName(projectName) {
+    try {
+      if (!currentUser || !currentUser.username || !projectName) return null;
+      const projects = loadProjectsFromCache(currentUser.username);
+      const idx = findProjectCacheIndex(projects, { name: projectName, id: null });
+      if (idx < 0) return null;
+      const p = projects[idx];
+      const id = (p && (p.id || (p.settings && p.settings.id))) ? String(p.id || p.settings.id) : null;
+      return id || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function getActiveProjectId() {
+    const stored = localStorage.getItem('amiantoActiveProjectId');
+    if (stored) return stored;
     const projectName = localStorage.getItem('amiantoActiveProjectName');
     if (!projectName) return null;
-    return projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    return normalizeProjectIdFromName(projectName);
   }
 
   async function pickResourceImage(options = {}) {
@@ -9950,9 +10029,10 @@ window.selectRoom = function(roomId) {
     if (currentUser && currentUser.uid) {
       if (!projectObj._meta) projectObj._meta = {};
       projectObj._meta.userId = currentUser.uid;
+      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-      if (!projectObj._meta.projectId && activeProjectName) {
-        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      if (!projectObj._meta.projectId) {
+        projectObj._meta.projectId = activeProjectId || (activeProjectName ? normalizeProjectIdFromName(activeProjectName) : null);
       }
     }
     jsonString = JSON.stringify(projectObj, null, 2);
@@ -10625,7 +10705,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Save project settings function
-  window.saveProjectSettings = function() {
+  window.saveProjectSettings = async function() {
     if (!currentUser) {
       showNotification('You must be logged in to save project settings', 'warning');
       return;
@@ -10670,65 +10750,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     updateEditorDisplay();
     redraw();
     
-    // Se il nome del progetto è cambiato, aggiorna il progetto attivo
-    if (newProjectName !== activeProjectName) {
-      console.log(`[ProjectSettings] Nome progetto cambiato: "${activeProjectName}" -> "${newProjectName}"`);
-      localStorage.setItem('amiantoActiveProjectName', newProjectName);
-      
-      // Aggiorna anche la lista progetti nella cache
-      try {
-        const userProjects = loadProjectsFromCache(currentUser.username);
-        const projectIndex = userProjects.findIndex(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
-          return name === activeProjectName;
-        });
-        
-        if (projectIndex >= 0) {
-          // Aggiorna il nome nel progetto nella cache
-          if (!userProjects[projectIndex].settings) {
-            userProjects[projectIndex].settings = {};
-          }
-          userProjects[projectIndex].settings.name = newProjectName;
-          saveProjectsToCache(currentUser.username, userProjects);
-          console.log('[ProjectSettings] Cache progetti aggiornata con nuovo nome');
-        }
-      } catch (error) {
-        console.warn('[ProjectSettings] Errore aggiornamento cache progetti:', error);
-      }
-    }
-    
-    // Salva le impostazioni in localStorage
+    const previousProjectName = activeProjectName;
+    const stableProjectId = getStableProjectId(settings, previousProjectName);
+    settings.id = stableProjectId;
+
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
-    
-    // Salva il progetto completo con le nuove impostazioni
-    // Questo assicura che le impostazioni siano persistenti nel progetto stesso
+    localStorage.setItem('amiantoActiveProjectId', stableProjectId);
+
+    if (newProjectName !== previousProjectName) {
+      console.log(`[ProjectSettings] Rinomina progetto corrente: "${previousProjectName}" -> "${newProjectName}" (id: ${stableProjectId})`);
+      localStorage.setItem('amiantoActiveProjectName', newProjectName);
+      removeProjectLocalBackup(currentUser.username, previousProjectName);
+      deleteProjectFileFromOPFS(previousProjectName).catch(() => {});
+      window.__amiantoProjectRenameFrom = previousProjectName;
+    } else {
+      window.__amiantoProjectRenameFrom = null;
+    }
+
     try {
-      const projectObj = window.serializeProject();
-      if (projectObj) {
-        // Aggiorna le impostazioni nel progetto
-        if (!projectObj.settings) {
-          projectObj.settings = {};
-        }
-        Object.assign(projectObj.settings, settings);
-        
-        // Salva il progetto aggiornato
-        // Usa saveCurrentProject se disponibile, altrimenti salva manualmente
-        if (typeof window.saveCurrentProject === 'function') {
-          // Salva il progetto (questo aggiornerà anche Firestore se disponibile)
-          window.saveCurrentProject().catch(error => {
-            console.warn('[ProjectSettings] Errore salvataggio progetto:', error);
-            showNotification('Settings saved locally, but full project save failed', 'warning');
-          });
-        } else {
-          // Fallback: salva solo in cache locale
-          const jsonString = JSON.stringify(projectObj);
-          const projectKey = `amiantoProject_${currentUser.username}:${newProjectName}`;
-          localStorage.setItem(projectKey, jsonString);
-          console.log('[ProjectSettings] Progetto salvato in cache locale');
-        }
+      if (typeof window.saveCurrentProject === 'function') {
+        await window.saveCurrentProject();
       }
     } catch (error) {
       console.warn('[ProjectSettings] Errore aggiornamento progetto:', error);
+      showNotification('Settings saved locally, but full project save failed', 'warning');
+    } finally {
+      window.__amiantoProjectRenameFrom = null;
     }
     
     // Close modal
@@ -10742,9 +10789,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Log settings for debugging
     console.log('Project settings saved:', settings);
     
-    // Aggiorna la UI se necessario (es. nome progetto nella sidebar)
-    if (typeof updateProjectsTab === 'function') {
-      updateProjectsTab();
+    refreshActiveProjectNameInUi();
+    if (typeof loadAndRenderProjectsTab === 'function') {
+      loadAndRenderProjectsTab().catch(() => {});
     }
   };
 
@@ -12504,10 +12551,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Ensure width/height reflect current viewport
     settings.canvasWidth = gameViewport.width;
     settings.canvasHeight = gameViewport.height;
-    // Project name best-effort
+    // Nome e ID del progetto corrente (non creare un nuovo progetto al salvataggio)
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    const activeId = localStorage.getItem('amiantoActiveProjectId');
     const nameField = document.getElementById('projectName');
-    if (nameField && nameField.value) settings.name = nameField.value;
+    if (nameField && nameField.value) {
+      settings.name = nameField.value.trim();
+    } else if (activeName) {
+      settings.name = activeName;
+    }
     if (!settings.name) settings.name = 'Untitled Project';
+    const stableId = getStableProjectId(settings, settings.name);
+    if (stableId) settings.id = stableId;
+    else if (activeId) settings.id = activeId;
     // Normalize start config types
     if (typeof settings.startX !== 'undefined') settings.startX = Number(settings.startX) || 0;
     if (typeof settings.startY !== 'undefined') settings.startY = Number(settings.startY) || 0;
@@ -12586,13 +12642,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       // Prova a ottenere projectId da settings.id o normalizzando settings.name
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
       if (projectObj.settings && projectObj.settings.id) {
         projectObj._meta.projectId = projectObj.settings.id;
       } else if (projectObj.settings && projectObj.settings.name) {
         // Normalizza il nome come viene fatto in saveCurrentProject
-        projectObj._meta.projectId = projectObj.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-      } else if (activeProjectName) {
-        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        projectObj._meta.projectId = normalizeProjectIdFromName(projectObj.settings.name);
+      } else if (activeProjectId || activeProjectName) {
+        projectObj._meta.projectId = activeProjectId || normalizeProjectIdFromName(activeProjectName);
       }
     }
     
@@ -13660,12 +13717,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       };
     }
 
+    const settings = project.settings
+      ? { ...project.settings }
+      : { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` };
+    const stableId = project.id || settings.id || normalizeProjectIdFromName(settings.name);
+    if (stableId) {
+      settings.id = stableId;
+    }
     return {
-      settings: project.settings || { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` },
+      settings,
       updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
       createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
       source: project.source || 'unknown',
-      id: project.id || null
+      id: stableId || null
     };
   }
 
@@ -14234,8 +14298,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localProjects.forEach((p, i) => {
       const normalized = normalizeProject(p, i);
       if (normalized.settings && normalized.settings.name) {
-        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        localProjectsMap.set(projectId, normalized);
+        const stableId = normalized.id || (normalized.settings && normalized.settings.id)
+          ? String(normalized.id || normalized.settings.id)
+          : normalizeProjectIdFromName(normalized.settings.name);
+        if (stableId) localProjectsMap.set(stableId, normalized);
       }
     });
 
@@ -14315,11 +14381,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localProjects.forEach((localProject, i) => {
       const normalized = normalizeProject(localProject, i);
       if (normalized.settings && normalized.settings.name) {
-        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        const existsInFirestore = firestoreProjects.some(fp => {
-          const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          return fpId === projectId;
-        });
+        const localId = normalized.id || (normalized.settings && normalized.settings.id)
+          ? String(normalized.id || normalized.settings.id)
+          : normalizeProjectIdFromName(normalized.settings.name);
+        const existsInFirestore = !!localId && firestoreProjects.some(fp => fp && fp.id === localId);
         
         if (!existsInFirestore) {
           // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
@@ -14860,18 +14925,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     let projectObj = window.serializeProject();
-    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : activeProjectName;
-    
-    // Verifica che il progetto serializzato corrisponda al progetto attivo
-    if (projectName !== activeProjectName && projectName !== 'amianto-project') {
-      showNotification('Project name mismatch. Please open the project you want to save.', 'warning');
-      return;
-    }
-    
-    // TODO: Implementare sistema di projectId univoci
-    // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
-    // In futuro, generare ID univoci (UUID) e salvare mapping nome->ID in Firestore.
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    if (!projectObj.settings) projectObj.settings = {};
+
+    const renameFrom = window.__amiantoProjectRenameFrom || null;
+    const projectId = getStableProjectId(projectObj.settings, activeProjectName);
+    projectObj.settings.id = projectId;
+    projectObj.settings.name = activeProjectName;
+    const projectName = activeProjectName;
+    localStorage.setItem('amiantoActiveProjectId', projectId);
     
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
     // Le regole di sicurezza controllano request.auth.uid == userId
@@ -14984,9 +15045,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // 4. LIGHTWEIGHT ENTRY PER LISTING - Aggiorna cache usando funzione centralizzata
     const userProjects = loadProjectsFromCache(currentUser.username);
-    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
+    let idx = findProjectCacheIndex(userProjects, { id: projectId, name: projectName });
+    if (idx < 0 && renameFrom) {
+      idx = findProjectCacheIndex(userProjects, { id: projectId, name: renameFrom });
+    }
     const entry = normalizeProject({ 
-      settings: projectObj.settings, 
+      settings: projectObj.settings,
+      id: projectId,
       updatedAt: new Date().toISOString(),
       createdAt: projectObj.createdAt || new Date().toISOString(),
       source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
@@ -14994,12 +15059,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
     saveProjectsToCache(currentUser.username, userProjects);
 
+    if (renameFrom && renameFrom !== projectName) {
+      removeProjectLocalBackup(currentUser.username, renameFrom);
+    }
+
     // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
     try {
       const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
       localStorage.setItem(projectKey, jsonString);
       localStorage.setItem('amiantoActiveProjectName', projectName);
       localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+      localStorage.setItem('amiantoActiveProjectId', projectId);
     } catch (_) {}
 
     // 6. PERSIST TO OPFS (silent) - GIÀ IMPLEMENTATO
@@ -15056,6 +15126,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         editorVersion: '0.1'
       },
       settings: {
+        id: trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_'),
         name: trimmedName,
         canvasWidth: 800,
         canvasHeight: 600
@@ -15094,9 +15165,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Apri il progetto nell'editor
     await applyProjectObject(newProject);
 
+    const projectId = newProject.settings.id;
+
     // Imposta come progetto attivo
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    localStorage.setItem('amiantoActiveProjectId', projectId);
     
     // Aggiorna indicatore dimensione progetto
     updateProjectSizeIndicator();
@@ -15105,6 +15179,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const userProjects = loadProjectsFromCache(currentUser.username);
     const entry = normalizeProject({
       settings: newProject.settings,
+      id: projectId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -15114,7 +15189,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Salva su Firestore se l'utente è autenticato
     const userId = currentUser.uid;
     if (userId && window.firebaseDB) {
-      const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
       await saveProjectToFirestore(userId, projectId, newProject);
     }
 
@@ -15864,6 +15938,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       migrateLegacyInventoryRefsOnLoad(projectObj);
       migrateEmbeddedAssetsOnProjectLoad(projectObj);
 
+      // Invalida caricamenti async del progetto precedente e azzera stato editor
+      projectLoadGeneration += 1;
+      const loadGen = projectLoadGeneration;
+      resetEditorRoomGlobals();
+
       // Ottieni projectId dal progetto (necessario per risolvere assetId)
       const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
       const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
@@ -15874,6 +15953,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Settings / viewport
       if (projectObj && projectObj.settings) {
         const s = projectObj.settings;
+        const stableId = (s && s.id) ? String(s.id) : normalizeProjectIdFromName(projectName);
+        if (stableId) {
+          s.id = stableId;
+          localStorage.setItem('amiantoActiveProjectId', stableId);
+        }
         // aggiorna viewport
         if (s.canvasWidth && s.canvasHeight) {
           gameViewport.width = Number(s.canvasWidth) || gameViewport.width;
@@ -15981,8 +16065,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           rooms.set(roomId, roomVal);
           // carica immagini async (background, foregrounds, scene objects)
           Promise.resolve().then(async () => {
+            if (isStaleProjectLoad(loadGen)) return;
             if (r.background) {
               const img = await createImageFromDataUrl(r.background, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 // Verifica che l'immagine sia completamente caricata
                 const width = img.naturalWidth || img.width;
@@ -16012,15 +16098,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             }
             if (Array.isArray(r.foregrounds)) {
+              if (isStaleProjectLoad(loadGen)) return;
               console.log(`[Load] Caricamento ${r.foregrounds.length} foreground per room ${roomId}`, r.foregrounds);
               const out = [];
               for (const f of r.foregrounds) {
+                if (isStaleProjectLoad(loadGen)) return;
                 if (!f || !f.image) {
                   console.warn(`[Load] Foreground senza image, skip:`, f);
                   continue;
                 }
                 
                 const img = await createImageFromDataUrl(f.image, projectId);
+                if (isStaleProjectLoad(loadGen)) return;
                 if (!img) {
                   console.warn(`[Load] Impossibile caricare immagine foreground:`, f.image);
                   continue;
@@ -16059,22 +16148,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               roomVal.foregrounds = out;
               
               // IMPORTANTE: Se questa è la room corrente, aggiorna anche lo stato globale
-              if (roomId === currentRoomId) {
+              if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 foregrounds = out;
                 console.log(`[Load] ✓ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
               }
               
-              refreshForegroundListUI();
-              redraw();
+              if (!isStaleProjectLoad(loadGen)) {
+                refreshForegroundListUI();
+                redraw();
+              }
             } else {
               console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non è un array o è vuoto)`);
             }
             if (Array.isArray(r.sceneObjects)) {
               for (let i = 0; i < r.sceneObjects.length; i++) {
+                if (isStaleProjectLoad(loadGen)) return;
                 const src = r.sceneObjects[i];
                 const dst = roomVal.sceneObjects[i];
                 if (src && src.image) {
                   const img = await createImageFromDataUrl(src.image, projectId);
+                  if (isStaleProjectLoad(loadGen)) return;
                   dst.img = img;
                   // Se è un assetId, registra nella mappa
                   if (img && src.image.startsWith('asset:')) {
@@ -16084,14 +16177,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 }
               }
               // ricrea lista oggetti
-              if (roomId === currentRoomId) {
+              if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 sceneObjects = roomVal.sceneObjects;
                 refreshSceneObjectsListUI();
                 redraw();
               }
             }
-              refreshHotspotsListUI();
-              scheduleProjectSizeIndicatorRefresh(300);
+              if (!isStaleProjectLoad(loadGen)) {
+                refreshHotspotsListUI();
+                scheduleProjectSizeIndicatorRefresh(300);
+              }
           });
         }
       } else {
@@ -16099,10 +16194,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const rid = uid('room');
         rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
-      // Seleziona prima stanza e sincronizza riferimenti
+      // Seleziona prima stanza e sincronizza riferimenti (walkable/hotspot del progetto corrente)
       const firstRoom = rooms.keys().next().value;
       currentRoomId = firstRoom;
       bindRoomRefs();
+      if (isStaleProjectLoad(loadGen)) return;
       refreshForegroundListUI();
       refreshSceneObjectsListUI();
       refreshHotspotsListUI();
@@ -16265,7 +16361,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const bgRef = invData.backgroundRef || invData.background;
           if (bgRef) {
             Promise.resolve().then(async () => {
+              if (isStaleProjectLoad(loadGen)) return;
               const img = await createImageFromDataUrl(bgRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 inventoryDefinition.background = img;
                 if (typeof bgRef === 'string' && bgRef.startsWith('asset:')) {
@@ -16278,7 +16376,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const iconRef = invData.toggleIconRef || invData.toggleIcon;
           if (iconRef) {
             Promise.resolve().then(async () => {
+              if (isStaleProjectLoad(loadGen)) return;
               const img = await createImageFromDataUrl(iconRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 inventoryDefinition.toggleIcon = img;
                 if (typeof iconRef === 'string' && iconRef.startsWith('asset:')) {
@@ -16302,8 +16402,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         });
         Promise.resolve().then(async () => {
           for (const item of inventoryItems) {
+            if (isStaleProjectLoad(loadGen)) return;
             if (item._imageRef) {
               item.image = await createImageFromDataUrl(item._imageRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (item.image && typeof item._imageRef === 'string' && item._imageRef.startsWith('asset:')) {
                 imageAssetMap.set(item.image, { assetId: item._imageRef.replace('asset:', ''), type: 'inventory', projectId });
               }
@@ -16311,6 +16413,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             delete item._imageRef;
             syncInventoryItemScript(item);
           }
+          if (isStaleProjectLoad(loadGen)) return;
           refreshInventoryItemsListUI();
           refreshInventorySlotsListUI();
           applyInventoryRectsToUI();
@@ -16597,6 +16700,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       requestAnimationFrame(() => {
         requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
       });
+
+      // Ricarica risorse/suoni del progetto attivo (evita catalogo del progetto precedente)
+      await refreshResourcesForActiveProject();
       
       // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
       rebuildScriptsTree();
@@ -16644,7 +16750,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return;
     }
 
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    // Se il progetto è stato rinominato, l'ID stabile NON coincide più col nome.
+    // Prima prova a recuperare l'ID dalla cache progetti.
+    let projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
     
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
     // Le regole di sicurezza controllano request.auth.uid == userId
@@ -16664,6 +16772,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           loadedFrom = 'firestore';
           console.log('[Load] ✅ Caricato da Firestore');
           addDebugMessage('Loaded from Firestore', 'success');
+          if (projectObj.settings) {
+            projectId = getStableProjectId(projectObj.settings, projectName);
+          }
         } else {
           console.log('[Load] Progetto non trovato su Firestore, uso fallback');
         }
@@ -16710,7 +16821,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       projectObj = {
         format: 'amianto-game',
         version: 1,
-        settings: { name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
+        settings: { id: projectId, name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
         rooms: [],
         guis: [],
         characters: [],
@@ -16726,6 +16837,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     mergeLegacyHotspotScriptsIntoRooms(projectObj);
+
+    // Salva walkable/hotspot della stanza corrente nel progetto in uscita prima di sostituire lo stato
+    if (currentRoomId && rooms && rooms.has(currentRoomId)) {
+      const leaving = rooms.get(currentRoomId);
+      if (leaving) {
+        leaving.walkableArea = Array.isArray(walkableArea) ? walkableArea.slice() : [];
+        leaving.hotspots = Array.isArray(hotspots) ? hotspots : [];
+      }
+    }
+
+    // Stabilizza progetti legacy: assicura settings.id persistito (coerente con Firestore/Storage)
+    // IMPORTANTE: per progetti esistenti, usa il projectId già determinato (di default normalizzato dal nome
+    // oppure recuperato da settings.id quando caricato da Firestore).
+    try {
+      if (!projectObj.settings) projectObj.settings = {};
+      if (!projectObj.settings.id) {
+        projectObj.settings.id = projectId;
+      }
+    } catch (_) {}
 
     // Applica il progetto caricato
     await applyProjectObject(projectObj);
@@ -16965,7 +17095,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!projectName) return;
     if (!confirm(`Delete project "${projectName}"? This action cannot be undone.`)) return;
     
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    // Se rinominato, l'ID stabile potrebbe non coincidere col nome
+    const projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
     
     // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
     const userId = currentUser.uid;
