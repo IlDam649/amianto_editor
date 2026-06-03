@@ -23,9 +23,9 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - 📖 **In-app Docs tab** — full English guide in the editor toolbar (**Docs**, `Ctrl+7`)
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
-- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
-- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
-- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–D ✅)
+- 🔥 **`firestore.rules`** — regole Firestore (deploy con Firebase CLI)
+- 🌐 **`cors.json`** — CORS per Firebase Storage · **`JS/supabase-config-template.js`** — setup libreria asset Supabase
 
 ---
 
@@ -62,14 +62,15 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - GUI Editor
   - Create GUIs; background images
   - Draw, move and delete buttons; list buttons
-- Contextual Cursors
-  - Define cursor per target type (hotspot/character/scene object)
+- Contextual Cursors (editor)
+  - Define cursor per target type (hotspot/character/scene object) with hover feedback on the **editor** canvas
   - Upload cursor image, optional action text; list active cursors
+  - Runtime/playtest: fixed pointer (dynamic contextual cursors — roadmap)
 - Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
   - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili — vedi [Current API Status](#current-api-status)
-  - **API unification (Fasi A–B ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` in `runtime.js`; stesse API in iframe e `runtime.html`
+  - **API unification (Fasi A–D ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` + scope handler in `runtime.js`; stesse API in iframe e `runtime.html`
   - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
   - **GameAPI / `Game`**: API esposte agli script (`print`, `load_room`, `add_to_inventory`, `spawn_object`, `Game.getVar()`, …)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
@@ -78,7 +79,10 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - Save/Load scripts, Run/Stop sandbox
 - Play Test Panel
   - Start/Pause/Stop test session; debug console; quick test actions
-- Authentication & Projects
+- Projects & Resources
+  - **Projects** tab: create/open/delete projects (Firestore + cache OPFS/localStorage)
+  - **Resources** tab: central image/sound library on Supabase (import, search, picker in other editors)
+- Authentication
   - Login/logout, registration modal, persistent sessions
   - Per-user project storage
 - File Menu
@@ -113,7 +117,7 @@ The runtime system provides a complete game execution environment:
 
 Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone. L’editor espone le stesse funzioni tramite `getScriptApiBindings()` (Fasi A–B dell’unificazione API).
 
-**Fasi completate:** A (infrastruttura binding) · B.1 (inventario) · B.2 (oggetti dinamici) · B.3 (stanze + alias variabili)
+**Fasi completate:** A (binding) · B (inventario, oggetti, stanze, alias variabili) · C (scope handler) · D (pulizia editor)
 
 ### API disponibili (per categoria)
 
@@ -129,9 +133,12 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 ### Event System APIs
 - **`on_game_start(handler)`** - Registers a function to call when the game starts
 - **`on_room_change(handler)`** - Registers a function to call when changing rooms (receives oldRoomId, newRoomId)
-- **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y)
-- **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId)
-- **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId)
+- **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y, usedItemId?)
+- **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId, x, y, usedItemId?)
+- **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId, x, y, usedItemId?)
+- **`on_gui_click(handler)`** - Registers a function to call when clicking GUI buttons (receives buttonId, x, y)
+- **`on_use_with(handler)`** - Inventory item script: combine item with target (return `true` if handled)
+- **`on_inventory_use_with(handler)`** - Global fallback for any inventory use-with combination
 
 ### Inventory System APIs
 - **`add_to_inventory(itemId, quantity)`** - Adds items to inventory
@@ -139,6 +146,8 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`has_item(itemId)`** - Checks if an item exists in inventory
 - **`get_item_count(itemId)`** - Gets the quantity of an item in inventory
 - **`clear_inventory()`** - Clears all items from inventory
+- **`get_carried_item()`** - Item selected for use-with, or `null`
+- **`set_carried_item(itemId)`** / **`clear_carried_item()`** - Pick up / cancel item in hand
 
 ### Object System APIs
 - **`spawn_object(objectNameOrId, x, y, imageUrlOrDataUrl)`** - Creates a new scene object
@@ -266,8 +275,8 @@ on_hotspot_click(async function() {
 
 ## Keyboard & Tips
 
-- Tabs: Ctrl+1..5 to switch quickly
-- Scripts: Ctrl+S saves the current script
+- Tabs: **Ctrl+0** Projects, **Ctrl+1** Resources, **Ctrl+2** Rooms, **Ctrl+3** Inventory, **Ctrl+4** Characters, **Ctrl+5** GUI, **Ctrl+6** Scripts, **Ctrl+7** Docs, **Ctrl+8** PLAY (requires open project except Docs)
+- Scripts: **Ctrl+S** saves the current script; **Ctrl+Space** API autocomplete
 - Zoom editor (Rooms/Characters): mouse wheel (bounded zoom)
 
 ## Project Structure
@@ -275,9 +284,12 @@ on_hotspot_click(async function() {
 - `index.html` — Editor UI layout (login, dashboard, tabs and sections)
 - `CSS/main.css` — Acid dark theme and neon styling
 - `JS/main.js` — Editor engine: tabs, canvas, rooms/objects, characters, scripting, UI handlers
+- `JS/docs-panel.js` — In-app documentation (Docs tab content)
+- `JS/resources.js` — Central resource library (Supabase)
 - `runtime.html` — Standalone runtime player
-- `JS/runtime.js` — Runtime renderer (rooms/assets, start room, OPFS/localStorage)
-- `# 🎮 Funzioni da Implementare - Amianto editor.md` — Full list of APIs to implement
+- `JS/runtime.js` — Runtime renderer (rooms/assets, scripts, OPFS/localStorage)
+- `# 🎮 Funzioni da Implementare - Amianto editor.md` — API backlog / wishlist (not current runtime status)
+- `firestore.rules` / `cors.json` — Firebase deploy config
 - `img/mnt.png` — Project cover (shown above)
 
 ## Extending
@@ -341,14 +353,13 @@ window.gameAPI = {
 
 ### 📋 Implementation Checklist
 
-- [ ] **Phase 1**: Core event system and inventory
-- [ ] **Phase 1**: Advanced object and room management  
+- [x] **Phase 1**: Core event system (8 handlers), inventory, objects, rooms, variables ✅
+- [x] **Phase 1**: API unification A–D (`getScriptApiBindings`, scope handler) ✅
 - [x] **Phase 2**: Basic dialogue balloons (`show_dialogue`, `end_dialogue`) ✅
-- [ ] **Phase 2**: Branching dialogue, audio systems
-- [ ] **Phase 2**: Character management and visual effects
-- [ ] **Phase 3**: Complete game system and advanced UI
-- [ ] **Phase 3**: Debug tools and utility functions
-- [ ] **Bonus**: Data persistence and project export/import
+- [ ] **Phase 2**: Branching dialogue, audio, contextual cursors in runtime
+- [ ] **Phase 2**: Visual transitions (`fade_in`, …)
+- [ ] **Phase 3**: Save/load slots, advanced UI helpers, utility math APIs
+- [ ] **Bonus**: Standalone export/PWA, autosave versioning
 
 See `# 🎮 Funzioni da Implementare - Amianto editor.md` for the complete list of functions to implement.
 
@@ -362,9 +373,9 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 - 📄 **[README](README.md)** - Panoramica e guida rapida
 - 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
-- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–B)
-- 🔥 **[FIRESTORE_SETUP](FIRESTORE_SETUP.md)** - Configurazione Firestore e regole di sicurezza
-- 🌐 **[STORAGE_CORS_SETUP](STORAGE_CORS_SETUP.md)** - Configurazione CORS per Firebase Storage
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–D ✅)
+- 🔥 **`firestore.rules`** — regole Firestore (deploy con Firebase CLI)
+- 🌐 **`cors.json`** — CORS per Firebase Storage · **`JS/supabase-config-template.js`** — setup libreria asset Supabase
 
 ---
 
@@ -407,7 +418,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Upload immagine cursore, testo azione opzionale; lista cursori attivi
 - Scripting (JavaScript, Runtime Sandboxed)
   - Editor JavaScript integrato (CodeMirror)
-  - **Sistema Eventi**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`
+  - **Sistema Eventi**: 8 handler (`on_game_start`, `on_room_change`, click con `usedItemId?`, `on_gui_click`, `on_use_with`, …)
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato con `sandbox="allow-scripts"` per sicurezza
   - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
@@ -417,7 +428,10 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Salva/Carica script, Esegui/Stop sandbox
 - Play Test
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
-- Autenticazione & Progetti
+- Progetti & Risorse
+  - Tab **Projects**: crea/apri/elimina progetti (Firestore + cache OPFS/localStorage)
+  - Tab **Resources**: libreria immagini/suoni centralizzata su Supabase
+- Autenticazione
   - Login/logout, registrazione, sessioni persistenti
   - Progetti per utente
 - Menu File
@@ -452,7 +466,7 @@ Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
 
 Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play Test** e in **runtime.html** standalone.
 
-**Fasi unificazione API completate:** A (binding) · B.1 (inventario) · B.2 (oggetti) · B.3 (stanze + variabili)
+**Fasi unificazione API completate:** A (binding) · B (inventario, oggetti, stanze) · C (scope handler) · D (pulizia editor)
 
 ### API Base
 - **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
@@ -466,9 +480,12 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 ### API Sistema Eventi
 - **`on_game_start(handler)`** - Registra una funzione da chiamare all'avvio del gioco
 - **`on_room_change(handler)`** - Registra una funzione da chiamare al cambio stanza (riceve oldRoomId, newRoomId)
-- **`on_object_click(handler)`** - Registra una funzione da chiamare al click sugli oggetti (riceve objectId, x, y)
-- **`on_character_click(handler)`** - Registra una funzione da chiamare al click sui personaggi (riceve characterId)
-- **`on_hotspot_click(handler)`** - Registra una funzione da chiamare al click sugli hotspot (riceve hotspotId)
+- **`on_object_click(handler)`** - Click oggetti (objectId, x, y, usedItemId?)
+- **`on_character_click(handler)`** - Click personaggi (characterId, x, y, usedItemId?)
+- **`on_hotspot_click(handler)`** - Click hotspot (hotspotId, x, y, usedItemId?)
+- **`on_gui_click(handler)`** - Click pulsanti GUI (buttonId, x, y)
+- **`on_use_with(handler)`** - Script oggetto inventario: combinazione (restituire `true` se gestita)
+- **`on_inventory_use_with(handler)`** - Fallback globale use-with
 
 ### API Sistema Inventario
 - **`add_to_inventory(itemId, quantity)`** - Aggiunge oggetti all'inventario
@@ -476,6 +493,7 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`has_item(itemId)`** - Verifica se un oggetto è presente nell'inventario
 - **`get_item_count(itemId)`** - Ottiene la quantità di un oggetto nell'inventario
 - **`clear_inventory()`** - Svuota completamente l'inventario
+- **`get_carried_item()`** / **`set_carried_item(itemId)`** / **`clear_carried_item()`** - Oggetto in mano (use-with)
 
 ### API Sistema Oggetti
 - **`spawn_object(objectNameOrId, x, y, imageUrlOrDataUrl)`** - Crea un nuovo oggetto di scena
@@ -577,8 +595,8 @@ on_hotspot_click(async function() {
 
 ## Note & Consigli
 
-- Cambio tab: Ctrl+1..5
-- Scripts: Ctrl+S salva lo script
+- Tab: **Ctrl+0** Projects … **Ctrl+7** Docs, **Ctrl+8** PLAY (serve progetto aperto, tranne Docs)
+- Scripts: **Ctrl+S** salva lo script; **Ctrl+Space** autocomplete API
 - Zoom editor (Rooms/Characters): rotella mouse
 
 ## Struttura del Progetto
@@ -586,9 +604,12 @@ on_hotspot_click(async function() {
 - `index.html` — Editor (login, dashboard, tabs/sezioni)
 - `CSS/main.css` — Tema scuro neon
 - `JS/main.js` — Motore editor: tabs, canvas, stanze/oggetti, personaggi, scripting, UI
+- `JS/docs-panel.js` — Documentazione in-app (tab Docs)
+- `JS/resources.js` — Libreria risorse Supabase
 - `runtime.html` — Player runtime standalone
-- `JS/runtime.js` — Renderer runtime (stanze/assets, start room, OPFS/localStorage)
-- `# 🎮 Funzioni da Implementare - Amianto editor.md` — Lista completa API da implementare
+- `JS/runtime.js` — Renderer runtime (stanze/assets, script, OPFS/localStorage)
+- `# 🎮 Funzioni da Implementare - Amianto editor.md` — Backlog API (non stato runtime attuale)
+- `firestore.rules` / `cors.json` — Config Firebase
 - `img/mnt.png` — Cover (in alto)
 
 ## Estensioni Possibili
@@ -667,8 +688,8 @@ Vedi `# 🎮 Funzioni da Implementare - Amianto editor.md` per la lista completa
 ## Roadmap (integrazioni possibili)
 
 ### Fase 1 — Migliorie core
-- Sistema eventi completo (click/hover oggetti, cambi stanza, avvio gioco)
-- Pathfinding su zona camminabile e click-to-move del personaggio
+- ✅ Sistema eventi runtime (8 handler), pathfinding, click-to-move, inventario/use-with base
+- Cursori contestuali dinamici in **runtime** (definiti in editor, hover solo su canvas editor)
 - Undo/Redo globale, multi‑selezione, snap‑to‑grid, guide e allineamenti
 - Ordinamento livelli/oggetti (z‑index, y‑sorting), parallax per foreground
 - Asset manager con drag&drop e deduplica, anteprime

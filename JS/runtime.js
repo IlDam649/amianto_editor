@@ -813,7 +813,8 @@
         gameState.attachments = projectData.attachments || {};
         invalidateResourceFileIndex();
         await initializeVariables(projectData.variables);
-        
+        loadInventory(projectData.inventory);
+
         // Invia conferma all'editor
         sendToEditor({
           type: 'PLAYTEST_STARTED',
@@ -1063,6 +1064,13 @@
         }
         // Avvia comunque il game loop, il rendering gestirà le immagini mancanti
         startGameLoop();
+      }
+
+      if (window.opener && !isInIframe) {
+        sendToEditor({
+          type: 'PLAYTEST_RUNTIME_READY',
+          timestamp: Date.now()
+        });
       }
     } catch (error) {
       log(`Runtime initialization error: ${error.message}`, 'error');
@@ -2596,9 +2604,8 @@
     inv.pointerY = y;
     updateInventoryCursorStyle();
     log(`[Runtime] Inventario: preso in mano "${entry.def.name || entry.key}"`, 'info');
+    syncInventoryStateToEditor();
   }
-
-  function clearCarriedInventoryItem() {
     const inv = gameState.inventory;
     if (!inv || !inv.carriedItem) return;
     const name = inv.carriedItem.def && inv.carriedItem.def.name;
@@ -2609,6 +2616,119 @@
     }
     updateInventoryCursorStyle();
     log(`[Runtime] Inventario: oggetto rilasciato${name ? ` ("${name}")` : ''}`, 'info');
+    syncInventoryStateToEditor();
+  }
+
+  let suppressInventoryStateSync = false;
+  let inventoryStateSyncTimer = null;
+
+  /** Snapshot JSON-serializable dello stato inventario runtime (contenuti + oggetto in mano). */
+  function serializeInventoryRuntimeSnapshot() {
+    const inv = gameState.inventory;
+    if (!inv) {
+      return { contents: {}, carriedItemKey: null };
+    }
+    const contents = {};
+    if (inv.contents && typeof inv.contents.forEach === 'function') {
+      inv.contents.forEach((count, key) => {
+        const c = Math.max(0, Number(count) || 0);
+        if (c > 0) contents[key] = c;
+      });
+    }
+    const carriedItemKey = inv.carriedItem && inv.carriedItem.key
+      ? String(inv.carriedItem.key)
+      : null;
+    return { contents, carriedItemKey };
+  }
+
+  function applyCarriedItemFromSnapshot(carriedItemKey) {
+    const inv = ensureInventoryState();
+    refreshInventoryItemImages();
+    if (!carriedItemKey) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    const key = resolveInventoryContentKey(carriedItemKey);
+    if (!key || Number(inv.contents.get(key) || 0) <= 0) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    const def = resolveInventoryItemDef(key);
+    if (!def) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    inv.carriedItem = {
+      key,
+      def,
+      sourceSlotIndex: -1,
+      slotW: 48,
+      slotH: 48
+    };
+    inv.suppressPanelUntilDrop = true;
+    if (inv.displayMode === 'toggle' || inv.displayMode === 'popup') {
+      inv.visible = false;
+    }
+    updateInventoryCursorStyle();
+  }
+
+  /** Applica snapshot inventario da editor (UPDATE_CONTEXT / RUN_SCRIPT context). */
+  function applyInventoryRuntimeSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      return;
+    }
+    suppressInventoryStateSync = true;
+    try {
+      const inv = ensureInventoryState();
+      refreshInventoryItemImages();
+      inv.contents.clear();
+      if (snapshot.contents && typeof snapshot.contents === 'object') {
+        Object.keys(snapshot.contents).forEach(key => {
+          const count = Math.max(0, Number(snapshot.contents[key]) || 0);
+          if (count > 0) {
+            inv.contents.set(String(key), count);
+          }
+        });
+      }
+      const carriedKey = snapshot.carriedItemKey != null && snapshot.carriedItemKey !== ''
+        ? String(snapshot.carriedItemKey)
+        : null;
+      applyCarriedItemFromSnapshot(carriedKey);
+    } finally {
+      suppressInventoryStateSync = false;
+    }
+  }
+
+  function syncInventoryStateToEditor() {
+    if (suppressInventoryStateSync) return;
+    if (!isInIframe && !window.opener) return;
+    if (inventoryStateSyncTimer) clearTimeout(inventoryStateSyncTimer);
+    inventoryStateSyncTimer = setTimeout(() => {
+      inventoryStateSyncTimer = null;
+      sendToEditor({
+        type: 'INVENTORY_STATE',
+        inventory: serializeInventoryRuntimeSnapshot(),
+        timestamp: Date.now()
+      });
+    }, 40);
+  }
+
+  function applyRuntimeContext(context) {
+    if (!context || typeof context !== 'object') return;
+    if (context.roomId !== undefined) {
+      gameState.currentRoomId = context.roomId;
+    }
+    if (context.objectId !== undefined) {
+      gameState.objectId = context.objectId;
+    }
+    if (context.variables && typeof context.variables === 'object') {
+      Object.keys(context.variables).forEach(key => {
+        gameState.variables.set(key, context.variables[key]);
+      });
+    }
+    if (context.inventory !== undefined) {
+      applyInventoryRuntimeSnapshot(context.inventory);
+    }
   }
 
   function updateInventoryCursorStyle() {
@@ -4676,6 +4796,7 @@
       const next = current + q;
       inv.contents.set(key, next);
       log(`[Runtime] add_to_inventory: +${q} × "${key}" (totale: ${next})`, 'info');
+      syncInventoryStateToEditor();
       return next;
     },
 
@@ -4695,6 +4816,7 @@
         inv.contents.set(key, next);
       }
       log(`[Runtime] remove_from_inventory: -${q} × "${key}" (totale: ${next})`, 'info');
+      syncInventoryStateToEditor();
       return next;
     },
 
@@ -4719,6 +4841,7 @@
       inv.contents.clear();
       clearCarriedInventoryItem();
       log('[Runtime] clear_inventory: inventario svuotato', 'info');
+      syncInventoryStateToEditor();
       return true;
     },
 
@@ -4730,6 +4853,7 @@
 
     clear_carried_item: function() {
       clearCarriedInventoryItem();
+      syncInventoryStateToEditor();
     },
 
     set_carried_item: function(itemId) {
@@ -4751,6 +4875,7 @@
       }
       updateInventoryCursorStyle();
       log(`[Runtime] set_carried_item: "${def.name || key}" preso in mano`, 'info');
+      syncInventoryStateToEditor();
       return true;
     },
 
@@ -6470,17 +6595,22 @@
   const isInIframe = window.self !== window.top;
 
   function sendToEditor(message, priority = false) {
-    // Se siamo in un iframe, invia messaggio al parent
+    const targets = [];
     if (isInIframe) {
+      targets.push(window.parent);
+    }
+    if (window.opener && window.opener !== window.parent) {
+      targets.push(window.opener);
+    }
+    targets.forEach(target => {
       try {
-        window.parent.postMessage(message, '*');
+        target.postMessage(message, '*');
       } catch (e) {
-        // Ignora errori di comunicazione (sandbox restrictions)
         if (window.addRuntimeLog) {
-          window.addRuntimeLog(`Cannot send message to parent: ${e.message}`, 'warning');
+          window.addRuntimeLog(`Cannot send message to editor: ${e.message}`, 'warning');
         }
       }
-    }
+    });
   }
 
   function sendRuntimeReady() {
@@ -6538,6 +6668,9 @@
         if (message.code && message.handlerName) {
           (async () => {
             try {
+              if (message.context) {
+                applyRuntimeContext(message.context);
+              }
               const scriptName = message.scriptName || `run_script_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
               await executeScriptHandler(message.code, message.handlerName, message.handlerArgs || [], scriptName);
               sendScriptDone();
@@ -6556,19 +6689,8 @@
         break;
 
       case 'UPDATE_CONTEXT':
-        // Aggiorna contesto senza eseguire script
         if (message.context) {
-          if (message.context.roomId !== undefined) {
-            gameState.currentRoomId = message.context.roomId;
-          }
-          if (message.context.objectId !== undefined) {
-            gameState.objectId = message.context.objectId;
-          }
-          if (message.context.variables && typeof message.context.variables === 'object') {
-            Object.keys(message.context.variables).forEach(key => {
-              gameState.variables.set(key, message.context.variables[key]);
-            });
-          }
+          applyRuntimeContext(message.context);
         }
         break;
 

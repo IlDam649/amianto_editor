@@ -12,7 +12,7 @@
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**✅ Nota API (maggio 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/variabili, scope handler Fase C). **Dialoghi base ✅:** `show_dialogue`, `show_dialogue_text`, `end_dialogue` (balloon DialogBox). Prossimi step: scelte ramificate, audio, cursori contestuali.
+**✅ Nota API (giugno 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/stanze/variabili, scope handler Fase C, pulizia editor Fase D). **Dialoghi base ✅:** `show_dialogue`, `show_dialogue_text`, `end_dialogue`. **Inventario runtime ✅:** API + GUI parziale + use-with. Prossimi step: scelte dialogo ramificate, audio, cursori contestuali in playtest, transizioni, save slot.
 
 ---
 
@@ -58,11 +58,11 @@
 - **Ottimizzazione immagini**: Nessuna compressione/ridimensionamento automatico
   - **Prossimo passo**: Compressore automatico per immagini > 1MB
 
+#### 🟡 **Parzialmente Implementato**
+- **Asset manager centralizzato**: Tab **Resources** con immagini e suoni su Supabase (import, ricerca, picker); mancano statistiche uso globali e deduplica
+- **Supporto audio (editor)**: Upload/gestione file audio in Resources; **nessuna API runtime** `play_music` / `play_sound`
+
 #### ❌ **Mancante**
-- **Asset manager centralizzato**: Nessuna vista unificata di tutti gli asset
-  - **Prossimo passo**: Tab "Assets" con lista completa, ricerca, statistiche uso
-- **Supporto audio**: Nessun sistema per caricare/gestire audio
-  - **Prossimo passo**: Upload audio (MP3/OGG) con preview player
 - **Supporto video**: Nessun sistema per cutscene video
   - **Prossimo passo**: Upload video (MP4) con preview e timeline
 - **Thumbnail generation**: Nessuna generazione automatica di thumbnail
@@ -108,7 +108,7 @@
 #### ✅ **Runtime (`JS/runtime.js`) — Play Test e standalone**
 - Editor CodeMirror + attach script a rooms, objects, characters, hotspots, GUI, cursors
 - **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
-- **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with`
+- **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with` (click con `usedItemId` opzionale dove applicabile)
 - **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
 - **Dialoghi (base):** `show_dialogue`, `show_dialogue_text`, `end_dialogue`
 - **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
@@ -191,17 +191,15 @@
 
 #### 🟡 **Parzialmente Implementato**
 - **Sistema inventario runtime**
-  - ❌ API inventario **non** in `runtime.js` (solo codice legacy in `main.js`, non collegato al Play Test)
-  - ❌ Rendering inventario GUI non implementato
-  - **Completato (Fase B.1):** `gameState.inventory` + API inventario + use-with; GUI inventario parziale
+  - ✅ API inventario in `runtime.js` (`add_to_inventory`, use-with, `get_carried_item`, …)
+  - ✅ Rendering GUI inventario parziale (pannello, slot, oggetto in mano, combinazioni)
+  - **Prossimo passo**: drag&drop slot, tooltip, sync `UPDATE_CONTEXT` editor↔runtime
+- **Sistema cursori contestuali**
+  - ✅ Definizione e hover sul **canvas editor** (`checkContextualCursor` in `main.js`)
+  - ❌ Cambio cursore dinamico in **playtest/runtime** (cursore `pointer` o custom inventario)
+  - **Prossimo passo**: Hover detection runtime + immagini cursore da progetto
 
 #### ❌ **Mancante**
-- **Sistema cursori contestuali**: Cursori definiti ma cambio dinamico non implementato
-  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
-  - ✅ Cursor fisso 'pointer' implementato
-  - **Prossimo passo**: Sistema hover detection e cambio cursore dinamico con action text
-- **Sistema inventario visuale**: Inventario non visibile nel runtime
-  - **Prossimo passo**: Rendering inventario GUI con drag&drop, tooltip
 - **Sistema dialogo visuale**: 🟡 Balloon base implementato (`show_dialogue`)
   - **Prossimo passo**: Scelte ramificate, animazioni GUI dialogo avanzate
 - **Sistema audio runtime**: Nessun sistema audio
@@ -287,7 +285,7 @@
 **Obiettivo**: Rendere il runtime completamente funzionale per gameplay base.
 
 **✅ COMPLETATO - Runtime core (rendering, click, stanze, personaggi)**:
-- ✅ Eventi (6): incluso `on_gui_click`
+- ✅ Eventi (8): inclusi `on_gui_click`, `on_use_with`, `on_inventory_use_with`
 - ✅ API base runtime: `print`, `show_message`, `move_object`, `load_room`, variabili (`getVariable`/`setVariable`)
 - ✅ Personaggi: `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation`
 
@@ -297,7 +295,7 @@
 - ✅ **Fase C:** `buildHandlerExecutionScope` + `runHandlerWithExecutionScope` negli handler
 - ✅ **Fase D:** rimossi `sandboxApi` / `gameInventory` editor; `scriptName` stabile in Play Test
 
-**⏳ Prossimo:** Fase E test manuali; sync inventario in `UPDATE_CONTEXT`
+**⏳ Prossimo:** Fase E test manuali (checklist); sync inventario in `UPDATE_CONTEXT`; cursori runtime
 
 **✅ COMPLETATO - Sistema Runtime Sandboxed**:
 - ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
@@ -591,10 +589,10 @@
 - **Impatto**: Performance degrada con molti asset
 - **Soluzione**: Resource pool con cleanup automatico, LRU cache
 
-### 4. **Scripting API Inconsistente** — 🟡 IN RISOLUZIONE
-- **Problema**: API documentate vs runtime non allineate; `sandboxApi` in `main.js` morto
-- **Impatto**: Script con `add_to_inventory` / `Game.getVar` falliscono in Play Test
-- **Soluzione**: ✅ Fase A infrastruttura; ⏳ Fase B porting API; test in `API_UNIFICATION_CHECKLIST.md`
+### 4. **Scripting API Inconsistente** — ✅ RISOLTO (Fasi A–D)
+- **Problema originale**: API solo in editor legacy; Play Test senza inventario/oggetti/alias variabili
+- **Soluzione**: `getScriptApiBindings()` + `buildHandlerExecutionScope()` in `runtime.js`; `sandboxApi` / `gameInventory` rimossi da `main.js`
+- **Residuo**: test manuali Fase E; allineare `GAME_API_COMPLETIONS` con ogni nuova API
 
 ---
 
@@ -606,17 +604,16 @@
 - ✅ **Fase A unificazione API:** binding unico `getScriptApiBindings` + `buildScriptExecutor`
 - ✅ API personaggio script nel runtime
 
-### **Immediato — Unificazione API (Fase B)**
-1. ✅ Fase A infrastruttura scripting — COMPLETATO
-2. ✅ **Fase B.1:** inventario in `runtime.js` (API + use-with + `gameState.inventory`)
-3. ⏳ **Fase B.2:** oggetti dinamici (`spawn_object`, …)
-4. ⏳ **Fase B.3:** `get_room_objects`, `set_room_background`, alias variabili
-5. ⏳ Pulizia `sandboxApi` morto in `main.js` + fix `on_room_enter` → `on_room_change` (Play Test)
+### **Immediato — Qualità e gameplay**
+1. ✅ Unificazione API Fasi A–D — COMPLETATO
+2. ⏳ Test manuali Fase E (`API_UNIFICATION_CHECKLIST.md`)
+3. Inventario GUI: drag&drop, tooltip, sync contesto
+4. Cursori contestuali in runtime/playtest (Fase 2.3)
+5. ~~Dialoghi base~~ ✅ balloon + `show_dialogue`
 
 ### **Breve Termine**
-6. Inventario GUI visuale (rendering + drag&drop) — dopo Fase B.1
-7. Sistema cursori contestuali (Fase 2.3)
-8. ~~Dialoghi base (Fase 2.4)~~ ✅ balloon + `show_dialogue`
+6. Scelte dialogo ramificate (resto Fase 2.4)
+7. Sistema audio runtime (Fase 3.1)
 
 ### **Medio Termine (Settimane 9-16)**
 9. Scelte dialogo ramificate (Fase 2.4 resto)
@@ -633,16 +630,16 @@
 ## 🎯 OBIETTIVO FINALE
 
 **Amianto Editor** dovrebbe permettere di:
-1. ✅ Creare stanze, oggetti, personaggi, GUI (completato)
-2. 🟡 Scrivere script JavaScript funzionanti nel Play Test (runtime core OK; inventario/oggetti/alias variabili — Fase B)
-3. 🟡 Testare gameplay punta-e-clicca (cammina, clic, stanze, GUI, personaggi ✅; puzzle/inventario ⏳)
-4. ❌ Esportare gioco standalone (manca export ottimizzato)
+1. ✅ Creare stanze, oggetti, personaggi, GUI, libreria Resources (completato)
+2. ✅ Scrivere script JavaScript nel Play Test con API unificate (inventario, oggetti, stanze, variabili, dialoghi)
+3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, inventario GUI parziale ✅; audio/transizioni/save ❌)
+4. ❌ Esportare gioco standalone ottimizzato (export JSON ✅; PWA/desktop ❌)
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
 
 ---
 
-*Roadmap aggiornata il: Maggio 2026*
+*Roadmap aggiornata il: Giugno 2026*
 *Versione progetto: 0.4+*
-*Ultimo aggiornamento: dialoghi base (`show_dialogue`, `end_dialogue`); Fase A unificazione API; riferimento a `API_UNIFICATION_CHECKLIST.md`*
+*Ultimo aggiornamento: allineamento doc con runtime — Fasi A–D API, 8 eventi, inventario/use-with runtime, tab Resources, cursori editor vs runtime*
 

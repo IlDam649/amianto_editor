@@ -51,7 +51,7 @@ function on_game_start() {
     </table>
     <h3>Keyboard shortcuts</h3>
     <ul>
-      <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — switch tabs (order: Projects → … → Docs → PLAY)</li>
+      <li><kbd>Ctrl</kbd>+<kbd>0</kbd> Projects · <kbd>1</kbd> Resources · <kbd>2</kbd> Rooms · <kbd>3</kbd> Inventory · <kbd>4</kbd> Characters · <kbd>5</kbd> GUI · <kbd>6</kbd> Scripts · <kbd>7</kbd> Docs · <kbd>8</kbd> PLAY</li>
       <li><kbd>Ctrl</kbd>+<kbd>S</kbd> — save current script (Scripts tab)</li>
       <li><kbd>Ctrl</kbd>+<kbd>Space</kbd> — autocomplete game API in script editor</li>
       <li>Canvas: mouse wheel zoom, <kbd>Ctrl</kbd>+click pan, click-drag objects</li>
@@ -74,7 +74,8 @@ function on_game_start() {
     <p><strong>Custom animations:</strong> in the <strong>Animation</strong> dropdown choose <strong>+</strong> and enter a name (e.g. <code>wave</code>, <code>talk</code> — do not use <code>walking</code>, it is reserved). Assign frames per direction the same way as walking. Play them in scripts with <code>play_character_animation</code>.</p>
     <p>Set FPS for preview. Configure <strong>game start</strong>: starting character, room, and coordinates.</p>
     <h3>GUI &amp; cursors</h3>
-    <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Create a <strong>DialogBox</strong> GUI to configure speech balloons (colors, optional balloon image, appear effect). In scripts use <code>show_dialogue(character, text)</code> — the balloon follows the speaking character. Contextual cursors change when hovering hotspots, objects, or characters.</p>
+    <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Create a <strong>DialogBox</strong> GUI to configure speech balloons (colors, optional balloon image, appear effect). In scripts use <code>show_dialogue(character, text)</code> — the balloon follows the speaking character.</p>
+    <p><strong>Contextual cursors</strong> are defined in the editor and update on hover on the <strong>editor canvas</strong> only. During Play Test the runtime uses a fixed <code>pointer</code> (plus the inventory “item in hand” cursor). Dynamic runtime cursors are on the roadmap — see <code>ROADMAP.md</code>.</p>
   </section>
 
   <section id="doc-scripting" class="docs-section">
@@ -138,7 +139,7 @@ if (Game.getVar("door_open")) {
 
   <section id="doc-api" class="docs-section">
     <h2>Game API reference</h2>
-    <p>Available in Play Test and standalone runtime unless noted. Use <kbd>Ctrl</kbd>+<kbd>Space</kbd> in the editor for autocomplete.</p>
+    <p>Available in Play Test and standalone runtime unless noted. Use <kbd>Ctrl</kbd>+<kbd>Space</kbd> in the script editor for autocomplete (aligned with <code>getScriptApiBindings()</code> in <code>runtime.js</code>, including <code>Game.</code> and <code>GameAPI.</code> members).</p>
 
     <h3>Logging &amp; UI</h3>
     <ul>

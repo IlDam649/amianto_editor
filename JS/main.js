@@ -7045,27 +7045,57 @@ window.selectRoom = function(roomId) {
     attachAutoHint(largeCodeMirrorEditor, 'large');
   }
 
-  // Game API completions for CodeMirror
+  // CodeMirror autocomplete — keep in sync with JS/runtime.js:
+  // getScriptApiBindings() + SUPPORTED_SCRIPT_HANDLERS (on_*)
   const GAME_API_COMPLETIONS = [
-    'print', 'show_message', 'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'move_object',
-    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
-    'on_use_with', 'on_inventory_use_with',
+    'Game', 'GameAPI',
+    'Game.getVar', 'Game.setVar', 'Game.hasVar', 'Game.toggleVar',
+    'GameAPI.print', 'GameAPI.error', 'GameAPI.getVariable', 'GameAPI.setVariable',
+    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click',
+    'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with',
+    'print', 'log', 'show_message', 'showText', 'show_dialogue', 'show_dialogue_text', 'end_dialogue',
+    'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
+    'load_room', 'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
+    'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
+    'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'get_carried_item', 'set_carried_item', 'clear_carried_item',
-    'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
-    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
-    'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
-    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character',
-    'play_character_animation'
+    'spawn_character', 'move_character', 'walk_character', 'set_character_direction',
+    'animate_character', 'play_character_animation'
   ];
+
+  const GAME_DOT_METHODS = ['getVar', 'setVar', 'hasVar', 'toggleVar'];
+  const GAMEAPI_DOT_METHODS = ['print', 'error', 'getVariable', 'setVariable'];
 
   function cmGameApiHint(cm) {
     const cursor = cm.getCursor();
     const token = cm.getTokenAt(cursor);
     const start = token.start;
     const end = cursor.ch;
+    const line = cm.getLine(cursor.line);
+    const before = line.slice(0, start);
     const currentWord = token.string || '';
-    const list = GAME_API_COMPLETIONS.filter(name => name.toLowerCase().startsWith(currentWord.toLowerCase()));
+
+    const dotMatch = before.match(/(Game|GameAPI)\.(\w*)$/);
+    if (dotMatch) {
+      const ns = dotMatch[1];
+      const partial = dotMatch[2] || '';
+      const methods = ns === 'Game' ? GAME_DOT_METHODS : GAMEAPI_DOT_METHODS;
+      const fromCh = start - partial.length;
+      let list = methods
+        .filter(m => m.toLowerCase().startsWith(partial.toLowerCase()))
+        .map(m => ns + '.' + m);
+      if (!list.length) list = methods.map(m => ns + '.' + m);
+      return {
+        list,
+        from: CodeMirror.Pos(cursor.line, fromCh),
+        to: CodeMirror.Pos(cursor.line, end)
+      };
+    }
+
+    const list = GAME_API_COMPLETIONS.filter(name =>
+      name.toLowerCase().startsWith(currentWord.toLowerCase())
+    );
     return {
       list: list.length ? list : GAME_API_COMPLETIONS,
       from: CodeMirror.Pos(cursor.line, start),
@@ -9308,7 +9338,8 @@ window.selectRoom = function(roomId) {
     pendingScripts: [],
     gameState: {
       currentRoomId: null,
-      variables: new Map()
+      variables: new Map(),
+      inventory: { contents: {}, carriedItemKey: null }
     },
     isInitialized: false,
     renderLoopId: null,
@@ -9433,6 +9464,19 @@ window.selectRoom = function(roomId) {
 
         case 'SCRIPT_DONE':
           // Script completato (opzionale, per logging)
+          break;
+
+        case 'INVENTORY_STATE':
+          if (message.inventory) {
+            applyEditorInventorySnapshot(message.inventory);
+            if (event.source !== playTestState.runtimeWindow) {
+              pushPlaytestContextToRuntimeWindow();
+            }
+          }
+          break;
+
+        case 'PLAYTEST_RUNTIME_READY':
+          pushPlaytestContextToRuntimeWindow();
           break;
 
         case 'ROOM_CHANGE_REQUEST':
@@ -9571,24 +9615,71 @@ window.selectRoom = function(roomId) {
   }
 
   // Esegue uno script nell'iframe sandboxed
+  function createEmptyEditorRuntimeInventory() {
+    return { contents: {}, carriedItemKey: null };
+  }
+
+  function applyEditorInventorySnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
+      return;
+    }
+    const contents = {};
+    if (snapshot.contents && typeof snapshot.contents === 'object') {
+      Object.keys(snapshot.contents).forEach(key => {
+        const count = Math.max(0, Number(snapshot.contents[key]) || 0);
+        if (count > 0) contents[key] = count;
+      });
+    }
+    embeddedRuntime.gameState.inventory = {
+      contents,
+      carriedItemKey: snapshot.carriedItemKey != null && snapshot.carriedItemKey !== ''
+        ? String(snapshot.carriedItemKey)
+        : null
+    };
+  }
+
+  function buildSandboxContext(extra) {
+    const inv = embeddedRuntime.gameState.inventory || createEmptyEditorRuntimeInventory();
+    const variables = {};
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      variables[key] = value;
+    });
+    return {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: (extra && extra.objectId) || null,
+      variables,
+      inventory: {
+        contents: Object.assign({}, inv.contents),
+        carriedItemKey: inv.carriedItemKey || null
+      }
+    };
+  }
+
+  function pushPlaytestContextToRuntimeWindow() {
+    if (!playTestState.isRunning || !playTestState.runtimeWindow || playTestState.runtimeWindow.closed) {
+      return;
+    }
+    try {
+      playTestState.runtimeWindow.postMessage({
+        type: 'UPDATE_CONTEXT',
+        context: buildSandboxContext()
+      }, '*');
+    } catch (_) {
+      // finestra playtest chiusa o cross-origin
+    }
+  }
+
   function executeScriptInSandbox(scriptName, scriptContent, handlerName, argsArray, context) {
     if (!scriptContent || typeof scriptContent !== 'string' || !scriptContent.trim()) {
       return;
     }
 
     const callArgs = Array.isArray(argsArray) ? argsArray : [];
-    
-    // Prepara il contesto di esecuzione
-    const executionContext = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: context?.objectId || null,
-      variables: {}
-    };
-
-    // Copia variabili dal gameState
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      executionContext.variables[key] = value;
-    });
+    const executionContext = buildSandboxContext(context || {});
+    if (context && context.objectId) {
+      executionContext.objectId = context.objectId;
+    }
 
     // Se l'iframe non è pronto, metti in coda
     if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
@@ -9620,30 +9711,22 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  // Aggiorna il contesto dell'iframe (variabili, room, etc.)
+  // Aggiorna il contesto dell'iframe (variabili, stanza, inventario)
   function updateSandboxContext() {
     if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
       return;
     }
 
-    const context = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: null,
-      variables: {}
-    };
-
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      context.variables[key] = value;
-    });
-
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'UPDATE_CONTEXT',
-        context: context
+        context: buildSandboxContext()
       }, '*');
     } catch (e) {
       // Ignora errori di comunicazione
     }
+
+    pushPlaytestContextToRuntimeWindow();
   }
 
   // Inizializza gli script del runtime usando l'iframe sandboxed
@@ -9658,6 +9741,7 @@ window.selectRoom = function(roomId) {
     
     // Reset e carica variabili iniziali
     embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
     if (embeddedRuntime.gameData.variables && Array.isArray(embeddedRuntime.gameData.variables)) {
       embeddedRuntime.gameData.variables.forEach(v => {
         if (v && v.name) {
@@ -10019,6 +10103,7 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.currentRoomIndex = 0;
     embeddedRuntime.gameState.currentRoomId = null;
     embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
     embeddedRuntime.isInitialized = false;
   }
 
@@ -10066,6 +10151,10 @@ window.selectRoom = function(roomId) {
     jsonString = JSON.stringify(projectObj, null, 2);
     addDebugMessage('Playtest: progetto serializzato dallo stato corrente in editor', 'info');
 
+    if (!runtimeWasAlreadyOpen) {
+      embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
+    }
+
     if (runtimeWasAlreadyOpen) {
       try {
         localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
@@ -10073,6 +10162,7 @@ window.selectRoom = function(roomId) {
         playTestState.runtimeWindow.focus();
         addDebugMessage('Playtest: progetto ricaricato nella finestra runtime (script ricompilati)', 'success');
         updateGameStatus('Test running...');
+        setTimeout(() => pushPlaytestContextToRuntimeWindow(), 800);
         return;
       } catch (reloadErr) {
         console.warn('[PlayTest] Ricarica finestra esistente fallita, apro nuova finestra:', reloadErr);
