@@ -218,7 +218,7 @@
         <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+5)">GUI</button>
         <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+6)">Scripts</button>
         <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+7)">Docs</button>
-        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+8)">PLAY</button>
+        <button type="button" class="section-btn playtest-btn" id="nav-playtest-btn" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+8)">PLAY</button>
       </div>
     </nav>
 
@@ -1087,60 +1087,6 @@
           </div>
         </div>
 
-        <div id="play" class="section">
-          <h3>Play Test</h3>
-          <div class="section-content">
-            <div class="mb-3">
-              <div class="alert alert-info" role="alert">
-                <strong>Test Mode:</strong> Here you can test your game in real time while developing it.
-              </div>
-            </div>
-            
-            <div class="mb-3">
-              <div class="btn-group w-100" role="group">
-                <button class="btn btn-success btn-sm" onclick="startPlayTest()">
-                  <i class="fas fa-play"></i> Start Test
-                </button>
-                <button class="btn btn-warning btn-sm" onclick="pausePlayTest()">
-                  <i class="fas fa-pause"></i> Pause
-                </button>
-                <button class="btn btn-danger btn-sm" onclick="stopPlayTest()">
-                  <i class="fas fa-stop"></i> Stop
-                </button>
-              </div>
-            </div>
-
-            <div class="mb-3">
-              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Run on_game_start scripts without opening the runtime">
-                <i class="fas fa-rocket"></i> Test Game Start
-              </button>
-            </div>
-            
-            <div class="mb-3">
-              <label class="form-label text-light">Game status:</label>
-              <div class="form-control form-control-sm bg-dark text-light" id="game-status" readonly>
-                Ready for testing
-              </div>
-            </div>
-            
-
-            <div class="mb-3">
-              <h6 class="text-light">Test controls:</h6>
-              <div class="row">
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testRoomChange()">Test Room Change</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testObjectInteraction()">Test Interaction</button>
-                </div>
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterInteraction()">Test Character Click</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterDialog()">Test Dialogs</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testHotspotInteraction()">Test Hotspot</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="clearDebugConsole()">Clear Console</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </div>

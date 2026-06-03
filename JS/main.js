@@ -182,7 +182,8 @@ document.addEventListener("DOMContentLoaded", () => {
   /* ============================
      PART 1 - Sistema Tabs Avanzato
      ============================ */
-  const sectionButtons = document.querySelectorAll(".section-btn");
+  const sectionButtons = document.querySelectorAll(".section-btn[data-section]");
+  const playtestBtn = document.getElementById('nav-playtest-btn');
   const sections = document.querySelectorAll(".section");
   
   // Stato globale per le tabs
@@ -191,6 +192,17 @@ document.addEventListener("DOMContentLoaded", () => {
     tabHistory: [],
     notifications: new Map()
   };
+
+  function launchPlaytest() {
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('Please select or create a project first', 'warning');
+      return;
+    }
+    if (typeof window.startPlayTest === 'function') {
+      window.startPlayTest();
+    }
+  }
 
   // Funzione migliorata per mostrare una sezione
   function showSectionById(id, addToHistory = true) {
@@ -356,9 +368,25 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.addEventListener("keydown", handleKeyboardNavigation);
     });
 
+    if (playtestBtn) {
+      playtestBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (playtestBtn.disabled) return;
+        launchPlaytest();
+      });
+    }
+
     // Support for keyboard shortcuts (Ctrl + number)
     document.addEventListener('keydown', (e) => {
-      if (e.ctrlKey && e.key >= '1' && e.key <= '9') {
+      if (!e.ctrlKey) return;
+      if (e.key === '8') {
+        e.preventDefault();
+        if (playtestBtn && !playtestBtn.disabled) {
+          launchPlaytest();
+        }
+        return;
+      }
+      if (e.key >= '1' && e.key <= '9') {
         const index = parseInt(e.key) - 1;
         if (index < sectionButtons.length) {
           e.preventDefault();
@@ -14100,7 +14128,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Abilita/disabilita altre tab (tutte tranne Projects)
    */
   function enableOtherTabs(enabled) {
-    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
+    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts'];
     tabsToDisable.forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
@@ -14112,6 +14140,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       }
     });
+    const playtestButton = document.getElementById('nav-playtest-btn');
+    if (playtestButton) {
+      playtestButton.disabled = !enabled;
+      if (!enabled) {
+        playtestButton.classList.add('disabled');
+      } else {
+        playtestButton.classList.remove('disabled');
+      }
+    }
   }
 
   /**
