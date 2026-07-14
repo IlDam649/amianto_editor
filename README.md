@@ -16,16 +16,34 @@
 
 # Amianto Editor
 
-Modern web-based point'n'click game editor. Design rooms, place scene objects, draw walkable areas, manage characters and animations, and script behaviors with JavaScript — all in your browser.
+Offline point-and-click game editor for Windows (Electron) and modern browsers. Design rooms, place scene objects, draw walkable areas, manage characters and animations, and script behaviors with JavaScript — no cloud account required.
 
-## 📚 Documentazione
+## 📚 Documentation
 
-- 📖 **In-app Docs tab** — full English guide in the editor toolbar (**Docs**, `Ctrl+7`)
-- 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
-- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–D ✅)
-- 🔥 **`firestore.rules`** — regole Firestore (deploy con Firebase CLI)
-- 🌐 **`cors.json`** — CORS per Firebase Storage · **`JS/supabase-config-template.js`** — setup libreria asset Supabase
+- 📖 **In-app Docs tab** — full English guide in the editor toolbar (**Docs**, `Ctrl+8`)
+- 📄 **[README](README.md)** — overview and quick start
+- 🗺️ **[ROADMAP](ROADMAP.md)** — development plan and implementation status
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** — editor ↔ runtime API unification (Phases A–D ✅)
+- 📋 **[# 🎮 Funzioni da Implementare](%23%20%F0%9F%8E%AE%20Funzioni%20da%20Implementare%20-%20Amianto%20editor.md)** — API wishlist / backlog (not current runtime status)
+
+---
+
+## Offline & desktop
+
+Amianto Editor runs **fully offline**:
+
+| Layer | Technology |
+|-------|------------|
+| **Project file** | `.amnt` — single JSON bundle (project + embedded assets as base64) |
+| **Asset cache** | IndexedDB (`JS/local-storage.js`) |
+| **Project list / cache** | `localStorage` + OPFS backup |
+| **Desktop app** | Electron (`npm start` / `npm run dist` → Windows `.exe`) |
+
+- **Create project** — choose save path for the `.amnt` file (native dialog in Electron)
+- **Save Project** — header button updates the linked `.amnt` file
+- **Project Settings** — canvas size, name, and metadata (header, next to Save)
+- **Load Project** — open `.amnt` or legacy `.json` from disk
+- No Firebase, Supabase, or login
 
 ---
 
@@ -33,10 +51,11 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 - Rooms Manager
   - Create, rename, delete, and switch rooms
-  - Per-room assets: background, foreground layers, scene objects, walkable area
+  - Per-room assets: background, foreground layers, scene objects, **room animation placements**, walkable area
 - Canvas Workspace (context-aware)
-  - Rooms: renders background, scene objects, foregrounds, walkable overlay
-  - Characters: preview animation frames in the main canvas
+  - Rooms: renders background, **room animations**, scene objects, foregrounds, walkable overlay
+  - Animations: preview room/environment animation frames on the main canvas
+  - Characters: preview character animation frames in the main canvas
   - Scripts: editor-focused canvas
   - Canvas controls: zoom in/out, reset to 100%, fit to screen, center view
 - Walkable Area (Level Design)
@@ -49,6 +68,10 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Scene Objects (Rooms)
   - Add image-based objects; edit name and position; delete
   - List with filtering and type badges
+- Room Animations
+  - **Animations** tab: create frame sequences (FPS, loop, background/foreground layer), preview on canvas
+  - **Rooms** tab: place animation instances; first frame draggable on canvas
+  - Script API: `play_animation()`, `stop_animation()` (same loop rules as audio)
 - Foreground Layers
   - Multiple image layers; list and ordering controls
 - Characters
@@ -71,7 +94,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
   - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili — vedi [Current API Status](#current-api-status)
   - **API unification (Fasi A–D ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` + scope handler in `runtime.js`; stesse API in iframe e `runtime.html`
-  - **Runtime Sandboxed**: Script execution in isolated iframe with `sandbox="allow-scripts"` for security
+  - **Runtime Sandboxed**: Script execution in isolated iframe (`runtime-sandbox.html` + `JS/runtime.js`)
   - **GameAPI / `Game`**: API esposte agli script (`print`, `load_room`, `add_to_inventory`, `spawn_object`, `Game.getVar()`, …)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
   - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
@@ -80,13 +103,10 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 - Play Test Panel
   - Start/Pause/Stop test session; debug console; quick test actions
 - Projects & Resources
-  - **Projects** tab: create/open/delete projects (Firestore + cache OPFS/localStorage)
-  - **Resources** tab: central image/sound library on Supabase (import, search, picker in other editors)
-- Authentication
-  - Login/logout, registration modal, persistent sessions
-  - Per-user project storage
-- File Menu
-  - New/Open/Save/Export, Project Settings, Delete Project
+  - **Projects** tab: create, load (`.amnt` / `.json`), open linked file, delete from local list
+  - **Resources** tab: central image/sound library in IndexedDB (import, search, picker in other editors)
+- Header actions
+  - **Project Settings** and **Save Project** (top right); project size indicator
 - Standalone Runtime & Play Test
   - `runtime.html` loads and renders exported JSON via `JS/runtime.js`
   - Load JSON file, load last saved (OPFS/localStorage), download JSON
@@ -105,7 +125,7 @@ Modern web-based point'n'click game editor. Design rooms, place scene objects, d
 
 The runtime system provides a complete game execution environment:
 
-- **✅ Complete Rendering**: Rooms (background, foregrounds, objects), characters with 8-direction animations and scaling, GUI overlays with buttons
+- **✅ Complete Rendering**: Rooms (background, **room animations**, foregrounds, objects), characters with 8-direction animations and scaling, GUI overlays with buttons
 - **✅ Click Interactions**: Full hit detection system for hotspots (polygon), objects (bounding box), characters, and GUI buttons with script execution
 - **✅ Pathfinding & Movement**: Click-to-move player with intelligent pathfinding on walkable areas, smooth character movement with direction-based animations
 - **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
@@ -194,6 +214,28 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 }
 ```
 
+- **✅ Room animation system**: Catalog + per-room instances; layer-aware rendering; `play_animation` / `stop_animation` with loop options
+
+### Room animation APIs
+- **`play_animation(instanceIdOrName, loop?)`** — Start or restart a placed room animation. `loop` follows audio rules (`true`/`'once'`/number N); default uses the animation's loop setting. Instances with `autoPlay` start when the room loads.
+- **`stop_animation(instanceIdOrName?)`** — Stop one instance by id or name, or all room animations if omitted.
+
+**Editor setup:** **Animations** → create animation + frames → **Rooms → Room Animations** → add instance and drag first frame.
+
+**Project JSON (excerpt):**
+```json
+{
+  "roomAnimations": [
+    { "id": "anim_water", "name": "waterfall", "fps": 8, "loop": true, "layer": "background", "frames": ["asset:..."] }
+  ],
+  "rooms": [{
+    "animationInstances": [
+      { "id": "ainst_1", "animationId": "anim_water", "name": "waterfall_main", "x": 120, "y": 80, "layer": "background", "autoPlay": true }
+    ]
+  }]
+}
+```
+
 ### Hotspot APIs
 - **`enableHotspot(idOrName)`** — Activates a hotspot in the current room (clickable; sets `visible` to true). Returns `true` on success.
 - **`disableHotspot(idOrName)`** — Deactivates a hotspot (no clicks; sets `visible` to false). Returns `true` on success.
@@ -255,42 +297,61 @@ function on_object_click(object_id, x, y) {
 on_hotspot_click(async function() {
   await play_character_animation("Hero", "wave", "south");
   show_message("Hello!");
+// Room animation (requires instance placed in Rooms tab)
+on_room_change(function(oldRoom, newRoom) {
+  play_animation("waterfall_main", true);
 });
 ```
 
-**Not yet in runtime (roadmap):** branching dialogue choices, audio, save/load slots, visual transitions (`fade_in`, …). Basic speech balloons: `show_dialogue` / `end_dialogue`. See [ROADMAP.md](ROADMAP.md).
+**Not yet in runtime (roadmap):** branching dialogue choices, save/load slots, visual transitions (`fade_in`, …). Basic speech balloons: `show_dialogue` / `end_dialogue`. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
 ## Quick Start
 
-1. Open `index.html` in a modern browser.
-2. Rooms → Rooms Manager: create/select a room.
-3. Add a Background and optional Foreground Layers.
-4. Scene Objects → add images; edit positions as needed.
-5. Walkable Area → Start Drawing → click to add vertices → Finish.
-6. Characters → select a character → upload walking frames (or add a custom animation with **+**) → Start Preview.
-7. Scripts → write JavaScript and Run; use the provided APIs.
-8. Play → Start Test to see runtime logs and basic flow.
+### Desktop (recommended)
+
+```bash
+npm install
+npm start          # run Electron app
+npm run dist       # build Windows installer in dist/
+```
+
+1. Create or **Load Project** from the Projects tab (`.amnt` file).
+2. Rooms → create a room, add background, objects, walkable area; place room animations.
+3. Animations → create ambient/prop animations (optional).
+4. Characters → upload walking frames; set game start room/position.
+4. Scripts → write JavaScript; use **PLAY** to test.
+5. **Save Project** (header) writes your `.amnt` file.
+
+### Browser only
+
+1. Open `index.html` in a modern browser (or serve the folder locally).
+2. Same workflow as above; use the browser file picker for load/save where native dialogs are unavailable.
 
 ## Keyboard & Tips
 
-- Tabs: **Ctrl+0** Projects, **Ctrl+1** Resources, **Ctrl+2** Rooms, **Ctrl+3** Inventory, **Ctrl+4** Characters, **Ctrl+5** GUI, **Ctrl+6** Scripts, **Ctrl+7** Docs, **Ctrl+8** PLAY (requires open project except Docs)
+- Tabs: **Ctrl+0** Projects, **Ctrl+1** Resources, **Ctrl+2** Rooms, **Ctrl+3** Inventory, **Ctrl+4** Characters, **Ctrl+5** Animations, **Ctrl+6** GUI, **Ctrl+7** Scripts, **Ctrl+8** Docs, **Ctrl+9** PLAY (requires open project except Docs)
 - Scripts: **Ctrl+S** saves the current script; **Ctrl+Space** API autocomplete
-- Zoom editor (Rooms/Characters): mouse wheel (bounded zoom)
+- Zoom editor (Rooms/Characters/Animations): mouse wheel (bounded zoom)
 
 ## Project Structure
 
-- `index.html` — Editor UI layout (login, dashboard, tabs and sections)
-- `CSS/main.css` — Acid dark theme and neon styling
-- `JS/main.js` — Editor engine: tabs, canvas, rooms/objects, characters, scripting, UI handlers
-- `JS/docs-panel.js` — In-app documentation (Docs tab content)
-- `JS/resources.js` — Central resource library (Supabase)
-- `runtime.html` — Standalone runtime player
-- `JS/runtime.js` — Runtime renderer (rooms/assets, scripts, OPFS/localStorage)
-- `# 🎮 Funzioni da Implementare - Amianto editor.md` — API backlog / wishlist (not current runtime status)
-- `firestore.rules` / `cors.json` — Firebase deploy config
-- `img/mnt.png` — Project cover (shown above)
+- `index.html` — Editor UI (tabs, header, canvas)
+- `runtime.html` — Full-screen runtime player (Play Test window)
+- `runtime-sandbox.html` — Minimal iframe shell for in-editor script sandbox
+- `CSS/main.css` — Acid dark theme
+- `JS/main.js` — Editor engine (rooms, scripting, projects, UI)
+- `JS/runtime.js` — Game runtime (rendering, scripts, GameAPI)
+- `JS/amnt-format.js` — `.amnt` pack/unpack
+- `JS/local-storage.js` — IndexedDB asset storage
+- `JS/app-mode.js` — Local user + Electron detection
+- `JS/resources.js` — Resources tab (local library)
+- `JS/docs-panel.js` — In-app documentation (Docs tab)
+- `electron/main.js` — Electron main process (native file dialogs)
+- `electron/preload.js` — IPC bridge for filesystem
+- `package.json` — Electron scripts and Windows build config
+- `img/mnt.png` — App icon / cover
 
 ## Extending
 
@@ -308,7 +369,8 @@ on_hotspot_click(async function() {
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
 - 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
-- **Audio System**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
+- 🟡 **Audio System (partial)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ volume mixer, ambient layers
+- ✅ **Room animations**: Animations tab + room placements; `play_animation()`, `stop_animation()`
 - **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
@@ -367,15 +429,20 @@ See `# 🎮 Funzioni da Implementare - Amianto editor.md` for the complete list 
 
 # Amianto Editor (Italiano)
 
-Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona oggetti di scena, disegna le zone camminabili, gestisci personaggi e animazioni, e crea comportamenti con script JavaScript — tutto nel browser.
+Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure browser). Progetta stanze, oggetti, personaggi e script JavaScript — senza account cloud.
 
 ## 📚 Documentazione
 
-- 📄 **[README](README.md)** - Panoramica e guida rapida
-- 🗺️ **[ROADMAP](ROADMAP.md)** - Piano di sviluppo completo e stato delle implementazioni
-- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** - Unificazione API editor ↔ runtime (Fasi A–D ✅)
-- 🔥 **`firestore.rules`** — regole Firestore (deploy con Firebase CLI)
-- 🌐 **`cors.json`** — CORS per Firebase Storage · **`JS/supabase-config-template.js`** — setup libreria asset Supabase
+- 📄 **[README](README.md)** — panoramica (inglese, sezione italiana sotto)
+- 🗺️ **[ROADMAP](ROADMAP.md)** — piano di sviluppo e stato implementazioni
+- 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** — unificazione API editor ↔ runtime (Fasi A–D ✅)
+
+### Modalità offline
+
+- File progetto **`.amnt`** (JSON + asset embedded)
+- Asset in **IndexedDB**; lista progetti in **localStorage**
+- App desktop: `npm start` / `npm run dist`
+- **Save Project** e **Project Settings** in alto a destra
 
 ---
 
@@ -383,9 +450,10 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 
 - Gestione Stanze
   - Crea, rinomina, elimina e seleziona stanze
-  - Dati per stanza: background, livelli di foreground, oggetti di scena, zona camminabile
+  - Dati per stanza: background, livelli di foreground, oggetti di scena, **posizionamenti animazioni**, zona camminabile
 - Canvas (contestuale alla tab)
-  - Rooms: render di background, oggetti, foreground e overlay walkable
+  - Rooms: render di background, **animazioni di stanza**, oggetti, foreground e overlay walkable
+  - Animations: anteprima animazioni ambiente sul canvas principale
   - Characters: anteprima frame d’animazione sul canvas principale
   - Scripts: canvas dedicato all’editor
   - Controlli canvas: zoom +/−, reset 100%, Fit, Center
@@ -400,6 +468,10 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Aggiunta immagini; modifica nome/posizione; rimozione
   - Supporto per più oggetti con stessa immagine (nomi unici)
   - Lista con filtro e badge (Interactive, Container, ecc.)
+- Animazioni di stanza
+  - Tab **Animations**: sequenze di frame (FPS, loop, layer background/foreground), anteprima canvas
+  - Tab **Rooms**: posizionamento istanze; primo frame trascinabile sul canvas
+  - API script: `play_animation()`, `stop_animation()` (stesse regole loop dell'audio)
 - Livelli di Foreground
   - Più livelli immagine con ordinamento
 - Personaggi
@@ -420,7 +492,7 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
   - Editor JavaScript integrato (CodeMirror)
   - **Sistema Eventi**: 8 handler (`on_game_start`, `on_room_change`, click con `usedItemId?`, `on_gui_click`, `on_use_with`, …)
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
-  - **Runtime Sandboxed**: Esecuzione script in iframe isolato con `sandbox="allow-scripts"` per sicurezza
+  - **Runtime Sandboxed**: Esecuzione script in iframe isolato (`runtime-sandbox.html`)
   - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
   - **Messaggistica Robusta**: Sistema MessageQueue con buffer, retry (3 tentativi) e fallback a console
   - **Script Logging**: ScriptLogService integrato con log timestamped e livelli (info, warning, error)
@@ -429,13 +501,10 @@ Editor web moderno per giochi punta‑e‑clicca. Progetta stanze, posiziona ogg
 - Play Test
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
 - Progetti & Risorse
-  - Tab **Projects**: crea/apri/elimina progetti (Firestore + cache OPFS/localStorage)
-  - Tab **Resources**: libreria immagini/suoni centralizzata su Supabase
-- Autenticazione
-  - Login/logout, registrazione, sessioni persistenti
-  - Progetti per utente
-- Menu File
-  - Nuovo/Apri/Salva/Export, Impostazioni Progetto, Elimina Progetto
+  - Tab **Projects**: crea, carica (`.amnt` / `.json`), elimina dalla lista locale
+  - Tab **Resources**: libreria immagini/suoni in IndexedDB
+- Header
+  - **Project Settings** e **Save Project**; indicatore dimensione progetto
 - Runtime Standalone & Play Test
   - `runtime.html` + `JS/runtime.js` per caricare/eseguire JSON di progetto
   - Carica file JSON, Carica ultimo salvataggio (OPFS/localStorage), Download JSON
@@ -531,6 +600,12 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 
 **Setup editor:** Characters → personaggio → menu Animation → **+** → nome → frame per direzione.
 
+### API Animazioni di stanza (runtime)
+- **`play_animation(instanceIdOrName, loop?)`** — Avvia o riavvia un'animazione posizionata nella stanza. Parametro `loop` come per l'audio; default = impostazione loop dell'animazione.
+- **`stop_animation(instanceIdOrName?)`** — Ferma un'istanza o tutte le animazioni della stanza.
+
+**Setup editor:** **Animations** → crea animazione + frame → **Rooms → Room Animations** → aggiungi istanza e trascina il primo frame.
+
 ### Esempi di Utilizzo
 ```javascript
 // Evento di avvio gioco
@@ -576,41 +651,44 @@ on_hotspot_click(async function() {
   await play_character_animation("Eroe", "wave", "south");
   show_message("Ciao!");
 });
+
+// Animazione di stanza (istanza posizionata in Rooms)
+on_room_change(function(oldRoom, newRoom) {
+  play_animation("waterfall_main", true);
+});
 ```
 
-**Non ancora nel runtime:** scelte dialogo ramificate, audio, salvataggi, transizioni visive. Dialoghi base: `show_dialogue` / `end_dialogue`. Vedi [ROADMAP.md](ROADMAP.md).
+**Non ancora nel runtime:** scelte dialogo ramificate, salvataggi, transizioni visive. Dialoghi base: `show_dialogue` / `end_dialogue`. Audio: `play_music` / `play_sound` ✅ (senza mixer volumi). Vedi [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
 ## Avvio Rapido
 
-1. Apri `index.html` in un browser recente.
-2. Rooms → Rooms Manager: crea/seleziona una stanza.
-3. Aggiungi un Background e, se vuoi, livelli di Foreground.
-4. Scene Objects → aggiungi immagini; modifica le posizioni.
-5. Walkable Area → Start Drawing → clic per i vertici → Finish.
-6. Characters → seleziona un personaggio → carica frame walking (o animazione custom con **+**) → Start Preview.
-7. Scripts → scrivi JavaScript e premi Run; usa le API fornite.
-8. Play → Start Test per vedere i log e provare il flusso.
+**Desktop:** `npm install` → `npm start`. Crea o carica un progetto `.amnt`, lavora nelle tab, salva con **Save Project**.
+
+**Browser:** apri `index.html`, stesso flusso (file picker al posto dei dialoghi nativi).
+
+1. Projects → nuovo progetto o Load Project
+2. Rooms → stanza, background, oggetti, walkable, hotspot; posiziona animazioni di stanza
+3. Animations → animazioni ambiente (opzionale)
+4. Characters → frame walking, posizione iniziale
+4. Scripts → JavaScript + PLAY per testare
 
 ## Note & Consigli
 
-- Tab: **Ctrl+0** Projects … **Ctrl+7** Docs, **Ctrl+8** PLAY (serve progetto aperto, tranne Docs)
+- Tab: **Ctrl+0** Projects … **Ctrl+8** Docs, **Ctrl+9** PLAY (serve progetto aperto, tranne Docs)
 - Scripts: **Ctrl+S** salva lo script; **Ctrl+Space** autocomplete API
-- Zoom editor (Rooms/Characters): rotella mouse
+- Zoom editor (Rooms/Characters/Animations): rotella mouse
 
 ## Struttura del Progetto
 
-- `index.html` — Editor (login, dashboard, tabs/sezioni)
-- `CSS/main.css` — Tema scuro neon
-- `JS/main.js` — Motore editor: tabs, canvas, stanze/oggetti, personaggi, scripting, UI
-- `JS/docs-panel.js` — Documentazione in-app (tab Docs)
-- `JS/resources.js` — Libreria risorse Supabase
-- `runtime.html` — Player runtime standalone
-- `JS/runtime.js` — Renderer runtime (stanze/assets, script, OPFS/localStorage)
-- `# 🎮 Funzioni da Implementare - Amianto editor.md` — Backlog API (non stato runtime attuale)
-- `firestore.rules` / `cors.json` — Config Firebase
-- `img/mnt.png` — Cover (in alto)
+- `index.html` — Editor UI
+- `runtime.html` — Player runtime (finestra Play Test)
+- `runtime-sandbox.html` — Shell iframe per sandbox script
+- `JS/main.js`, `JS/runtime.js` — Editor e runtime
+- `JS/amnt-format.js`, `JS/local-storage.js`, `JS/app-mode.js` — Offline / `.amnt`
+- `electron/` — App Windows
+- `package.json` — Build Electron
 
 ## Estensioni Possibili
 
@@ -628,7 +706,8 @@ on_hotspot_click(async function() {
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
 - 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
-- **Sistema Audio**: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
+- 🟡 **Sistema Audio (parziale)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ mixer volumi, ambient
+- ✅ **Animazioni di stanza**: tab Animations + posizionamento in Rooms; `play_animation()`, `stop_animation()`
 - **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
@@ -708,14 +787,15 @@ Vedi `# 🎮 Funzioni da Implementare - Amianto editor.md` per la lista completa
 - Visual scripting opzionale (nodi) per utenti non programmatori
 
 ### Fase 4 — Produzione e distribuzione
-- Esportazione progetto in HTML/PWA “one‑click” e pacchetti desktop
-- Localizzazione (i18n) e gestione traduzioni
-- Sistema salvataggi gioco (slot), caricamento e autosave
+- ✅ Editor desktop Electron (Windows `.exe`)
+- ✅ Formato progetto `.amnt` (bundle singolo)
+- Esportazione gioco standalone HTML/PWA “one‑click”
+- Localizzazione (i18n) UI editor
+- Sistema salvataggi gioco (slot), caricamento e autosave in runtime
 - Telemetria facoltativa e report errori runtime
 
-### Fase 5 — Account & collaborazione
-- Migliorie auth: reset password via email, social login
-- Sync cloud e condivisione progetti, permessi per progetto
+### Fase 5 — Collaborazione (futuro, opzionale)
+- Sync cloud e condivisione progetti
 - Versionamento progetti e cronologia modifiche
 
 Nota: le voci di roadmap sono indicative e potranno variare in base al feedback.

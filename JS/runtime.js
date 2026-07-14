@@ -28,6 +28,7 @@
     guis: new Map(), // GUI caricate
     characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, roomId}>
     characterDefinitions: new Map(), // Definizioni dei character dal progetto: Map<characterName, {directions: {...}}>
+    roomAnimationDefinitions: new Map(), // Definizioni animazioni stanza: Map<animId, {fps, loop, frames}>
     scripts: {}, // script del progetto
     attachments: {}, // script collegati a eventi
     isRunning: false,
@@ -42,7 +43,15 @@
     compiledScriptHashes: new Map(),
     inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible, carriedItem, pointerX, pointerY }
     resourceFileIndex: null, // Map<filenameLower, "asset:assetId"> — cache Resources per spawn_object
-    resourceFileIndexKey: null
+    resourceFileIndexKey: null,
+    audioFileIndex: null,
+    audioFileIndexKey: null,
+    audio: {
+      music: null,
+      sounds: new Map(),
+      musicVolume: 1,
+      soundVolume: 1
+    }
   };
 
   // ⚠️ FLAG PROTEZIONE DOPPI EVENTI
@@ -75,6 +84,7 @@
     'sprite',
     'gui',
     'character',
+    'animation',
     'cursor'
   ];
 
@@ -241,6 +251,7 @@
   };
 
   const RESOURCE_IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+  const AUDIO_FILE_EXT = /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i;
 
   function getActualProjectId() {
     let id = projectInfo.projectId;
@@ -253,6 +264,200 @@
   function invalidateResourceFileIndex() {
     gameState.resourceFileIndex = null;
     gameState.resourceFileIndexKey = null;
+    invalidateAudioFileIndex();
+  }
+
+  function invalidateAudioFileIndex() {
+    gameState.audioFileIndex = null;
+    gameState.audioFileIndexKey = null;
+  }
+
+  /**
+   * loop: true | 'loop' | 'infinite' → loop forever
+   *       false | 'once' | 'none' | 0 | 1 → play once
+   *       number N > 1 → play N times
+   */
+  function parseAudioLoopOption(loop, defaultInfinite) {
+    if (loop === undefined || loop === null) {
+      return defaultInfinite ? { mode: 'infinite' } : { mode: 'once' };
+    }
+    if (loop === true || loop === 'loop' || loop === 'infinite' || loop === 'repeat') {
+      return { mode: 'infinite' };
+    }
+    if (loop === false || loop === 'once' || loop === 'none') {
+      return { mode: 'once' };
+    }
+    const n = Number(loop);
+    if (!Number.isNaN(n)) {
+      if (n <= 1) return { mode: 'once' };
+      return { mode: 'count', count: Math.floor(n) };
+    }
+    return defaultInfinite ? { mode: 'infinite' } : { mode: 'once' };
+  }
+
+  function applyAudioLoop(audio, loopOpt) {
+    if (!audio || !loopOpt) return;
+    audio.loop = loopOpt.mode === 'infinite';
+    if (loopOpt.mode !== 'count') return;
+
+    let remaining = loopOpt.count;
+    const onEnded = () => {
+      remaining -= 1;
+      if (remaining > 0) {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        audio.removeEventListener('ended', onEnded);
+      }
+    };
+    audio.addEventListener('ended', onEnded);
+  }
+
+  function stopMusicPlayback() {
+    const music = gameState.audio && gameState.audio.music;
+    if (!music || !music.element) return;
+    try {
+      music.element.pause();
+      music.element.removeAttribute('src');
+      music.element.load();
+    } catch (_) {}
+    gameState.audio.music = null;
+  }
+
+  function stopSoundPlayback(soundKey) {
+    if (!gameState.audio || !gameState.audio.sounds) return;
+    const key = String(soundKey || '').trim().toLowerCase();
+    if (!key) return;
+    const entry = gameState.audio.sounds.get(key);
+    if (!entry || !entry.element) return;
+    try {
+      entry.element.pause();
+      entry.element.removeAttribute('src');
+      entry.element.load();
+    } catch (_) {}
+    gameState.audio.sounds.delete(key);
+  }
+
+  function stopAllAudioPlayback() {
+    stopMusicPlayback();
+    if (gameState.audio && gameState.audio.sounds) {
+      for (const key of [...gameState.audio.sounds.keys()]) {
+        stopSoundPlayback(key);
+      }
+    }
+  }
+
+  async function refreshAudioFileIndex() {
+    const projectId = getActualProjectId();
+    if (!projectId) return new Map();
+
+    const userId = projectInfo.userId || 'local';
+    const cacheKey = `${userId}|${projectId}|audio`;
+    if (gameState.audioFileIndex && gameState.audioFileIndexKey === cacheKey) {
+      return gameState.audioFileIndex;
+    }
+
+    const index = new Map();
+
+    if (window.assetStorage && typeof window.assetStorage.listProjectAudio === 'function') {
+      try {
+        const entries = await window.assetStorage.listProjectAudio(projectId, userId);
+        for (const entry of entries || []) {
+          const aid = entry.assetId || normalizeResourceFileKey(entry.name).replace(/\.[^.]+$/, '');
+          const url = entry.publicUrl || null;
+          registerResourceFileAlias(index, entry.name, aid, url);
+          if (entry.fileName) registerResourceFileAlias(index, entry.fileName, aid, url);
+          if (entry.displayName) registerResourceFileAlias(index, entry.displayName, aid, url);
+          if (aid) {
+            registerResourceFileAlias(index, aid, aid, url);
+          }
+        }
+      } catch (err) {
+        log(`[Runtime] refreshAudioFileIndex: ${err.message}`, 'warning');
+      }
+    }
+
+    gameState.audioFileIndex = index;
+    gameState.audioFileIndexKey = cacheKey;
+    log(`[Runtime] Audio file index: ${index.size} alias`, 'info');
+    return index;
+  }
+
+  async function resolveAudioUrl(audioRef) {
+    const trimmed = String(audioRef == null ? '' : audioRef).trim();
+    if (!trimmed) return null;
+
+    if (
+      trimmed.startsWith('data:') ||
+      trimmed.startsWith('blob:') ||
+      /^https?:\/\//i.test(trimmed)
+    ) {
+      return trimmed;
+    }
+
+    let assetId = null;
+    if (trimmed.startsWith('asset:')) {
+      assetId = trimmed.slice(6);
+    } else if (/^asset_[\w-]+$/i.test(trimmed)) {
+      assetId = trimmed;
+    }
+
+    if (assetId) {
+      const url = await resolveAssetId(assetId, 'audio');
+      if (url) return url;
+    }
+
+    const key = normalizeResourceFileKey(trimmed);
+    const index = await refreshAudioFileIndex();
+    const fromIndex = index.get(key);
+    if (fromIndex) {
+      if (fromIndex.publicUrl) return fromIndex.publicUrl;
+      if (fromIndex.assetRef && fromIndex.assetRef.startsWith('asset:')) {
+        const id = fromIndex.assetRef.slice(6);
+        const url = await resolveAssetId(id, 'audio');
+        if (url) return url;
+      }
+    }
+
+    const withoutExt = key.replace(/\.[^.]+$/, '');
+    if (withoutExt && withoutExt !== key) {
+      const fromStem = index.get(withoutExt);
+      if (fromStem) {
+        if (fromStem.publicUrl) return fromStem.publicUrl;
+        if (fromStem.assetRef && fromStem.assetRef.startsWith('asset:')) {
+          const id = fromStem.assetRef.slice(6);
+          const url = await resolveAssetId(id, 'audio');
+          if (url) return url;
+        }
+      }
+    }
+
+    if (AUDIO_FILE_EXT.test(key)) {
+      log(
+        `Audio "${trimmed}" not found. Import it in Resources → Audio and use the file name, asset id, or asset:... ref.`,
+        'error'
+      );
+    } else {
+      log(`Audio "${trimmed}" not found in project audio library.`, 'error');
+    }
+    return null;
+  }
+
+  async function playAudioFromRef(audioRef, options = {}) {
+    const url = await resolveAudioUrl(audioRef);
+    if (!url) return null;
+
+    const audio = new Audio(url);
+    audio.volume = Math.max(0, Math.min(1, Number(options.volume) || 1));
+    applyAudioLoop(audio, options.loopOpt || { mode: 'once' });
+
+    try {
+      await audio.play();
+    } catch (err) {
+      log(`Could not play audio "${audioRef}": ${err && err.message ? err.message : err}`, 'error');
+      return null;
+    }
+    return audio;
   }
 
   function normalizeResourceFileKey(fileRef) {
@@ -293,13 +498,12 @@
       if (row.fileName) registerResourceFileAlias(index, row.fileName, row.assetId, url);
     }
     if (catalog.length > 0 && catalog.every(r => !r.publicUrl)) {
-      log('[Runtime] resourcesCatalog slim (senza publicUrl); URL da Supabase/Firestore assets', 'info');
+      log('[Runtime] resourcesCatalog slim (senza publicUrl); URL da storage locale', 'info');
     }
   }
 
   /**
    * Indice nome file Resources (es. "chiave.png") → "asset:assetId".
-   * Usa Supabase listProjectResources + metadata Firestore (displayName originale).
    */
   async function refreshResourceFileIndex() {
     const projectId = getActualProjectId();
@@ -307,10 +511,8 @@
       return new Map();
     }
 
-    const userId = projectInfo.userId || (window.firebaseAuth && window.firebaseAuth.currentUser
-      ? window.firebaseAuth.currentUser.uid
-      : null);
-    const cacheKey = `${userId || ''}|${projectId}`;
+    const userId = projectInfo.userId || 'local';
+    const cacheKey = `${userId}|${projectId}`;
     if (gameState.resourceFileIndex && gameState.resourceFileIndexKey === cacheKey) {
       return gameState.resourceFileIndex;
     }
@@ -321,9 +523,9 @@
       loadResourcesCatalogIntoIndex(index, gameState.projectData.resourcesCatalog);
     }
 
-    if (window.supabaseStorage && typeof window.supabaseStorage.listProjectResources === 'function') {
+    if (window.assetStorage && typeof window.assetStorage.listProjectResources === 'function') {
       try {
-        const entries = await window.supabaseStorage.listProjectResources(projectId, userId);
+        const entries = await window.assetStorage.listProjectResources(projectId, userId);
         for (const entry of entries || []) {
           const aid = entry.assetId || normalizeResourceFileKey(entry.name).replace(/\.[^.]+$/, '');
           const url = entry.publicUrl || null;
@@ -333,27 +535,7 @@
           }
         }
       } catch (err) {
-        log(`[Runtime] refreshResourceFileIndex Supabase: ${err.message}`, 'warning');
-      }
-    }
-
-    if (userId && window.firebaseDB) {
-      try {
-        const snap = await window.firebaseDB
-          .collection('users').doc(userId)
-          .collection('projects').doc(projectId)
-          .collection('assets')
-          .where('type', '==', 'resource')
-          .get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          const aid = d.assetId || doc.id;
-          const url = d.publicUrl || null;
-          if (d.name) registerResourceFileAlias(index, d.name, aid, url);
-          if (d.fileName) registerResourceFileAlias(index, d.fileName, aid, url);
-        });
-      } catch (err) {
-        log(`[Runtime] refreshResourceFileIndex Firestore: ${err.message}`, 'warning');
+        log(`[Runtime] refreshResourceFileIndex: ${err.message}`, 'warning');
       }
     }
 
@@ -425,160 +607,33 @@
     });
   }
 
-  // Risolve un assetId in URL Supabase
   async function resolveAssetId(assetId, category, roomName = null, characterName = null) {
     try {
-      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}${roomName ? `, roomName=${roomName}` : ''}${characterName ? `, characterName=${characterName}` : ''}`, 'info');
-      
-      // PRIMA: Prova a recuperare URL da Firestore se disponibile (più affidabile)
-      if (typeof window !== 'undefined' && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userId = window.firebaseAuth.currentUser.uid;
-          // Estrai projectId reale (potrebbe essere "username:projectname", dobbiamo usare solo il nome)
-          let actualProjectId = projectInfo.projectId;
-          if (actualProjectId && actualProjectId.includes(':')) {
-            actualProjectId = actualProjectId.split(':')[1]; // Prendi solo la parte dopo ":"
-          }
-          
-          if (actualProjectId) {
-            log(`[Runtime] resolveAssetId: tentativo recupero da Firestore (userId: ${userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}..., assetId: ${assetId})`, 'info');
-            const assetRef = window.firebaseDB
-              .collection('users')
-              .doc(userId)
-              .collection('projects')
-              .doc(actualProjectId)
-              .collection('assets')
-              .doc(assetId);
+      log(`[Runtime] resolveAssetId: assetId=${assetId}, category=${category}`, 'info');
+      const storage = window.assetStorage;
+      if (!storage || !storage.isAvailable()) return null;
 
-            const doc = await assetRef.get();
-            
-            if (doc.exists) {
-              const data = doc.data();
-              log(`[Runtime] resolveAssetId: metadata trovato in Firestore per assetId '${assetId}'`, 'info');
-              log(`[Runtime] resolveAssetId: hasPublicUrl=${!!data.publicUrl}, hasFileName=${!!data.fileName}, fileName='${data.fileName || 'N/A'}', type='${data.type || 'N/A'}'`, 'info');
-              
-              if (data.publicUrl) {
-                log(`[Runtime] resolveAssetId: ✓ URL trovato in Firestore: ${data.publicUrl.substring(0, 80)}...`, 'success');
-                return data.publicUrl;
-              } else if (data.fileName) {
-                // Usa il tipo salvato in Firestore (es. 'resource' per Resources centralizzate)
-                const metaCategory = data.type || category;
-                const folder = window.supabaseStorage.getSupabaseFolderForType
-                  ? window.supabaseStorage.getSupabaseFolderForType(metaCategory)
-                  : metaCategory;
-                const subfolder = data.subfolder || null;
-                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', tipo metadata '${metaCategory}' -> folder '${folder}'${subfolder ? `, subfolder '${subfolder}'` : ''}`, 'info');
-                const url = window.supabaseStorage.getAssetPublicUrl(
-                  userId,
-                  actualProjectId,
-                  metaCategory,
-                  data.fileName,
-                  subfolder
-                );
-                if (url) {
-                  log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName Firestore: ${url}`, 'success');
-                  return url;
-                } else {
-                  log(`[Runtime] resolveAssetId: ⚠️ fileName trovato ma URL non generato. fileName='${data.fileName}', category='${category}', folder='${folder}', subfolder='${subfolder || 'N/A'}'`, 'warning');
-                }
-              } else {
-                log(`[Runtime] resolveAssetId: ⚠️ ERRORE CRITICO - metadata trovato in Firestore ma publicUrl e fileName mancanti!`, 'error');
-                log(`[Runtime] resolveAssetId: Questo significa che l'asset è stato caricato ma il metadata è incompleto.`, 'error');
-                log(`[Runtime] resolveAssetId: Data completa:`, data, 'error');
-                log(`[Runtime] resolveAssetId: Soluzione: ricarica l'asset o verifica che saveAssetMetadata venga chiamato correttamente.`, 'error');
-              }
-            } else {
-              log(`[Runtime] resolveAssetId: ⚠️ WARNING - asset not found in Firestore (assetId: '${assetId}')`, 'warning');
-              log(`[Runtime] resolveAssetId: Questo significa che il metadata dell'asset non è stato salvato correttamente.`, 'warning');
-              log(`[Runtime] resolveAssetId: Proverò pattern di fallback, ma potrebbero non funzionare se il fileName include un baseName.`, 'warning');
-              log(`[Runtime] resolveAssetId: Soluzione: assicurati che saveAssetMetadata venga chiamato dopo ogni upload.`, 'warning');
-            }
-          }
-        } catch (firestoreError) {
-          log(`[Runtime] resolveAssetId: Firestore error (continuing with Supabase): ${firestoreError.message}`, 'info');
-        }
-      }
-      
-      // SECONDO: Fallback a Supabase Storage diretto
-      // Verifica se Supabase è disponibile
-      if (typeof window === 'undefined' || !window.supabaseStorage) {
-        log(`[Runtime] resolveAssetId: Supabase non disponibile (window.supabaseStorage mancante)`, 'warning');
-        return null;
-      }
-
-      const isAvailable = window.supabaseStorage.isAvailable ? window.supabaseStorage.isAvailable() : false;
-      if (!isAvailable) {
-        log(`[Runtime] resolveAssetId: Supabase non disponibile (isAvailable() = false)`, 'warning');
-        return null;
-      }
-      log(`[Runtime] resolveAssetId: Supabase disponibile, tentativo risoluzione diretta`, 'info');
-
-      if (!projectInfo.projectId) {
-        log(`[Runtime] resolveAssetId: projectInfo.projectId mancante, impossibile risolvere`, 'warning');
-        return null;
-      }
-
-      // Estrai projectId reale (rimuovi "username:" se presente per path legacy)
       let actualProjectId = projectInfo.projectId;
-      if (actualProjectId.includes(':')) {
-        actualProjectId = actualProjectId.split(':')[1]; // Prendi solo la parte dopo ":"
-        log(`[Runtime] resolveAssetId: projectId estratto da formato "username:name" -> ${actualProjectId}`, 'info');
+      if (actualProjectId && actualProjectId.includes(':')) {
+        actualProjectId = actualProjectId.split(':')[1];
       }
+      if (!actualProjectId) return null;
 
-      const hasUserId = !!projectInfo.userId;
-      if (!hasUserId) {
-        log(`[Runtime] resolveAssetId: userId mancante in projectInfo, proverò comunque risoluzione diretta via Supabase (path legacy senza userId).`, 'warning');
-      } else {
-        log(`[Runtime] resolveAssetId: projectInfo disponibile (userId: ${projectInfo.userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}...)`, 'info');
-      }
+      const useRoomSubfolder = category !== 'resource' && category !== 'gui' && category !== 'cursor';
+      const subfolder = useRoomSubfolder
+        ? (roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null))
+        : null;
 
-      // PRIMO TENTATIVO: chiedi direttamente a Supabase lo storagePath reale,
-      // evitando di indovinare l'estensione. Usa resolveAssetUrl che fa una list()
-      // nella cartella del progetto e cerca un file che inizi con assetId.
-      if (window.supabaseStorage.resolveAssetUrl) {
-        try {
-          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}${characterName ? ` (characterName: ${characterName})` : ''}`, 'info');
-          // Resources/gui/cursor vivono nella cartella di categoria, non in rooms/characters
-          const useRoomSubfolder = category !== 'resource' && category !== 'gui' && category !== 'cursor';
-          const subfolder = useRoomSubfolder
-            ? (roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null))
-            : null;
-          const directUrl = await window.supabaseStorage.resolveAssetUrl(
-            actualProjectId,
-            assetId,
-            category,
-            null,
-            projectInfo.userId || null, // Passa esplicitamente l'userId del progetto
-            subfolder // Passa subfolder se abbiamo roomId
-          );
-          if (directUrl) {
-            log(
-              `[Runtime] resolveAssetId: ✓ URL ottenuto direttamente da Supabase: ${directUrl.substring(0, 100)}${directUrl.length > 100 ? '...' : ''}`,
-              'success'
-            );
-            return directUrl;
-          } else {
-            log(`[Runtime] resolveAssetId: resolveAssetUrl ha restituito null, interrompo risoluzione`, 'warning');
-          }
-        } catch (directErr) {
-          log(`[Runtime] resolveAssetId: errore in resolveAssetUrl Supabase: ${directErr.message}`, 'warning');
-        }
-      } else {
-        log(`[Runtime] resolveAssetId: window.supabaseStorage.resolveAssetUrl non disponibile`, 'warning');
-      }
-
-      // Se siamo arrivati qui significa che:
-      // - Firestore non aveva un publicUrl/fileName utilizzabile, e
-      // - Supabase.resolveAssetUrl non è riuscito a trovare un file reale.
-      // Non proviamo più a "indovinare" l'URL con pattern: falliamo in modo esplicito.
-      log(
-        `[Runtime] resolveAssetId: ✗ No URL found (Firestore+Supabase), stopping without fallback patterns`,
-        'warning'
+      const url = await storage.resolveAssetUrl(
+        actualProjectId, assetId, category, null, projectInfo.userId || 'local', subfolder
       );
+      if (url) {
+        log(`[Runtime] resolveAssetId: URL da storage locale`, 'success');
+        return url;
+      }
       return null;
     } catch (error) {
       log(`[Runtime] resolveAssetId: error: ${error.message}`, 'error');
-      console.error('Errore resolveAssetId:', error);
       return null;
     }
   }
@@ -856,6 +911,7 @@
       gameState.compiledScripts.clear();
       gameState.compiledScriptHashes.clear();
       invalidateResourceFileIndex();
+      stopAllAudioPlayback();
       resetInputLock();
       log('[Runtime] Cache script compilati resettata', 'info');
       
@@ -878,12 +934,7 @@
         projectInfo.projectId = projectData._meta.projectId;
         log(`[Runtime] projectInfo impostato da _meta: userId=${projectInfo.userId}, projectId=${projectInfo.projectId}`, 'info');
       } else {
-        // Fallback: prova a recuperare da Firebase Auth se disponibile
-        if (typeof window !== 'undefined' && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          projectInfo.userId = window.firebaseAuth.currentUser.uid;
-          log(`[Runtime] projectInfo.userId recuperato da Firebase Auth: ${projectInfo.userId}`, 'info');
-        }
-        
+        projectInfo.userId = 'local';
         // Prova a recuperare projectId da settings, localStorage o nome progetto
         if (!projectInfo.projectId) {
           // Prova da settings se c'è un ID
@@ -962,6 +1013,9 @@
 
       updateLoadingMessage('Loading characters...');
       await loadCharacterDefinitions(projectData.characters || []);
+
+      updateLoadingMessage('Loading room animations...');
+      await loadRoomAnimationDefinitions(projectData.roomAnimations || []);
 
       updateLoadingMessage('Loading initial room...');
       const playerCharForStartRoom = (projectData.characters || []).find(char =>
@@ -1225,6 +1279,25 @@
       }
     }
 
+    // Room animation catalog frames (tab Animations)
+    if (projectData.roomAnimations && Array.isArray(projectData.roomAnimations)) {
+      projectData.roomAnimations.forEach(anim => {
+        const animName = anim && (anim.name || anim.id) ? String(anim.name || anim.id) : 'animation';
+        if (anim.frames && Array.isArray(anim.frames)) {
+          anim.frames.forEach(frameRef => {
+            if (frameRef && typeof frameRef === 'string') {
+              assetsWithCategory.set(frameRef, {
+                category: 'animation',
+                roomName: null,
+                characterName: null,
+                animationName: animName
+              });
+            }
+          });
+        }
+      });
+    }
+
     // Character frames (hanno characterName invece di roomName)
     // NOTA: I frame specchiati (con proprietà mirror) non devono essere caricati come asset separati
     if (projectData.characters && Array.isArray(projectData.characters)) {
@@ -1464,11 +1537,39 @@
     }
 
     // Salva nello stato
+    const animationInstances = [];
+    if (room.animationInstances && Array.isArray(room.animationInstances)) {
+      for (const instData of room.animationInstances) {
+        const animDef = gameState.roomAnimationDefinitions.get(instData.animationId);
+        if (!animDef || !animDef.frames || animDef.frames.length === 0) {
+          log(`[Runtime] Room animation instance skipped (missing definition): ${instData.id || instData.name}`, 'warning');
+          continue;
+        }
+        const loopDefault = animDef.loop !== false;
+        animationInstances.push({
+          id: instData.id || `ainst_${Date.now()}`,
+          animationId: instData.animationId,
+          name: instData.name || instData.id || 'Animation',
+          x: Number(instData.x) || 0,
+          y: Number(instData.y) || 0,
+          layer: instData.layer === 'foreground' ? 'foreground' : 'background',
+          visible: instData.visible !== false,
+          loopDefault,
+          loopOpt: parseAudioLoopOption(null, loopDefault),
+          cyclesRemaining: null,
+          currentFrame: 0,
+          frameTime: 0,
+          playing: false
+        });
+      }
+    }
+
     gameState.currentRoom = {
       ...room,
       backgroundImg,
       foregrounds,
       objects,
+      animationInstances,
       hotspots,
       walkableArea: room.walkableArea || null,
       // Usa valori di default solo se non sono definiti, ma preserva 0 e null
@@ -1638,6 +1739,115 @@
     }
 
     log(`[Runtime] Character definitions loaded: ${gameState.characterDefinitions.size} character(s)`, 'success');
+  }
+
+  async function loadRoomAnimationDefinitions(animationsData) {
+    gameState.roomAnimationDefinitions.clear();
+    if (!Array.isArray(animationsData) || animationsData.length === 0) {
+      log('[Runtime] No room animations to load', 'info');
+      return;
+    }
+
+    log(`[Runtime] Loading ${animationsData.length} room animation definition(s)...`, 'info');
+    for (const src of animationsData) {
+      if (!src || !src.id) continue;
+      const frames = [];
+      if (Array.isArray(src.frames)) {
+        for (const frameRef of src.frames) {
+          if (frameRef && typeof frameRef === 'string') {
+            let img = AssetRegistry.images.get(frameRef);
+            if (!img || !img.complete || img.naturalWidth <= 0) {
+              try {
+                img = await loadImage(frameRef, 'animation');
+              } catch (loadErr) {
+                log(`[Runtime] Room animation frame load failed: ${src.id} (${String(frameRef).substring(0, 50)}) — ${loadErr.message}`, 'warning');
+                img = null;
+              }
+            }
+            if (img && img.complete && img.naturalWidth > 0) {
+              frames.push(img);
+            } else {
+              log(`[Runtime] Room animation frame not found in registry: ${src.id} (${String(frameRef).substring(0, 50)})`, 'warning');
+            }
+          }
+        }
+      }
+      if (frames.length > 0) {
+        gameState.roomAnimationDefinitions.set(src.id, {
+          id: src.id,
+          name: src.name || src.id,
+          fps: Number(src.fps) || 8,
+          loop: src.loop !== false,
+          layer: src.layer === 'foreground' ? 'foreground' : 'background',
+          frames
+        });
+        log(`[Runtime] Room animation loaded: ${src.name || src.id} (${frames.length} frame(s))`, 'info');
+      }
+    }
+    log(`[Runtime] Room animation definitions loaded: ${gameState.roomAnimationDefinitions.size}`, 'success');
+  }
+
+  function findRoomAnimationInstance(idOrName) {
+    const room = gameState.currentRoom;
+    if (!room || !Array.isArray(room.animationInstances)) return null;
+    const key = String(idOrName);
+    return room.animationInstances.find(i => i.id === key || i.name === key) || null;
+  }
+
+  function getRoomAnimationFrameImage(animDef, frameIndex) {
+    if (!animDef || !animDef.frames || !animDef.frames.length) return null;
+    const idx = Math.max(0, Math.min(frameIndex, animDef.frames.length - 1));
+    return animDef.frames[idx];
+  }
+
+  function updateRoomAnimationInstance(inst, animDef, deltaTime) {
+    if (!inst.playing || inst.visible === false) return;
+    if (!animDef || !animDef.frames || animDef.frames.length === 0) return;
+
+    if (animDef.frames.length === 1) {
+      inst.currentFrame = 0;
+      if (inst.loopOpt && inst.loopOpt.mode === 'once') inst.playing = false;
+      return;
+    }
+
+    inst.frameTime += deltaTime;
+    const frameDuration = 1000 / (Number(animDef.fps) || 8);
+    if (inst.frameTime < frameDuration) return;
+
+    inst.frameTime = 0;
+    inst.currentFrame++;
+    if (inst.currentFrame < animDef.frames.length) return;
+
+    const loopOpt = inst.loopOpt || parseAudioLoopOption(null, animDef.loop !== false);
+    if (loopOpt.mode === 'infinite') {
+      inst.currentFrame = 0;
+      return;
+    }
+    if (loopOpt.mode === 'count') {
+      if (inst.cyclesRemaining == null) inst.cyclesRemaining = loopOpt.count;
+      inst.cyclesRemaining -= 1;
+      if (inst.cyclesRemaining > 0) {
+        inst.currentFrame = 0;
+        return;
+      }
+    }
+    inst.playing = false;
+    inst.currentFrame = animDef.frames.length - 1;
+    inst.cyclesRemaining = null;
+  }
+
+  function drawRoomAnimationInstanceOnCanvas(ctx, inst) {
+    if (!inst || inst.visible === false) return;
+    const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+    if (!animDef) return;
+    const frameIndex = inst.playing ? inst.currentFrame : 0;
+    const frame = getRoomAnimationFrameImage(animDef, frameIndex);
+    if (!frame || !frame.complete || frame.naturalWidth <= 0) return;
+    try {
+      ctx.drawImage(frame, inst.x, inst.y);
+    } catch (error) {
+      log(`[Runtime] Error rendering room animation ${inst.id}: ${error.message}`, 'warning');
+    }
   }
 
   // Cache per frame specchiati (per evitare di ricrearli ogni frame)
@@ -2606,6 +2816,8 @@
     log(`[Runtime] Inventario: preso in mano "${entry.def.name || entry.key}"`, 'info');
     syncInventoryStateToEditor();
   }
+
+  function releaseCarriedInventoryItem() {
     const inv = gameState.inventory;
     if (!inv || !inv.carriedItem) return;
     const name = inv.carriedItem.def && inv.carriedItem.def.name;
@@ -5400,6 +5612,141 @@
       dismissActiveDialogue();
     },
 
+    /**
+     * Riproduce musica di sottofondo (una traccia alla volta).
+     * @param {string} trackId - Nome file, asset id, o "asset:..."
+     * @param {boolean|string|number} [loop=true] - true/'loop'/'infinite' = loop; false/'once' = una volta; N = N ripetizioni
+     */
+    play_music: function(trackId, loop) {
+      if (!trackId || !String(trackId).trim()) {
+        GameAPI.error('play_music: trackId is required');
+        return;
+      }
+      const loopOpt = parseAudioLoopOption(loop, true);
+      const ref = String(trackId).trim();
+      stopMusicPlayback();
+      playAudioFromRef(ref, {
+        volume: gameState.audio.musicVolume,
+        loopOpt
+      }).then(audio => {
+        if (!audio) return;
+        gameState.audio.music = { element: audio, ref, loopOpt };
+        log(`[Runtime] play_music: "${ref}" (loop: ${loopOpt.mode === 'count' ? loopOpt.count : loopOpt.mode})`, 'info');
+      });
+    },
+
+    /**
+     * Riproduce un effetto sonoro (può sovrapporsi ad altri SFX).
+     * @param {string} soundId - Nome file, asset id, o "asset:..."
+     * @param {boolean|string|number} [loop=false] - true/'loop' = loop fino a stop_sound; false/'once' = una volta; N = N ripetizioni
+     */
+    play_sound: function(soundId, loop) {
+      if (!soundId || !String(soundId).trim()) {
+        GameAPI.error('play_sound: soundId is required');
+        return;
+      }
+      const loopOpt = parseAudioLoopOption(loop, false);
+      const ref = String(soundId).trim();
+      const trackKey = normalizeResourceFileKey(ref);
+
+      if (loopOpt.mode === 'infinite') {
+        stopSoundPlayback(trackKey);
+      }
+
+      playAudioFromRef(ref, {
+        volume: gameState.audio.soundVolume,
+        loopOpt
+      }).then(audio => {
+        if (!audio) return;
+        if (loopOpt.mode === 'infinite') {
+          gameState.audio.sounds.set(trackKey, { element: audio, ref, loopOpt });
+        }
+        log(`[Runtime] play_sound: "${ref}" (loop: ${loopOpt.mode === 'count' ? loopOpt.count : loopOpt.mode})`, 'info');
+      });
+    },
+
+    /** Ferma la musica di sottofondo */
+    stop_music: function() {
+      stopMusicPlayback();
+      log('[Runtime] stop_music', 'info');
+    },
+
+    /**
+     * Ferma un effetto sonoro in loop (stesso id usato in play_sound).
+     * Senza argomenti ferma tutti i suoni in loop tracciati.
+     */
+    stop_sound: function(soundId) {
+      if (soundId == null || soundId === '') {
+        for (const key of [...gameState.audio.sounds.keys()]) {
+          stopSoundPlayback(key);
+        }
+        log('[Runtime] stop_sound: all looping sounds stopped', 'info');
+        return;
+      }
+      const trackKey = normalizeResourceFileKey(String(soundId).trim());
+      stopSoundPlayback(trackKey);
+      log(`[Runtime] stop_sound: "${soundId}"`, 'info');
+    },
+
+    /**
+     * Avvia o riavvia un'animazione di stanza posizionata nell'editor.
+     * @param {string} instanceIdOrName - ID o nome dell'istanza nella stanza corrente
+     * @param {boolean|string|number} [loop] - true/'loop' = loop; false/'once' = una volta; N = N cicli; omit = default animazione
+     */
+    play_animation: function(instanceIdOrName, loop) {
+      if (!instanceIdOrName || !String(instanceIdOrName).trim()) {
+        GameAPI.error('play_animation: instanceIdOrName is required');
+        return;
+      }
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`play_animation: instance "${instanceIdOrName}" not found in current room`);
+        return;
+      }
+      const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+      if (!animDef) {
+        GameAPI.error(`play_animation: animation definition missing for "${instanceIdOrName}"`);
+        return;
+      }
+      const loopOpt = parseAudioLoopOption(loop, inst.loopDefault);
+      inst.loopOpt = loopOpt;
+      inst.cyclesRemaining = loopOpt.mode === 'count' ? loopOpt.count : null;
+      inst.playing = true;
+      inst.currentFrame = 0;
+      inst.frameTime = 0;
+      log(`[Runtime] play_animation: "${inst.name}" (loop: ${loopOpt.mode === 'count' ? loopOpt.count : loopOpt.mode})`, 'info');
+    },
+
+    /**
+     * Ferma un'animazione di stanza. Senza argomenti ferma tutte le istanze della stanza corrente.
+     */
+    stop_animation: function(instanceIdOrName) {
+      const room = gameState.currentRoom;
+      if (!room || !Array.isArray(room.animationInstances)) return;
+
+      if (instanceIdOrName == null || instanceIdOrName === '') {
+        room.animationInstances.forEach(inst => {
+          inst.playing = false;
+          inst.currentFrame = 0;
+          inst.frameTime = 0;
+          inst.cyclesRemaining = null;
+        });
+        log('[Runtime] stop_animation: all room animations stopped', 'info');
+        return;
+      }
+
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`stop_animation: instance "${instanceIdOrName}" not found in current room`);
+        return;
+      }
+      inst.playing = false;
+      inst.currentFrame = 0;
+      inst.frameTime = 0;
+      inst.cyclesRemaining = null;
+      log(`[Runtime] stop_animation: "${inst.name}"`, 'info');
+    },
+
     // Event System - Funzioni helper per registrare handler
     on_game_start: function(handler) {
       if (typeof handler === 'function') {
@@ -5504,6 +5851,12 @@
       { name: 'show_dialogue', value: bindGameApiMethod(api, 'show_dialogue') },
       { name: 'show_dialogue_text', value: bindGameApiMethod(api, 'show_dialogue_text') },
       { name: 'end_dialogue', value: bindGameApiMethod(api, 'end_dialogue') },
+      { name: 'play_music', value: bindGameApiMethod(api, 'play_music') },
+      { name: 'play_sound', value: bindGameApiMethod(api, 'play_sound') },
+      { name: 'stop_music', value: bindGameApiMethod(api, 'stop_music') },
+      { name: 'stop_sound', value: bindGameApiMethod(api, 'stop_sound') },
+      { name: 'play_animation', value: bindGameApiMethod(api, 'play_animation') },
+      { name: 'stop_animation', value: bindGameApiMethod(api, 'stop_animation') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
@@ -5633,9 +5986,23 @@
         }
       }
 
+      // Background-layer room animations
+      if (room.animationInstances && Array.isArray(room.animationInstances)) {
+        room.animationInstances
+          .filter(inst => (inst.layer || 'background') !== 'foreground')
+          .forEach(inst => drawRoomAnimationInstanceOnCanvas(ctx, inst));
+      }
+
       // Oggetti di scena (supporto scale/rotazione)
       if (room.objects && Array.isArray(room.objects)) {
         room.objects.forEach(obj => drawSceneObject(ctx, obj));
+      }
+
+      // Foreground-layer room animations
+      if (room.animationInstances && Array.isArray(room.animationInstances)) {
+        room.animationInstances
+          .filter(inst => (inst.layer || 'background') === 'foreground')
+          .forEach(inst => drawRoomAnimationInstanceOnCanvas(ctx, inst));
       }
 
       // Foregrounds - verifica che le immagini siano caricate e pronte
@@ -5772,6 +6139,13 @@
   // ============================================
   function update(deltaTime) {
     updateDialogueAppear(deltaTime);
+
+    if (gameState.currentRoom && Array.isArray(gameState.currentRoom.animationInstances)) {
+      gameState.currentRoom.animationInstances.forEach(inst => {
+        const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+        if (animDef) updateRoomAnimationInstance(inst, animDef, deltaTime);
+      });
+    }
 
     // Aggiorna movimento e animazioni dei character
     gameState.characters.forEach(character => {
@@ -6694,6 +7068,12 @@
         }
         break;
 
+      case 'SANDBOX_PING':
+        if (isInIframe) {
+          sendRuntimeReady();
+        }
+        break;
+
       case 'RESET':
         // Reset completo dello stato
         dismissActiveDialogue();
@@ -6714,6 +7094,7 @@
         gameState.compiledScripts.clear();
         gameState.compiledScriptHashes.clear();
         invalidateResourceFileIndex();
+        stopAllAudioPlayback();
         
         // Reset AssetRegistry
         AssetRegistry.images.clear();
@@ -6831,23 +7212,14 @@
       log('[Runtime] Modalità iframe rilevata - playtest mode', 'info');
       
       function initIframeMode() {
-        // Invia RUNTIME_READY solo se non è già stato inviato
         if (!runtimeReadySent) {
-          log('[Runtime] Invio RUNTIME_READY all\'editor', 'info');
+          log('[Runtime] Sending RUNTIME_READY to editor', 'info');
           sendRuntimeReady();
           runtimeReadySent = true;
-          
-          // Re-invia dopo un breve delay come backup (solo una volta)
-          setTimeout(() => {
-            if (!runtimeReadySent) {
-              log('[Runtime] Re-invio RUNTIME_READY (backup)', 'info');
-              sendRuntimeReady();
-              runtimeReadySent = true;
-            }
-          }, 200);
-        } else {
-          log('[Runtime] RUNTIME_READY già inviato, skip', 'info');
         }
+        setTimeout(() => sendRuntimeReady(), 100);
+        setTimeout(() => sendRuntimeReady(), 400);
+        setTimeout(() => sendRuntimeReady(), 1000);
       }
 
       if (document.readyState === 'loading') {

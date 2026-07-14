@@ -1,6 +1,6 @@
 # 🎮 Funzioni da Implementare - Amianto Editor
 
-> **Aggiornamento: Giugno 2026** — Questo file elenca API **target** (wishlist + backlog). Per lo **stato reale nel runtime** vedi [`README.md`](README.md), tab **Docs** in-app (`JS/docs-panel.js`), [`ROADMAP.md`](ROADMAP.md) e [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md).
+> **Aggiornamento: Luglio 2026** — Questo file elenca API **target** (wishlist + backlog). Per lo **stato reale nel runtime** vedi [`README.md`](README.md), tab **Docs** in-app (`JS/docs-panel.js`), [`ROADMAP.md`](ROADMAP.md) e [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md). L'editor è **offline**; progetti in file **`.amnt`**; asset in IndexedDB.
 
 ## Legenda stato
 
@@ -24,10 +24,11 @@
 | Stanze | `load_room`, `get_current_room`, `get_room_objects`, `set_room_background` | — | `unload_room`, transizioni |
 | Variabili | `get_var` / `Game.getVar`, `set_var`, `has_var`, `toggle_var` | — | array/object vars |
 | Personaggi | spawn, walk, `play_character_animation`, … | — | AI patrol/follow, health |
+| Animazioni stanza | `play_animation`, `stop_animation` | — | — |
 | Inventario | 5 API + carried item + use-with | GUI drag&drop, tooltip | peso, sort avanzato |
 | Oggetti scena | spawn/despawn/rotate/scale/visible, enable/disable | — | proprietà custom |
 | Dialoghi | `show_dialogue`, `end_dialogue` | — | scelte ramificate, mood |
-| Audio / FX | — | upload in tab Resources | `play_music`, `fade_in`, save slot |
+| Audio / FX | `play_music`, `play_sound`, stop | upload Resources | volumi, fade, save slot |
 
 **Infrastruttura ✅ (Fasi A–D):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, scope handler.
 
@@ -119,26 +120,54 @@ change_reputation(faction, amount)  // Modifica reputazione
 get_all_reputations()              // Ottieni tutte le reputazioni
 ```
 
-### 🎵 **Sistema Audio** — ❌ Non implementato (Fase 3.1 roadmap)
+### 🎵 **Sistema Audio** — 🟡 Parziale (runtime luglio 2026)
 
 #### Gestione Suoni
 ```javascript
-// ❌ Tutti in backlog
-play_music(trackId, loop)           // Riproduci musica
-stop_music()                        // Ferma musica
-pause_music()                       // Metti in pausa musica
-resume_music()                      // Riprendi musica
-set_music_volume(volume)            // Imposta volume musica
-fade_music_in(duration)             // Fade in musica
-fade_music_out(duration)            // Fade out musica
+// ✅ Runtime (GameAPI)
+play_music(trackId, loop?)            // Musica di sottofondo (una traccia)
+stop_music()                          // Ferma musica
+play_sound(soundId, loop?)            // Effetto sonoro (sovrapponibili)
+stop_sound(soundId?)                  // Ferma SFX in loop (o tutti se omesso)
 
-// Effetti sonori
-play_sound(soundId, volume)         // Riproduci effetto sonoro
-play_sound_at_position(soundId, x, y) // Riproduci suono in posizione
-stop_sound(soundId)                 // Ferma effetto sonoro
-set_sound_volume(soundId, volume)   // Imposta volume suono
-play_ambient_sound(soundId)         // Riproduci suono ambientale
-stop_ambient_sound(soundId)         // Ferma suono ambientale
+// ❌ Backlog
+pause_music()                         // Metti in pausa musica
+resume_music()                        // Riprendi musica
+set_music_volume(volume)              // Imposta volume musica
+fade_music_in(duration)               // Fade in musica
+fade_music_out(duration)              // Fade out musica
+play_sound_at_position(soundId, x, y) // Suono posizionale
+set_sound_volume(soundId, volume)     // Volume per suono
+play_ambient_sound(soundId)           // Suono ambientale
+stop_ambient_sound(soundId)           // Ferma ambientale
+```
+
+Import file in **Resources → Sounds**. Riferimento: nome file, asset id, `asset:…`.
+
+### 🎬 **Animazioni di stanza** — ✅ Runtime + editor (luglio 2026)
+
+Animazioni ambiente/sfondo (acqua, fuoco, bandiere) distinte dalle animazioni **personaggio**.
+
+#### Editor
+```text
+Tab Animations → catalogo project.roomAnimations[] (frame, fps, layer, loop)
+Tab Rooms → Room Animations → istanze room.animationInstances[] (x, y, autoPlay)
+Primo frame trascinabile sul canvas
+```
+
+#### Script
+```javascript
+// ✅ Runtime
+play_animation(instanceIdOrName, loop?)  // Avvia/riavvia istanza nella stanza corrente
+stop_animation(instanceIdOrName?)        // Ferma una o tutte le istanze
+
+// loop: true/'loop' = infinito; false/'once' = un ciclo; N = N cicli (come audio)
+```
+
+**JSON progetto:**
+```json
+"roomAnimations": [{ "id": "anim_1", "name": "waterfall", "fps": 8, "loop": true, "layer": "background", "frames": ["asset:..."] }],
+"rooms": [{ "animationInstances": [{ "id": "ainst_1", "animationId": "anim_1", "name": "water_main", "x": 100, "y": 50, "autoPlay": true }] }]
 ```
 
 ### 🎨 **Sistema Visivo** — ❌ Non implementato (Fase 3.2 roadmap)
@@ -473,4 +502,4 @@ GameAPI.add_to_inventory = function(itemId, quantity) { /* gameState.inventory *
 
 ---
 
-*Ultimo aggiornamento: Giugno 2026 — Fasi A–D API; 8 eventi; inventario/use-with runtime; tab Resources; questo file = backlog futuro.*
+*Ultimo aggiornamento: Luglio 2026 — Animazioni stanza (tab Animations + `play_animation`); audio base (`play_music`/`play_sound`); Fasi A–D API; 8 eventi; inventario/use-with runtime; tab Resources.*

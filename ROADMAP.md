@@ -2,17 +2,18 @@
 
 ## Analisi Architettura Attuale
 
-**Amianto Editor** è una webapp per creare giochi punta e clicca nel browser. L'architettura è divisa in:
+**Amianto Editor** è un editor offline per avventure punta e clicca (Electron Windows + browser). L'architettura è divisa in:
 - **Editor** (`index.html` + `JS/main.js`): Interfaccia di editing con tabs
-- **Runtime Standalone** (`runtime.html` + `JS/runtime.js`): Player standalone per test/gioco
-- **Runtime Sandboxed** (iframe + `JS/runtime.js`): Esecuzione script isolata durante Play Test
-- **Backend**: Firebase (auth/progetti) + Supabase Storage (asset, in migrazione)
-- **Scripting**: JavaScript in iframe `sandbox="allow-scripts"`; API esposte via `GameAPI` + `getScriptApiBindings()` / `compileScript`
+- **Runtime Standalone** (`runtime.html` + `JS/runtime.js`): Player a finestra per Play Test
+- **Runtime Sandboxed** (`runtime-sandbox.html` + iframe + `JS/runtime.js`): Esecuzione script isolata nell'editor
+- **Storage locale**: file `.amnt` su disco, IndexedDB per asset (`JS/local-storage.js`), cache `localStorage` + backup OPFS
+- **Desktop**: Electron (`electron/main.js`) con dialoghi nativi open/save
+- **Scripting**: JavaScript in iframe sandboxed; API via `GameAPI` + `getScriptApiBindings()` / `compileScript`
 
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**✅ Nota API (giugno 2026):** Unificazione API **Fasi A–D** completata in `runtime.js` (`getScriptApiBindings`, inventario/oggetti/stanze/variabili, scope handler Fase C, pulizia editor Fase D). **Dialoghi base ✅:** `show_dialogue`, `show_dialogue_text`, `end_dialogue`. **Inventario runtime ✅:** API + GUI parziale + use-with. Prossimi step: scelte dialogo ramificate, audio, cursori contestuali in playtest, transizioni, save slot.
+**✅ Nota (luglio 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi base ✅**, **animazioni stanza ✅**, **audio base ✅** (`play_music`/`play_sound`), inventario runtime parziale. Prossimi step: scelte dialogo, mixer audio, cursori in playtest, transizioni, save slot gioco.
 
 ---
 
@@ -22,11 +23,13 @@
 
 #### ✅ **Già Implementato**
 - Struttura JSON progetto completa (`serializeProject()`)
-- Salvataggio multi-backend: OPFS + localStorage + Firebase
-- Caricamento progetti da storage
-- Export/Import JSON
-- Project Settings (nome, dimensioni canvas)
-- Gestione progetti per utente
+- **Formato `.amnt`** — bundle singolo (progetto + asset base64) via `JS/amnt-format.js`
+- Salvataggio su file `.amnt` scelto dall'utente (dialogo nativo Electron)
+- Cache locale: `localStorage` + IndexedDB + backup OPFS
+- Caricamento `.amnt` e `.json` legacy
+- Export `.amnt` e JSON
+- **Project Settings** e **Save Project** in header
+- Utente locale (`Local`) — nessun login cloud
 
 #### 🟡 **Parzialmente Implementato**
 - **Salvataggio automatico**: Esiste debounce OPFS ma non autosave periodico
@@ -49,6 +52,7 @@
 - Upload scene objects con posizionamento
 - Upload inventory items
 - Upload character animation frames (8 direzioni)
+- Upload room/environment animation frames (tab **Animations**)
 - Upload GUI backgrounds e cursors
 - Cache immagini in memoria
 
@@ -59,8 +63,9 @@
   - **Prossimo passo**: Compressore automatico per immagini > 1MB
 
 #### 🟡 **Parzialmente Implementato**
-- **Asset manager centralizzato**: Tab **Resources** con immagini e suoni su Supabase (import, ricerca, picker); mancano statistiche uso globali e deduplica
-- **Supporto audio (editor)**: Upload/gestione file audio in Resources; **nessuna API runtime** `play_music` / `play_sound`
+- **Asset manager centralizzato**: Tab **Resources** con immagini e suoni in **IndexedDB** (import, ricerca, picker); mancano statistiche uso globali e deduplica
+- **Supporto audio (editor)**: Upload/gestione file audio in Resources
+- **API audio runtime**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ mixer volumi, ambient layers, fade
 
 #### ❌ **Mancante**
 - **Supporto video**: Nessun sistema per cutscene video
@@ -98,6 +103,7 @@
   - **Prossimo passo**: drag&drop slot, tooltip
 - **Animazioni GUI**: Nessun sistema di animazioni per elementi GUI
   - **Prossimo passo**: Fade in/out, slide, scale per elementi GUI
+- **Animazioni stanza (ambiente)**: ✅ Tab Animations + posizionamento in Rooms; runtime con layer background/foreground; `play_animation` / `stop_animation`
 - **Stili GUI**: Nessun sistema di temi/stili per GUI
   - **Prossimo passo**: Sistema di stili (colori, font, bordi) per GUI
 
@@ -115,6 +121,8 @@
 - **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
 - **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
 - **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (animazioni custom da editor)
+- **Animazioni stanza:** `play_animation`, `stop_animation` (istanze posizionate in editor)
+- **Audio:** `play_music`, `play_sound`, `stop_music`, `stop_sound`
 - Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
 
 #### ✅ **API runtime (Fase B completata)**
@@ -126,7 +134,7 @@
 
 #### ❌ **Mancante (backlog)**
 - Dialoghi avanzati: `start_dialogue()`, `show_dialogue_choices()`, mood/relazioni
-- Audio: `play_music()`, `play_sound()`, volumi, ambient
+- Audio avanzato: volumi, ambient, fade musica
 - Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 - Salvataggio gioco: `save_game()`, `load_game()`, slot, metadata
 - Utility: `distance()`, `angle_between()`, `lerp()`, `shuffle_array()`
@@ -138,7 +146,8 @@
 
 #### ✅ **Già Implementato**
 - Caricamento JSON progetto
-- Rendering stanze (background, foregrounds, scene objects)
+- **Rendering stanze (background, foregrounds, scene objects)**
+- **Rendering animazioni stanza** (layer background/foreground, game loop frame)
 - Rendering starting position marker
 - Esecuzione script con Jailed sandbox
 - Sistema variabili funzionante
@@ -202,8 +211,8 @@
 #### ❌ **Mancante**
 - **Sistema dialogo visuale**: 🟡 Balloon base implementato (`show_dialogue`)
   - **Prossimo passo**: Scelte ramificate, animazioni GUI dialogo avanzate
-- **Sistema audio runtime**: Nessun sistema audio
-  - **Prossimo passo**: Audio context, gestione musica/SFX, mixer volumi
+- **Sistema audio runtime**: 🟡 `play_music` / `play_sound` base implementati
+  - **Prossimo passo**: Mixer volumi, ambient layers, fade
 - **Sistema transizioni**: Nessun sistema di transizioni tra stanze
   - **Prossimo passo**: Fade in/out, slide, dissolve tra stanze
 - **Sistema pause/menu**: Nessun sistema di pausa o menu principale
@@ -238,8 +247,7 @@
 ### 7. SALVATAGGIO (Sistema Salvataggio Gioco)
 
 #### ✅ **Già Implementato**
-- Salvataggio progetto (editor)
-- Salvataggio in OPFS/localStorage/Firebase
+- Salvataggio progetto editor (`.amnt`, cache locale)
 
 #### ❌ **Mancante**
 - **Sistema salvataggi gioco**: Nessun sistema per salvare stato gioco durante il gameplay
@@ -257,24 +265,21 @@
 
 #### ✅ **Già Implementato**
 - Export JSON progetto
-- Download file .amianto.json
+- Export **`.amnt`** (progetto + asset embedded)
+- Download / salvataggio file su disco
 - Salvataggio OPFS per runtime
+- **App editor desktop** Electron (Windows installer via `npm run dist`)
 
 #### 🟡 **Parzialmente Implementato**
-- **Export standalone HTML**: Nessun export completo standalone
+- **Export standalone HTML**: Nessun export completo del *gioco* come HTML standalone
   - **Prossimo passo**: Generare HTML standalone con progetto embedded, runtime incluso
 
 #### ❌ **Mancante**
-- **Export PWA**: Nessun export come Progressive Web App
-  - **Prossimo passo**: Generare manifest.json, service worker, icona per PWA
-- **Export desktop**: Nessun export come app desktop
-  - **Prossimo passo**: Wrapper Electron o Tauri per export desktop
+- **Export PWA**: Nessun export del gioco come Progressive Web App
+- **Export gioco desktop**: Wrapper del solo gioco (non l'editor) — Electron/Tauri
 - **Export mobile**: Nessun export ottimizzato mobile
-  - **Prossimo passo**: Versione mobile-responsive, touch controls
-- **Compressione export**: Nessuna compressione asset nell'export
-  - **Prossimo passo**: Minificazione JS, compressione immagini, tree-shaking
-- **Export con build**: Nessun sistema di build ottimizzato
-  - **Prossimo passo**: Build system che ottimizza asset, bundle JS, CSS
+- **Compressione export**: Nessuna compressione asset nell'export gioco
+- **Build gioco ottimizzata**: Minificazione, tree-shaking per distribuzione finale
 
 ---
 
@@ -298,7 +303,7 @@
 **⏳ Prossimo:** Fase E test manuali (checklist); sync inventario in `UPDATE_CONTEXT`; cursori runtime
 
 **✅ COMPLETATO - Sistema Runtime Sandboxed**:
-- ✅ Runtime sandboxed con iframe isolato (`sandbox="allow-scripts"`)
+- ✅ Runtime sandboxed con iframe (`runtime-sandbox.html`, `allow-scripts allow-same-origin`)
 - ✅ Sistema MessageQueue robusto (buffer, retry, fallback)
 - ✅ GameAPI completo esposto agli script (`print()`, `error()`, `getVariable()`, `setVariable()`, `load_room()`, `getCurrentRoom()`, `getCurrentObject()`)
 - ✅ ScriptLogService integrato con logging timestamped e livelli
@@ -438,15 +443,9 @@
 **Obiettivo**: Aggiungere sistemi avanzati per gameplay ricco.
 
 #### 3.1 Sistema Audio
-- **Stato**: ❌ Mancante
-- **Problema**: Nessun supporto audio
-- **Soluzione**:
-  - Upload audio (MP3/OGG) nell'editor
-  - API scripting: `play_music()`, `play_sound()`, `set_music_volume()`, `play_ambient_sound()`
-  - Audio context nel runtime
-  - Mixer con volumi separati (musica/SFX/ambient)
-  - Fade in/out automatico
-- **Tempo stimato**: 5-7 giorni
+- **Stato**: 🟡 Parzialmente implementato
+- **✅ Runtime:** `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()`; import audio in Resources
+- **❌ Mancante:** `set_music_volume()`, `play_ambient_sound()`, fade in/out, mixer
 
 #### 3.2 Sistema Effetti Visivi
 - **Stato**: ❌ Mancante
@@ -632,14 +631,14 @@
 **Amianto Editor** dovrebbe permettere di:
 1. ✅ Creare stanze, oggetti, personaggi, GUI, libreria Resources (completato)
 2. ✅ Scrivere script JavaScript nel Play Test con API unificate (inventario, oggetti, stanze, variabili, dialoghi)
-3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, inventario GUI parziale ✅; audio/transizioni/save ❌)
-4. ❌ Esportare gioco standalone ottimizzato (export JSON ✅; PWA/desktop ❌)
+3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, inventario GUI parziale ✅; audio/transizioni/save gioco ❌)
+4. 🟡 Distribuzione: editor desktop `.exe` + `.amnt` ✅; export *gioco* standalone HTML/PWA ❌
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
 
 ---
 
-*Roadmap aggiornata il: Giugno 2026*
-*Versione progetto: 0.4+*
-*Ultimo aggiornamento: allineamento doc con runtime — Fasi A–D API, 8 eventi, inventario/use-with runtime, tab Resources, cursori editor vs runtime*
+*Roadmap aggiornata: Luglio 2026*
+*Versione progetto: 1.0.0 (offline / Electron)*
+*Ultimo aggiornamento: editor offline, formato .amnt, rimozione stack cloud, runtime-sandbox.html*
 

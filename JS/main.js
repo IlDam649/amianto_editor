@@ -1,12 +1,12 @@
-// main.js
+﻿// main.js
 
 /* ============================
-   APP STATE - UNICA FONTE DI VERITÀ
+   APP STATE - UNICA FONTE DI VERITÃ€
    ============================ */
 
 /**
  * Stato globale dell'applicazione
- * Questa è l'UNICA fonte di verità per:
+ * Questa Ã¨ l'UNICA fonte di veritÃ  per:
  * - utente loggato
  * - lista progetti
  * - stato di caricamento
@@ -22,7 +22,7 @@ const AppState = {
 
 /**
  * Aggiorna lo stato dell'app e notifica eventuali listener
- * @param {Object} updates - Oggetto con le proprietà da aggiornare
+ * @param {Object} updates - Oggetto con le proprietÃ  da aggiornare
  */
 function updateAppState(updates) {
   Object.assign(AppState, updates);
@@ -45,14 +45,92 @@ function updateAppState(updates) {
   }
 }
 
+function normalizeProject(project, index = null) {
+  if (!project || typeof project !== 'object') {
+    return {
+      settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
+      updatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      source: 'unknown'
+    };
+  }
+
+  const settings = project.settings
+    ? { ...project.settings }
+    : { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` };
+  const stableId = project.id || settings.id || normalizeProjectIdFromName(settings.name);
+  if (stableId) settings.id = stableId;
+
+  return {
+    settings,
+    updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
+    createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+    source: project.source || 'unknown',
+    id: stableId || null,
+    filePath: project.filePath || null
+  };
+}
+
+function normalizeProjectIdFromName(name) {
+  if (!name) return null;
+  return String(name).replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+}
+
+function loadProjectsFromCache(username) {
+  if (!username) {
+    console.warn('[Cache] Username non disponibile per caricamento cache');
+    return [];
+  }
+
+  try {
+    const cacheKey = `amiantoProjects_${username}`;
+    const cachedData = localStorage.getItem(cacheKey);
+    if (!cachedData) return [];
+
+    const projects = JSON.parse(cachedData);
+    if (!Array.isArray(projects)) {
+      console.error('[Cache] Dati cache non sono un array:', typeof projects);
+      return [];
+    }
+
+    return projects.map((p, i) => normalizeProject(p, i));
+  } catch (error) {
+    console.error('[Cache] Errore parsing cache:', error);
+    return [];
+  }
+}
+
+function saveProjectsToCache(username, projects) {
+  if (!username) {
+    console.warn('[Cache] Username non disponibile per salvataggio cache');
+    return;
+  }
+  if (!Array.isArray(projects)) {
+    console.error('[Cache] Tentativo di salvare dati non-array in cache');
+    return;
+  }
+
+  try {
+    localStorage.setItem(`amiantoProjects_${username}`, JSON.stringify(projects));
+  } catch (error) {
+    console.error('[Cache] Errore salvataggio cache:', error);
+  }
+}
+
+function getLocalUser() {
+  if (typeof window.getAmiantoLocalUser === 'function') {
+    return window.getAmiantoLocalUser();
+  }
+  return { username: 'Local', email: '', uid: 'local' };
+}
+
 /**
  * Bootstrap globale dell'applicazione
  * 
- * Responsabilità:
- * - attendere autenticazione Firebase
- * - caricare SEMPRE i progetti da Firestore (non dalla cache)
+ * ResponsabilitÃ :
+ * - inizializzare l'utente locale
+ * - caricare i progetti da cache locale (localStorage)
  * - popolare AppState.projects
- * - aggiornare localStorage solo come cache secondaria
  * - impostare AppState.initialized = true
  * 
  * La UI NON deve essere utilizzabile prima che bootstrapApp sia completata.
@@ -61,119 +139,31 @@ function updateAppState(updates) {
  */
 async function bootstrapApp() {
   console.log('========================================');
-  console.log('🚀 BOOTSTRAP START');
+  console.log('ðŸš€ BOOTSTRAP START');
   console.log('========================================');
-  
+
   updateAppState({ loading: true, error: null });
-  
-  // Mostra loading overlay visivamente
-  showLoadingOverlay('Loading application...');
-  
+  if (typeof window.showLoadingOverlay === 'function') {
+    window.showLoadingOverlay('Loading application...');
+  }
+
   try {
-    // STEP 1: Attendi che Firebase sia disponibile
-    console.log('[BOOTSTRAP] Attesa Firebase...');
-    
-    let firebaseReady = false;
-    let attempts = 0;
-    const maxAttempts = 50; // 5 secondi max
-    
-    while (!firebaseReady && attempts < maxAttempts) {
-      if (window.firebaseAuth && window.firebaseDB) {
-        firebaseReady = true;
-        break;
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      attempts++;
-    }
-    
-    if (!firebaseReady) {
-      throw new Error('Firebase non disponibile dopo 5 secondi');
-    }
-    
-    console.log('[BOOTSTRAP] ✅ Firebase disponibile');
-    
-    // STEP 2: Attendi autenticazione utente
-    console.log('[BOOTSTRAP] Attesa autenticazione...');
-    
-    const currentUser = window.firebaseAuth.currentUser;
-    
-    if (!currentUser) {
-      console.log('[BOOTSTRAP] ⚠️ Nessun utente autenticato - app in modalità login');
-      updateAppState({ 
-        loading: false, 
-        initialized: true,
-        user: null,
-        projects: []
-      });
-      console.log('========================================');
-      console.log('✅ BOOTSTRAP COMPLETE (no user)');
-      console.log('========================================');
-      return;
-    }
-    
-    // STEP 3: Mappa utente
-    const mappedUser = {
-      username: (currentUser.email || '').split('@')[0] || (currentUser.uid ? `user_${currentUser.uid.substring(0, 6)}` : 'User'),
-      email: currentUser.email || '',
-      uid: currentUser.uid
-    };
-    
+    const mappedUser = getLocalUser();
     updateAppState({ user: mappedUser });
-    console.log('[BOOTSTRAP] ✅ USER AUTHENTICATED:', mappedUser.username);
-    
-    // STEP 4: Carica progetti SEMPRE da Firestore (non dalla cache)
-    console.log('[BOOTSTRAP] Caricamento progetti da Firestore...');
-    
-    let projects = [];
-    
-    try {
-      // Usa loadProjectsDirectlyFromFirestore per ottenere dati sempre aggiornati
-      projects = await loadProjectsDirectlyFromFirestore(currentUser.uid);
-      console.log(`[BOOTSTRAP] ✅ PROJECTS LOADED: ${projects.length}`);
-      
-      // Aggiorna localStorage solo come cache secondaria
-      if (mappedUser.username) {
-        saveProjectsToCache(mappedUser.username, projects);
-        console.log('[BOOTSTRAP] Cache localStorage aggiornata');
-      }
-    } catch (error) {
-      console.error('[BOOTSTRAP] ❌ Errore caricamento progetti:', error);
-      
-      // In caso di errore, prova a caricare dalla cache come fallback
-      if (mappedUser.username) {
-        console.log('[BOOTSTRAP] Fallback a cache localStorage...');
-        projects = loadProjectsFromCache(mappedUser.username);
-        console.log(`[BOOTSTRAP] Progetti da cache: ${projects.length}`);
-      }
-      
-      // Se anche la cache è vuota, continua comunque (utente nuovo)
-      updateAppState({ error: error.message || 'Error loading projects' });
-    }
-    
-    // STEP 5: Popola AppState
-    updateAppState({ 
-      projects: projects,
+    const projects = loadProjectsFromCache(mappedUser.username);
+    updateAppState({
+      projects,
       loading: false,
       initialized: true
     });
-    
-    console.log('========================================');
-    console.log('✅ BOOTSTRAP COMPLETE');
-    console.log(`   User: ${mappedUser.username}`);
-    console.log(`   Projects: ${projects.length}`);
-    console.log('========================================');
-    
+    console.log(`[BOOTSTRAP] âœ… ${projects.length} progetti locali`);
   } catch (error) {
-    console.error('[BOOTSTRAP] ❌ Errore critico:', error);
-    updateAppState({ 
+    console.error('[BOOTSTRAP] âŒ Errore:', error);
+    updateAppState({
       loading: false,
-      initialized: true, // Inizializzato anche in caso di errore per permettere login
+      initialized: true,
       error: error.message || 'Error during bootstrap'
     });
-    
-    console.log('========================================');
-    console.log('⚠️ BOOTSTRAP COMPLETE (con errori)');
-    console.log('========================================');
   }
 }
 
@@ -208,7 +198,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function showSectionById(id, addToHistory = true) {
     if (!id || tabState.currentTab === id) return;
     
-    // Blocca cambio tab se non c'è progetto aperto (tranne Projects e Docs)
+    // Blocca cambio tab se non c'Ã¨ progetto aperto (tranne Projects e Docs)
     if (id !== 'projects' && id !== 'docs') {
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (!activeProjectName) {
@@ -230,7 +220,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     
-    // Blocca cambio se il bottone è disabilitato
+    // Blocca cambio se il bottone Ã¨ disabilitato
     if (targetButton.disabled) {
       return;
     }
@@ -344,7 +334,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Improved initialization
   function initializeTabs() {
-    // Controlla se c'è un progetto aperto e abilita/disabilita tab di conseguenza
+    // Controlla se c'Ã¨ un progetto aperto e abilita/disabilita tab di conseguenza
     const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
     enableOtherTabs(!!activeProjectName);
     
@@ -379,11 +369,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // Support for keyboard shortcuts (Ctrl + number)
     document.addEventListener('keydown', (e) => {
       if (!e.ctrlKey) return;
-      if (e.key === '8') {
+      if (e.key === '9') {
         e.preventDefault();
         if (playtestBtn && !playtestBtn.disabled) {
           launchPlaytest();
         }
+        return;
+      }
+      if (e.key === '8') {
+        e.preventDefault();
+        showSectionById('docs');
         return;
       }
       if (e.key >= '1' && e.key <= '9') {
@@ -418,7 +413,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Event listeners per pulsanti nella tab Projects
-  // Usa un listener che si attiva dopo che il DOM è caricato e le funzioni sono disponibili
+  // Usa un listener che si attiva dopo che il DOM Ã¨ caricato e le funzioni sono disponibili
   setTimeout(() => {
     // Pulsante Create Project
     const btnCreateProject = document.getElementById('btn-create-project-in-tab');
@@ -439,22 +434,21 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
     
-    // Pulsante Refresh
-    const btnRefreshProjects = document.getElementById('btn-refresh-projects');
-    if (btnRefreshProjects && !btnRefreshProjects.hasAttribute('data-listener-attached')) {
-      btnRefreshProjects.setAttribute('data-listener-attached', 'true');
-      btnRefreshProjects.addEventListener('click', async () => {
-        btnRefreshProjects.disabled = true;
-        btnRefreshProjects.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+    // Pulsante Load Project
+    const btnLoadProject = document.getElementById('btn-load-project');
+    if (btnLoadProject && !btnLoadProject.hasAttribute('data-listener-attached')) {
+      btnLoadProject.setAttribute('data-listener-attached', 'true');
+      btnLoadProject.addEventListener('click', async () => {
+        btnLoadProject.disabled = true;
         try {
-          await loadAndRenderProjectsTab();
-          showNotification('Projects list refreshed', 'success');
+          await window.loadProjectFromFile();
         } catch (error) {
-          console.error('[ProjectsTab] Errore refresh progetti:', error);
-          showNotification('Error refreshing projects', 'error');
+          if (error && error.name !== 'AbortError') {
+            console.error('[ProjectsTab] Errore caricamento progetto:', error);
+            showNotification('Error loading project', 'error');
+          }
         } finally {
-          btnRefreshProjects.disabled = false;
-          btnRefreshProjects.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh List';
+          btnLoadProject.disabled = false;
         }
       });
     }
@@ -493,8 +487,10 @@ document.addEventListener("DOMContentLoaded", () => {
   let background = null;
   let foregrounds = [];
   let sceneObjects = [];
+  let animationInstances = [];
   let selectedForegroundId = null;
   let selectedSceneObjectId = null;
+  let selectedAnimationInstanceId = null;
   // GUI overlay: background image and button rectangles
   let guiBackground = null;
   let guiButtons = []; // { id, name, x, y, w, h, backgroundImage: Image|null, text: string }
@@ -547,6 +543,8 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedHotspotVertexIndex = -1;
     isDraggingObject = false;
     draggedObject = null;
+    isDraggingAnimationInstance = false;
+    draggedAnimationInstance = null;
     isDraggingScalingLine = false;
     draggedScalingLineType = null;
   }
@@ -596,6 +594,17 @@ document.addEventListener("DOMContentLoaded", () => {
   let isDraggingObject = false;
   let draggedObject = null;
   let dragOffset = { x: 0, y: 0 };
+
+  // Room animation catalog and editor preview
+  const roomAnimationsCatalog = new Map(); // animId -> { id, name, fps, loop, layer, frames: [{ img, name, orderIndex }] }
+  let selectedRoomAnimationId = null;
+  let roomAnimationPreviewTimer = null;
+  let roomAnimationPreviewIndex = 0;
+
+  // Room animation instance drag state
+  let isDraggingAnimationInstance = false;
+  let draggedAnimationInstance = null;
+  let animationInstanceDragOffset = { x: 0, y: 0 };
   
   // Character pivot management
 
@@ -683,7 +692,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
@@ -765,8 +774,10 @@ document.addEventListener("DOMContentLoaded", () => {
       foregrounds = Array.isArray(r.foregrounds) ? r.foregrounds : [];
     
     sceneObjects = Array.isArray(r.sceneObjects) ? r.sceneObjects : [];
+    animationInstances = Array.isArray(r.animationInstances) ? r.animationInstances : [];
     selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
     selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
+    selectedAnimationInstanceId = animationInstances && animationInstances.length ? animationInstances[0].id : null;
     walkableArea = Array.isArray(r.walkableArea) ? r.walkableArea : [];
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
@@ -816,7 +827,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Update displays
     document.getElementById('zoomLevel').textContent = Math.round(editorState.zoom * 100) + '%';
-    document.getElementById('viewportSize').textContent = `${gameViewport.width}×${gameViewport.height}`;
+    document.getElementById('viewportSize').textContent = `${gameViewport.width}Ã—${gameViewport.height}`;
   }
 
   // Draw image at original size with offset
@@ -826,13 +837,13 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     
-    // Controlla se l'immagine è completamente caricata
-    // Usa naturalWidth/naturalHeight per maggiore affidabilità
+    // Controlla se l'immagine Ã¨ completamente caricata
+    // Usa naturalWidth/naturalHeight per maggiore affidabilitÃ 
     const width = img.naturalWidth || img.width;
     const height = img.naturalHeight || img.height;
     
     if (!width || !height) {
-      // Se l'immagine non è ancora caricata, aspetta e ridisegna
+      // Se l'immagine non Ã¨ ancora caricata, aspetta e ridisegna
       if (!img.complete) {
         console.warn('[drawImageAtOriginalSize] Image not fully loaded yet, waiting...', {
           complete: img.complete,
@@ -842,13 +853,13 @@ document.addEventListener("DOMContentLoaded", () => {
           height: img.height
         });
         
-        // Se non c'è già un handler onload, aggiungilo per ridisegnare quando l'immagine è pronta
+        // Se non c'Ã¨ giÃ  un handler onload, aggiungilo per ridisegnare quando l'immagine Ã¨ pronta
         if (!img._onloadHandlerAdded) {
           img._onloadHandlerAdded = true;
           const originalOnload = img.onload;
           img.onload = () => {
             if (originalOnload) originalOnload.call(img);
-            // Ridisegna quando l'immagine è caricata
+            // Ridisegna quando l'immagine Ã¨ caricata
             setTimeout(() => redraw(), 10);
           };
         }
@@ -943,7 +954,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return `${px}, ${py}`;
   }
 
-  /** Visibilità/interattività a runtime (playtest); in editor si disegna sempre. */
+  /** VisibilitÃ /interattivitÃ  a runtime (playtest); in editor si disegna sempre. */
   function isSceneObjectRuntimeVisible(obj) {
     return obj && obj.visible !== false;
   }
@@ -981,6 +992,76 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     return null;
+  }
+
+  function getRoomAnimationDef(animationId) {
+    if (!animationId) return null;
+    return roomAnimationsCatalog.get(animationId) || null;
+  }
+
+  function getRoomAnimationFirstFrameImg(animDefOrId) {
+    const animDef = typeof animDefOrId === 'string' ? getRoomAnimationDef(animDefOrId) : animDefOrId;
+    if (!animDef || !Array.isArray(animDef.frames) || !animDef.frames.length) return null;
+    const frame = animDef.frames[0];
+    return frame && frame.img ? frame.img : null;
+  }
+
+  function getAnimationInstanceAtPoint(worldX, worldY) {
+    const checkList = (list) => {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const inst = list[i];
+        if (!inst || inst.visible === false) continue;
+        const img = getRoomAnimationFirstFrameImg(inst.animationId);
+        if (!img) continue;
+        const ix = inst.x || 0;
+        const iy = inst.y || 0;
+        if (worldX >= ix && worldX <= ix + img.width && worldY >= iy && worldY <= iy + img.height) {
+          return inst;
+        }
+      }
+      return null;
+    };
+    const fgInstances = animationInstances.filter(i => (i.layer || 'background') === 'foreground');
+    const bgInstances = animationInstances.filter(i => (i.layer || 'background') !== 'foreground');
+    return checkList(fgInstances) || checkList(bgInstances);
+  }
+
+  function drawRoomAnimationInstance(inst, frameIndex) {
+    if (!inst || inst.visible === false) return;
+    const animDef = getRoomAnimationDef(inst.animationId);
+    if (!animDef || !animDef.frames || !animDef.frames.length) return;
+    const idx = Math.max(0, Math.min(frameIndex, animDef.frames.length - 1));
+    const frame = animDef.frames[idx];
+    const img = frame && frame.img ? frame.img : null;
+    if (!img) return;
+    const ix = inst.x || 0;
+    const iy = inst.y || 0;
+    ctx.drawImage(img, ix, iy, img.width, img.height);
+    if (inst.id === selectedAnimationInstanceId) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(ix, iy, img.width, img.height);
+      ctx.restore();
+    }
+    if (isDraggingAnimationInstance && draggedAnimationInstance && draggedAnimationInstance.id === inst.id) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(ix, iy, img.width, img.height);
+      ctx.restore();
+    }
+  }
+
+  function updateAnimationInstanceUI(inst) {
+    const listItem = document.querySelector(`[data-animation-instance-id="${inst.id}"]`);
+    if (!listItem) return;
+    const positionInfo = listItem.querySelector('.animation-instance-position');
+    if (positionInfo) {
+      positionInfo.textContent = `Position: ${Math.round(inst.x)}, ${Math.round(inst.y)}`;
+    }
   }
 
   // Update scene object UI position info
@@ -1167,6 +1248,62 @@ document.addEventListener("DOMContentLoaded", () => {
       return; // skip rooms rendering
     }
 
+    if (activeTab === 'animations') {
+      const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (!animDef || !animDef.frames || !animDef.frames.length) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(animDef ? 'No frames loaded for this animation' : 'Select an animation to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      const frameIndex = roomAnimationPreviewIndex % animDef.frames.length;
+      const frame = animDef.frames[frameIndex];
+      const frameImg = frame && frame.img ? frame.img : null;
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      if (frameImg && frameImg.complete && frameImg.naturalWidth > 0) {
+        ctx.drawImage(frameImg, 0, 0);
+        if (roomAnimationPreviewTimer) {
+          ctx.save();
+          ctx.resetTransform();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(10, 10, 280, 65);
+          ctx.fillStyle = '#39ff14';
+          ctx.font = '12px monospace';
+          ctx.fillText(`Animation: ${animDef.name}`, 15, 28);
+          ctx.fillText(`Frame: ${frameIndex + 1}/${animDef.frames.length}`, 15, 45);
+          ctx.fillText(`FPS: ${animDef.fps || 8} | Layer: ${animDef.layer || 'background'}`, 15, 62);
+          ctx.restore();
+        }
+      }
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
+    }
+
     if (activeTab === 'inventory') {
       if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
         canvas.width = gameViewport.width;
@@ -1271,7 +1408,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Default (Rooms tab): draw scene
     // Draw background scaled to viewport size (always matches the green rectangle)
-    // L'origine (0,0) è ora nell'angolo in alto a sinistra del contenuto centrato
+    // L'origine (0,0) Ã¨ ora nell'angolo in alto a sinistra del contenuto centrato
     if (background) {
       // Draw background scaled to viewport dimensions
       ctx.drawImage(background, 0, 0, gameViewport.width, gameViewport.height);
@@ -1280,6 +1417,11 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillStyle = "#111";
       ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
     }
+
+    // Background-layer room animations (after background, before scene objects)
+    animationInstances
+      .filter(inst => (inst.layer || 'background') !== 'foreground')
+      .forEach(inst => drawRoomAnimationInstance(inst, 0));
 
     // Draw scene objects at their positions (sempre in editor; attenuati se off a runtime)
     for (let obj of sceneObjects) {
@@ -1324,6 +1466,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     }
+
+    // Foreground-layer room animations (after scene objects, before foreground layers)
+    animationInstances
+      .filter(inst => (inst.layer || 'background') === 'foreground')
+      .forEach(inst => drawRoomAnimationInstance(inst, 0));
 
     // Draw foregrounds - after scene objects, before GUI
     // Support same transforms as scene objects: x, y, rotationRad, scaleX, scaleY, visible
@@ -1812,6 +1959,19 @@ document.addEventListener("DOMContentLoaded", () => {
             
             canvas.style.cursor = 'grabbing';
             redraw();
+          } else {
+            const clickedAnim = getAnimationInstanceAtPoint(worldPos.x, worldPos.y);
+            if (clickedAnim && !activeHotspotId) {
+              e.preventDefault();
+              isDraggingAnimationInstance = true;
+              draggedAnimationInstance = clickedAnim;
+              selectedAnimationInstanceId = clickedAnim.id;
+              animationInstanceDragOffset.x = worldPos.x - (clickedAnim.x || 0);
+              animationInstanceDragOffset.y = worldPos.y - (clickedAnim.y || 0);
+              refreshRoomAnimationInstancesListUI();
+              canvas.style.cursor = 'grabbing';
+              redraw();
+            }
           }
         }
       }
@@ -1904,6 +2064,27 @@ document.addEventListener("DOMContentLoaded", () => {
         // Update UI position info
         updateSceneObjectUI(draggedObject);
         
+        redraw();
+      } else if (isDraggingAnimationInstance && draggedAnimationInstance) {
+        if (!isRoomCanvasActive()) {
+          isDraggingAnimationInstance = false;
+          draggedAnimationInstance = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
+        if (activeHotspotId) {
+          isDraggingAnimationInstance = false;
+          draggedAnimationInstance = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        draggedAnimationInstance.x = Math.round(worldPos.x - animationInstanceDragOffset.x);
+        draggedAnimationInstance.y = Math.round(worldPos.y - animationInstanceDragOffset.y);
+        const r = rooms.get(currentRoomId);
+        if (r) r.animationInstances = animationInstances;
+        updateAnimationInstanceUI(draggedAnimationInstance);
         redraw();
       } else if (isDraggingGuiButton && draggedGuiButton) {
         e.preventDefault();
@@ -2066,6 +2247,11 @@ document.addEventListener("DOMContentLoaded", () => {
         draggedObject = null;
         canvas.style.cursor = 'default';
         redraw();
+      } else if (isDraggingAnimationInstance) {
+        isDraggingAnimationInstance = false;
+        draggedAnimationInstance = null;
+        canvas.style.cursor = 'default';
+        redraw();
       } else if (isDraggingGuiButton) {
         isDraggingGuiButton = false;
         draggedGuiButton = null;
@@ -2127,7 +2313,7 @@ document.addEventListener("DOMContentLoaded", () => {
         refreshGuiButtonsList();
         if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
         saveCurrentGUI();
-        showNotification(`GUI button created (${btn.w}×${btn.h})`, 'success');
+        showNotification(`GUI button created (${btn.w}Ã—${btn.h})`, 'success');
         redraw();
       }
     });
@@ -2139,6 +2325,11 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (isDraggingObject) {
         isDraggingObject = false;
         draggedObject = null;
+        canvas.style.cursor = 'default';
+        redraw();
+      } else if (isDraggingAnimationInstance) {
+        isDraggingAnimationInstance = false;
+        draggedAnimationInstance = null;
         canvas.style.cursor = 'default';
         redraw();
       }
@@ -2275,17 +2466,17 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // ⚠️ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
-    // sul canvas dell'EDITOR, causando doppia esecuzione perché:
+    // âš ï¸ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
+    // sul canvas dell'EDITOR, causando doppia esecuzione perchÃ©:
     // 1. Il listener in main.js gestiva i click sul canvas dell'editor
     // 2. Il listener in runtime.js gestiva i click sul canvas del runtime (finestra separata)
-    // 3. Quando il playtest è attivo, il runtime dovrebbe essere l'unico a gestire i click
+    // 3. Quando il playtest Ã¨ attivo, il runtime dovrebbe essere l'unico a gestire i click
     // 
     // SOLUZIONE: Rimuoviamo completamente la gestione playtest dal listener dell'editor.
-    // Il runtime nella finestra separata gestirà TUTTI i click durante il playtest.
+    // Il runtime nella finestra separata gestirÃ  TUTTI i click durante il playtest.
     // L'editor gestisce solo click per editing (walkable, hotspot drawing, GUI selection).
     //
-    // NOTA: executeScriptHandler() è vuoto (non esegue nulla), quindi non causava
+    // NOTA: executeScriptHandler() Ã¨ vuoto (non esegue nulla), quindi non causava
     // doppia esecuzione di script, ma triggerObjectClick() e triggerHotspotClick()
     // potevano comunque causare effetti collaterali indesiderati.
     //
@@ -2368,7 +2559,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Click per selezionare un vertice walkable quando non stiamo disegnando
   canvas.addEventListener('click', (e) => {
     if (!isRoomCanvasActive()) return;
-    if (isDrawingWalkable) return; // già gestito sopra
+    if (isDrawingWalkable) return; // giÃ  gestito sopra
     if (isDraggingWalkableVertex) return;
     // evita conflitti con hotspot: se stai disegnando hotspot non selezionare walkable
     if (isDrawingHotspot) return;
@@ -2513,7 +2704,7 @@ document.addEventListener("DOMContentLoaded", () => {
       idInput.readOnly = true;
       idInput.className = 'form-control form-control-sm hotspot-id-input';
       idInput.value = hs.id;
-      idInput.title = 'Hotspot ID — select and copy';
+      idInput.title = 'Hotspot ID â€” select and copy';
       const copyBtn = document.createElement('button');
       copyBtn.type = 'button';
       copyBtn.className = 'btn btn-outline-secondary btn-sm btn-copy-hotspot-id py-0 px-1';
@@ -2596,7 +2787,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
       btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
-      btnEdit.textContent = '✏️';
+      btnEdit.textContent = 'âœï¸';
       btnEdit.disabled = !isSelected;
       btnEdit.addEventListener('click', () => {
         if (!isSelected) {
@@ -2615,7 +2806,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
       btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
-      btnClear.textContent = '🧹';
+      btnClear.textContent = 'ðŸ§¹';
       btnClear.disabled = !isSelected;
       btnClear.addEventListener('click', () => {
         if (!isSelected) {
@@ -2632,7 +2823,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
       btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
-      btnDelete.textContent = '🗑️';
+      btnDelete.textContent = 'ðŸ—‘ï¸';
       btnDelete.disabled = !isSelected;
       btnDelete.addEventListener('click', () => {
         if (!isSelected) {
@@ -3004,7 +3195,7 @@ document.addEventListener("DOMContentLoaded", () => {
     showNotification(`Canvas fitted to screen (${Math.round(editorState.zoom * 100)}%)`, 'info');
   };
 
-  // Reset editor zoom and pan — 100% con (0,0) in alto a sinistra
+  // Reset editor zoom and pan â€” 100% con (0,0) in alto a sinistra
   window.resetEditorZoom = function() {
     alignEditorViewTopLeft();
     showNotification('Viewport at 100% with top-left corner aligned', 'info');
@@ -3094,7 +3285,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // delete
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-danger ms-2";
-      del.textContent = "✕";
+      del.textContent = "âœ•";
       del.title = "Delete layer";
       del.addEventListener("click", async () => {
         if (!isSelected) {
@@ -3105,7 +3296,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Salva il layer prima di eliminarlo per poter eliminare l'asset
         const layerToDelete = foregrounds[idx];
         
-        // Elimina l'asset da Supabase se presente
+        // Elimina l'asset dallo storage locale se presente
         if (layerToDelete && layerToDelete.img) {
           try {
             await deleteAssetFromImage(layerToDelete.img);
@@ -3128,7 +3319,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // optional: move up/down buttons (keyboard users)
       const up = document.createElement("button");
       up.className = "btn btn-sm btn-outline-light me-1";
-      up.textContent = "↑";
+      up.textContent = "â†‘";
       up.title = "Move up";
       up.addEventListener("click", () => {
         if (!isSelected) {
@@ -3145,7 +3336,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const down = document.createElement("button");
       down.className = "btn btn-sm btn-outline-light me-1";
-      down.textContent = "↓";
+      down.textContent = "â†“";
       down.title = "Move down";
       down.addEventListener("click", () => {
         if (!isSelected) {
@@ -3253,7 +3444,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
     refreshForegroundListUI();
@@ -3270,6 +3461,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const content = jsScripts.get(roomScript);
       executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
     }
+    notifyEditorProjectChanged();
   };
 
   window.renameRoom = function() {
@@ -3278,6 +3470,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!name) return;
     r.name = name;
     refreshRoomsSelector();
+    notifyEditorProjectChanged();
   };
 
   window.deleteRoom = async function() {
@@ -3287,7 +3480,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const prevRoomId = currentRoomId;
     const roomToDelete = rooms.get(currentRoomId);
     
-    // Elimina tutti gli asset della stanza da Supabase
+    // Elimina tutti gli asset della stanza dallo storage locale
     if (roomToDelete) {
       try {
         // Elimina background
@@ -3337,6 +3530,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const content = jsScripts.get(roomScript);
       executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
     }
+    notifyEditorProjectChanged();
   };
 
 window.selectRoom = function(roomId) {
@@ -3346,6 +3540,8 @@ window.selectRoom = function(roomId) {
     bindRoomRefs();
     refreshForegroundListUI();
     refreshSceneObjectsListUI();
+    refreshRoomAnimationInstancesListUI();
+    refreshRoomAnimationPickerUI();
     refreshHotspotsListUI();
     refreshRoomsSelector();
     refreshRoomIdDisplay();
@@ -3371,11 +3567,6 @@ window.selectRoom = function(roomId) {
     return prefix + "-" + Math.random().toString(36).slice(2, 9);
   }
 
-  function normalizeProjectIdFromName(name) {
-    if (!name) return null;
-    return String(name).replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-  }
-
   function getStableProjectId(settings, fallbackName) {
     if (settings && settings.id) return String(settings.id);
     if (fallbackName) return normalizeProjectIdFromName(fallbackName);
@@ -3394,11 +3585,66 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  function removeProjectLocalBackup(username, projectName) {
-    if (!username || !projectName) return;
-    const projectKey = `amiantoProject_${username}:${projectName}`;
+  function removeProjectFromEditorCache(projectName, projectId) {
+    if (!currentUser || !projectName) return;
+
+    const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+    const deletedFilePath = getProjectFilePath(projectName);
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    const activeId = localStorage.getItem('amiantoActiveProjectId');
+    const isActiveProject = activeName === projectName
+      || (projectId && activeId && activeId === projectId);
+
     try { localStorage.removeItem(projectKey); } catch (_) {}
     try { localStorage.removeItem(`${projectKey}_meta`); } catch (_) {}
+    try { localStorage.removeItem(getProjectFilePathKey(projectName)); } catch (_) {}
+    projectFileHandles.delete(projectName);
+
+    if (isActiveProject) {
+      const activeFile = localStorage.getItem('amiantoActiveProjectFile');
+      if (deletedFilePath && activeFile === deletedFilePath) {
+        try { localStorage.removeItem('amiantoActiveProjectFile'); } catch (_) {}
+      }
+      try { localStorage.removeItem('amiantoActiveProjectName'); } catch (_) {}
+      try { localStorage.removeItem('amiantoActiveProjectOwner'); } catch (_) {}
+      try { localStorage.removeItem('amiantoActiveProjectId'); } catch (_) {}
+      try { localStorage.removeItem('amiantoLastSavedProjectJson'); } catch (_) {}
+      try { localStorage.removeItem('amiantoProjectSettings'); } catch (_) {}
+    }
+  }
+
+  function removeProjectLocalBackup(username, projectName) {
+    if (!username || !projectName) return;
+    removeProjectFromEditorCache(projectName);
+  }
+
+  function clearInMemoryProjectState() {
+    jsScripts.clear();
+    objectScripts.clear();
+    roomScripts.clear();
+    characterScripts.clear();
+    inventoryScripts.clear();
+    hotspotScripts.clear();
+    if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+    refreshScriptSelector();
+    rebuildScriptsTree();
+  }
+
+  function clearEditorWorkspaceAfterProjectRemoved() {
+    rooms = new Map();
+    currentRoomId = null;
+    background = null;
+    foregrounds = [];
+    sceneObjects = [];
+    animationInstances = [];
+    guis = [];
+    roomAnimationsCatalog.clear();
+    selectedRoomAnimationId = null;
+    characters = [];
+    contextualCursors = [];
+    enableOtherTabs(false);
+    const indicator = document.getElementById('projectSizeIndicator');
+    if (indicator) indicator.style.display = 'none';
   }
 
   function refreshActiveProjectNameInUi() {
@@ -3445,19 +3691,27 @@ window.selectRoom = function(roomId) {
   }
 
   async function deleteFirestoreAssetDoc(projectId, assetId) {
-    if (!window.firebaseDB || !window.firebaseAuth?.currentUser || !assetId) return false;
+    if (!projectId || !assetId) return true;
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (!storage || !storage.deleteAsset) return true;
     try {
-      await window.firebaseDB
-        .collection('users')
-        .doc(window.firebaseAuth.currentUser.uid)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId)
-        .delete();
-      return true;
+      let metadata = null;
+      if (storage.getAssetMetadata) {
+        metadata = await storage.getAssetMetadata(projectId, assetId);
+      } else if (storage.listProjectAssetMetadata) {
+        const all = await storage.listProjectAssetMetadata(projectId);
+        metadata = all.find((entry) => entry.assetId === assetId) || null;
+      }
+      if (!metadata) return true;
+      return await storage.deleteAsset(
+        projectId,
+        metadata.type || 'sprite',
+        metadata.fileName || `${assetId}.png`,
+        null,
+        metadata.subfolder || null
+      );
     } catch (err) {
-      console.warn('[Asset] Errore eliminazione metadata Firestore:', err);
+      console.warn('[Asset] Errore eliminazione metadata locale:', err);
       return false;
     }
   }
@@ -3469,7 +3723,7 @@ window.selectRoom = function(roomId) {
   if (btnAddBg) {
     btnAddBg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         const projectId = getActiveProjectId();
@@ -3527,7 +3781,7 @@ window.selectRoom = function(roomId) {
           const finalHeight = img.naturalHeight || img.height;
           
           if (!finalWidth || !finalHeight) {
-            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}×${finalHeight}`);
+            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}Ã—${finalHeight}`);
           }
           
           console.log('[Background] Immagine caricata con successo:', {
@@ -3544,7 +3798,7 @@ window.selectRoom = function(roomId) {
           background = img;
           if (room) room.background = img;
           
-          showNotification(`Background set: ${finalWidth}×${finalHeight}`, 'success');
+          showNotification(`Background set: ${finalWidth}Ã—${finalHeight}`, 'success');
           redraw();
         } catch (error) {
           console.error('[Asset] Errore background da Resources:', error);
@@ -3558,7 +3812,7 @@ window.selectRoom = function(roomId) {
   if (btnAddFg) {
     btnAddFg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         if (!getActiveProjectId()) return;
@@ -3642,7 +3896,7 @@ window.selectRoom = function(roomId) {
     btnAddGuiBg.addEventListener('click', async () => {
         if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
         if (!currentUser) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         if (!getActiveProjectId()) {
@@ -3905,7 +4159,7 @@ window.selectRoom = function(roomId) {
       const btnBrowse = document.createElement('button');
       btnBrowse.type = 'button';
       btnBrowse.className = 'btn btn-outline-info btn-sm';
-      btnBrowse.textContent = 'Browse…';
+      btnBrowse.textContent = 'Browseâ€¦';
       const btnClear = document.createElement('button');
       btnClear.type = 'button';
       btnClear.className = 'btn btn-outline-secondary btn-sm';
@@ -3921,7 +4175,7 @@ window.selectRoom = function(roomId) {
       updateLabel();
       btnBrowse.addEventListener('click', async () => {
         if (!currentUser) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         if (!getActiveProjectId()) {
@@ -3978,7 +4232,7 @@ window.selectRoom = function(roomId) {
       const btnImport = document.createElement('button');
       btnImport.type = 'button';
       btnImport.className = 'btn btn-outline-info btn-sm';
-      btnImport.textContent = 'Import font…';
+      btnImport.textContent = 'Import fontâ€¦';
       const btnClear = document.createElement('button');
       btnClear.type = 'button';
       btnClear.className = 'btn btn-outline-secondary btn-sm';
@@ -4202,13 +4456,13 @@ window.selectRoom = function(roomId) {
       item.innerHTML = `
         <div>
           <strong>${btn.name}</strong>
-          <br><small>${btn.x}, ${btn.y} — ${btn.w}×${btn.h}</small>
+          <br><small>${btn.x}, ${btn.y} â€” ${btn.w}Ã—${btn.h}</small>
         </div>
         <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Rename">✏️</button>
-          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">🖼️</button>
-          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">📝</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete">🗑️</button>
+          <button class="btn btn-sm btn-outline-light me-1" title="Rename">âœï¸</button>
+          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">ðŸ–¼ï¸</button>
+          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">ðŸ“</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete">ðŸ—‘ï¸</button>
         </div>
       `;
       const [btnEdit, btnImage, btnText, btnDel] = item.querySelectorAll('button');
@@ -4218,7 +4472,7 @@ window.selectRoom = function(roomId) {
       });
       btnImage.addEventListener('click', async () => {
           if (!currentUser) {
-            showNotification('Please log in to select images', 'warning');
+            showNotification('Open a project to select images', 'warning');
             return;
           }
           if (!getActiveProjectId()) {
@@ -4270,7 +4524,7 @@ window.selectRoom = function(roomId) {
   setupMouseWheelZoom();
   setupMousePanning();
 
-  // Handle window resize — ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
+  // Handle window resize â€” ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
   window.addEventListener("resize", () => {
     updateEditorDisplay();
     redraw();
@@ -4865,7 +5119,7 @@ window.selectRoom = function(roomId) {
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-sm btn-outline-light me-1';
     editBtn.title = isSelected ? 'Edit' : 'Select before editing';
-    editBtn.textContent = '✏️';
+    editBtn.textContent = 'âœï¸';
     editBtn.disabled = !isSelected;
     editBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -4878,7 +5132,7 @@ window.selectRoom = function(roomId) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'btn btn-sm btn-outline-danger';
     deleteBtn.title = isSelected ? 'Delete' : 'Select before editing';
-    deleteBtn.textContent = '🗑️';
+    deleteBtn.textContent = 'ðŸ—‘ï¸';
     deleteBtn.disabled = !isSelected;
     deleteBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -4912,7 +5166,7 @@ window.selectRoom = function(roomId) {
 
   window.addSceneObject = async function() {
     if (!currentUser || !currentUser.uid) {
-      showNotification('Please log in to select images', 'warning');
+      showNotification('Open a project to select images', 'warning');
       return;
     }
     if (!getActiveProjectId()) return;
@@ -4952,6 +5206,7 @@ window.selectRoom = function(roomId) {
       refreshSceneObjectsListUI();
       redraw();
       showNotification(`Scene object "${objectName}" added`, 'success');
+      notifyEditorProjectChanged();
     } catch (error) {
       console.error('[Asset] Errore scene object da Resources:', error);
       showNotification(`Scene object error: ${error.message}`, 'error');
@@ -4976,7 +5231,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Rimuove solo dall'editor; i file su Supabase restano (eliminabili da Resources)
+      // Rimuove solo dall'editor; i file nello storage locale restano (eliminabili da Resources)
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
@@ -5035,7 +5290,7 @@ window.selectRoom = function(roomId) {
       }
     } else if (normalized === 'image') {
       if (!currentUser?.uid) {
-        showNotification('Please log in', 'warning');
+        showNotification('Open a project first', 'warning');
         return;
       }
       const resource = await pickResourceImage({ title: 'New scene object image' });
@@ -5230,6 +5485,7 @@ window.selectRoom = function(roomId) {
     characterFrames.set(name, createEmptyCharacterData());
     selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
+    notifyEditorProjectChanged();
   };
 
   window.removeCharacter = async function(button) {
@@ -5237,7 +5493,7 @@ window.selectRoom = function(roomId) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
       
-      // Ferma la preview se è attiva per questo character
+      // Ferma la preview se Ã¨ attiva per questo character
       const sel = document.getElementById('character-selector');
       const currentCharacter = sel ? sel.value : '';
       if (currentCharacter === characterName) {
@@ -5246,7 +5502,7 @@ window.selectRoom = function(roomId) {
       
       const charData = characterFrames.get(characterName);
 
-      // Pulisce i riferimenti in memoria (i file su Supabase restano; eliminabili da Resources)
+      // Pulisce i riferimenti in memoria (i file nello storage locale restano; eliminabili da Resources)
       // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
       const clearDirectionFramesFromMap = (directionsMap) => {
         if (!directionsMap) return;
@@ -5312,7 +5568,7 @@ window.selectRoom = function(roomId) {
       refreshCharactersListUI();
       
       showNotification('Character deleted!', 'info');
-      console.log(`[Character] ✅ Character "${characterName}" rimosso dall'editor`);
+      console.log(`[Character] âœ… Character "${characterName}" rimosso dall'editor`);
     }
   };
 
@@ -5371,14 +5627,14 @@ window.selectRoom = function(roomId) {
   let currentDirection = 'south'; // Default direction
 
   const DIRECTION_LABELS = {
-    north: 'North (↑)',
-    northeast: 'Northeast (↗)',
-    east: 'East (→)',
-    southeast: 'Southeast (↘)',
-    south: 'South (↓)',
-    southwest: 'Southwest (↙)',
-    west: 'West (←)',
-    northwest: 'Northwest (↖)'
+    north: 'North (â†‘)',
+    northeast: 'Northeast (â†—)',
+    east: 'East (â†’)',
+    southeast: 'Southeast (â†˜)',
+    south: 'South (â†“)',
+    southwest: 'Southwest (â†™)',
+    west: 'West (â†)',
+    northwest: 'Northwest (â†–)'
   };
 
   function getSelectedCharacterAnimationKey() {
@@ -5460,14 +5716,18 @@ window.selectRoom = function(roomId) {
     redraw();
   };
 
-  window.addCharacterAnimation = function() {
+  window.addCharacterAnimation = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
       showNotification('Select a character first', 'warning');
       return;
     }
-    const name = prompt('Animation name (e.g. idle, talk, pick_up):');
+    const name = await showInputPrompt({
+      title: 'New Character Animation',
+      message: 'Animation name (e.g. idle, talk, pick_up):',
+      defaultValue: ''
+    });
     if (!name || !name.trim()) return;
     const animName = name.trim();
     if (animName.toLowerCase() === 'walking') {
@@ -5491,6 +5751,7 @@ window.selectRoom = function(roomId) {
     if (animSel) animSel.value = animName;
     onCharacterAnimationChange();
     showNotification(`Animation "${animName}" added`, 'success');
+    notifyEditorProjectChanged();
   };
 
   window.removeCharacterAnimation = function() {
@@ -5570,9 +5831,9 @@ window.selectRoom = function(roomId) {
   }
   
   // Traccia i frame caricati durante la sessione corrente che non sono stati ancora salvati nel progetto
-  // Questo permette di eliminarli da Supabase se si chiude il browser o si fa logout senza salvare
-  const unsavedCharacterFrames = new Set(); // Set di Image objects che sono stati caricati su Supabase ma non salvati
-  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character caricati su Supabase ma non salvati nel progetto
+  // Questo permette di eliminarli dallo storage locale se si chiude il browser o si fa logout senza salvare
+  const unsavedCharacterFrames = new Set(); // Set di Image objects caricati ma non ancora salvati nel progetto
+  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character non ancora salvati nel progetto
 
   function refreshCharacterSelector() {
     const sel = document.getElementById('character-selector');
@@ -5700,7 +5961,7 @@ window.selectRoom = function(roomId) {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
-      // Reset toggle a "upload" quando non c'è character selezionato
+      // Reset toggle a "upload" quando non c'Ã¨ character selezionato
       const uploadRadio = document.getElementById('frame-source-upload');
       if (uploadRadio) uploadRadio.checked = true;
       toggleFrameSource();
@@ -5774,7 +6035,7 @@ window.selectRoom = function(roomId) {
       console.warn('[Character] autoSpawn checkbox non trovata');
     }
     
-    // Aggiorna visibilità dei campi (dopo aver caricato entrambe le checkbox)
+    // Aggiorna visibilitÃ  dei campi (dopo aver caricato entrambe le checkbox)
     updateSpawnSettingsVisibility();
     
     // Carica room selector
@@ -5878,7 +6139,7 @@ window.selectRoom = function(roomId) {
     characterFrames.set(characterName, charData);
   }
 
-  // Aggiorna la visibilità dei campi spawn (Starting Room, posizione, direzione e velocità sempre visibili)
+  // Aggiorna la visibilitÃ  dei campi spawn (Starting Room, posizione, direzione e velocitÃ  sempre visibili)
   function updateSpawnSettingsVisibility() {
     const roomContainer = document.getElementById('character-spawn-room-container');
     const positionContainer = document.getElementById('character-spawn-position-container');
@@ -5960,12 +6221,12 @@ window.selectRoom = function(roomId) {
         const roundedX = Math.round(worldPos.x);
         const roundedY = Math.round(worldPos.y);
         
-        // Nota: la copia delle coordinate negli appunti in modalità rooms è gestita
+        // Nota: la copia delle coordinate negli appunti in modalitÃ  rooms Ã¨ gestita
         // dal gestore contextmenu principale (riga 1773)
         
         const sel = document.getElementById('character-selector');
         if (sel && sel.value) {
-          // Se siamo nella tab characters e c'è un character selezionato
+          // Se siamo nella tab characters e c'Ã¨ un character selezionato
           const currentTab = document.querySelector('.nav-link.active');
           if (currentTab && currentTab.getAttribute('data-tab') === 'characters') {
             const positionInput = document.getElementById('character-spawn-position');
@@ -5993,9 +6254,9 @@ window.selectRoom = function(roomId) {
 
     const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
     const resources = await pickResourceImage({
-      title: `Animation frames — ${who} [${animLabel}]`,
+      title: `Animation frames â€” ${who} [${animLabel}]`,
       multiple: true,
-      hint: 'Click multiple images to select them. Confirm with «Add selection». Frame order follows numbers in the file name.'
+      hint: 'Click multiple images to select them. Confirm with Â«Add selectionÂ». Frame order follows numbers in the file name.'
     });
     if (!resources || !resources.length) return;
 
@@ -6003,7 +6264,7 @@ window.selectRoom = function(roomId) {
     const direction = dirSel ? dirSel.value : 'south';
 
     if (!currentUser) {
-      showNotification('Please log in', 'warning');
+      showNotification('Open a project first', 'warning');
       return;
     }
 
@@ -6054,27 +6315,27 @@ window.selectRoom = function(roomId) {
         return Infinity;
       }
       
-      // Se c'è un solo numero, usalo
+      // Se c'Ã¨ un solo numero, usalo
       if (numberMatches.length === 1) {
         return numberMatches[0].value;
       }
       
-      // Se ci sono più numeri, preferisci quello con padding (001, 002, 01, etc.)
-      // perché di solito è il frame number
+      // Se ci sono piÃ¹ numeri, preferisci quello con padding (001, 002, 01, etc.)
+      // perchÃ© di solito Ã¨ il frame number
       const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
       
       if (paddedNumbers.length > 0) {
-        // Se ci sono numeri con padding, usa quello con più cifre (001 > 01)
+        // Se ci sono numeri con padding, usa quello con piÃ¹ cifre (001 > 01)
         // o se hanno la stessa lunghezza, usa l'ultimo
         paddedNumbers.sort((a, b) => {
-          if (b.length !== a.length) return b.length - a.length; // Preferisci più cifre
+          if (b.length !== a.length) return b.length - a.length; // Preferisci piÃ¹ cifre
           return b.position - a.position; // Se stessa lunghezza, usa l'ultimo
         });
         return paddedNumbers[0].value;
       }
       
       // Se non ci sono numeri con padding, usa l'ultimo numero trovato
-      // (spesso è il frame number quando ci sono altri numeri nel nome)
+      // (spesso Ã¨ il frame number quando ci sono altri numeri nel nome)
       return numberMatches[numberMatches.length - 1].value;
     };
     
@@ -6096,10 +6357,10 @@ window.selectRoom = function(roomId) {
       return (a.displayName || a.name).localeCompare(b.displayName || b.name);
     });
     
-    console.log(`[Frame] 📁 Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
-    console.log(`[Frame] ✅ Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
+    console.log(`[Frame] ðŸ“ Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
+    console.log(`[Frame] âœ… Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
       const num = extractNumberFromFileName(f.displayName || f.fileName || f.name);
-      return `${f.displayName || f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
+      return `${f.displayName || f.name} â†’ num: ${num !== Infinity ? num : 'N/A'}`;
     }));
     
     // Verifica che l'ordinamento sia corretto
@@ -6110,7 +6371,7 @@ window.selectRoom = function(roomId) {
       const isOrdered = num === Infinity || prevNum === Infinity || num >= prevNum;
       return { file: label, num, isOrdered };
     });
-    console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
+    console.log(`[Frame] ðŸ” Verifica ordine:`, orderCheck);
     
     // Carica i frame su storage e registra nella mappa
     showNotification(`Loading ${sortedFiles.length} frame(s) from Resources...`, 'info');
@@ -6130,7 +6391,7 @@ window.selectRoom = function(roomId) {
           
           return { frameData, index: actualFrameIndex, assetId: resource.assetId };
         } catch (error) {
-          console.error(`[Frame] ❌ Errore frame ${resource.displayName || resource.name}:`, error);
+          console.error(`[Frame] âŒ Errore frame ${resource.displayName || resource.name}:`, error);
           return { frameData: null, index: existingFrameCount + index, error: error.message };
         }
       });
@@ -6147,10 +6408,10 @@ window.selectRoom = function(roomId) {
         if (frameData) {
           dirData.frames.push(frameData);
           successCount++;
-          console.log(`[Frame] ✅ Frame ${index} caricato: ${assetId}`);
+          console.log(`[Frame] âœ… Frame ${index} caricato: ${assetId}`);
         } else {
           errorCount++;
-          console.error(`[Frame] ❌ Frame ${index} fallito: ${error || 'Unknown error'}`);
+          console.error(`[Frame] âŒ Frame ${index} fallito: ${error || 'Unknown error'}`);
         }
       });
       
@@ -6158,7 +6419,7 @@ window.selectRoom = function(roomId) {
       characterFrames.set(who, charData);
       
       if (successCount > 0) {
-        showNotification(`✅ ${successCount} frame(s) uploaded and saved to storage`, 'success');
+        showNotification(`âœ… ${successCount} frame(s) uploaded and saved to storage`, 'success');
         updateDirectionInfo();
         // Initialize pivot if it doesn't exist
         initializePivotForCharacter(charData, direction);
@@ -6166,11 +6427,11 @@ window.selectRoom = function(roomId) {
       }
       
       if (errorCount > 0) {
-        showNotification(`⚠️ ${errorCount} frame(s) failed to upload`, 'warning');
+        showNotification(`âš ï¸ ${errorCount} frame(s) failed to upload`, 'warning');
       }
       
     } catch (error) {
-      console.error('[Frame] ❌ Errore durante upload frame:', error);
+      console.error('[Frame] âŒ Errore durante upload frame:', error);
       showNotification('Error uploading frames', 'error');
     }
   };
@@ -6253,7 +6514,7 @@ window.selectRoom = function(roomId) {
 
     const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
     if (confirm(`Clear all frames for animation "${animLabel}"?`)) {
-      // Ferma la preview se è attiva
+      // Ferma la preview se Ã¨ attiva
       stopCharacterPreview();
 
       const charData = characterFrames.get(who);
@@ -6287,6 +6548,659 @@ window.selectRoom = function(roomId) {
       showNotification(`Frames cleared for ${who} (${animLabel})`, 'success');
     }
   };
+
+  // ============================================
+  // Room Animations (catalog + room placements)
+  // ============================================
+
+  function notifyEditorProjectChanged() {
+    if (typeof window.markAmiantoProjectDirty === 'function') {
+      window.markAmiantoProjectDirty();
+    }
+  }
+
+  /**
+   * Prompt testuale compatibile con Electron (window.prompt non è supportato nel renderer).
+   * @returns {Promise<string|null>}
+   */
+  function showInputPrompt({ title = 'Input', message = '', defaultValue = '', okLabel = 'OK' } = {}) {
+    if (!window.AMIANTO_IS_ELECTRON && typeof window.prompt === 'function') {
+      const result = window.prompt(message || title, defaultValue);
+      return Promise.resolve(result === null ? null : result);
+    }
+
+    return new Promise((resolve) => {
+      const modalId = `amianto-input-prompt-${Date.now()}`;
+      const inputId = `${modalId}-field`;
+      const modal = document.createElement('div');
+      modal.className = 'modal fade';
+      modal.id = modalId;
+      modal.setAttribute('tabindex', '-1');
+      modal.innerHTML = `
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content bg-dark text-light border-secondary">
+            <div class="modal-header border-secondary">
+              <h5 class="modal-title">${title}</h5>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              ${message ? `<label class="form-label text-light" for="${inputId}">${message}</label>` : ''}
+              <input type="text" class="form-control bg-secondary text-light border-secondary" id="${inputId}" value="">
+            </div>
+            <div class="modal-footer border-secondary">
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-success btn-sm" id="${modalId}-ok">${okLabel}</button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      const input = modal.querySelector(`#${inputId}`);
+      const okBtn = modal.querySelector(`#${modalId}-ok`);
+      if (input) input.value = defaultValue;
+
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+          const inst = bootstrap.Modal.getInstance(modal);
+          if (inst) inst.hide();
+        } else {
+          modal.remove();
+        }
+      };
+
+      modal.addEventListener('hidden.bs.modal', () => {
+        if (!settled) finish(null);
+        modal.remove();
+      });
+
+      okBtn.addEventListener('click', () => finish(input ? input.value : ''));
+      if (input) {
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            finish(input.value);
+          }
+        });
+      }
+
+      if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        setTimeout(() => {
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        }, 150);
+      } else {
+        finish(window.prompt(message || title, defaultValue));
+      }
+    });
+  }
+
+  function createEmptyRoomAnimationData(name) {
+    return {
+      id: uid('anim'),
+      name: name || 'Animation',
+      fps: 8,
+      loop: true,
+      layer: 'background',
+      frames: []
+    };
+  }
+
+  function extractNumberFromFileName(fileName) {
+    const nameWithoutExt = String(fileName || '').replace(/\.[^.]*$/, '');
+    const numberMatches = [];
+    let match;
+    const numberRegex = /\d+/g;
+    while ((match = numberRegex.exec(nameWithoutExt)) !== null) {
+      numberMatches.push({
+        value: parseInt(match[0], 10),
+        original: match[0],
+        position: match.index,
+        length: match[0].length
+      });
+    }
+    if (numberMatches.length === 0) return Infinity;
+    if (numberMatches.length === 1) return numberMatches[0].value;
+    const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
+    if (paddedNumbers.length > 0) {
+      paddedNumbers.sort((a, b) => {
+        if (b.length !== a.length) return b.length - a.length;
+        return b.position - a.position;
+      });
+      return paddedNumbers[0].value;
+    }
+    return numberMatches[numberMatches.length - 1].value;
+  }
+
+  function selectRoomAnimationFromList(animId) {
+    selectedRoomAnimationId = animId;
+    const sel = document.getElementById('room-animation-selector');
+    if (sel) sel.value = animId || '';
+    onRoomAnimationSelect();
+    refreshRoomAnimationsCatalogListUI();
+  }
+
+  window.onRoomAnimationSelect = function() {
+    const sel = document.getElementById('room-animation-selector');
+    selectedRoomAnimationId = sel && sel.value ? sel.value : null;
+    const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    const fpsInput = document.getElementById('room-animation-fps');
+    const layerSel = document.getElementById('room-animation-layer');
+    const loopChk = document.getElementById('room-animation-loop');
+    if (fpsInput) fpsInput.value = animDef ? (Number(animDef.fps) || 8) : 8;
+    if (layerSel) layerSel.value = animDef && animDef.layer === 'foreground' ? 'foreground' : 'background';
+    if (loopChk) loopChk.checked = animDef ? animDef.loop !== false : true;
+    stopRoomAnimationPreview();
+    roomAnimationPreviewIndex = 0;
+    refreshRoomAnimationFramesPreview();
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    redraw();
+  };
+
+  function refreshRoomAnimationSelector() {
+    const sel = document.getElementById('room-animation-selector');
+    if (!sel) return;
+    const previous = sel.value;
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Select animation...';
+    sel.appendChild(opt);
+    const ids = [];
+    roomAnimationsCatalog.forEach((_, id) => ids.push(id));
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = anim ? anim.name : id;
+      sel.appendChild(o);
+    });
+    if (previous && ids.includes(previous)) sel.value = previous;
+    else if (selectedRoomAnimationId && ids.includes(selectedRoomAnimationId)) sel.value = selectedRoomAnimationId;
+  }
+
+  function refreshRoomAnimationPickerUI() {
+    const picker = document.getElementById('room-animation-picker');
+    if (!picker) return;
+    const previous = picker.value;
+    picker.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Select animation...';
+    picker.appendChild(opt);
+    const ids = [];
+    roomAnimationsCatalog.forEach((anim, id) => {
+      if (anim && anim.frames && anim.frames.length > 0) ids.push(id);
+    });
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = anim ? anim.name : id;
+      picker.appendChild(o);
+    });
+    if (previous && ids.includes(previous)) picker.value = previous;
+  }
+
+  function refreshRoomAnimationsCatalogListUI() {
+    const list = document.getElementById('room-animations-catalog-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const ids = [];
+    roomAnimationsCatalog.forEach((_, id) => ids.push(id));
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      if (!anim) return;
+      const isSelected = id === selectedRoomAnimationId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      const frameCount = anim.frames ? anim.frames.length : 0;
+      const info = document.createElement('div');
+      info.innerHTML = `<strong>${anim.name}</strong><br><small class="text-muted">${frameCount} frame${frameCount !== 1 ? 's' : ''} | ${anim.layer || 'background'}</small>`;
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectRoomAnimationFromList(id));
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'btn btn-sm btn-outline-light me-1';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', () => window.renameRoomAnimation(id));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => window.removeRoomAnimation(id));
+      controls.appendChild(selectBtn);
+      controls.appendChild(renameBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      list.appendChild(el);
+    });
+    refreshRoomAnimationSelector();
+    refreshRoomAnimationPickerUI();
+  }
+
+  function refreshRoomAnimationFramesPreview() {
+    const container = document.getElementById('room-animation-frames-preview');
+    if (!container) return;
+    const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!animDef || !animDef.frames || !animDef.frames.length) {
+      container.innerHTML = '<div class="text-muted">No frames loaded</div>';
+      return;
+    }
+    container.innerHTML = '';
+    animDef.frames.forEach((frameData, index) => {
+      const frameItem = document.createElement('div');
+      frameItem.className = 'frame-item';
+      const img = document.createElement('img');
+      if (frameData && frameData.img) {
+        img.src = frameData.img.src || frameData.img;
+      }
+      const frameLabel = `Frame ${index + 1}`;
+      img.alt = frameLabel;
+
+      const frameNumber = document.createElement('div');
+      frameNumber.className = 'frame-number';
+      frameNumber.textContent = index + 1;
+
+      const frameFileName = document.createElement('div');
+      frameFileName.className = 'frame-filename';
+      frameFileName.textContent = frameLabel;
+      if (frameData && frameData.name) {
+        frameFileName.title = frameData.name;
+      }
+
+      frameItem.appendChild(img);
+      frameItem.appendChild(frameNumber);
+      frameItem.appendChild(frameFileName);
+      container.appendChild(frameItem);
+    });
+  }
+
+  window.addRoomAnimation = async function() {
+    const name = (await showInputPrompt({
+      title: 'New Animation',
+      message: 'Animation name:',
+      defaultValue: ''
+    }) || '').trim();
+    if (!name) return;
+    for (const anim of roomAnimationsCatalog.values()) {
+      if (anim.name === name) {
+        showNotification('Animation name already in use', 'warning');
+        return;
+      }
+    }
+    const animData = createEmptyRoomAnimationData(name);
+    roomAnimationsCatalog.set(animData.id, animData);
+    selectRoomAnimationFromList(animData.id);
+    showNotification(`Animation "${name}" added`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.renameRoomAnimation = async function(animId) {
+    const anim = getRoomAnimationDef(animId);
+    if (!anim) return;
+    const newName = (await showInputPrompt({
+      title: 'Rename Animation',
+      message: 'New animation name:',
+      defaultValue: anim.name
+    }) || '').trim();
+    if (!newName || newName === anim.name) return;
+    for (const [id, other] of roomAnimationsCatalog.entries()) {
+      if (id !== animId && other.name === newName) {
+        showNotification('Animation name already in use', 'warning');
+        return;
+      }
+    }
+    anim.name = newName;
+    refreshRoomAnimationsCatalogListUI();
+    showNotification(`Animation renamed to "${newName}"`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.removeRoomAnimation = function(animId) {
+    const anim = getRoomAnimationDef(animId);
+    if (!anim) return;
+    if (!confirm(`Delete animation "${anim.name}"? Room placements using it will also be removed.`)) return;
+    stopRoomAnimationPreview();
+    roomAnimationsCatalog.delete(animId);
+    rooms.forEach((room) => {
+      if (Array.isArray(room.animationInstances)) {
+        room.animationInstances = room.animationInstances.filter(inst => inst.animationId !== animId);
+      }
+    });
+    if (selectedRoomAnimationId === animId) {
+      selectedRoomAnimationId = roomAnimationsCatalog.keys().next().value || null;
+    }
+    bindRoomRefs();
+    refreshRoomAnimationInstancesListUI();
+    refreshRoomAnimationsCatalogListUI();
+    onRoomAnimationSelect();
+    redraw();
+    showNotification(`Animation "${anim.name}" deleted`, 'info');
+    notifyEditorProjectChanged();
+  };
+
+  window.updateRoomAnimationFPS = function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim) { showNotification('Select an animation first', 'warning'); return; }
+    const fpsInput = document.getElementById('room-animation-fps');
+    const fps = fpsInput ? Number(fpsInput.value) : 8;
+    anim.fps = Math.max(1, Math.min(60, fps || 8));
+    if (fpsInput) fpsInput.value = anim.fps;
+    showNotification(`FPS updated to ${anim.fps}`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.uploadRoomAnimationFrames = async function() {
+    if (!selectedRoomAnimationId) {
+      showNotification('Select an animation first', 'warning');
+      return;
+    }
+    const anim = getRoomAnimationDef(selectedRoomAnimationId);
+    if (!anim) return;
+
+    const resources = await pickResourceImage({
+      title: `Animation frames — ${anim.name}`,
+      multiple: true,
+      hint: 'Click multiple images to select them. Frame order follows numbers in the file name.'
+    });
+    if (!resources || !resources.length) return;
+    if (!currentUser || !getActiveProjectId()) {
+      showNotification('Open a project first', 'warning');
+      return;
+    }
+
+    const existingFrameCount = anim.frames ? anim.frames.length : 0;
+    const sortedFiles = [...resources].sort((a, b) => {
+      const numA = extractNumberFromFileName(a.displayName || a.fileName || a.name);
+      const numB = extractNumberFromFileName(b.displayName || b.fileName || b.name);
+      if (numA !== Infinity && numB !== Infinity) return numA - numB;
+      if (numA !== Infinity) return -1;
+      if (numB !== Infinity) return 1;
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name);
+    });
+
+    showNotification(`Loading ${sortedFiles.length} frame(s)...`, 'info');
+    try {
+      for (let index = 0; index < sortedFiles.length; index++) {
+        const resource = sortedFiles[index];
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) continue;
+        anim.frames.push({
+          img,
+          name: resource.displayName || resource.fileName || resource.name,
+          orderIndex: existingFrameCount + index
+        });
+        if (resource.assetId) {
+          imageAssetMap.set(img, {
+            assetId: resource.assetId,
+            type: 'animation',
+            projectId: getActiveProjectId()
+          });
+        }
+      }
+      roomAnimationsCatalog.set(anim.id, anim);
+      refreshRoomAnimationFramesPreview();
+      refreshRoomAnimationsCatalogListUI();
+      refreshRoomAnimationPickerUI();
+      redraw();
+      showNotification(`${sortedFiles.length} frame(s) added`, 'success');
+      notifyEditorProjectChanged();
+    } catch (error) {
+      console.error('[Animation] Frame upload error:', error);
+      showNotification('Error uploading frames', 'error');
+    }
+  };
+
+  const btnRoomAnimationFramesBrowse = document.getElementById('btn-room-animation-frames-browse');
+  if (btnRoomAnimationFramesBrowse) {
+    btnRoomAnimationFramesBrowse.addEventListener('click', () => window.uploadRoomAnimationFrames());
+  }
+
+  const roomAnimationLayerSel = document.getElementById('room-animation-layer');
+  if (roomAnimationLayerSel) {
+    roomAnimationLayerSel.addEventListener('change', () => {
+      const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+      if (!anim) return;
+      anim.layer = roomAnimationLayerSel.value === 'foreground' ? 'foreground' : 'background';
+      refreshRoomAnimationsCatalogListUI();
+      notifyEditorProjectChanged();
+    });
+  }
+
+  const roomAnimationLoopChk = document.getElementById('room-animation-loop');
+  if (roomAnimationLoopChk) {
+    roomAnimationLoopChk.addEventListener('change', () => {
+      const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+      if (!anim) return;
+      anim.loop = !!roomAnimationLoopChk.checked;
+      notifyEditorProjectChanged();
+    });
+  }
+
+  window.startRoomAnimationPreview = function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim || !anim.frames || !anim.frames.length) {
+      showNotification('No frames loaded for this animation', 'warning');
+      return;
+    }
+    stopRoomAnimationPreview();
+    roomAnimationPreviewIndex = 0;
+    const fps = Number(anim.fps) || 8;
+    const interval = Math.max(1, Math.round(1000 / fps));
+    redraw();
+    roomAnimationPreviewTimer = setInterval(() => {
+      roomAnimationPreviewIndex = (roomAnimationPreviewIndex + 1) % anim.frames.length;
+      redraw();
+    }, interval);
+    showNotification(`Preview started: ${anim.name} (${anim.frames.length} frames @ ${fps} FPS)`, 'info');
+  };
+
+  window.stopRoomAnimationPreview = function() {
+    if (roomAnimationPreviewTimer) {
+      clearInterval(roomAnimationPreviewTimer);
+      roomAnimationPreviewTimer = null;
+      showNotification('Preview stopped', 'info');
+    }
+  };
+
+  window.clearRoomAnimationFrames = function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim) { showNotification('Select an animation first', 'warning'); return; }
+    if (!confirm(`Clear all frames for "${anim.name}"?`)) return;
+    stopRoomAnimationPreview();
+    anim.frames = [];
+    roomAnimationPreviewIndex = 0;
+    refreshRoomAnimationFramesPreview();
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    redraw();
+    showNotification('Frames cleared', 'success');
+    notifyEditorProjectChanged();
+  };
+
+  function selectRoomAnimationInstance(instanceId) {
+    selectedAnimationInstanceId = instanceId;
+    refreshRoomAnimationInstancesListUI();
+    redraw();
+  }
+
+  function createRoomAnimationInstanceListItem(inst) {
+    const animDef = getRoomAnimationDef(inst.animationId);
+    const isSelected = inst.id === selectedAnimationInstanceId;
+    const item = document.createElement('div');
+    item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+    if (isSelected) item.classList.add('border', 'border-info');
+    item.dataset.animationInstanceId = inst.id;
+    const info = document.createElement('div');
+    const animName = animDef ? animDef.name : inst.animationId;
+    info.innerHTML = `<strong>${inst.name || animName}</strong><br><small class="text-muted">${inst.layer || 'background'} layer</small><br><small class="animation-instance-position text-muted">Position: ${Math.round(inst.x || 0)}, ${Math.round(inst.y || 0)}</small>`;
+    const visibleWrap = document.createElement('div');
+    visibleWrap.className = 'form-check form-check-inline small mt-1';
+    const visibleChk = document.createElement('input');
+    visibleChk.type = 'checkbox';
+    visibleChk.className = 'form-check-input';
+    visibleChk.checked = inst.visible !== false;
+    visibleChk.addEventListener('change', () => {
+      inst.visible = visibleChk.checked;
+      const r = rooms.get(currentRoomId);
+      if (r) r.animationInstances = animationInstances;
+      redraw();
+    });
+    const visibleLbl = document.createElement('label');
+    visibleLbl.className = 'form-check-label text-light';
+    visibleLbl.textContent = 'Visible';
+    visibleWrap.appendChild(visibleChk);
+    visibleWrap.appendChild(visibleLbl);
+    info.appendChild(visibleWrap);
+    const controls = document.createElement('div');
+    const selectBtn = document.createElement('button');
+    selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+    selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+    selectBtn.addEventListener('click', () => selectRoomAnimationInstance(inst.id));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-sm btn-outline-danger';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => window.removeRoomAnimationInstance(inst.id));
+    controls.appendChild(selectBtn);
+    controls.appendChild(delBtn);
+    item.appendChild(info);
+    item.appendChild(controls);
+    return item;
+  }
+
+  function refreshRoomAnimationInstancesListUI() {
+    const list = document.getElementById('room-animations-list');
+    if (!list) return;
+    list.innerHTML = '';
+    animationInstances.forEach((inst) => {
+      if (!inst.id) inst.id = uid('ainst');
+      list.appendChild(createRoomAnimationInstanceListItem(inst));
+    });
+  }
+
+  window.addRoomAnimationInstance = function() {
+    const picker = document.getElementById('room-animation-picker');
+    const animationId = picker ? picker.value : '';
+    if (!animationId) {
+      showNotification('Select an animation with frames first', 'warning');
+      return;
+    }
+    const animDef = getRoomAnimationDef(animationId);
+    if (!animDef || !animDef.frames || !animDef.frames.length) {
+      showNotification('Selected animation has no frames', 'warning');
+      return;
+    }
+    const instance = {
+      id: uid('ainst'),
+      animationId,
+      name: `${animDef.name}_${Date.now()}`,
+      x: 100 + Math.random() * 200,
+      y: 100 + Math.random() * 200,
+      layer: animDef.layer === 'foreground' ? 'foreground' : 'background',
+      visible: true,
+      autoPlay: false
+    };
+    animationInstances.push(instance);
+    const r = rooms.get(currentRoomId);
+    if (r) r.animationInstances = animationInstances;
+    selectedAnimationInstanceId = instance.id;
+    refreshRoomAnimationInstancesListUI();
+    redraw();
+    showNotification(`Animation "${animDef.name}" placed in room`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.removeRoomAnimationInstance = function(instanceId) {
+    if (!confirm('Delete this animation placement from the room?')) return;
+    animationInstances = animationInstances.filter(inst => inst.id !== instanceId);
+    const r = rooms.get(currentRoomId);
+    if (r) r.animationInstances = animationInstances;
+    selectedAnimationInstanceId = animationInstances[0] ? animationInstances[0].id : null;
+    refreshRoomAnimationInstancesListUI();
+    redraw();
+    showNotification('Animation placement removed', 'info');
+    notifyEditorProjectChanged();
+  };
+
+  function serializeRoomAnimationsCatalog() {
+    const result = [];
+    roomAnimationsCatalog.forEach((anim) => {
+      result.push({
+        id: anim.id,
+        name: anim.name,
+        fps: Number(anim.fps) || 8,
+        loop: anim.loop !== false,
+        layer: anim.layer === 'foreground' ? 'foreground' : 'background',
+        frames: Array.isArray(anim.frames) ? anim.frames.map(fr => {
+          if (fr && fr.img) return serializeImage(fr.img);
+          return null;
+        }).filter(Boolean) : []
+      });
+    });
+    return result;
+  }
+
+  async function loadRoomAnimationsCatalogFromData(animationsData, projectId) {
+    roomAnimationsCatalog.clear();
+    if (!Array.isArray(animationsData)) return;
+    for (const src of animationsData) {
+      if (!src || !src.id) continue;
+      const frames = [];
+      if (Array.isArray(src.frames)) {
+        for (let i = 0; i < src.frames.length; i++) {
+          const frameRef = src.frames[i];
+          if (!frameRef) continue;
+          const img = await createImageFromDataUrl(frameRef, projectId);
+          if (img) {
+            frames.push({ img, name: `frame_${i + 1}`, orderIndex: i });
+            if (typeof frameRef === 'string' && frameRef.startsWith('asset:')) {
+              imageAssetMap.set(img, { assetId: frameRef.replace('asset:', ''), type: 'animation', projectId });
+            }
+          }
+        }
+      }
+      roomAnimationsCatalog.set(src.id, {
+        id: src.id,
+        name: src.name || src.id,
+        fps: Number(src.fps) || 8,
+        loop: src.loop !== false,
+        layer: src.layer === 'foreground' ? 'foreground' : 'background',
+        frames
+      });
+    }
+    selectedRoomAnimationId = roomAnimationsCatalog.keys().next().value || null;
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    onRoomAnimationSelect();
+  }
 
   // Character Pivot Management - Automatic initialization
   function initializePivotForCharacter(charData, direction) {
@@ -6370,13 +7284,13 @@ window.selectRoom = function(roomId) {
   };
 
   // Helper function per ottenere l'immagine di un frame e se deve essere specchiata
-  // Gestisce sia frame normali che frame specchiati (con proprietà mirror)
+  // Gestisce sia frame normali che frame specchiati (con proprietÃ  mirror)
   function getFrameImage(frame, directionsStore, frameIndex, direction) {
     if (!frame || !directionsStore) {
       return { img: null, mirrored: false };
     }
 
-    // Se il frame è un riferimento specchiato
+    // Se il frame Ã¨ un riferimento specchiato
     if (frame.mirror && typeof frame.mirror === 'string') {
       const sourceDirection = frame.mirror;
       const sourceDirData = directionsStore[sourceDirection];
@@ -6399,7 +7313,7 @@ window.selectRoom = function(roomId) {
     // Frame normale: estrai l'immagine (gestisce entrambi i formati)
     let frameImg = null;
     if (frame.img && typeof frame.img === 'object') {
-      // Formato nuovo: oggetto con proprietà img
+      // Formato nuovo: oggetto con proprietÃ  img
       frameImg = frame.img;
     } else if (frame.src || (frame.width && frame.height)) {
       // Formato salvato: oggetto Image direttamente
@@ -6538,7 +7452,7 @@ window.selectRoom = function(roomId) {
     const container = document.getElementById('frames-preview');
     if (!container) return;
     
-    // Verifica se il toggle è su "mirror" - in quel caso non mostrare i thumbnails
+    // Verifica se il toggle Ã¨ su "mirror" - in quel caso non mostrare i thumbnails
     const mirrorRadio = document.getElementById('frame-source-mirror');
     if (mirrorRadio && mirrorRadio.checked) {
       container.innerHTML = '<div class="text-muted">Thumbnails hidden when using mirror mode</div>';
@@ -6584,7 +7498,7 @@ window.selectRoom = function(roomId) {
         img.src = frameResult.img.src || frameResult.img;
         isMirrored = frameResult.mirrored;
         
-        // Se è specchiato, aggiungi un indicatore nel nome
+        // Se Ã¨ specchiato, aggiungi un indicatore nel nome
         if (isMirrored) {
           frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror})`;
         }
@@ -6592,12 +7506,12 @@ window.selectRoom = function(roomId) {
         // Frame specchiato ma non riuscito a risolvere l'immagine
         frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror} - source not found)`;
         // Usa un'immagine placeholder o salta questo frame
-        console.warn(`Frame ${index + 1} è specchiato ma la direzione sorgente non è stata trovata`);
+        console.warn(`Frame ${index + 1} Ã¨ specchiato ma la direzione sorgente non Ã¨ stata trovata`);
         return; // Salta questo frame se non possiamo risolverlo
       } else {
-        // Gestisce frame normali (compatibilità con codice precedente)
+        // Gestisce frame normali (compatibilitÃ  con codice precedente)
         if (frameData && typeof frameData === 'object' && frameData.img) {
-          // Formato nuovo: oggetto con proprietà img
+          // Formato nuovo: oggetto con proprietÃ  img
           img.src = frameData.img.src || frameData.img;
           if (frameData.name) {
             frameName = frameData.name;
@@ -6624,13 +7538,13 @@ window.selectRoom = function(roomId) {
           }
         } else {
           console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
-          return; // Salta questo frame se non è valido
+          return; // Salta questo frame se non Ã¨ valido
         }
       }
       
       img.alt = frameName;
       
-      // Se è specchiato, applica CSS transform per mostrarlo specchiato nella preview
+      // Se Ã¨ specchiato, applica CSS transform per mostrarlo specchiato nella preview
       if (isMirrored) {
         img.style.transform = 'scaleX(-1)';
       }
@@ -6651,7 +7565,7 @@ window.selectRoom = function(roomId) {
       
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'frame-delete';
-      deleteBtn.innerHTML = '×';
+      deleteBtn.innerHTML = 'Ã—';
       deleteBtn.title = 'Delete frame';
       deleteBtn.onclick = (e) => {
         e.stopPropagation();
@@ -6684,7 +7598,7 @@ window.selectRoom = function(roomId) {
     if (confirm(`Delete frame ${frameIndex + 1}?`)) {
       const frameToDelete = activeDirections[currentDirection].frames[frameIndex];
       
-      // Se è un frame specchiato, non eliminare asset (non ne ha uno)
+      // Se Ã¨ un frame specchiato, non eliminare asset (non ne ha uno)
       if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.mirror) {
         activeDirections[currentDirection].frames.splice(frameIndex, 1);
         characterFrames.set(who, charData);
@@ -6803,7 +7717,7 @@ window.selectRoom = function(roomId) {
     return defaultKey;
   }
 
-  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id → Hotspot:id). */
+  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id â†’ Hotspot:id). */
   function migrateLegacyScriptKey(key) {
     const k = String(key || '');
     const m = k.match(/^Hotspot:hotspot:(.+)$/);
@@ -7045,7 +7959,7 @@ window.selectRoom = function(roomId) {
     attachAutoHint(largeCodeMirrorEditor, 'large');
   }
 
-  // CodeMirror autocomplete — keep in sync with JS/runtime.js:
+  // CodeMirror autocomplete â€” keep in sync with JS/runtime.js:
   // getScriptApiBindings() + SUPPORTED_SCRIPT_HANDLERS (on_*)
   const GAME_API_COMPLETIONS = [
     'Game', 'GameAPI',
@@ -7053,7 +7967,9 @@ window.selectRoom = function(roomId) {
     'GameAPI.print', 'GameAPI.error', 'GameAPI.getVariable', 'GameAPI.setVariable',
     'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click',
     'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with',
-    'print', 'log', 'show_message', 'showText', 'show_dialogue', 'show_dialogue_text', 'end_dialogue',
+    'print', 'log', 'show_message', 'showText',     'show_dialogue', 'show_dialogue_text', 'end_dialogue',
+    'play_music', 'play_sound', 'stop_music', 'stop_sound',
+    'play_animation', 'stop_animation',
     'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
     'load_room', 'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
     'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
@@ -7139,7 +8055,7 @@ window.selectRoom = function(roomId) {
       { id: 'on_inventory_use_with', label: 'onInventoryUseWith' }
     ],
     Room: [
-      // Anche disponibile a livello globale; mantenuto qui per comodità UI
+      // Anche disponibile a livello globale; mantenuto qui per comoditÃ  UI
       { id: 'on_room_change', label: 'onRoomChange' }
     ],
     Object: [{ id: 'on_object_click', label: 'onClick' }],
@@ -7379,7 +8295,7 @@ window.selectRoom = function(roomId) {
       // Salva il contenuto dello script corrente prima di aprire un nuovo script
       saveCurrentScriptIfNeeded();
       
-      // Imposta currentScriptName PRIMA di qualsiasi controllo, così deleteScript funziona anche se l'hotspot non viene trovato
+      // Imposta currentScriptName PRIMA di qualsiasi controllo, cosÃ¬ deleteScript funziona anche se l'hotspot non viene trovato
       const hotspotKey = `Hotspot:${hotspotId}`;
       currentScriptName = hotspotKey;
       
@@ -7528,7 +8444,7 @@ window.selectRoom = function(roomId) {
           type: 'room',
           scope: 'Room',
           target: roomId,
-          label: `📋 Room: ${room.name || roomId}`,
+          label: `ðŸ“‹ Room: ${room.name || roomId}`,
           handlers: handlerNames,
           hasContent: roomContent.trim().length > 0
         });
@@ -7545,7 +8461,7 @@ window.selectRoom = function(roomId) {
               type: 'object',
               scope: 'Object',
               target: obj.id,
-              label: `📦 Object: ${obj.name || obj.id}`,
+              label: `ðŸ“¦ Object: ${obj.name || obj.id}`,
               handlers: handlerNames,
               hasContent: objContent.trim().length > 0
             });
@@ -7565,7 +8481,7 @@ window.selectRoom = function(roomId) {
               scope: 'Hotspot',
               target: hotspot.id,
               roomId: roomId,
-              label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
+              label: `ðŸ–±ï¸ Hotspot: ${hotspot.name || hotspot.id}`,
               handlers: handlerNames,
               hasContent: hotspotCode.trim().length > 0
             });
@@ -7594,7 +8510,7 @@ window.selectRoom = function(roomId) {
       const roomGroup = document.createElement('div');
       roomGroup.className = 'mb-3';
       const h = document.createElement('div');
-      h.textContent = `🏠 ${roomData.roomName}`;
+      h.textContent = `ðŸ  ${roomData.roomName}`;
       h.style.color = '#39ff14';
       h.style.fontWeight = '600';
       h.style.fontSize = '14px';
@@ -7636,7 +8552,7 @@ window.selectRoom = function(roomId) {
         inventoryScriptItems.push({
           scope: 'Inventory',
           target: item.name,
-          label: `🎒 Item: ${item.name}`,
+          label: `ðŸŽ’ Item: ${item.name}`,
           handlers: handlerNames,
           hasContent: content.trim().length > 0
         });
@@ -7682,7 +8598,7 @@ window.selectRoom = function(roomId) {
         characterScriptItems.push({
           scope: 'Character',
           target: charName,
-          label: `🧍 Character: ${charName}`,
+          label: `ðŸ§ Character: ${charName}`,
           handlers: handlerNames,
           hasContent: content.trim().length > 0
         });
@@ -7785,7 +8701,7 @@ window.selectRoom = function(roomId) {
         if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
       }
       
-      // Se è uno script oggetto, mantieni l'attachment in objectScripts
+      // Se Ã¨ uno script oggetto, mantieni l'attachment in objectScripts
       if (currentKey.startsWith('Object:')) {
         const objId = currentKey.replace('Object:', '');
         // Verifica che l'oggetto esista
@@ -7831,12 +8747,12 @@ window.selectRoom = function(roomId) {
     // Se lo script non esiste affatto, crealo vuoto
     if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
       const hasAttachment = hasEditorScriptLink(scope, target);
-      // Per oggetti/inventario/personaggi, permetti sempre di creare uno script vuoto (l'attachment verrà creato al salvataggio)
+      // Per oggetti/inventario/personaggi, permetti sempre di creare uno script vuoto (l'attachment verrÃ  creato al salvataggio)
       if (!hasAttachment && scope !== 'Object' && scope !== 'Inventory' && scope !== 'Character') {
         showNotification('Script not found', 'warning');
         return;
       }
-      // Crea lo script vuoto se ha un attachment o se è un oggetto/inventario/personaggio
+      // Crea lo script vuoto se ha un attachment o se Ã¨ un oggetto/inventario/personaggio
       content = '';
       jsScripts.set(scriptKeyToUse, content);
       try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
@@ -7862,7 +8778,7 @@ window.selectRoom = function(roomId) {
           if (typeof largeCodeMirrorEditor.refresh === 'function') {
             largeCodeMirrorEditor.refresh();
           }
-          // Forza il focus se l'editor è visibile
+          // Forza il focus se l'editor Ã¨ visibile
           const editorContainer = document.getElementById('codeEditorContainer');
           if (editorContainer && editorContainer.style.display !== 'none') {
             largeCodeMirrorEditor.focus();
@@ -8021,7 +8937,7 @@ window.selectRoom = function(roomId) {
       targetSel.disabled = false;
     }
     
-    showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
+    showNotification(`Script created: ${scope} â†’ ${target} (${eventDef.label})`, 'success');
   }
 
   // ============================================
@@ -8066,7 +8982,7 @@ window.selectRoom = function(roomId) {
       return undefined;
     }
     if (!(key in _gameState)) {
-      // Se la variabile è definita ma non ancora impostata, restituisci il valore iniziale
+      // Se la variabile Ã¨ definita ma non ancora impostata, restituisci il valore iniziale
       const def = gameVariableDefinitions.find(v => v.name === key);
       if (def && 'initialValue' in def) {
         return def.initialValue;
@@ -8092,7 +9008,7 @@ window.selectRoom = function(roomId) {
       Game.setVar(key, !current);
       return true;
     } else {
-      // Se non è boolean, inizializza a true
+      // Se non Ã¨ boolean, inizializza a true
       Game.setVar(key, true);
       return true;
     }
@@ -8104,7 +9020,7 @@ window.selectRoom = function(roomId) {
   };
 
   // API opzionale per mostrare testo nel gioco (usata da print(..., { showInGame: true }))
-  // L'implementazione concreta nel runtime può sovrascrivere questo metodo.
+  // L'implementazione concreta nel runtime puÃ² sovrascrivere questo metodo.
   window.Game.showText = window.Game.showText || function(text) {
     // Di default, in editor mostriamo una notifica non invasiva
     try {
@@ -8154,7 +9070,7 @@ window.selectRoom = function(roomId) {
       return varExists;
     }
     
-    // Se la variabile non esiste e l'operatore non è "exists", fallisce
+    // Se la variabile non esiste e l'operatore non Ã¨ "exists", fallisce
     if (!varExists) {
       console.warn(`[Condition.evaluate] Variable "${varName}" does not exist`);
       return false;
@@ -8190,7 +9106,7 @@ window.selectRoom = function(roomId) {
   };
 
   // Helper per serializzare valori nello Script Log (ScriptLogService)
-  // Deve essere standalone perché viene usata in contesti diversi (sandbox)
+  // Deve essere standalone perchÃ© viene usata in contesti diversi (sandbox)
   function serializeValue(value) {
     if (value === null) return 'null';
     if (value === undefined) return 'undefined';
@@ -8252,7 +9168,7 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Script handler non più supportato in modalità iframe
+    // Script handler non piÃ¹ supportato in modalitÃ  iframe
     // Gli script vengono eseguiti nel runtime standalone
     addDebugMessage(`[Script] Handler "${handlerName}" - scripts run in the standalone runtime`, 'info');
   }
@@ -8296,13 +9212,13 @@ window.selectRoom = function(roomId) {
 
     const oldContent = getScriptContent(key);
     
-    // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
+    // âš ï¸ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se Ã¨ uno script hotspot
     if (key.startsWith('Hotspot:')) {
       const hotspotId = key.replace('Hotspot:', '');
       syncHotspotScriptToAllRooms(hotspotId, content, key);
     }
     
-    // ⚠️ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se è uno script oggetto
+    // âš ï¸ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se Ã¨ uno script oggetto
     if (key.startsWith('Object:')) {
       const objId = key.replace('Object:', '');
       // Verifica che l'oggetto esista in almeno una stanza
@@ -8357,7 +9273,7 @@ window.selectRoom = function(roomId) {
         if (linked !== key) return false;
         syncHotspotScriptToAllRooms(hotspot.id, content, key);
         syncedHotspotIds.add(hotspot.id);
-        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} ← "${key}" [${source}]`);
+        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} â† "${key}" [${source}]`);
         return true;
       };
       rooms.forEach((room, roomId) => {
@@ -8393,12 +9309,12 @@ window.selectRoom = function(roomId) {
     }
     
     // Per eseguire script, apri il runtime in una nuova finestra
-    // Il runtime caricherà automaticamente il progetto da localStorage
+    // Il runtime caricherÃ  automaticamente il progetto da localStorage
     const jsonString = window.serializeProjectToJsonString(true);
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     
     // Apri runtime in nuova finestra
-    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeUrl = getRuntimePageUrl();
     const runtimeWindow = window.open(
       runtimeUrl,
       'AmiantoRuntime',
@@ -8600,7 +9516,7 @@ window.selectRoom = function(roomId) {
   };
 
   window.stopScript = function() {
-    // Non serve più fermare script singoli, ma possiamo pulire lo stato se necessario
+    // Non serve piÃ¹ fermare script singoli, ma possiamo pulire lo stato se necessario
     showNotification('Script execution stopped', 'info');
   };
 
@@ -8671,8 +9587,8 @@ window.selectRoom = function(roomId) {
             <br><small class="text-muted">Initial: ${JSON.stringify(varDef.initialValue)}</small>
           </div>
           <div class="btn-group btn-group-sm">
-            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">✏️</button>
-            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">🗑️</button>
+            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">âœï¸</button>
+            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">ðŸ—‘ï¸</button>
           </div>
         </div>
       `;
@@ -9035,7 +9951,7 @@ window.selectRoom = function(roomId) {
     
     const hotspotId = targetValue.replace('hotspot:', '');
     
-    // ⚠️ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
+    // âš ï¸ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
     const hotspot = hotspots.find(h => h.id === hotspotId);
     if (!hotspot) {
       showNotification('Hotspot not found', 'error');
@@ -9046,7 +9962,7 @@ window.selectRoom = function(roomId) {
     
     // DEBUG: Verifica che il contenuto dello script sia disponibile
     if (!scriptContent || scriptContent.trim() === '') {
-      console.warn(`[attachScriptToHotspot] Script "${scriptName}" è vuoto o non trovato!`);
+      console.warn(`[attachScriptToHotspot] Script "${scriptName}" Ã¨ vuoto o non trovato!`);
       showNotification(`Script "${scriptName}" is empty or not found`, 'warning');
       return;
     }
@@ -9101,7 +10017,7 @@ window.selectRoom = function(roomId) {
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
       setMainWorkspaceMode('scripts');
-      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
@@ -9118,7 +10034,7 @@ window.selectRoom = function(roomId) {
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
-      // Aggiorna le dimensioni di CodeMirror dopo che il container è visibile
+      // Aggiorna le dimensioni di CodeMirror dopo che il container Ã¨ visibile
       setTimeout(() => {
         if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
           largeCodeMirrorEditor.refresh();
@@ -9139,15 +10055,12 @@ window.selectRoom = function(roomId) {
       }
     } else {
       setMainWorkspaceMode('canvas');
-      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
     }
   });
-
-  // Variabile globale per tracciare lo stato di sincronizzazione
-  let isSyncingProjects = false;
 
   // Function to show loading overlay with mnt.png
   /**
@@ -9213,6 +10126,8 @@ window.selectRoom = function(roomId) {
       overlay.remove();
     }
   }
+  window.showLoadingOverlay = showLoadingOverlay;
+  window.hideLoadingOverlay = hideLoadingOverlay;
 
   // Function to close project selection modal deterministically
   function closeProjectModal() {
@@ -9286,7 +10201,7 @@ window.selectRoom = function(roomId) {
     
     // Assicurati che il loop di rendering del canvas embedded continui anche quando si cambia tab
     if (embeddedRuntime.isInitialized && embeddedRuntime.canvas && embeddedRuntime.ctx) {
-      // Se il loop non è attivo, riavvialo
+      // Se il loop non Ã¨ attivo, riavvialo
       if (!embeddedRuntime.renderLoopId) {
         startEmbeddedRenderLoop();
       }
@@ -9302,6 +10217,8 @@ window.selectRoom = function(roomId) {
         break;
       case 'rooms':
         disableRoomCanvasEditing();
+        refreshRoomAnimationInstancesListUI();
+        refreshRoomAnimationPickerUI();
         redraw();
         break;
       case 'gui':
@@ -9313,6 +10230,12 @@ window.selectRoom = function(roomId) {
         disableRoomCanvasEditing();
         // ensure character selector refreshed and redraw preview
         refreshCharacterSelector();
+        redraw();
+        break;
+      case 'animations':
+        disableRoomCanvasEditing();
+        refreshRoomAnimationsCatalogListUI();
+        onRoomAnimationSelect();
         redraw();
         break;
       case 'scripts':
@@ -9374,244 +10297,166 @@ window.selectRoom = function(roomId) {
     addDebugMessage(`[Runtime] ${message}`, level);
   }
 
+  function getRuntimePageUrl() {
+    try {
+      return new URL('runtime.html', window.location.href).href;
+    } catch (_) {
+      return 'runtime.html';
+    }
+  }
+
   // ============================================
   // GESTIONE IFRAME SANDBOXED
   // ============================================
   
   // Crea l'iframe sandboxed per l'esecuzione degli script
+  let sandboxMessageHandlerInstalled = false;
+
+  function handleSandboxMessage(event) {
+    const message = event.data;
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    switch (message.type) {
+      case 'RUNTIME_READY':
+        if (!embeddedRuntime.isReady) {
+          embeddedRuntime.isReady = true;
+          sendRuntimeLogToEditor('Sandbox runtime ready and initialized', 'info');
+          sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
+          updateSandboxContext();
+          embeddedRuntime.pendingScripts.forEach(script => {
+            executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
+          });
+          embeddedRuntime.pendingScripts = [];
+        }
+        break;
+
+      case 'SCRIPT_LOG':
+        if (window.ScriptLogService) {
+          const level = message.level || 'info';
+          let mappedType = 'print';
+          if (level === 'error') mappedType = 'error';
+          else if (level === 'warning') mappedType = 'warning';
+          const timestamp = message.timestamp || Date.now();
+          ScriptLogService.log({
+            type: mappedType,
+            message: message.message || '',
+            source: 'runtime',
+            timestamp: timestamp
+          });
+        } else {
+          console.log('[Runtime Log]', message.message || '');
+        }
+        break;
+
+      case 'SCRIPT_ERROR':
+        sendRuntimeLogToEditor(`Script error: ${message.error || 'Unknown error'}`, 'error');
+        if (window.ScriptLogService) {
+          ScriptLogService.log({
+            type: 'error',
+            message: message.error || 'Unknown error',
+            source: 'runtime',
+            timestamp: message.timestamp || Date.now()
+          });
+        }
+        break;
+
+      case 'SCRIPT_DONE':
+        break;
+
+      case 'INVENTORY_STATE':
+        if (message.inventory) {
+          applyEditorInventorySnapshot(message.inventory);
+          if (event.source !== playTestState.runtimeWindow) {
+            pushPlaytestContextToRuntimeWindow();
+          }
+        }
+        break;
+
+      case 'PLAYTEST_RUNTIME_READY':
+        pushPlaytestContextToRuntimeWindow();
+        break;
+
+      case 'ROOM_CHANGE_REQUEST':
+        sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
+        break;
+
+      default:
+        break;
+    }
+  }
+
   function createSandboxIframe() {
-    // Rimuovi iframe esistente se presente
+    if (!sandboxMessageHandlerInstalled) {
+      window.addEventListener('message', handleSandboxMessage);
+      sandboxMessageHandlerInstalled = true;
+    }
+
     if (embeddedRuntime.sandboxIframe) {
       try {
-        // Rimuovi listener precedente se presente
-        if (embeddedRuntime.sandboxIframe._messageHandler) {
-          window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
-        }
         embeddedRuntime.sandboxIframe.remove();
       } catch (e) {
-        // Ignora errori di rimozione
+        // ignore
       }
       embeddedRuntime.sandboxIframe = null;
     }
 
-    // Listener per messaggi dall'iframe (deve essere configurato PRIMA di aggiungere l'iframe)
-    const messageHandler = function(event) {
-      // NOTA: In produzione, verificare event.origin per sicurezza
-      const message = event.data;
-      if (!message || typeof message !== 'object') {
-        return;
-      }
-
-      switch (message.type) {
-        case 'RUNTIME_READY':
-          if (!embeddedRuntime.isReady) {
-            embeddedRuntime.isReady = true;
-            sendRuntimeLogToEditor('✓ Sandbox runtime ready and initialized', 'info');
-            sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
-            
-            // Aggiorna contesto prima di eseguire script
-            updateSandboxContext();
-            
-            // Esegui script in attesa
-            embeddedRuntime.pendingScripts.forEach(script => {
-              executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
-            });
-            embeddedRuntime.pendingScripts = [];
-          } else {
-            sendRuntimeLogToEditor('Warning: RUNTIME_READY received but runtime already marked as ready', 'warning');
-          }
-          break;
-
-        case 'SCRIPT_LOG':
-          if (window.ScriptLogService) {
-            const level = message.level || 'info';
-            let mappedType = 'print';
-            if (level === 'error') mappedType = 'error';
-            else if (level === 'warning') mappedType = 'warning';
-            
-            // Usa timestamp dal messaggio o genera uno nuovo se mancante
-            const timestamp = message.timestamp || Date.now();
-            
-            ScriptLogService.log({
-              type: mappedType,
-              message: message.message || '',
-              source: 'runtime',
-              timestamp: timestamp
-            });
-          } else {
-            // Fallback se ScriptLogService non è disponibile
-            console.log('[Runtime Log]', message.message || '');
-          }
-          break;
-
-        case 'SCRIPT_ERROR':
-          const errorMsg = message.error || 'Unknown error';
-          const errorTimestamp = message.timestamp || Date.now();
-          
-          sendRuntimeLogToEditor(`Script error: ${errorMsg}`, 'error');
-          if (window.ScriptLogService) {
-            ScriptLogService.log({
-              type: 'error',
-              message: errorMsg,
-              source: 'runtime',
-              timestamp: errorTimestamp
-            });
-          } else {
-            // Fallback se ScriptLogService non è disponibile
-            console.error('[Runtime Error]', errorMsg);
-          }
-          break;
-
-        case 'SCRIPT_DONE':
-          // Script completato (opzionale, per logging)
-          break;
-
-        case 'INVENTORY_STATE':
-          if (message.inventory) {
-            applyEditorInventorySnapshot(message.inventory);
-            if (event.source !== playTestState.runtimeWindow) {
-              pushPlaytestContextToRuntimeWindow();
-            }
-          }
-          break;
-
-        case 'PLAYTEST_RUNTIME_READY':
-          pushPlaytestContextToRuntimeWindow();
-          break;
-
-        case 'ROOM_CHANGE_REQUEST':
-          // Richiesta cambio stanza dallo script
-          sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
-          // TODO: Implementare cambio stanza se necessario
-          break;
-
-        default:
-          // Ignora messaggi sconosciuti
-          break;
-      }
-    };
-
-    // Aggiungi listener PRIMA di creare l'iframe
-    window.addEventListener('message', messageHandler);
-
-    // Crea nuovo iframe con sandbox="allow-scripts" (SENZA allow-same-origin)
     const iframe = document.createElement('iframe');
     iframe.id = 'sandbox-runtime-iframe';
-    iframe.style.display = 'none'; // Nascosto, serve solo per esecuzione script
+    iframe.style.display = 'none';
     iframe.style.width = '0';
     iframe.style.height = '0';
     iframe.style.border = 'none';
-    iframe.sandbox = 'allow-scripts'; // IMPORTANTE: solo allow-scripts, NO allow-same-origin
-    
-    // Usa direttamente runtime.html (più affidabile)
-    // Il percorso deve essere relativo alla root o assoluto
-    const runtimePath = window.location.pathname.endsWith('/') 
-      ? 'runtime.html' 
-      : './runtime.html';
-    iframe.src = runtimePath;
-    
-    // Salva riferimento al listener per rimozione futura
-    iframe._messageHandler = messageHandler;
+    iframe.sandbox = 'allow-scripts allow-same-origin';
 
-    // Listener per errori di caricamento
+    let runtimeUrl;
+    try {
+      runtimeUrl = new URL('runtime-sandbox.html', window.location.href).href;
+    } catch (_) {
+      runtimeUrl = 'runtime-sandbox.html';
+    }
+    iframe.src = runtimeUrl;
+
     iframe.onerror = function(e) {
       sendRuntimeLogToEditor('Error loading sandbox iframe', 'error');
       console.error('[Sandbox] Iframe load error:', e);
     };
 
-    // Listener per quando l'iframe è caricato (per debug)
     iframe.onload = function() {
       sendRuntimeLogToEditor('Sandbox iframe loaded, waiting for initialization...', 'info');
-      
-      // Prova a verificare se ci sono errori nell'iframe
       try {
-        // Prova ad accedere alla console dell'iframe per vedere errori (se possibile)
-        if (iframe.contentWindow && iframe.contentWindow.console) {
-          const originalError = iframe.contentWindow.console.error;
-          iframe.contentWindow.console.error = function(...args) {
-            sendRuntimeLogToEditor('Iframe error: ' + args.join(' '), 'error');
-            if (originalError) originalError.apply(iframe.contentWindow.console, args);
-          };
+        if (iframe.contentWindow) {
+          iframe.contentWindow.postMessage({ type: 'SANDBOX_PING' }, '*');
         }
-        
-        // Verifica se runtime.js è stato caricato
-        setTimeout(() => {
-          try {
-            if (iframe.contentWindow && iframe.contentWindow.GameAPI) {
-              sendRuntimeLogToEditor('Runtime.js loaded successfully - GameAPI available', 'info');
-            } else {
-              sendRuntimeLogToEditor('Warning: Runtime.js may not have loaded - GameAPI not found', 'warning');
-            }
-          } catch (e) {
-            // Non possiamo accedere (sandbox restriction)
-            sendRuntimeLogToEditor('Cannot verify runtime.js load status (sandbox restriction)', 'warning');
-          }
-        }, 500);
-      } catch (e) {
-        // Non possiamo accedere alla console dell'iframe (sandbox restriction)
-        sendRuntimeLogToEditor('Cannot access iframe console (sandbox restriction): ' + (e.message || e), 'warning');
+      } catch (_) {
+        // ignore
       }
-      
-      // Se dopo 2 secondi non abbiamo ricevuto RUNTIME_READY, potrebbe esserci un problema
       setTimeout(() => {
         if (!embeddedRuntime.isReady) {
-          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received after 2s. Check if JS/runtime.js is loading correctly.', 'warning');
-          // Verifica se possiamo accedere all'iframe
+          sendRuntimeLogToEditor('Warning: RUNTIME_READY not received yet after iframe load', 'warning');
           try {
             if (iframe.contentWindow) {
-              if (iframe.contentWindow.GameAPI) {
-                sendRuntimeLogToEditor('GameAPI exists but RUNTIME_READY not sent - runtime may not be initializing', 'error');
-              } else {
-                sendRuntimeLogToEditor('GameAPI not found - JS/runtime.js may not have loaded', 'error');
-              }
+              iframe.contentWindow.postMessage({ type: 'SANDBOX_PING' }, '*');
             }
-          } catch (e) {
-            sendRuntimeLogToEditor('Cannot access iframe contentWindow to verify runtime status', 'warning');
+          } catch (_) {
+            // ignore
           }
         }
       }, 2000);
     };
 
-    // Aggiungi iframe al DOM
     document.body.appendChild(iframe);
     embeddedRuntime.sandboxIframe = iframe;
     embeddedRuntime.isReady = false;
 
-    // Timeout per rilevare se l'iframe non si carica
     setTimeout(() => {
       if (!embeddedRuntime.isReady) {
-        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 5s. Runtime may not be working.', 'error');
-        sendRuntimeLogToEditor('Check: 1) runtime.html exists, 2) JS/runtime.js is accessible, 3) No CORS errors in console', 'error');
-        
-        // Prova a verificare se l'iframe è caricato
-        try {
-          if (iframe.contentWindow) {
-            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'error');
-            // Verifica se runtime.js è caricato
-            try {
-              if (iframe.contentWindow.GameAPI) {
-                sendRuntimeLogToEditor('GameAPI exists - runtime.js loaded but RUNTIME_READY message not sent', 'error');
-              } else {
-                sendRuntimeLogToEditor('GameAPI NOT found - JS/runtime.js may not have loaded correctly', 'error');
-              }
-            } catch (e) {
-              sendRuntimeLogToEditor('Cannot check GameAPI (sandbox restriction): ' + (e.message || e), 'warning');
-            }
-          } else {
-            sendRuntimeLogToEditor('Iframe contentWindow not accessible (sandbox restriction)', 'warning');
-          }
-        } catch (e) {
-          sendRuntimeLogToEditor('Cannot access iframe contentWindow: ' + (e.message || e), 'warning');
-        }
-        
-        // Mostra informazioni di debug
+        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 8s.', 'error');
         sendRuntimeLogToEditor(`Iframe src: ${iframe.src}`, 'info');
-        sendRuntimeLogToEditor(`Iframe sandbox: ${iframe.sandbox}`, 'info');
-        sendRuntimeLogToEditor(`Current page location: ${window.location.href}`, 'info');
-      } else {
-        sendRuntimeLogToEditor('✓ Runtime initialization completed successfully', 'info');
+        sendRuntimeLogToEditor('Check DevTools console for runtime-sandbox.html load errors.', 'error');
       }
-    }, 5000);
+    }, 8000);
   }
 
   // Esegue uno script nell'iframe sandboxed
@@ -9681,7 +10526,7 @@ window.selectRoom = function(roomId) {
       executionContext.objectId = context.objectId;
     }
 
-    // Se l'iframe non è pronto, metti in coda
+    // Se l'iframe non Ã¨ pronto, metti in coda
     if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
       embeddedRuntime.pendingScripts.push({
         name: scriptName,
@@ -9693,7 +10538,7 @@ window.selectRoom = function(roomId) {
       return;
     }
 
-    // Invia script all'iframe (l'handler verrà gestito dal runtime.js)
+    // Invia script all'iframe (l'handler verrÃ  gestito dal runtime.js)
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'RUN_SCRIPT',
@@ -9826,7 +10671,7 @@ window.selectRoom = function(roomId) {
     
     // Verifica che il canvas sia inizializzato
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
-      // Prova a inizializzare il canvas se non è già inizializzato
+      // Prova a inizializzare il canvas se non Ã¨ giÃ  inizializzato
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
         embeddedRuntime.canvas = canvasElement;
@@ -9883,7 +10728,7 @@ window.selectRoom = function(roomId) {
       }
     }
 
-    // Disegna marker posizione iniziale se questa è la stanza di start
+    // Disegna marker posizione iniziale se questa Ã¨ la stanza di start
     try {
       const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
       if (s && s.startRoomId) {
@@ -9917,7 +10762,7 @@ window.selectRoom = function(roomId) {
 
     sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
 
-    // Inizializza il canvas embedded se non è già inizializzato
+    // Inizializza il canvas embedded se non Ã¨ giÃ  inizializzato
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
@@ -9975,8 +10820,8 @@ window.selectRoom = function(roomId) {
     sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
     createSandboxIframe();
     
-    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe è pronto)
-    // Gli script verranno messi in pendingScripts se l'iframe non è ancora pronto
+    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe Ã¨ pronto)
+    // Gli script verranno messi in pendingScripts se l'iframe non Ã¨ ancora pronto
     initializeEmbeddedRuntimeScripts();
     
     embeddedRuntime.isInitialized = true;
@@ -9993,7 +10838,7 @@ window.selectRoom = function(roomId) {
     
     // Verifica che il canvas sia disponibile prima di avviare il loop
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
-      // Prova a inizializzare il canvas se non è già inizializzato
+      // Prova a inizializzare il canvas se non Ã¨ giÃ  inizializzato
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
         embeddedRuntime.canvas = canvasElement;
@@ -10016,7 +10861,7 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.lastRenderTime = performance.now();
     
     function renderLoop(currentTime) {
-      // Verifica la tab attiva - non renderizzare se si è nella tab "characters"
+      // Verifica la tab attiva - non renderizzare se si Ã¨ nella tab "characters"
       const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
       if (activeTab === 'characters') {
         // Nella tab characters, non renderizzare il canvas embedded
@@ -10032,7 +10877,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Renderizza solo se il canvas è disponibile e il runtime è inizializzato
+      // Renderizza solo se il canvas Ã¨ disponibile e il runtime Ã¨ inizializzato
       if (embeddedRuntime.canvas && embeddedRuntime.ctx && embeddedRuntime.isInitialized && 
           embeddedRuntime.gameData && embeddedRuntime.currentRoomIndex >= 0) {
         // Verifica che il canvas non sia stato resettato (controlla le dimensioni)
@@ -10076,14 +10921,6 @@ window.selectRoom = function(roomId) {
     
     // Rimuovi iframe sandboxed
     if (embeddedRuntime.sandboxIframe) {
-      // Rimuovi listener messaggi se presente
-      if (embeddedRuntime.sandboxIframe._messageHandler) {
-        window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
-      }
-      // Revoca blob URL se presente
-      if (embeddedRuntime.sandboxIframe._blobUrl) {
-        URL.revokeObjectURL(embeddedRuntime.sandboxIframe._blobUrl);
-      }
       try {
         embeddedRuntime.sandboxIframe.remove();
       } catch (e) {
@@ -10129,7 +10966,7 @@ window.selectRoom = function(roomId) {
     let projectObj = null;
     let jsonString = null;
 
-    // Playtest usa sempre lo stato LIVE dell'editor (non Firebase: snapshot obsoleto senza script in stanze)
+    // Playtest usa sempre lo stato LIVE dell'editor (non snapshot obsoleto senza script in stanze)
     if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
       try {
         await window.amiantoResources.refresh();
@@ -10149,7 +10986,7 @@ window.selectRoom = function(roomId) {
       }
     }
     jsonString = JSON.stringify(projectObj, null, 2);
-    addDebugMessage('Playtest: progetto serializzato dallo stato corrente in editor', 'info');
+    addDebugMessage('Playtest: project serialized from current editor state', 'info');
 
     if (!runtimeWasAlreadyOpen) {
       embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
@@ -10160,7 +10997,7 @@ window.selectRoom = function(roomId) {
         localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
         playTestState.runtimeWindow.postMessage({ type: 'RELOAD_PLAYTEST_PROJECT' }, '*');
         playTestState.runtimeWindow.focus();
-        addDebugMessage('Playtest: progetto ricaricato nella finestra runtime (script ricompilati)', 'success');
+        addDebugMessage('Playtest: project reloaded in runtime window (scripts recompiled)', 'success');
         updateGameStatus('Test running...');
         setTimeout(() => pushPlaytestContextToRuntimeWindow(), 800);
         return;
@@ -10171,46 +11008,25 @@ window.selectRoom = function(roomId) {
       }
     }
 
-    // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
+    // Salva in localStorage per il runtime (snapshot playtest, non sostituisce il backup del progetto)
     try {
       localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-      addDebugMessage('Project saved to localStorage for runtime', 'success');
+      addDebugMessage('Playtest snapshot saved for runtime', 'success');
     } catch (error) {
       console.error('[PlayTest] Errore salvataggio localStorage:', error);
       addDebugMessage('localStorage save error: ' + error.message, 'error');
     }
-    
-    // Salva anche in cache locale con chiave progetto (backup)
-    try {
-      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'Untitled';
-      const currentUser = AppState.user;
-      if (currentUser && currentUser.username) {
-        const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-        localStorage.setItem(projectKey, jsonString);
-        localStorage.setItem('amiantoActiveProjectName', projectName);
-        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-        addDebugMessage('Project saved to local cache', 'info');
-      }
-    } catch (error) {
-      console.error('[PlayTest] Errore salvataggio cache:', error);
-    }
-    
+
     // Save game.json depending on mode
     if (window.AMIANTO_PLAYTEST_MODE === 'server') {
       saveGameJsonServer(jsonString);
     } else {
-      // saveGameJsonLocal già chiama saveProjectJsonToOPFS, non duplicare
+      // saveGameJsonLocal giÃ  chiama saveProjectJsonToOPFS, non duplicare
       saveGameJsonLocal(jsonString);
     }
-    
-    // Salva anche con nome progetto in OPFS (backup aggiuntivo)
-    // Usa setTimeout per evitare chiamate simultanee
-    setTimeout(() => {
-      saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
-    }, 100);
 
     // Apri runtime.html in una nuova finestra
-    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeUrl = getRuntimePageUrl();
     const runtimeWindow = window.open(
       runtimeUrl,
       'AmiantoRuntime',
@@ -10227,11 +11043,11 @@ window.selectRoom = function(roomId) {
     playTestState.startTime = Date.now();
     playTestState.runtimeWindow = runtimeWindow;
     updateGameStatus('Test running...');
-    addDebugMessage('Runtime avviato in finestra separata', 'success');
+    addDebugMessage('Runtime started in separate window', 'success');
 
-    // Non inviare postMessage se localStorage è disponibile (priorità a localStorage)
-    // Il runtime caricherà automaticamente da localStorage all'avvio
-    // PostMessage è solo un fallback se localStorage non funziona
+    // Non inviare postMessage se localStorage Ã¨ disponibile (prioritÃ  a localStorage)
+    // Il runtime caricherÃ  automaticamente da localStorage all'avvio
+    // PostMessage Ã¨ solo un fallback se localStorage non funziona
     addDebugMessage('Project saved to localStorage; the runtime will load it automatically', 'info');
 
     // Monitora se la finestra viene chiusa
@@ -10408,7 +11224,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     addDebugMessage(`Testing hotspot interaction: ${hotspot.name}...`, 'info');
     
-    // ⚠️ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
+    // âš ï¸ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
     if (!hotspot.scripts || !hotspot.scripts.onClick) {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
@@ -10417,7 +11233,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const onClickScript = hotspot.scripts.onClick;
     
     // BUG FIX: Usa la stessa logica di normalizzazione del runtime
-    // Se enabled non è definito e c'è codice, considera enabled=true
+    // Se enabled non Ã¨ definito e c'Ã¨ codice, considera enabled=true
     const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
     const isEnabled = (typeof onClickScript.enabled === 'boolean') 
       ? onClickScript.enabled 
@@ -10633,10 +11449,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // ============================================
-  // SISTEMA DI COMUNICAZIONE EDITOR ↔ RUNTIME
+  // SISTEMA DI COMUNICAZIONE EDITOR â†” RUNTIME
   // ============================================
-  // NOTA: Il runtime è ora incorporato nell'editor, quindi non serve più postMessage
-  // Mantenuto per compatibilità futura se necessario
+  // NOTA: Il runtime Ã¨ ora incorporato nell'editor, quindi non serve piÃ¹ postMessage
+  // Mantenuto per compatibilitÃ  futura se necessario
   /*
   // Listener per messaggi dal runtime (postMessage) - DISABILITATO: runtime incorporato
   // Gestisce solo messaggi con type === "SCRIPT_LOG"
@@ -10656,7 +11472,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   });
   */
 
-  // Funzione di compatibilità: aggiunge messaggi al pannello Script Log
+  // Funzione di compatibilitÃ : aggiunge messaggi al pannello Script Log
   // Supporta livelli: info, warning, error
   // NON usa console.log come output principale
   function appendToScriptLog(message, level = 'info') {
@@ -10667,7 +11483,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Script console: mostra solo output degli script (print, errori handler, ecc.)
-  // Mantiene compatibilità con il resto del codice che chiama addScriptLogMessage
+  // Mantiene compatibilitÃ  con il resto del codice che chiama addScriptLogMessage
   function addScriptLogMessage(message, type = 'print') {
     ScriptLogService.log({ type, message, source: 'editor' });
   }
@@ -10902,7 +11718,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       modal.hide();
     }
     
-    showNotification(`Project settings saved! Viewport: ${newWidth}×${newHeight}`, 'success');
+    showNotification(`Project settings saved! Viewport: ${newWidth}Ã—${newHeight}`, 'success');
     
     // Log settings for debugging
     console.log('Project settings saved:', settings);
@@ -10946,43 +11762,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // USER AUTHENTICATION SYSTEM
   // ================================
 
-  // User management variables
-  let currentUser = null;
-  let isDemoMode = false;
+  // User management variables — utente locale sempre disponibile
+  let currentUser = getLocalUser();
+  updateAppState({ user: currentUser });
+  localStorage.setItem('amiantoCurrentUser', currentUser.username);
 
-  // Firebase auth (v9) integration via CDN
-  let __fbApp = null;
-  let __fbAuthMod = null;
-  let __fbAuth = null;
-  async function ensureFirebaseAuth() {
-    if (__fbApp && __fbAuth && __fbAuthMod) return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
-    const appMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js');
-    __fbAuthMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js');
-    const firebaseConfig = {
-      apiKey: "AIzaSyAg-wvBsbaKEWw896GbfUU9LDURrNa0xjY",
-      authDomain: "amianto-editor.firebaseapp.com",
-      projectId: "amianto-editor",
-      appId: "1:1044586682132:web:c53a04a0d204412f051401"
-    };
-    __fbApp = appMod.initializeApp(firebaseConfig);
-    __fbAuth = __fbAuthMod.getAuth(__fbApp);
-    return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
-  }
-  async function fbObserveAuthState(callback) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.onAuthStateChanged(auth, callback);
-  }
-  async function fbRegister(email, password) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.createUserWithEmailAndPassword(auth, email, password);
-  }
-  async function fbLogin(email, password) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.signInWithEmailAndPassword(auth, email, password);
-  }
-  async function fbSignOut() {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.signOut(auth);
+  function ensureCurrentUser() {
+    if (!currentUser) {
+      currentUser = getLocalUser();
+      updateAppState({ user: currentUser });
+      localStorage.setItem('amiantoCurrentUser', currentUser.username);
+    }
+    return currentUser;
   }
 
   // Rimuovi progetto attivo alla chiusura della pagina
@@ -11014,7 +11805,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         // Aggiungi frame tracciati come assetId (cerca nell'imageAssetMap)
         for (const assetId of unsavedCharacterAssetIds) {
-          // Verifica se questo assetId è già nella lista (da unsavedCharacterFrames)
+          // Verifica se questo assetId Ã¨ giÃ  nella lista (da unsavedCharacterFrames)
           const alreadyInList = framesToClean.some(f => f.assetId === assetId);
           if (!alreadyInList) {
             // Cerca l'assetInfo nell'imageAssetMap
@@ -11055,206 +11846,52 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (!stored) return;
 
       const framesToDelete = JSON.parse(stored);
-      console.log(`[Cleanup] Trovati ${framesToDelete.length} frame da eliminare dalla sessione precedente...`);
-
-      if (window.supabaseStorage && window.supabaseStorage.deleteAsset && 
-          window.firebaseAuth && window.firebaseAuth.currentUser) {
-        const userId = window.firebaseAuth.currentUser.uid;
-        let deletedCount = 0;
-
-        for (const frameInfo of framesToDelete) {
-          try {
-            // PRIMA: controlla se è un asset legacy Firebase Storage
-            let firebaseStoragePath = null;
-            let isFirebaseLegacy = false;
-            if (frameInfo.assetId && window.firebaseDB) {
-              try {
-                const assetRef = window.firebaseDB
-                  .collection('users')
-                  .doc(userId)
-                  .collection('projects')
-                  .doc(frameInfo.projectId)
-                  .collection('assets')
-                  .doc(frameInfo.assetId);
-                
-                const doc = await assetRef.get();
-                if (doc.exists) {
-                  const data = doc.data();
-                  // Controlla se è un asset legacy Firebase Storage
-                  if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
-                    firebaseStoragePath = data.storagePath;
-                    isFirebaseLegacy = true;
-                    console.log(`[Cleanup] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
-                  }
-                }
-              } catch (metaErr) {
-                console.warn(`[Cleanup] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
-              }
-            }
-            
-            // Elimina da Firebase Storage se è un asset legacy
-            let firebaseDeleted = true; // Default true se non è un asset legacy
-            if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
-              try {
-                console.log(`[Cleanup] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
-                const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
-                await storageRef.delete();
-                firebaseDeleted = true;
-                console.log(`[Cleanup] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
-              } catch (firebaseError) {
-                console.warn(`[Cleanup] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
-                // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
-                firebaseDeleted = false;
-              }
-            }
-            
-            // POI: elimina da Supabase Storage
-            const deleted = await window.supabaseStorage.deleteAsset(
-              frameInfo.projectId,
-              frameInfo.type,
-              frameInfo.fileName,
-              userId,
-              frameInfo.subfolder
-            );
-            
-            // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
-            if (deleted || (firebaseDeleted && isFirebaseLegacy)) {
-              deletedCount++;
-            }
-          } catch (error) {
-            console.warn('[Cleanup] Errore eliminazione frame dalla sessione precedente:', error);
-          }
-        }
-
-        console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame dalla sessione precedente`);
-      }
-
-      // Rimuovi dallo storage dopo il cleanup
-      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
-    } catch (error) {
-      console.error('[Cleanup] Errore cleanup frame dalla sessione precedente:', error);
-    }
-  }
-
-  // Initialize authentication system
-  async function initAuthSystem() {
-    // Default view
-    showLoginPage();
-
-    // Wire forms
-    setupLoginForm();
-    setupRegistrationModal();
-
-    // Restore demo mode if previously set for this session
-    if (sessionStorage.getItem('amiantoDemoMode') === '1') {
-      isDemoMode = true;
-      setTimeout(() => {
-        if (typeof window.enterDemoMode === 'function') {
-          window.enterDemoMode();
-        }
-      }, 0);
-    }
-
-    // Esegui bootstrap iniziale
-    await bootstrapApp();
-    
-    // Pulisci i frame non salvati dalla sessione precedente (se la pagina è stata chiusa senza salvare)
-    cleanupStoredUnsavedFrames().catch(err => {
-      console.warn('[Bootstrap] Errore cleanup frame sessione precedente:', err);
-    });
-    
-    // Nascondi loading dopo bootstrap
-    hideLoadingOverlay();
-    
-    // Se l'app è inizializzata con un utente, mostra dashboard
-    if (AppState.initialized && AppState.user) {
-      currentUser = AppState.user;
-      localStorage.setItem('amiantoCurrentUser', AppState.user.username);
-      showDashboard();
-      
-      // Controlla se c'è un progetto attivo e abilita/disabilita tab
-      const activeProject = localStorage.getItem('amiantoActiveProjectName');
-      enableOtherTabs(!!activeProject);
-      
-      // Carica progetti nella tab Projects se siamo nella tab Projects
-      setTimeout(async () => {
-        const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
-        if (currentTab === 'projects') {
-          await loadAndRenderProjectsTab();
-        }
-      }, 500);
-    }
-
-    // Observe Firebase auth state per cambiamenti successivi
-    fbObserveAuthState(async function(user){
-      // In demo mode, ignore Firebase auth state transitions
-      if (isDemoMode) {
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.deleteAsset) {
+        sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
         return;
       }
-      
-      if (user) {
-        const mappedUser = {
-          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-          email: user.email || '',
-          uid: user.uid
-        };
-        
-        // Se l'utente è già loggato e corrisponde, aggiorna AppState e sincronizza in background
-        if (AppState.user && AppState.user.uid === mappedUser.uid) {
-          console.log('[AuthObserver] Utente già loggato, aggiornamento progetti in background...');
-          
-          // Sincronizza in background (non blocca UI)
-          syncProjectsFromFirestore(mappedUser.uid)
-            .then(() => {
-              // Ricarica progetti da Firestore e aggiorna AppState
-              return loadProjectsDirectlyFromFirestore(mappedUser.uid);
-            })
-            .then(projects => {
-              updateAppState({ projects: projects });
-              if (mappedUser.username) {
-                saveProjectsToCache(mappedUser.username, projects);
-              }
-              console.log('[AuthObserver] ✅ Progetti aggiornati in background');
-            })
-            .catch(error => {
-              console.error('[AuthObserver] Errore aggiornamento background:', error);
-            });
-          
-          // Mostra modale se necessario
-          const activeProject = localStorage.getItem('amiantoActiveProjectName');
-          if (!activeProject) {
-            showProjectSelectionModal(false);
-          }
-          return;
+
+      let deletedCount = 0;
+      for (const frameInfo of framesToDelete) {
+        try {
+          const deleted = await storage.deleteAsset(
+            frameInfo.projectId,
+            frameInfo.type,
+            frameInfo.fileName,
+            'local',
+            frameInfo.subfolder
+          );
+          if (deleted) deletedCount++;
+        } catch (error) {
+          console.warn('[Cleanup] Errore eliminazione frame:', error);
         }
-        
-        // Nuovo login: esegui bootstrap completo
-        updateAppState({ loading: true, user: null, projects: [] });
-        showLoadingOverlay('Loading projects...');
-        await bootstrapApp();
-        hideLoadingOverlay();
-        
-        if (AppState.user) {
-          currentUser = AppState.user;
-          localStorage.setItem('amiantoCurrentUser', AppState.user.username);
-          showDashboard();
-          
-          // Verifica che i progetti siano stati caricati
-          console.log('[AuthObserver] Progetti caricati:', AppState.projects.length);
-          
-          // Mostra modale selezione progetto (AppState.projects è già popolato da bootstrapApp)
-          showProjectSelectionModal(false);
-        }
-      } else {
-        // Logout
-        currentUser = null;
-        updateAppState({ user: null, projects: [] });
-        showLoginPage();
       }
-    });
+      console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame`);
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+    } catch (error) {
+      console.error('[Cleanup] Errore cleanup frame:', error);
+    }
   }
 
-  // Force reset all auth data (emergency function) — demo user removed
+  async function initAuthSystem() {
+    try {
+      await bootstrapApp();
+    } catch (error) {
+      console.error('[Auth] Errore bootstrap:', error);
+      updateAppState({
+        user: getLocalUser(),
+        loading: false,
+        initialized: true,
+        error: error.message || 'Bootstrap failed'
+      });
+    }
+    cleanupStoredUnsavedFrames().catch(() => {});
+    if (typeof hideLoadingOverlay === 'function') hideLoadingOverlay();
+    window.enterLocalMode();
+  }
+
+  // Force reset all auth data (emergency function) â€” demo user removed
   window.forceResetAuth = function() {
     console.log('FORCE RESETTING ALL AUTH DATA');
 
@@ -11278,126 +11915,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     location.reload();
   };
 
-  // Show login page
-  function showLoginPage() {
-    document.getElementById('loginPage').style.display = 'block';
-    document.getElementById('mainDashboard').style.display = 'none';
-    document.getElementById('loginHeader').style.display = 'block';
-    document.getElementById('dashboardHeader').style.display = 'none';
-
-    // Clear form
-    document.getElementById('loginUsername').value = '';
-    document.getElementById('loginPassword').value = '';
-    document.getElementById('loginAlert').classList.add('d-none');
-  }
-
   // Show dashboard
   async function showDashboard() {
     try {
-      console.log('[showDashboard] Starting...');
-      const loginPage = document.getElementById('loginPage');
       const mainDashboard = document.getElementById('mainDashboard');
-      const loginHeader = document.getElementById('loginHeader');
       const dashboardHeader = document.getElementById('dashboardHeader');
-      
-      if (!loginPage || !mainDashboard || !loginHeader || !dashboardHeader) {
-        console.error('[showDashboard] Required elements not found');
-        return;
-      }
-      
-      loginPage.style.display = 'none';
+      if (!mainDashboard || !dashboardHeader) return;
+
       mainDashboard.style.display = 'block';
-      loginHeader.style.display = 'none';
       dashboardHeader.style.display = 'block';
 
-      // Update user info in header
       const currentUserNameEl = document.getElementById('currentUserName');
       const userDisplayNameEl = document.getElementById('userDisplayName');
-      if (currentUserNameEl && currentUser) {
-        currentUserNameEl.textContent = currentUser.username;
-      }
-      if (userDisplayNameEl && currentUser) {
-        userDisplayNameEl.textContent = currentUser.username;
-      }
-      console.log('[showDashboard] UI updated');
+      if (currentUserNameEl && currentUser) currentUserNameEl.textContent = currentUser.username;
+      if (userDisplayNameEl && currentUser) userDisplayNameEl.textContent = currentUser.username;
 
-    // Load user's projects
-    loadUserProjects();
-    
-    // Verifica se ci sono progetti: se non ce ne sono, mostra il modale
-    // (solo se non c'è un progetto attivo già aperto)
-    const activeProject = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProject && currentUser && currentUser.uid) {
-      // Sincronizza e verifica progetti
-      if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userProjects = await syncProjectsFromFirestore(currentUser.uid);
-          if (userProjects.length === 0) {
-            // Nessun progetto: mostra il modale
-            await showProjectSelectionModal(true);
-          }
-        } catch (error) {
-          console.error('[Dashboard] Errore verifica progetti:', error);
-          // In caso di errore, prova comunque a mostrare il modale usando getProjectsForUI
-          try {
-            const localProjects = await getProjectsForUI(currentUser.uid);
-            if (localProjects.length === 0) {
-              await showProjectSelectionModal(true, true); // skipSync = true
-            }
-          } catch (fallbackError) {
-            console.error('[Dashboard] Errore anche nel fallback:', fallbackError);
-            // Se anche il fallback fallisce, mostra comunque il modale (sarà vuoto)
-            await showProjectSelectionModal(true, true);
-          }
+      loadUserProjects();
+
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProject && currentUser && currentUser.uid) {
+        const userProjects = loadProjectsFromCache(currentUser.username);
+        if (userProjects.length === 0) {
+          await showProjectSelectionModal(true);
         }
       }
-    }
-      console.log('[showDashboard] Completed successfully');
     } catch (error) {
       console.error('[showDashboard] Error:', error);
-      console.error('[showDashboard] Error stack:', error.stack);
-      throw error; // Re-throw per essere gestito dal chiamante
-    }
-  }
-
-  // Setup login form
-  function setupLoginForm() {
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-      loginForm.addEventListener('submit', function(e) {
-        e.preventDefault();
-        const email = document.getElementById('loginUsername').value.trim();
-        const password = document.getElementById('loginPassword').value;
-        if (!email || !password) {
-          showLoginError('Please enter both email and password');
-          return;
-        }
-        fbLogin(email, password).then(async (cred) => {
-          const user = cred && cred.user;
-          if (user) {
-            console.log('[Login] User authenticated:', user.email);
-            const mapped = {
-              username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-              email: user.email || '',
-              uid: user.uid
-            };
-            console.log('[Login] Calling loginUser with:', mapped);
-            try {
-              await loginUser(mapped, document.getElementById('rememberMe').checked);
-              console.log('[Login] loginUser completed successfully');
-            } catch (loginError) {
-              console.error('[Login] Error in loginUser:', loginError);
-              showLoginError('Error during login process. Please try again.');
-            }
-          } else {
-            console.error('[Login] No user in credentials');
-            showLoginError('Invalid email or password');
-          }
-        }).catch((err) => {
-          console.error('[Login] Firebase error:', err && err.code, err && err.message);
-          showLoginError('Invalid email or password');
-        });
-      });
     }
   }
 
@@ -11438,14 +11981,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Trova container modale
     const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
     if (!modalBody) {
-      console.error('[ProjectModal] ❌ modal-body non trovato, impossibile aggiornare');
+      console.error('[ProjectModal] âŒ modal-body non trovato, impossibile aggiornare');
       return;
     }
     
-    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÀ)
+    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÃ€)
     renderProjectsList(AppState.projects, modalBody);
     
-    console.log('[ProjectModal] ✅ Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
+    console.log('[ProjectModal] âœ… Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
   }
 
   /**
@@ -11455,12 +11998,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Non avvia caricamenti, non fa fallback, non gestisce async
    * 
    * Flusso corretto:
-   * click →
-   *   se AppState.loading === true → mostra loader
-   *   se AppState.projects.length === 0 → mostra empty state
-   *   altrimenti → render lista e apri modale
+   * click â†’
+   *   se AppState.loading === true â†’ mostra loader
+   *   se AppState.projects.length === 0 â†’ mostra empty state
+   *   altrimenti â†’ render lista e apri modale
    * 
-   * @param {boolean} forceShow - Forza apertura anche se c'è progetto attivo
+   * @param {boolean} forceShow - Forza apertura anche se c'Ã¨ progetto attivo
    */
   function showProjectSelectionModal(forceShow = false) {
     // Verifica che l'app sia inizializzata
@@ -11485,7 +12028,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Usa il modale statico dall'HTML invece di crearlo dinamicamente
     let modal = document.getElementById('projectSelectionModal');
     
-    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilità)
+    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilitÃ )
     if (!modal) {
       console.warn('[ProjectModal] Modale statico non trovato, creazione dinamica...');
       modal = document.createElement('div');
@@ -11521,11 +12064,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     });
 
-    // Se c'è già un progetto attivo e non è forzato, non mostrare il modale
+    // Se c'Ã¨ giÃ  un progetto attivo e non Ã¨ forzato, non mostrare il modale
     if (!forceShow) {
       const activeProject = localStorage.getItem('amiantoActiveProjectName');
       if (activeProject) {
-        console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
+        console.log('[ProjectModal] Progetto giÃ  attivo, salto modale:', activeProject);
         return;
       }
     }
@@ -11538,7 +12081,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         showLoadingOverlay('Loading projects...');
       }
 
-      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÀ)
+      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÃ€)
       const userProjects = AppState.projects || [];
       console.log('[ProjectModal] Progetti da AppState:', userProjects.length);
 
@@ -11577,13 +12120,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       // STEP 7: Nascondi loader se era visibile
       if (AppState.loading) {
-        // Il loader verrà nascosto quando AppState.loading diventa false
+        // Il loader verrÃ  nascosto quando AppState.loading diventa false
         // Ma nascondiamo anche qui per sicurezza
         hideLoadingOverlay();
       }
 
     // Gestione click su pulsanti Open con event delegation (funziona anche dopo aggiornamenti contenuto)
-    // Aggiungi listener solo se non è già stato aggiunto
+    // Aggiungi listener solo se non Ã¨ giÃ  stato aggiunto
     if (!modal.dataset.clickListenersAttached) {
       modal.dataset.clickListenersAttached = 'true';
       
@@ -11613,7 +12156,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             try {
               await openProjectByName(projectName);
               
-              // Chiudi il modale DOPO che il progetto è stato caricato con successo
+              // Chiudi il modale DOPO che il progetto Ã¨ stato caricato con successo
               closeProjectModal();
             } catch (error) {
               console.error('[ProjectModal] Errore apertura progetto:', error);
@@ -11626,15 +12169,41 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         target = target.parentElement;
       }
       
+      // Gestione click su pulsante "Load Project" (modale)
+      if (e.target && (e.target.id === 'btn-load-project-modal' || e.target.closest('#btn-load-project-modal'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (AppState.loading) {
+          showNotification('Please wait for loading to complete', 'warning');
+          return false;
+        }
+        try {
+          await window.loadProjectFromFile();
+          const currentBsModal = bootstrap.Modal.getInstance(modal);
+          if (currentBsModal) {
+            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+            if (modalBody) renderProjectsList(AppState.projects || [], modalBody);
+          }
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (activeProject && currentBsModal) currentBsModal.hide();
+        } catch (err) {
+          if (err && err.name !== 'AbortError') {
+            console.error('[ProjectModal] Errore load project:', err);
+          }
+        }
+        return false;
+      }
+
       // Gestione click su pulsante "Create New Project"
       if (e.target && (e.target.id === 'btn-create-new-project' || e.target.closest('#btn-create-new-project'))) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
         
-        // Blocca durante la sincronizzazione
-        if (isSyncingProjects) {
-          showNotification('Please wait for synchronization to complete', 'warning');
+        // Blocca durante il caricamento
+        if (AppState.loading) {
+          showNotification('Please wait for loading to complete', 'warning');
           return false;
         }
         
@@ -11642,28 +12211,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (projectName && projectName.trim()) {
           showNotification(`Creating project "${projectName.trim()}"...`, 'info');
           
-          // Crea il progetto (questo salva anche su Firestore)
-          // Passa false per showSuccessNotification per evitare notifica duplicata
           await window.createNewProject(projectName.trim(), false);
           
-          // Attendi che Firestore abbia completato il salvataggio e propagato i cambiamenti
-          // Firestore può richiedere tempo per propagare i cambiamenti, specialmente su dispositivi lenti
-          console.log('[ProjectModal] Attesa completamento salvataggio Firestore...');
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Aumentato a 2 secondi per dare tempo a Firestore
-          
-          // Mostra notifica di successo dopo la creazione
           showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
           
-          // Dopo la creazione, sincronizza e aggiorna il modale con la nuova lista progetti
-          // Questo mostrerà il loading durante la sincronizzazione
-          console.log('[ProjectModal] Avvio sincronizzazione per aggiornare lista progetti...');
           const currentBsModal = bootstrap.Modal.getInstance(modal);
           if (currentBsModal) {
-            await updateProjectModalContent(modal, currentBsModal);
-            console.log('[ProjectModal] Sincronizzazione completata, modale aggiornato');
+            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+            if (modalBody) {
+              renderProjectsList(AppState.projects || [], modalBody);
+            }
           }
           
-          // Chiudi il modale solo se il progetto è stato aperto con successo
+          // Chiudi il modale solo se il progetto Ã¨ stato aperto con successo
           const activeProject = localStorage.getItem('amiantoActiveProjectName');
           if (activeProject === projectName.trim() && currentBsModal) {
             currentBsModal.hide();
@@ -11689,7 +12249,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }, { capture: true });
     }
 
-      // Il modale è statico nell'HTML, non rimuoverlo quando viene nascosto
+      // Il modale Ã¨ statico nell'HTML, non rimuoverlo quando viene nascosto
       // Aggiungi listener per sincronizzare sempre all'apertura (solo una volta)
       if (!modal.dataset.listenersAttached) {
         modal.dataset.listenersAttached = 'true';
@@ -11705,7 +12265,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               console.log('[ProjectModal] Modale aggiornato con', AppState.projects.length, 'progetti da AppState');
             }
             
-            // Se AppState.loading è true, mostra loader
+            // Se AppState.loading Ã¨ true, mostra loader
             if (AppState.loading) {
               showLoadingOverlay('Loading projects...');
             } else {
@@ -11727,12 +12287,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           showNotification('You must select or create a project to continue', 'warning');
           return false;
         }
-        // Se c'è un progetto attivo, permettere la chiusura
+        // Se c'Ã¨ un progetto attivo, permettere la chiusura
         console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
       });
     }
 
-    // Il listener per il backdrop è già gestito dentro handleProjectClick
+    // Il listener per il backdrop Ã¨ giÃ  gestito dentro handleProjectClick
     // Non aggiungere listener duplicati
 
     } catch (error) {
@@ -11740,12 +12300,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.error('[ProjectModal] Errore durante il rendering:', error);
 
       // Distingui tra diversi tipi di errori
-      if (error.code === 'permission-denied') {
-        console.error('[ProjectModal] Firestore permission denied error:', error);
-        console.error('[ProjectModal] Check Firestore security rules for user:', AppState.user?.uid);
-      } else if (error.code === 'network-error' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[ProjectModal] Network error:', error);
-      } else if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
+      if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
         console.error('[ProjectModal] DOM/Bootstrap error:', error);
         showNotification('Error creating modal. Reload the page.', 'danger');
         return;
@@ -11789,197 +12344,41 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Login user
-  async function loginUser(user, rememberMe = false) {
-    console.log('[loginUser] Starting with user:', user);
-    if (!user || !user.uid) {
-      console.error('[loginUser] Invalid user object:', user);
-      throw new Error('Invalid user object');
-    }
-    currentUser = user;
-    console.log('[loginUser] currentUser set to:', currentUser);
-    localStorage.setItem('amiantoCurrentUser', user.username);
-
-    if (rememberMe) {
-      localStorage.setItem('amiantoRememberUser', user.username);
-    } else {
-      localStorage.removeItem('amiantoRememberUser');
-    }
-
-    // Mostra loading overlay durante la sincronizzazione progetti
-    // IMPORTANTE: Durante il caricamento si vede SOLO il loading, NON il modale
-    showLoadingOverlay('Loading projects...');
-
-    // Sincronizza progetti da Firestore PRIMA di mostrare la dashboard
-    if (user.uid && window.firebaseDB && window.firebaseAuth) {
-      console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
-      
-      try {
-        // STEP 1: Sincronizza progetti (salva in localStorage)
-        await syncProjectsFromFirestore(user.uid);
-        console.log('[Login] ✅ Sincronizzazione progetti completata');
-        
-        // STEP 2: Carica progetti da Firestore e aggiorna AppState
-        const projects = await loadProjectsDirectlyFromFirestore(user.uid);
-        console.log('[Login] ✅ Progetti caricati:', projects.length);
-        
-        // STEP 3: Aggiorna AppState con i progetti caricati
-        updateAppState({ projects: projects });
-        
-        // STEP 4: Aggiorna anche la cache localStorage
-        if (user.username) {
-          saveProjectsToCache(user.username, projects);
-        }
-        
-      } catch (error) {
-        console.error('[Login] Errore durante sincronizzazione progetti:', error);
-        
-        // In caso di errore, prova a caricare dalla cache come fallback
-        if (user.username) {
-          console.log('[Login] Fallback a cache localStorage...');
-          const cachedProjects = loadProjectsFromCache(user.username);
-          updateAppState({ projects: cachedProjects });
-          console.log('[Login] Progetti da cache:', cachedProjects.length);
-        } else {
-          updateAppState({ projects: [] });
-        }
-        
-        // Per dispositivi senza cache (primo accesso), questo è normale se non ci sono progetti
-        // Mostra un messaggio informativo ma non bloccante
-        if (error.code === 'permission-denied') {
-          console.error('[Login] Firestore permission denied error');
-          console.warn('[Login] Questo può essere normale per nuovi utenti. L\'utente può comunque creare progetti.');
-          // Non mostrare notifica per permission-denied, il modale gestirà l'errore
-        } else if (error.code === 'network-error') {
-          console.error('[Login] Network error');
-          showNotification('Connection error. You can still create a new project.', 'warning');
-        } else {
-          // Per altri errori, mostra un messaggio informativo
-          console.warn('[Login] Errore sincronizzazione. L\'utente può comunque creare progetti.');
-          // Non mostrare notifica per errori generici, il modale gestirà l'errore
-        }
+  window.enterLocalMode = function() {
+    currentUser = getLocalUser();
+    updateAppState({ user: currentUser, initialized: true, loading: false });
+    localStorage.setItem('amiantoCurrentUser', currentUser.username);
+    showDashboard();
+    const activeProject = localStorage.getItem('amiantoActiveProjectName');
+    enableOtherTabs(!!activeProject);
+    setTimeout(async () => {
+      const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
+      if (currentTab === 'projects') {
+        await loadAndRenderProjectsTab();
+      } else if (!activeProject) {
+        showProjectSelectionModal(false);
       }
-    } else {
-      console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
-      updateAppState({ projects: [] });
-    }
-
-    // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
-    try {
-      hideLoadingOverlay();
-      console.log('[Login] Showing dashboard...');
-      await showDashboard();
-      console.log('[Login] Dashboard shown');
-      
-      if (typeof showNotification === 'function') {
-        showNotification(`Welcome back, ${user.username}!`, 'success');
-      }
-      
-      // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
-      // L'utente deve selezionare o creare un progetto per continuare
-      // skipSync = true perché abbiamo già sincronizzato i progetti sopra
-      // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
-      await showProjectSelectionModal(false, true);
-      console.log('[Login] Project selection modal shown');
-    } catch (dashboardError) {
-      console.error('[Login] Error showing dashboard:', dashboardError);
-      hideLoadingOverlay();
-      if (typeof showLoginError === 'function') {
-        showLoginError('Error showing dashboard. Please refresh the page.');
-      }
-    }
-  }
-
-  // Show login error
-  function showLoginError(message) {
-    const alert = document.getElementById('loginAlert');
-    alert.textContent = message;
-    alert.classList.remove('d-none');
-  }
-
-  // Show registration modal
-  window.showRegistration = function() {
-    const modal = new bootstrap.Modal(document.getElementById('registerModal'));
-    modal.show();
-
-    // Clear form
-    document.getElementById('registerEmail').value = '';
-    document.getElementById('registerPassword').value = '';
-    document.getElementById('registerConfirmPassword').value = '';
-    document.getElementById('registerAlert').classList.add('d-none');
+    }, 300);
   };
 
-  // Setup registration modal
-  function setupRegistrationModal() {
-    // Auto-focus first field when modal opens
-    const registerModal = document.getElementById('registerModal');
-    if (registerModal) {
-      registerModal.addEventListener('shown.bs.modal', function() {
-        document.getElementById('registerEmail').focus();
-      });
+  window.logout = async function() {
+    if (confirm('Close the current project and return to project selection?')) {
+      try { await cleanupUnsavedCharacterFrames(); } catch (_) {}
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+      enableOtherTabs(false);
+      showProjectSelectionModal(true);
     }
-  }
-
-  // Register new user
-  window.registerUser = function() {
-    const email = document.getElementById('registerEmail').value.trim();
-    const password = document.getElementById('registerPassword').value;
-    const confirmPassword = document.getElementById('registerConfirmPassword').value;
-
-    // Validation
-    if (!email || !password || !confirmPassword) {
-      showRegisterError('Please fill in all fields');
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      showRegisterError('Passwords do not match');
-      return;
-    }
-
-    if (password.length < 6) {
-      showRegisterError('Password must be at least 6 characters long');
-      return;
-    }
-
-    // Firebase registration
-    fbRegister(email, password).then((cred) => {
-      const user = cred && cred.user;
-      if (user) {
-        const mapped = {
-          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-          email: user.email || '',
-          uid: user.uid
-        };
-        loginUser(mapped);
-      }
-      const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
-      if (modal) modal.hide();
-      showNotification('Account created successfully!', 'success');
-    }).catch((err) => {
-      console.error('[Register] Firebase error:', err && err.code, err && err.message);
-      showRegisterError('Registration failed. Please check your email and try again.');
-    });
   };
-
-  // Show registration error
-  function showRegisterError(message) {
-    const alert = document.getElementById('registerAlert');
-    alert.textContent = message;
-    alert.classList.remove('d-none');
-  }
-
-  // Funzione per pulire i frame non salvati da Supabase
   async function cleanupUnsavedCharacterFrames() {
     if (unsavedCharacterFrames.size === 0 && unsavedCharacterAssetIds.size === 0) {
       return; // Nessun frame da eliminare
     }
 
-    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati da Supabase...`);
+    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati...`);
 
     let deletedCount = 0;
     
-    // Prima: elimina usando gli Image objects tracciati
     const framesToDelete = Array.from(unsavedCharacterFrames);
     for (const frameImg of framesToDelete) {
       try {
@@ -11993,97 +12392,30 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
     
-    // Secondo: elimina usando gli assetId tracciati (cerca le immagini corrispondenti)
-    if (unsavedCharacterAssetIds.size > 0 && window.supabaseStorage && window.supabaseStorage.deleteAsset) {
-      try {
-        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-        const projectId = activeProjectName ? activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_') : null;
-        
-        if (projectId && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          const userId = window.firebaseAuth.currentUser.uid;
-          
-          // Cerca le immagini corrispondenti agli assetId nell'imageAssetMap
-          for (const assetId of Array.from(unsavedCharacterAssetIds)) {
-            try {
-              // Cerca l'immagine nell'imageAssetMap
-              let foundImage = null;
-              for (const [img, assetInfo] of imageAssetMap.entries()) {
-                if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
-                  foundImage = img;
-                  break;
-                }
-              }
-              
-              if (foundImage) {
-                const deleted = await deleteAssetFromImage(foundImage);
-                if (deleted) {
-                  deletedCount++;
-                }
-              } else {
-                // Se non trovato nell'imageAssetMap, prova a eliminare direttamente usando i metadati
-                // (richiede che abbiamo salvato i metadati in Firestore)
-                console.warn(`[Cleanup] Immagine non trovata nell'imageAssetMap per assetId ${assetId}, eliminazione diretta non supportata`);
-              }
-            } catch (error) {
-              console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
+    if (unsavedCharacterAssetIds.size > 0) {
+      for (const assetId of Array.from(unsavedCharacterAssetIds)) {
+        try {
+          let foundImage = null;
+          for (const [img, assetInfo] of imageAssetMap.entries()) {
+            if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+              foundImage = img;
+              break;
             }
           }
+          if (foundImage) {
+            const deleted = await deleteAssetFromImage(foundImage);
+            if (deleted) deletedCount++;
+          }
+        } catch (error) {
+          console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
         }
-      } catch (error) {
-        console.error('[Cleanup] Errore eliminazione frame per assetId:', error);
       }
     }
 
-    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati da Supabase`);
+    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati`);
     unsavedCharacterFrames.clear();
     unsavedCharacterAssetIds.clear();
   }
-
-  // Logout user
-  window.logout = async function() {
-    // If in demo mode, just exit demo without calling Firebase
-    if (isDemoMode) {
-      isDemoMode = false;
-      sessionStorage.removeItem('amiantoDemoMode');
-      currentUser = null;
-      localStorage.removeItem('amiantoCurrentUser');
-      localStorage.removeItem('amiantoRememberUser');
-      showLoginPage();
-      showNotification('You left Demo Mode', 'info');
-      return;
-    }
-
-    if (confirm('Are you sure you want to logout?')) {
-      // Pulisci i frame non salvati prima del logout
-      try {
-        await cleanupUnsavedCharacterFrames();
-      } catch (error) {
-        console.error('[Logout] Errore cleanup frame:', error);
-        // Continua comunque con il logout
-      }
-
-      fbSignOut().catch(()=>{}).finally(() => {
-        currentUser = null;
-        localStorage.removeItem('amiantoCurrentUser');
-        localStorage.removeItem('amiantoRememberUser');
-        showLoginPage();
-        showNotification('Logged out successfully', 'info');
-      });
-    }
-  };
-
-  // Enter demo mode (no account required)
-  window.enterDemoMode = function() {
-    isDemoMode = true;
-    sessionStorage.setItem('amiantoDemoMode', '1');
-    currentUser = {
-      username: 'Demo',
-      email: '',
-      uid: 'demo'
-    };
-    showDashboard();
-    showNotification('Demo Mode active: you are using the editor without an account', 'info');
-  };
 
   // Show user profile (placeholder)
   window.showUserProfile = function() {
@@ -12100,7 +12432,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Password recovery feature coming soon!', 'info');
   };
 
-  // Debug authentication system (simplified — demo user removed)
+  // Debug authentication system (simplified â€” demo user removed)
   window.debugAuth = function() {
     console.log('=== AUTH DEBUG INFO ===');
     console.log('Current user:', currentUser);
@@ -12164,26 +12496,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return `asset:${assetInfo.assetId}`;
     }
     
-    // IMPORTANTE: Se l'immagine è un oggetto Image ma non è nella mappa,
-    // serializzala come dataURL. Verrà poi processata da saveAllAssetsToStorage
-    // che la convertirà in assetId e la caricherà nello storage.
+    // IMPORTANTE: Se l'immagine Ã¨ un oggetto Image ma non Ã¨ nella mappa,
+    // serializzala come dataURL. VerrÃ  poi processata da saveAllAssetsToStorage
+    // che la convertirÃ  in assetId e la caricherÃ  nello storage.
     // Questo garantisce che TUTTI gli assets vengano serializzati e salvati.
     if (img && typeof img === 'object' && (img.src || (img.width && img.height))) {
-      // È un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
+      // Ãˆ un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
       const dataURL = imageToDataURL(img);
       if (dataURL) {
-        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrà convertita in assetId al salvataggio)`);
+        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrÃ  convertita in assetId al salvataggio)`);
         return dataURL;
       }
     }
     
     // Se è già una stringa (dataURL o assetId), restituiscila così com'è
     if (typeof img === 'string') {
+      if (img.startsWith('blob:')) return null;
       return img;
     }
     
     // Fallback: usa dataURL (per compatibilità con progetti esistenti)
-    return imageToDataURL(img);
+    const dataUrl = imageToDataURL(img);
+    if (dataUrl && dataUrl.startsWith('blob:')) return null;
+    return dataUrl;
   }
 
   function serializeRooms() {
@@ -12193,7 +12528,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (Array.isArray(r.foregrounds)) {
         console.log(`[Serialize] Room ${r.id}: serializzando ${r.foregrounds.length} foreground`, r.foregrounds.map(f => ({ id: f.id, name: f.name, hasImg: !!f.img })));
       } else {
-        console.log(`[Serialize] Room ${r.id}: r.foregrounds non è un array`, typeof r.foregrounds, r.foregrounds);
+        console.log(`[Serialize] Room ${r.id}: r.foregrounds non Ã¨ un array`, typeof r.foregrounds, r.foregrounds);
       }
       serialized.push({
         id: r.id,
@@ -12209,8 +12544,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             image: serializeImage(f.img),
             x: Number(x) || 0,
             y: Number(y) || 0,
-            offsetX: Number(x) || 0, // Mantieni per compatibilità
-            offsetY: Number(y) || 0, // Mantieni per compatibilità
+            offsetX: Number(x) || 0, // Mantieni per compatibilitÃ 
+            offsetY: Number(y) || 0, // Mantieni per compatibilitÃ 
             rotationRad: Number(f.rotationRad) || 0,
             scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
             scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
@@ -12234,9 +12569,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             enabled
           };
         }) : [],
+        animationInstances: Array.isArray(r.animationInstances) ? r.animationInstances.map(inst => ({
+          id: inst.id,
+          animationId: inst.animationId,
+          name: inst.name || inst.id,
+          x: Number(inst.x) || 0,
+          y: Number(inst.y) || 0,
+          layer: inst.layer === 'foreground' ? 'foreground' : 'background',
+          visible: inst.visible !== false,
+          autoPlay: inst.autoPlay === true
+        })) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
         hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
-          // ⚠️ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
+          // âš ï¸ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
           const hotspotObj = {
             id: h.id,
             name: h.name,
@@ -12245,9 +12590,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             scripts: {}
           };
           
-          // ⚠️ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
-          // enabled = true di default se non definito e c'è codice
-          // BUG FIX CRITICO: Garantisce che enabled=true quando c'è codice e enabled non è esplicitamente definito come false
+          // âš ï¸ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
+          // enabled = true di default se non definito e c'Ã¨ codice
+          // BUG FIX CRITICO: Garantisce che enabled=true quando c'Ã¨ codice e enabled non Ã¨ esplicitamente definito come false
           if (h.scripts && h.scripts.onClick) {
             const onClickData = h.scripts.onClick;
             
@@ -12262,24 +12607,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             
             const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
             
-            // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
-            // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+            // AUTOMATIZZAZIONE: Se c'Ã¨ codice, enabled deve essere sempre true
+            // L'obiettivo Ã¨ eliminare il blocco "enabled = false" per hotspot con codice
             let normalizedEnabled;
             if (hasCode) {
-              // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+              // Se c'Ã¨ codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
               normalizedEnabled = true;
               if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
                 console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
               }
             } else {
-              // Se non c'è codice, enabled può essere false
+              // Se non c'Ã¨ codice, enabled puÃ² essere false
               normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
             }
             
             // DEBUG: Verifica che il codice venga salvato correttamente
             const codeToSave = String(onClickData.code || '');
             if (hasCode && codeToSave.length === 0) {
-              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave è vuoto!`, {
+              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave Ã¨ vuoto!`, {
                 originalCode: onClickData.code,
                 codeType: typeof onClickData.code,
                 codeLength: onClickData.code ? String(onClickData.code).length : 0
@@ -12291,7 +12636,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               enabled: normalizedEnabled
             };
           } else {
-            // Se non c'è script, imposta struttura vuota e disabilitata
+            // Se non c'Ã¨ script, imposta struttura vuota e disabilitata
             hotspotObj.scripts.onClick = {
               code: '',
               enabled: false
@@ -12310,9 +12655,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
       const serializedRoom = serialized[serialized.length - 1];
       if (serializedRoom && Array.isArray(serializedRoom.foregrounds)) {
-        console.log(`[Serialize] ✓ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
+        console.log(`[Serialize] âœ“ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
       } else {
-        console.warn(`[Serialize] ⚠️ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
+        console.warn(`[Serialize] âš ï¸ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
       }
     });
     return serialized;
@@ -12476,7 +12821,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return embeddedById;
   }
 
-  /** Raccoglie codice hotspot già embedded nelle stanze live (chiave = hotspot id). */
+  /** Raccoglie codice hotspot giÃ  embedded nelle stanze live (chiave = hotspot id). */
   function collectEmbeddedHotspotScriptCodes() {
     return collectEmbeddedHotspotScriptCodesFromProject({ rooms: Array.from(rooms.values()) });
   }
@@ -12516,7 +12861,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   /**
    * Prima di serializzare/playtest: copia jsScripts negli hotspot embedded nelle stanze.
    * Senza questo passaggio il runtime vede rooms[].hotspots[].scripts.onClick vuoti
-   * finché non si fa Save progetto (che prima era l'unico momento di sync).
+   * finchÃ© non si fa Save progetto (che prima era l'unico momento di sync).
    */
   function syncEditorScriptsToRoomsBeforeSerialize() {
     try {
@@ -12571,7 +12916,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   /**
    * Dopo serializeProject, reinserisce script Hotspot/Inventory in scripts{} per il runtime
-   * (serializeScripts li rimuove se già embedded) e riallinea rooms via mergeLegacy.
+   * (serializeScripts li rimuove se giÃ  embedded) e riallinea rooms via mergeLegacy.
    */
   function reinjectHotspotScriptsForPlaytest(projectObj) {
     if (!projectObj.scripts || typeof projectObj.scripts !== 'object') {
@@ -12589,7 +12934,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     mergeLegacyHotspotScriptsIntoRooms(projectObj);
   }
 
-  /** Payload progetto pronto per runtime / playtest (stato live editor, non snapshot Firebase obsoleto). */
+  /** Payload progetto pronto per runtime / playtest (stato live editor). */
   function buildPlaytestProjectPayload() {
     saveCurrentScriptIfNeeded();
     syncEditorScriptsToRoomsBeforeSerialize();
@@ -12602,7 +12947,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   /**
    * Gli script hotspot vivono in rooms[].hotspots[].scripts.onClick.
-   * Rimuove Hotspot:* duplicati da scripts{} quando il codice è già embedded.
+   * Rimuove Hotspot:* duplicati da scripts{} quando il codice Ã¨ giÃ  embedded.
    */
   function pruneDuplicateHotspotScriptsFromScriptsObject(scriptsObj, projectObjForEmbedded) {
     if (!scriptsObj || typeof scriptsObj !== 'object') return scriptsObj;
@@ -12642,7 +12987,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       characterScripts: mapToObject(characterScripts),
       inventoryScripts: mapToObject(inventoryScripts),
       guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {}
-      // ⚠️ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
+      // âš ï¸ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
     };
   }
 
@@ -12740,6 +13085,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       },
       settings: serializeSettings(),
       rooms: serializeRooms(),
+      roomAnimations: serializeRoomAnimationsCatalog(),
       guis: serializeGUI(),
       characters: serializeCharacters(),
       inventory: serializeInventory(),
@@ -12802,7 +13148,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     try {
       if (!navigator.storage || !navigator.storage.getDirectory) return null;
       
-      // Debounce: se è passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
+      // Debounce: se Ã¨ passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
       const now = Date.now();
       const timeSinceLastSave = now - lastOpfsSaveTime;
       
@@ -12829,8 +13175,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       lastOpfsSaveTime = now;
       return await saveProjectJsonToOPFSInternal(jsonString, projectName);
     } catch (err) {
-      // Non loggare errori OPFS come warning - è solo un fallback opzionale
-      // OPFS può fallire per vari motivi (permessi, sicurezza browser, ecc.)
+      // Non loggare errori OPFS come warning - Ã¨ solo un fallback opzionale
+      // OPFS puÃ² fallire per vari motivi (permessi, sicurezza browser, ecc.)
       return null;
     }
   }
@@ -12917,12 +13263,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return typeof value === 'string' && value.startsWith('asset:');
   }
 
-  /** Conta stringhe data:…;base64, nel progetto (immagini, audio, ecc.). */
+  /** Conta stringhe data:â€¦;base64, nel progetto (immagini, audio, ecc.). */
   function countEmbeddedDataUrls(root) {
     return collectEmbeddedDataUrlStats(root).embeddedAssetCount;
   }
 
-  /** Somma i byte delle stringhe data:…;base64, ancora nel progetto serializzato. */
+  /** Somma i byte delle stringhe data:â€¦;base64, ancora nel progetto serializzato. */
   function measureEmbeddedDataUrlBytes(root) {
     return collectEmbeddedDataUrlStats(root).embeddedBytes;
   }
@@ -12961,7 +13307,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
   }
 
-  /** Conta base64 solo nei campi asset (esclude scripts/eventConditions dove il testo può contenere "data:"). */
+  /** Conta base64 solo nei campi asset (esclude scripts/eventConditions dove il testo puÃ² contenere "data:"). */
   function measurePendingAssetDataUrlBytes(projectObj) {
     if (!projectObj || typeof projectObj !== 'object') return 0;
     let total = 0;
@@ -12996,7 +13342,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return count;
   }
 
-  /** Stima = payload Firestore canonico (stesso oggetto del salvataggio). */
+  /** Stima = payload canonico (stesso oggetto del salvataggio). */
   function estimateFirestorePayloadBytes(projectObj) {
     return measureFirestorePayloadBytes(projectObj);
   }
@@ -13083,7 +13429,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  /** Inventario Firestore: solo *Ref (asset:), mai base64 nei campi legacy. */
+  /** Inventario: solo *Ref (asset:), mai base64 nei campi legacy. */
   function normalizeInventoryAssetRefsForFirestore(inv) {
     if (!inv || typeof inv !== 'object') return;
     const promoteRef = (legacyKey, refKey) => {
@@ -13190,7 +13536,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return duplicates;
   }
 
-  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
+  /** Rimuove scripts Hotspot:* duplicati se giÃ  in rooms[].hotspots[].scripts.onClick */
   function dedupeHotspotScriptsInPayload(payload) {
     if (!payload || typeof payload !== 'object') return payload;
     if (!payload.scripts || typeof payload.scripts !== 'object') return payload;
@@ -13199,9 +13545,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Unica sorgente di verità per payload Firestore, stima dimensione ed export slim.
+   * Unica sorgente di veritÃ  per payload canonico, stima dimensione ed export slim.
    * @param {Object} projectObj - Progetto da serializeProject() (o equivalente)
-   * @returns {Object} Clone normalizzato pronto per JSON.stringify → Firestore
+   * @returns {Object} Clone normalizzato pronto per JSON.stringify / salvataggio locale
    */
   function prepareProjectPayloadForFirestore(projectObj) {
     if (!projectObj || typeof projectObj !== 'object') {
@@ -13223,7 +13569,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * @param {Object} payload - Payload già preparato o grezzo
+   * @param {Object} payload - Payload giÃ  preparato o grezzo
    * @param {{ autoStrip?: boolean, warn?: boolean }} [options]
    */
   function assertNoEmbeddedDataUrls(payload, options = {}) {
@@ -13234,7 +13580,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const warn = options.warn !== false;
     if (stats.embeddedAssetCount > 0 && warn) {
       const top = stats.offenders.slice(0, 5).map(o => `${o.path} (${formatProjectSizeLabel(o.bytes)})`).join(', ');
-      const msg = `[Firestore] ${stats.embeddedAssetCount} asset embedded (base64) nel payload (${formatProjectSizeLabel(stats.embeddedBytes)}). Carica su storage prima del salvataggio. Top: ${top}`;
+      const msg = `[Payload] ${stats.embeddedAssetCount} embedded (base64) assets in payload (${formatProjectSizeLabel(stats.embeddedBytes)}). Upload to storage before saving. Top: ${top}`;
       console.warn(msg, stats);
       addDebugMessage(msg, 'warning');
     }
@@ -13303,7 +13649,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       sectionBreakdown: breakdown,
       duplicateScriptBodies: scriptDupes
     };
-    console.group('[PayloadDebug] Firestore payload');
+    console.group('[PayloadDebug] Project payload');
     console.log('Dimensione serializzata (prepared):', report.totalLabel, `(${totalBytes} B)`);
     console.log('Embedded nel payload prepared:', embedded);
     console.log('Embedded negli asset live (pre-prepare):', pendingEmbedded);
@@ -13313,7 +13659,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return report;
   }
 
-  /** Allinea nomi ref inventario legacy → campi editor (background, image, …). */
+  /** Allinea nomi ref inventario legacy â†’ campi editor (background, image, â€¦). */
   function migrateLegacyInventoryRefsOnLoad(projectObj) {
     const inv = projectObj && projectObj.inventory;
     if (!inv || typeof inv !== 'object') return;
@@ -13339,8 +13685,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
     if (stats.embeddedAssetCount > 0) {
       console.warn(
-        `[Load] Progetto con ${stats.embeddedAssetCount} asset embedded (${formatProjectSizeLabel(stats.embeddedBytes)}). ` +
-        'Usa Save progetto per migrarli su storage.'
+        `[Load] Project has ${stats.embeddedAssetCount} embedded assets (${formatProjectSizeLabel(stats.embeddedBytes)}). ` +
+        'Use Save project to migrate them to storage.'
       );
       window.__amiantoEmbeddedAssetsOnLoad = stats;
     } else {
@@ -13357,9 +13703,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.markAmiantoProjectDirty = function() {
     window.__amiantoProjectDirty = true;
     scheduleProjectSizeIndicatorRefresh(350);
+    if (typeof scheduleAmiantoDiskPersist === 'function') {
+      scheduleAmiantoDiskPersist();
+    }
   };
 
-  /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
+  /** Progetti legacy: script solo in scripts['Hotspot:id'] â†’ hotspot.scripts.onClick */
   function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
     if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
     for (const [key, content] of Object.entries(projectObj.scripts)) {
@@ -13384,755 +13733,64 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
   window.mergeLegacyHotspotScriptsIntoRooms = mergeLegacyHotspotScriptsIntoRooms;
 
-  // ================================
-  // FIRESTORE PERSISTENCE SYSTEM
-  // ================================
-  // 
-  // AGGIUNTO: Sistema completo di salvataggio persistente su Firestore
-  // 
-  // COSA È GIÀ IMPLEMENTATO:
-  // - Firebase è già configurato in firebase-config.js (window.firebaseDB disponibile)
-  // - serializeProject() esiste e funziona
-  // - applyProjectObject() esiste per caricare progetti
-  // - localStorage/OPFS come cache locale
-  // 
-  // COSA È STATO AGGIUNTO:
-  // - saveProjectToFirestore(): Salva progetto su Firestore
-  // - loadProjectFromFirestore(): Carica progetto da Firestore
-  // - listProjectsFromFirestore(): Lista progetti da Firestore (TODO: integrare in UI)
-  // - autosaveToCache(): Autosave su cache locale come fallback
-  // - Modificato saveCurrentProject(): Ora salva anche su Firestore
-  // - Modificato openProjectByName(): Carica prima da Firestore, poi fallback cache
-  // 
-  // STRUTTURA FIRESTORE:
-  // users/{userId}/projects/{projectId}
-  // {
-  //   name: string,
-  //   projectData: string (JSON serializzato),
-  //   createdAt: timestamp,
-  //   updatedAt: timestamp
-  // }
-  // 
-  // TODO:
-  // - Implementare sistema di projectId univoci (attualmente usa nome normalizzato)
-  // - Integrare listProjectsFromFirestore() nella UI di selezione progetti
-  // - Aggiungere autosave periodico (ogni 30-60 secondi)
-  //
-
-  /**
-   * Salva un progetto su Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto (usa il nome del progetto come ID temporaneo)
-   * @param {Object} projectData - Oggetto progetto completo (già serializzato)
-   * @returns {Promise<boolean>} - true se salvato con successo, false altrimenti
-   * 
-   * GIÀ IMPLEMENTATO: Firebase è già configurato in firebase-config.js
-   * AGGIUNTO: Questa funzione per salvare su Firestore
-   */
-  async function saveProjectToFirestore(userId, projectId, projectData) {
-    try {
-      console.log('[Firestore] Tentativo salvataggio progetto...', { userId, projectId });
-      
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
-        addDebugMessage('[Firestore] Firestore unavailable, using cache fallback', 'warning');
-        return false;
-      }
-      console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
-
-      // Verifica che userId e projectId siano validi
-      if (!userId || !projectId) {
-        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
-        addDebugMessage('[Firestore] userId o projectId mancanti', 'error');
-        return false;
-      }
-
-      const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
-      const firestorePayload = prepareProjectPayloadForFirestore(projectData);
-      const jsonString = JSON.stringify(firestorePayload);
-      const dataSizeBytes = new Blob([jsonString]).size;
-      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      const embeddedStats = assertNoEmbeddedDataUrls(firestorePayload, { warn: false });
-      const dataURLCount = embeddedStats.embeddedAssetCount;
-      console.log('[Firestore] Dati progetto preparati:', {
-        projectName,
-        dataSize: jsonString.length,
-        dataSizeBytes,
-        dataSizeMB: `${dataSizeMB} MB`,
-        dataURLCount,
-        embeddedBytes: embeddedStats.embeddedBytes
-      });
-
-      if (dataURLCount > 0) {
-        const errorMsg = `Salvataggio Firestore bloccato: ${dataURLCount} asset ancora in base64 (data:…). Carica tutti gli asset su storage prima di salvare.`;
-        console.error('[Firestore] ❌', errorMsg);
-        addDebugMessage(errorMsg, 'error');
-        throw new Error(errorMsg);
-      }
-      
-      // Firestore ha un limite di 1MB per campo
-      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
-      if (dataSizeBytes > FIRESTORE_MAX_SIZE) {
-        const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
-        console.error('[Firestore] ❌', errorMsg);
-        addDebugMessage(errorMsg, 'error');
-        throw new Error(errorMsg);
-      }
-
-      // Struttura dati Firestore: users/{userId}/projects/{projectId}
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      console.log('[Firestore] Reference creata:', projectRef.path);
-
-      // Verifica se il documento esiste già per preservare createdAt
-      const docSnapshot = await projectRef.get();
-      const documentExists = docSnapshot.exists;
-      
-      // Prepara i dati da salvare
-      const firestoreData = {
-        name: projectName,
-        projectData: jsonString, // Salva come stringa JSON per evitare limiti di profondità Firestore
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-      
-      // Aggiungi createdAt solo se il documento non esiste
-      if (!documentExists) {
-        firestoreData.createdAt = firebase.firestore.FieldValue.serverTimestamp();
-        console.log('[Firestore] Creazione nuovo documento');
-      } else {
-        console.log('[Firestore] Aggiornamento documento esistente');
-      }
-
-      console.log('[Firestore] 🔄 Tentativo scrittura su Firestore...');
-      
-      // Usa set con merge per creare o aggiornare
-      await projectRef.set(firestoreData, { merge: true });
-
-      console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
-      console.log(`[Firestore] 📊 Dettagli salvataggio:`, {
-        projectId,
-        projectName,
-        dataSize: `${dataSizeMB} MB`,
-        documentExists: documentExists ? 'aggiornato' : 'creato'
-      });
-      addDebugMessage(`[Firestore] Project saved: ${projectName}`, 'success');
-
-      window.__amiantoLastFirestorePayloadBytes = dataSizeBytes;
-      window.__amiantoProjectDirty = false;
-      
-      // Aggiorna i counter dopo salvataggio progetto
-      if (typeof updateProjectSizeIndicator === 'function') {
-        updateProjectSizeIndicator();
-      }
-      
-      return true;
-    } catch (error) {
-      console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
-      console.error('[Firestore] Dettagli errore:', {
-        code: error.code,
-        message: error.message,
-        stack: error.stack
-      });
-      addDebugMessage(`[Firestore] Save error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
-      return false;
-    }
-  }
-
-  /**
-   * Carica un progetto da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto
-   * @returns {Promise<Object|null>} - Oggetto progetto o null se non trovato/errore
-   * 
-   * AGGIUNTO: Questa funzione per caricare da Firestore
-   */
-  async function loadProjectFromFirestore(userId, projectId) {
-    try {
-      console.log('[Firestore] Tentativo caricamento progetto...', { userId, projectId });
-      
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Firestore] Firestore non disponibile');
-        return null;
-      }
-
-      // Verifica che userId e projectId siano validi
-      if (!userId || !projectId) {
-        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
-        return null;
-      }
-
-      // Verifica che l'utente sia autenticato (per le regole di sicurezza)
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Firestore] Utente non autenticato - impossibile caricare da Firestore');
-        return null;
-      }
-
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid !== userId) {
-        console.error('[Firestore] userId non corrisponde a utente autenticato', {
-          userId,
-          currentAuthUid
-        });
-        return null;
-      }
-
-      console.log('[Firestore] Verifiche superate, accesso a Firestore...');
-
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      console.log('[Firestore] Reference creata:', projectRef.path);
-
-      const doc = await projectRef.get();
-
-      if (!doc.exists) {
-        console.log(`[Firestore] Progetto non trovato: ${projectId}`);
-        return null;
-      }
-
-      const data = doc.data();
-      if (!data || !data.projectData) {
-        console.error('[Firestore] Dati progetto non validi');
-        return null;
-      }
-
-      // Parse del JSON salvato
-      const projectObj = JSON.parse(data.projectData);
-      console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
-      addDebugMessage(`[Firestore] Project loaded: ${data.name || projectId}`, 'success');
-      return projectObj;
-    } catch (error) {
-      console.error('[Firestore] ❌ Errore durante il caricamento:', error);
-      console.error('[Firestore] Dettagli errore:', {
-        code: error.code,
-        message: error.message,
-        stack: error.stack
-      });
-      addDebugMessage(`[Firestore] Load error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
-      return null;
-    }
-  }
-
-  /**
-   * Test connessione Firestore - funzione di debug
-   * AGGIUNTO: Funzione per testare se Firestore funziona correttamente
-   */
-  window.testFirestoreConnection = async function() {
-    console.log('=== TEST CONNESSIONE FIRESTORE ===');
-    
-    // 1. Verifica Firestore disponibile
-    if (!window.firebaseDB) {
-      console.error('❌ window.firebaseDB non disponibile');
-      addDebugMessage('❌ Firestore unavailable', 'error');
-      return false;
-    }
-    console.log('✅ window.firebaseDB disponibile');
-    
-    // 2. Verifica utente autenticato
-    if (!currentUser || !currentUser.uid) {
-      console.error('❌ Utente non autenticato o uid mancante');
-      addDebugMessage('❌ User not authenticated', 'error');
-      return false;
-    }
-    console.log('✅ Utente autenticato:', currentUser.uid);
-    
-    // 3. Test scrittura
-    try {
-      const testRef = window.firebaseDB
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('projects')
-        .doc('_test_connection');
-      
-      const testData = {
-        name: 'Test Connection',
-        projectData: '{"test": true}',
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-      
-      console.log('🔄 Tentativo scrittura test...');
-      await testRef.set(testData);
-      console.log('✅ Scrittura test riuscita!');
-      
-      // 4. Test lettura
-      console.log('🔄 Tentativo lettura test...');
-      const doc = await testRef.get();
-      if (doc.exists) {
-        console.log('✅ Lettura test riuscita!', doc.data());
-        addDebugMessage('✅ Test Firestore: connessione OK', 'success');
-        
-        // Pulisci documento di test
-        await testRef.delete();
-        console.log('🧹 Documento di test eliminato');
-        return true;
-      } else {
-        console.error('❌ Documento test non trovato dopo scrittura');
-        return false;
-      }
-    } catch (error) {
-      console.error('❌ Errore durante test:', error);
-      console.error('Dettagli:', {
-        code: error.code,
-        message: error.message
-      });
-      addDebugMessage(`❌ Firestore test failed: ${error.message} (${error.code})`, 'error');
-      return false;
-    }
-  };
-
-  /**
-   * Lista tutti i progetti di un utente da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti con metadata
-   * 
-   * AGGIUNTO: Questa funzione per listare progetti da Firestore
-   * TODO: Integrare questa funzione nella UI di selezione progetti
-   */
-  /**
-   * Lista progetti da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti caricati da Firestore
-   * @throws {Error} - Lancia errori invece di ritornare array vuoto
-   */
-  async function listProjectsFromFirestore(userId) {
-    if (!window.firebaseDB) {
-      const error = new Error('Firestore database not available');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    if (!userId) {
-      const error = new Error('User ID is required');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    // Verifica che l'utente sia autenticato
-    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      const error = new Error('User not authenticated');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    const currentAuthUid = window.firebaseAuth.currentUser.uid;
-    if (currentAuthUid !== userId) {
-      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    try {
-      const projectsRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects');
-
-      const projects = [];
-      let lastDoc = null;
-      let hasMore = true;
-      const batchSize = 100; // Firestore default limit
-
-      // Implementa paginazione per recuperare TUTTI i progetti
-      // Usa documentId come campo di ordinamento (sempre disponibile)
-      try {
-        const firebaseObj = window.firebase || firebase;
-        const FieldPath = firebaseObj.firestore.FieldPath;
-        
-        while (hasMore) {
-          let query = projectsRef.orderBy(FieldPath.documentId()).limit(batchSize);
-          
-          if (lastDoc) {
-            query = query.startAfter(lastDoc);
-          }
-
-          const snapshot = await query.get();
-          
-          if (snapshot.empty) {
-            hasMore = false;
-            break;
-          }
-
-          snapshot.forEach(doc => {
-            const data = doc.data();
-            projects.push({
-              id: doc.id,
-              name: data.name || doc.id,
-              updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-              createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-            });
-          });
-
-          // Se abbiamo meno documenti del batch size, non ci sono più documenti
-          if (snapshot.size < batchSize) {
-            hasMore = false;
-          } else {
-            // Prendi l'ultimo documento per la prossima query
-            lastDoc = snapshot.docs[snapshot.docs.length - 1];
-          }
-        }
-      } catch (orderByError) {
-        // Fallback: se orderBy fallisce, prova una query semplice
-        console.warn('[Firestore] Errore con orderBy, uso query semplice:', orderByError);
-        const snapshot = await projectsRef.get();
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          projects.push({
-            id: doc.id,
-            name: data.name || doc.id,
-            updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-            createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-          });
-        });
-      }
-
-      console.log(`[Firestore] Recuperati ${projects.length} progetti totali con paginazione`);
-      return projects;
-    } catch (error) {
-      // Distingui tra errori di permesso e altri errori
-      if (error.code === 'permission-denied') {
-        console.error('[Firestore] Permission denied error:', error);
-        console.error('[Firestore] Check Firestore security rules for user:', userId);
-        const permissionError = new Error(`Permission denied: ${error.message}`);
-        permissionError.code = 'permission-denied';
-        throw permissionError;
-      }
-      
-      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[Firestore] Network error:', error);
-        const networkError = new Error(`Network error: ${error.message}`);
-        networkError.code = 'network-error';
-        throw networkError;
-      }
-
-      console.error('[Firestore] Unexpected error during listing:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Normalizza un progetto per garantire struttura coerente
-   * @param {Object} project - Progetto da normalizzare
-   * @param {number} index - Indice opzionale per progetti senza nome
-   * @returns {Object} - Progetto normalizzato
-   */
-  function normalizeProject(project, index = null) {
-    if (!project || typeof project !== 'object') {
-      return {
-        settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
-        updatedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        source: 'unknown'
-      };
-    }
-
-    const settings = project.settings
-      ? { ...project.settings }
-      : { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` };
-    const stableId = project.id || settings.id || normalizeProjectIdFromName(settings.name);
-    if (stableId) {
-      settings.id = stableId;
-    }
-    return {
-      settings,
-      updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
-      createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
-      source: project.source || 'unknown',
-      id: stableId || null
-    };
-  }
-
-  /**
-   * Carica progetti dalla cache localStorage
-   * @param {string} username - Username dell'utente
-   * @returns {Array} - Array di progetti normalizzati o array vuoto
-   */
-  function loadProjectsFromCache(username) {
-    if (!username) {
-      console.warn('[Cache] Username non disponibile per caricamento cache');
-      return [];
-    }
-
-    try {
-      const cacheKey = `amiantoProjects_${username}`;
-      const cachedData = localStorage.getItem(cacheKey);
-      
-      if (!cachedData) {
-        console.log('[Cache] Nessun dato in cache');
-        return [];
-      }
-
-      const projects = JSON.parse(cachedData);
-      
-      if (!Array.isArray(projects)) {
-        console.error('[Cache] Dati cache non sono un array:', typeof projects);
-        return [];
-      }
-
-      // Normalizza tutti i progetti
-      const normalizedProjects = projects.map((p, i) => normalizeProject(p, i));
-      console.log('[Cache] ✅ Caricati', normalizedProjects.length, 'progetti dalla cache');
-      return normalizedProjects;
-    } catch (error) {
-      console.error('[Cache] ❌ Errore parsing cache:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Salva progetti in cache localStorage
-   * @param {string} username - Username dell'utente
-   * @param {Array} projects - Array di progetti da salvare
-   */
-  function saveProjectsToCache(username, projects) {
-    if (!username) {
-      console.warn('[Cache] Username non disponibile per salvataggio cache');
-      return;
-    }
-
-    if (!Array.isArray(projects)) {
-      console.error('[Cache] Tentativo di salvare dati non-array in cache');
-      return;
-    }
-
-    try {
-      const cacheKey = `amiantoProjects_${username}`;
-      localStorage.setItem(cacheKey, JSON.stringify(projects));
-      console.log('[Cache] ✅ Salvati', projects.length, 'progetti in cache');
-    } catch (error) {
-      console.error('[Cache] ❌ Errore salvataggio cache:', error);
-    }
-  }
-
-  /**
-   * FUNZIONE PRINCIPALE: Ottiene progetti per la UI
-   * Questa è l'UNICA funzione che la UI deve usare per ottenere progetti
-   * Gestisce internamente cache e fallback
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti normalizzati (sempre un array, anche vuoto)
-   */
   async function getProjectsForUI(userId) {
-    if (!userId) {
-      console.error('[getProjectsForUI] userId mancante');
-      return [];
-    }
-
-    if (!currentUser || !currentUser.username) {
-      console.error('[getProjectsForUI] currentUser non disponibile');
-      return [];
-    }
-
-    const username = currentUser.username;
-
-    // STEP 1: Verifica se la cache esiste ed è valida
-    const cachedProjects = loadProjectsFromCache(username);
-    
-    // Se la cache esiste e ha progetti, usala immediatamente
-    // (ma aggiorna in background se possibile)
-    if (cachedProjects.length > 0) {
-      console.log('[getProjectsForUI] Cache trovata con', cachedProjects.length, 'progetti');
-      
-      // Prova ad aggiornare in background (non blocca il ritorno)
-      loadProjectsDirectlyFromFirestore(userId)
-        .then(firestoreProjects => {
-          if (Array.isArray(firestoreProjects) && firestoreProjects.length > 0) {
-            const normalized = firestoreProjects.map((p, i) => normalizeProject(p, i));
-            saveProjectsToCache(username, normalized);
-            console.log('[getProjectsForUI] Cache aggiornata in background');
-          }
-        })
-        .catch(error => {
-          console.warn('[getProjectsForUI] Errore aggiornamento background (non critico):', error);
-        });
-      
-      return cachedProjects;
-    }
-
-    // STEP 2: Cache vuota o non valida, carica da Firestore
-    console.log('[getProjectsForUI] Cache vuota o non valida, caricamento da Firestore...');
-    
-    try {
-      const firestoreProjects = await loadProjectsDirectlyFromFirestore(userId);
-      
-      if (!Array.isArray(firestoreProjects)) {
-        console.error('[getProjectsForUI] Firestore ha restituito dati non-array');
-        return [];
-      }
-
-      // Normalizza progetti
-      const normalizedProjects = firestoreProjects.map((p, i) => normalizeProject(p, i));
-      
-      // Salva in cache
-      saveProjectsToCache(username, normalizedProjects);
-      
-      console.log('[getProjectsForUI] ✅ Caricati', normalizedProjects.length, 'progetti da Firestore');
-      return normalizedProjects;
-    } catch (error) {
-      console.error('[getProjectsForUI] ❌ Errore caricamento da Firestore:', error);
-      
-      // Distingui errori critici
-      if (error.code === 'permission-denied') {
-        console.error('[getProjectsForUI] Permission denied - verifica regole Firestore per utente:', userId);
-      } else if (error.code === 'network-error') {
-        console.error('[getProjectsForUI] Network error - verifica connessione');
-      }
-      
-      // Ritorna array vuoto invece di lanciare errore
-      // La UI può gestire lista vuota mostrando messaggio appropriato
-      return [];
-    }
+    if (!currentUser || !currentUser.username) return [];
+    return loadProjectsFromCache(currentUser.username);
   }
 
-  /**
-   * Carica e renderizza progetti sempre da Firestore (NO cache) nella tab Projects
-   * Questa funzione viene chiamata quando si entra nella tab Projects
-   */
   async function loadAndRenderProjectsTab() {
     const container = document.getElementById('projects-list-container');
     const currentProjectInfo = document.getElementById('current-project-info');
     const currentProjectName = document.getElementById('current-project-name');
     const currentProjectUpdated = document.getElementById('current-project-updated');
-    
-    if (!container) {
-      console.error('[ProjectsTab] Container not found');
-      return;
-    }
-    
-    // Mostra loading
+    if (!container) return;
+
     container.innerHTML = `
       <div class="text-center py-4">
         <div class="spinner-border text-primary" role="status">
           <span class="visually-hidden">Loading...</span>
         </div>
-        <p class="text-muted mt-3">Loading projects from Firestore...</p>
+        <p class="text-muted mt-3">Loading projects...</p>
       </div>
     `;
-    
+
     try {
-      // Usa AppState.user come fonte primaria, fallback a currentUser, poi a firebaseAuth
-      let userId = null;
-      let username = null;
-      
-      console.log('[ProjectsTab] Verifica utente:', {
-        appStateUser: AppState.user,
-        currentUser: currentUser,
-        firebaseAuth: !!window.firebaseAuth,
-        firebaseAuthCurrentUser: window.firebaseAuth?.currentUser
-      });
-      
-      if (AppState.user && AppState.user.uid) {
-        userId = AppState.user.uid;
-        username = AppState.user.username;
-        console.log('[ProjectsTab] Usando AppState.user:', userId);
-      } else if (currentUser && currentUser.uid) {
-        userId = currentUser.uid;
-        username = currentUser.username;
-        console.log('[ProjectsTab] Usando currentUser:', userId);
-      } else if (window.firebaseAuth && window.firebaseAuth.currentUser) {
-        const fbUser = window.firebaseAuth.currentUser;
-        userId = fbUser.uid;
-        username = (fbUser.email || '').split('@')[0] || `user_${fbUser.uid.substring(0, 6)}`;
-        console.log('[ProjectsTab] Usando firebaseAuth.currentUser:', userId);
-      }
-      
-      if (!userId) {
-        console.warn('[ProjectsTab] Nessun utente trovato');
-        container.innerHTML = `
-          <div class="alert alert-warning" role="alert">
-            <strong>Please login to view projects</strong><br>
-            <small>No authenticated user found. Please refresh the page or login again.</small>
-          </div>
-        `;
-        return;
-      }
-      
-      console.log('[ProjectsTab] Caricamento progetti per userId:', userId);
-      
-      // Carica SEMPRE direttamente da Firestore (no cache)
-      const projects = await loadProjectsDirectlyFromFirestore(userId);
-      
-      // Renderizza lista progetti
+      const projects = await getProjectsForUI(currentUser?.uid);
       renderProjectsListInTab(projects, container);
-      
-      // Aggiorna info progetto corrente
+
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (activeProjectName && currentProjectInfo && currentProjectName && currentProjectUpdated) {
-        const project = projects.find(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
-          return name === activeProjectName;
-        });
-        
+        const project = projects.find(p => p.settings?.name === activeProjectName || p.name === activeProjectName);
         if (project) {
-          currentProjectName.textContent = activeProjectName;
-          const updated = project.updatedAt || project.createdAt || '';
-          if (updated) {
-            const updatedDate = new Date(updated);
-            currentProjectUpdated.textContent = `Last updated: ${updatedDate.toLocaleString()}`;
-          } else {
-            currentProjectUpdated.textContent = '';
-          }
           currentProjectInfo.style.display = 'block';
-          
-          // Abilita altre tab
-          enableOtherTabs(true);
-        } else {
-          currentProjectInfo.style.display = 'none';
-          enableOtherTabs(false);
+          currentProjectName.textContent = activeProjectName;
+          currentProjectUpdated.textContent = project.updatedAt
+            ? `Updated: ${new Date(project.updatedAt).toLocaleString()}`
+            : '';
         }
-      } else {
-        if (currentProjectInfo) currentProjectInfo.style.display = 'none';
-        enableOtherTabs(false);
       }
-      
     } catch (error) {
-      console.error('[ProjectsTab] Errore caricamento progetti:', error);
-      container.innerHTML = `
-        <div class="alert alert-danger" role="alert">
-          <strong>Error loading projects:</strong><br>
-          ${error.message || error}
-          ${error.code ? ` (${error.code})` : ''}
-        </div>
-      `;
-      enableOtherTabs(false);
+      console.error('[ProjectsTab] Errore:', error);
+      container.innerHTML = `<div class="alert alert-danger">Error loading projects</div>`;
     }
   }
-  
-  // WeakMap per memorizzare gli event handler dei container (evita memory leak)
+
   const containerHandlers = new WeakMap();
-  
-  /**
-   * Renderizza lista progetti nella tab Projects
-   */
+
   function renderProjectsListInTab(projects, container) {
     if (!container) return;
-    
+
     const hasProjects = Array.isArray(projects) && projects.length > 0;
-    
+
     if (hasProjects) {
       const projectsHtml = projects.map((p) => {
         const normalized = normalizeProject(p);
         const name = normalized.settings.name;
         const updated = normalized.updatedAt || normalized.createdAt || '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        
+        const updatedShort = updated ? new Date(updated).toLocaleString() : '';
         const isActive = name === localStorage.getItem('amiantoActiveProjectName');
-        
+        const filePath = normalized.filePath || getProjectFilePath(name);
+
         return `
           <div class="list-group-item bg-secondary text-light mb-2 ${isActive ? 'border border-success' : ''}" data-project-name="${name}">
             <div class="d-flex justify-content-between align-items-start">
@@ -14140,6 +13798,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 <strong>${name}</strong>
                 ${isActive ? ' <span class="badge bg-success">Active</span>' : ''}
                 ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+                ${filePath ? `<br><small class="text-muted" title="${filePath}">📁 ${filePath}</small>` : ''}
               </div>
               <div class="btn-group btn-group-sm ms-2">
                 <button class="btn btn-success" data-action="open" data-project-name="${name}" ${isActive ? 'disabled' : ''}>
@@ -14153,127 +13812,80 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           </div>
         `;
       }).join('');
-      
-      container.innerHTML = `
-        <div class="list-group">
-          ${projectsHtml}
-        </div>
-      `;
+
+      container.innerHTML = `<div class="list-group">${projectsHtml}</div>`;
     } else {
       container.innerHTML = `
         <div class="text-center py-4">
           <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+          <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `;
     }
-    
-    // Aggiungi event listeners ai pulsanti usando delegazione eventi (più efficiente e evita duplicati)
-    // Rimuovi listener precedenti se esistono
+
     const existingHandler = containerHandlers.get(container);
-    if (existingHandler) {
-      container.removeEventListener('click', existingHandler);
-    }
-    
+    if (existingHandler) container.removeEventListener('click', existingHandler);
+
     const clickHandler = async (e) => {
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
-      
       e.preventDefault();
       e.stopPropagation();
       const action = btn.getAttribute('data-action');
       const projectName = btn.getAttribute('data-project-name');
-        
+
       if (action === 'open' && projectName) {
         try {
-          showNotification(`Loading project "${projectName}"...`, 'info');
+          showNotification(`Loading "${projectName}"...`, 'info');
           await openProjectByName(projectName);
-          // Ricarica la lista dopo apertura
           await loadAndRenderProjectsTab();
-          showNotification(`Project "${projectName}" opened successfully!`, 'success');
+          showNotification(`Project "${projectName}" opened`, 'success');
         } catch (error) {
-          console.error('[ProjectsTab] Errore apertura progetto:', error);
+          console.error('[ProjectsTab] Errore apertura:', error);
           showNotification('Error opening project', 'error');
         }
       } else if (action === 'delete' && projectName) {
-        if (confirm(`Delete project "${projectName}"? This action cannot be undone.`)) {
-          try {
-            await deleteProjectByName(projectName);
-            // Ricarica la lista dopo eliminazione
-            await loadAndRenderProjectsTab();
-            showNotification(`Project "${projectName}" deleted`, 'info');
-          } catch (error) {
-            console.error('[ProjectsTab] Errore eliminazione progetto:', error);
-            showNotification('Error deleting project', 'error');
-          }
+        try {
+          await deleteProjectByName(projectName);
+          await loadAndRenderProjectsTab();
+        } catch (error) {
+          console.error('[ProjectsTab] Errore eliminazione:', error);
+          showNotification('Error deleting project', 'error');
         }
       }
     };
-    
+
     container.addEventListener('click', clickHandler);
     containerHandlers.set(container, clickHandler);
   }
-  
-  /**
-   * Abilita/disabilita altre tab (tutte tranne Projects)
-   */
+
   function enableOtherTabs(enabled) {
-    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts'];
-    tabsToDisable.forEach(tabId => {
+    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'scripts'].forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
         button.disabled = !enabled;
-        if (!enabled) {
-          button.classList.add('disabled');
-        } else {
-          button.classList.remove('disabled');
-        }
+        button.classList.toggle('disabled', !enabled);
       }
     });
     const playtestButton = document.getElementById('nav-playtest-btn');
     if (playtestButton) {
       playtestButton.disabled = !enabled;
-      if (!enabled) {
-        playtestButton.classList.add('disabled');
-      } else {
-        playtestButton.classList.remove('disabled');
-      }
+      playtestButton.classList.toggle('disabled', !enabled);
     }
   }
 
-  /**
-   * Renderizza la lista progetti nel container specificato
-   * @param {Array} projects - Array di progetti normalizzati
-   * @param {HTMLElement} container - Container dove renderizzare (es. modal-body)
-   */
   function renderProjectsList(projects, container) {
-    if (!container) {
-      console.error('[renderProjectsList] Container non fornito');
-      return;
-    }
-
-    if (!Array.isArray(projects)) {
-      console.error('[renderProjectsList] projects non è un array');
-      projects = [];
-    }
+    if (!container) return;
+    if (!Array.isArray(projects)) projects = [];
 
     const hasProjects = projects.length > 0;
-    
-    // Costruisci HTML progetti
     let projectsHtml = '';
     if (hasProjects) {
       projectsHtml = projects.map((p, i) => {
         const normalized = normalizeProject(p, i);
         const name = normalized.settings.name;
         const updated = normalized.updatedAt || normalized.createdAt || '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        
+        const updatedShort = updated ? new Date(updated).toLocaleString() : '';
         return `
           <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
             <div class="flex-grow-1">
@@ -14288,255 +13900,123 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }).join('');
     }
 
-    // Aggiorna contenuto container
     container.innerHTML = `
       ${hasProjects ? `
-        <div class="mb-3">
-          <p class="text-muted">Select an existing project or create a new one:</p>
-        </div>
+        <div class="mb-3"><p class="text-muted">Select an existing project or create a new one:</p></div>
         <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
-          <ul class="list-group">
-            ${projectsHtml}
-          </ul>
+          <ul class="list-group">${projectsHtml}</ul>
         </div>
       ` : `
         <div class="text-center py-4">
           <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+          <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `}
       <div class="d-grid gap-2">
         <button class="btn btn-primary btn-lg" id="btn-create-new-project">
-          <i class="fas fa-plus"></i> Create New Project
+          <i class="fas fa-plus"></i> New Project
+        </button>
+        <button class="btn btn-outline-light btn-lg" id="btn-load-project-modal">
+          <i class="fas fa-file-import"></i> Load Project
         </button>
       </div>
     `;
-
-    console.log('[renderProjectsList] ✅ Lista renderizzata con', projects.length, 'progetti');
   }
 
-  /**
-   * Carica direttamente i progetti da Firestore (solo metadata, senza dipendere da localStorage)
-   * Questa funzione è ottimale per PC nuovi senza cache, garantisce sempre dati aggiornati
-   * 
-   * RIFATTORIZZATA: Ora è una funzione pura che SOLO legge da Firestore
-   * Nessun accesso a DOM o localStorage
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti con metadata normalizzati
-   * @throws {Error} - Lancia errori invece di ritornare array vuoto
-   */
-  async function loadProjectsDirectlyFromFirestore(userId) {
-    if (!window.firebaseDB) {
-      const error = new Error('Firestore database not available');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+  async function registerImportedProject(jsonString) {
+    ensureCurrentUser();
+    let projectObj;
+    try {
+      projectObj = JSON.parse(jsonString);
+    } catch (_) {
+      return;
+    }
+    const name = projectObj?.settings?.name;
+    if (!name) return;
+
+    const arr = loadProjectsFromCache(currentUser.username);
+    if (findProjectCacheIndex(arr, { name }) < 0) {
+      arr.push(normalizeProject({
+        settings: { name, id: projectObj.settings.id },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        source: 'import'
+      }));
+      saveProjectsToCache(currentUser.username, arr);
+      updateAppState({ projects: arr });
     }
 
-    if (!userId) {
-      const error = new Error('User ID is required');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+    localStorage.setItem(`amiantoProject_${currentUser.username}:${name}`, jsonString);
+    localStorage.setItem('amiantoActiveProjectName', name);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    if (projectObj.settings?.id) {
+      localStorage.setItem('amiantoActiveProjectId', projectObj.settings.id);
     }
+  }
 
-    // Verifica che l'utente sia autenticato
-    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      const error = new Error('User not authenticated');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
-    }
+  window.loadProjectFromFile = async function loadProjectFromFile() {
+    ensureCurrentUser();
 
-    const currentAuthUid = window.firebaseAuth.currentUser.uid;
-    if (currentAuthUid !== userId) {
-      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+    let text = null;
+    let filePath = null;
+
+    let fileHandle = null;
+
+    if (window.amiantoNativeFs) {
+      filePath = await window.amiantoNativeFs.showOpenDialog();
+      if (!filePath) return;
+      text = await window.amiantoNativeFs.readFile(filePath);
+    } else if (window.showOpenFilePicker) {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'Amianto Project', accept: { 'application/json': ['.amnt', '.json'] } }],
+        multiple: false
+      });
+      fileHandle = handle;
+      const file = await handle.getFile();
+      text = await file.text();
+      filePath = file.name;
+    } else {
+      const input = document.getElementById('project-file-input');
+      if (!input) {
+        showNotification('File loading is not supported in this browser', 'warning');
+        return;
+      }
+      text = await new Promise((resolve, reject) => {
+        input.onchange = async () => {
+          const file = input.files && input.files[0];
+          input.value = '';
+          if (!file) { reject(new DOMException('Aborted', 'AbortError')); return; }
+          filePath = file.name;
+          try { resolve(await file.text()); } catch (err) { reject(err); }
+        };
+        input.click();
+      });
     }
 
     try {
-      console.log('[FirestoreDirect] Caricamento diretto progetti da Firestore...');
-      
-      // Lista progetti da Firestore (solo metadata, veloce)
-      const firestoreProjects = await listProjectsFromFirestore(userId);
-      console.log('[FirestoreDirect] Trovati', firestoreProjects.length, 'progetti su Firestore');
-      
-      // Normalizza progetti usando funzione centralizzata
-      const projectsList = firestoreProjects.map((fp, i) => normalizeProject({
-        settings: { name: fp.name },
-        updatedAt: fp.updatedAt || null,
-        createdAt: fp.createdAt || null,
-        source: 'firestore',
-        id: fp.id
-      }, i));
-      
-      console.log('[FirestoreDirect] ✅ Lista progetti caricata direttamente da Firestore:', projectsList.length);
-      return projectsList;
-    } catch (error) {
-      // Distingui tra errori di permesso e altri errori
-      if (error.code === 'permission-denied') {
-        console.error('[FirestoreDirect] Permission denied error:', error);
-        const permissionError = new Error(`Permission denied: ${error.message}`);
-        permissionError.code = 'permission-denied';
-        throw permissionError;
-      }
-      
-      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[FirestoreDirect] Network error:', error);
-        const networkError = new Error(`Network error: ${error.message}`);
-        networkError.code = 'network-error';
-        throw networkError;
-      }
-
-      console.error('[FirestoreDirect] Unexpected error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Sincronizza progetti da Firestore a localStorage (solo background)
-   * 
-   * RIFATTORIZZATA: Questa funzione serve SOLO per aggiornare la cache in background
-   * NON deve essere usata per il rendering UI - usa getProjectsForUI() invece
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<void>} - Non restituisce dati per la UI
-   * @throws {Error} - Lancia errori in caso di fallimento critico
-   */
-  async function syncProjectsFromFirestore(userId) {
-    if (!currentUser || !currentUser.username) {
-      const error = new Error('Current user not available');
-      console.error('[Sync] syncProjectsFromFirestore error:', error);
-      throw error;
+      await importAmntContent(text, filePath);
+    } catch (amntErr) {
+      if (amntErr && amntErr.name === 'AbortError') return;
+      await window.importProjectFromJson(text);
+      await registerImportedProject(text);
     }
 
-    const username = currentUser.username;
-    console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId, username });
-
-    // Carica lista progetti da Firestore
-    const firestoreProjects = await listProjectsFromFirestore(userId);
-    console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
-
-    // Carica progetti locali esistenti usando funzione centralizzata
-    const localProjects = loadProjectsFromCache(username);
-    console.log('[Sync] Progetti locali esistenti:', localProjects.length);
-
-    // Crea una mappa dei progetti locali per confronto rapido
-    const localProjectsMap = new Map();
-    localProjects.forEach((p, i) => {
-      const normalized = normalizeProject(p, i);
-      if (normalized.settings && normalized.settings.name) {
-        const stableId = normalized.id || (normalized.settings && normalized.settings.id)
-          ? String(normalized.id || normalized.settings.id)
-          : normalizeProjectIdFromName(normalized.settings.name);
-        if (stableId) localProjectsMap.set(stableId, normalized);
-      }
-    });
-
-    // Sincronizza ogni progetto da Firestore
-    const syncedProjects = [];
-    let syncedCount = 0;
-    let newCount = 0;
-    let updatedCount = 0;
-
-    for (const firestoreProject of firestoreProjects) {
-      try {
-        const projectId = firestoreProject.id;
-        const projectName = firestoreProject.name;
-
-        // Carica i dati completi del progetto da Firestore
-        const projectData = await loadProjectFromFirestore(userId, projectId);
-        
-        if (!projectData) {
-          console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
-          continue;
-        }
-
-        // Normalizza progetto usando funzione centralizzata
-        const projectEntry = normalizeProject({
-          settings: projectData.settings || { name: projectName },
-          updatedAt: firestoreProject.updatedAt || null,
-          createdAt: firestoreProject.createdAt || null,
-          source: 'firestore',
-          id: projectId
-        });
-
-        // Controlla se il progetto esiste già localmente
-        const localProject = localProjectsMap.get(projectId);
-        
-        if (localProject) {
-          // Progetto esiste localmente: confronta timestamp e mantieni il più recente
-          const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
-          const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
-          
-          if (firestoreUpdated >= localUpdated) {
-            // Firestore è più recente o uguale: usa Firestore
-            syncedProjects.push(projectEntry);
-            updatedCount++;
-            
-            // Salva anche il JSON completo in cache locale
-            const jsonString = JSON.stringify(projectData);
-            const projectKey = `amiantoProject_${username}:${projectName}`;
-            localStorage.setItem(projectKey, jsonString);
-            
-            console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
-          } else {
-            // Locale è più recente: mantieni locale
-            syncedProjects.push(localProject);
-            console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
-          }
-        } else {
-          // Nuovo progetto da Firestore
-          syncedProjects.push(projectEntry);
-          newCount++;
-          
-          // Salva il JSON completo in cache locale
-          const jsonString = JSON.stringify(projectData);
-          const projectKey = `amiantoProject_${username}:${projectName}`;
-          localStorage.setItem(projectKey, jsonString);
-          
-          console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
-        }
-
-        syncedCount++;
-      } catch (error) {
-        console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
-        // Continua con gli altri progetti anche se uno fallisce
-      }
+    const loadedName = localStorage.getItem('amiantoActiveProjectName');
+    if (loadedName && fileHandle) {
+      projectFileHandles.set(loadedName, fileHandle);
     }
 
-    // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
-    localProjects.forEach((localProject, i) => {
-      const normalized = normalizeProject(localProject, i);
-      if (normalized.settings && normalized.settings.name) {
-        const localId = normalized.id || (normalized.settings && normalized.settings.id)
-          ? String(normalized.id || normalized.settings.id)
-          : normalizeProjectIdFromName(normalized.settings.name);
-        const existsInFirestore = !!localId && firestoreProjects.some(fp => fp && fp.id === localId);
-        
-        if (!existsInFirestore) {
-          // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
-          syncedProjects.push(normalized);
-          console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${normalized.settings.name}`);
-        }
-      }
-    });
-
-    // Salva lista sincronizzata usando funzione centralizzata
-    saveProjectsToCache(username, syncedProjects);
-
-    console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
-    addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
-    
-    // IMPORTANTE: Questa funzione NON restituisce dati per la UI
-    // Usa getProjectsForUI() per ottenere progetti per il rendering
-  }
+    enableOtherTabs(true);
+    await loadAndRenderProjectsTab();
+    showNotification('Project loaded', 'success');
+  };
 
   /**
    * Autosave su cache locale (localStorage) come fallback temporaneo
    * @param {string} projectName - Nome del progetto
    * @param {string} jsonString - JSON serializzato del progetto
    * 
-   * GIÀ IMPLEMENTATO: localStorage è già usato per cache
+   * GIÃ€ IMPLEMENTATO: localStorage Ã¨ giÃ  usato per cache
    * AGGIUNTO: Questa funzione centralizza l'autosave su cache
    */
   function autosaveToCache(projectName, jsonString) {
@@ -14561,8 +14041,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Save current project for current user
-  // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  // Save current project for current user (localStorage + OPFS)
   /**
    * Converte un dataURL in un File object per l'upload
    * @param {string} dataURL - Data URL dell'immagine
@@ -14587,7 +14066,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica su Supabase
+   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica nello storage locale
    * @param {Object} projectObj - Oggetto progetto serializzato
    * @param {string} projectId - ID del progetto
    * @returns {Promise<Object>} - Progetto aggiornato con assetId invece di dataURL
@@ -14610,15 +14089,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Funzione helper per processare un asset
     const processAsset = async (assetValue, assetType, assetName, subfolder = null, existingAssetId = null, overwrite = false) => {
-      // Se è già un assetId (prefisso "asset:"), salta
+      // Se Ã¨ giÃ  un assetId (prefisso "asset:"), salta
       if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
         return assetValue;
       }
       
-      // Se è un oggetto Image, convertilo prima in dataURL
+      // Se Ã¨ un oggetto Image, convertilo prima in dataURL
       let dataURL = null;
       if (assetValue && typeof assetValue === 'object' && (assetValue.src || (assetValue.width && assetValue.height))) {
-        // È un oggetto Image, convertilo in dataURL
+        // Ãˆ un oggetto Image, convertilo in dataURL
         try {
           dataURL = imageToDataURL(assetValue);
           if (!dataURL) {
@@ -14634,14 +14113,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       } else if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
         dataURL = assetValue;
+      } else if (typeof assetValue === 'string' && assetValue.startsWith('blob:')) {
+        console.warn(`[Asset] blob URL non persistibile per ${assetName}`);
+        errorCount++;
+        return null;
       } else if (assetValue === null || assetValue === undefined) {
-        // Valore null/undefined, mantieni così
+        // Valore null/undefined, mantieni cosÃ¬
         return assetValue;
       } else {
-        // Non è né un assetId, né un dataURL, né un Image - potrebbe essere un valore non-immagine
-        // Verifica se è un oggetto con proprietà img (come i frame dei character)
+        // Non Ã¨ nÃ© un assetId, nÃ© un dataURL, nÃ© un Image - potrebbe essere un valore non-immagine
+        // Verifica se Ã¨ un oggetto con proprietÃ  img (come i frame dei character)
         if (assetValue && typeof assetValue === 'object' && assetValue.img) {
-          // È un oggetto frame con proprietà img, processa l'immagine
+          // Ãˆ un oggetto frame con proprietÃ  img, processa l'immagine
           const imgDataURL = imageToDataURL(assetValue.img);
           if (imgDataURL) {
             dataURL = imgDataURL;
@@ -14652,7 +14135,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return assetValue; // Mantieni originale se fallisce
           }
         } else {
-          // Non è un asset immagine, mantieni come è
+          // Non Ã¨ un asset immagine, mantieni come Ã¨
           return assetValue;
         }
       }
@@ -14668,12 +14151,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return dataURL; // Mantieni dataURL originale se fallisce
           }
 
-          // Se esiste già un assetId per questo asset, usalo
-          // IMPORTANTE: Sovrascrivi solo se è un dataURL nuovo/modificato, non se è già un assetId
+          // Se esiste giÃ  un assetId per questo asset, usalo
+          // IMPORTANTE: Sovrascrivi solo se Ã¨ un dataURL nuovo/modificato, non se Ã¨ giÃ  un assetId
           const finalAssetId = existingAssetId || null;
           // Sovrascrivi solo se:
-          // 1. È esplicitamente richiesto (overwrite=true)
-          // 2. O se esiste già un assetId E il valore corrente è un dataURL (modificato)
+          // 1. Ãˆ esplicitamente richiesto (overwrite=true)
+          // 2. O se esiste giÃ  un assetId E il valore corrente Ã¨ un dataURL (modificato)
           const shouldOverwrite = overwrite || (!!existingAssetId && dataURL && typeof assetValue === 'string' && assetValue.startsWith('data:image/'));
 
           const { assetId } = await uploadImage(file, projectId, assetType, { 
@@ -14683,13 +14166,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           });
           
           if (shouldOverwrite && existingAssetId) {
-            console.log(`[Asset] ✅ Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+            console.log(`[Asset] âœ… Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
           } else {
-            console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+            console.log(`[Asset] âœ… Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
           }
           savedCount++;
           
-          // Se è un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
+          // Se Ã¨ un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
           if (assetType === 'character' && assetId) {
             unsavedCharacterAssetIds.add(assetId);
             console.log(`[Asset] Frame character tracciato per cleanup (assetId: ${assetId})`);
@@ -14697,7 +14180,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           
           return `asset:${assetId}`;
         } catch (error) {
-          console.error(`[Asset] ❌ Errore salvataggio asset ${assetName}:`, error);
+          console.error(`[Asset] âŒ Errore salvataggio asset ${assetName}:`, error);
           errorCount++;
           return dataURL; // Mantieni dataURL originale se fallisce
         }
@@ -14792,9 +14275,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const characterName = char.name || char.id;
         
         // Verifica che il character esista ancora in characterFrames
-        // Se non esiste, significa che è stato eliminato e non dovremmo processare i suoi frame
+        // Se non esiste, significa che Ã¨ stato eliminato e non dovremmo processare i suoi frame
         if (!characterFrames.has(characterName)) {
-          console.warn(`[Asset] ⚠️ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
+          console.warn(`[Asset] âš ï¸ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
           const clearDirs = (dirs) => {
             if (!dirs) return;
             for (const dirData of Object.values(dirs)) {
@@ -14902,6 +14385,73 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
+    // Processa room animation frames (catalogo Animations tab)
+    if (updatedProject.roomAnimations && Array.isArray(updatedProject.roomAnimations)) {
+      for (const anim of updatedProject.roomAnimations) {
+        if (!anim || !anim.id || !Array.isArray(anim.frames)) continue;
+        const safeAnimName = String(anim.name || anim.id).replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+        const animSubfolder = `animations/${safeAnimName}`;
+        const liveAnim = roomAnimationsCatalog.get(anim.id);
+
+        for (let i = 0; i < anim.frames.length; i++) {
+          const frameRef = anim.frames[i];
+          if (!frameRef) continue;
+
+          const liveFrame = liveAnim && liveAnim.frames ? liveAnim.frames[i] : null;
+          if (liveFrame && liveFrame.img) {
+            const mapped = imageAssetMap.get(liveFrame.img);
+            if (mapped && mapped.assetId) {
+              anim.frames[i] = `asset:${mapped.assetId}`;
+              continue;
+            }
+          }
+
+          let frameToProcess = frameRef;
+          if (liveFrame && liveFrame.img && (
+            typeof frameRef !== 'string' ||
+            frameRef.startsWith('blob:') ||
+            frameRef.startsWith('data:image/')
+          )) {
+            frameToProcess = liveFrame.img;
+          }
+
+          let existingAssetId = null;
+          if (typeof frameRef === 'string' && frameRef.startsWith('asset:')) {
+            existingAssetId = frameRef.replace('asset:', '');
+          } else {
+            existingAssetId = `animframe_${String(anim.id).replace(/[^a-z0-9_-]/gi, '_')}_${i}`;
+          }
+
+          const needsUpload = typeof frameRef === 'string' && (
+            frameRef.startsWith('data:image/') || frameRef.startsWith('blob:')
+          ) || (frameToProcess && typeof frameToProcess === 'object');
+
+          const converted = await processAsset(
+            frameToProcess,
+            'animation',
+            `room_anim_${anim.id}_frame_${i}`,
+            animSubfolder,
+            existingAssetId,
+            needsUpload
+          );
+
+          if (converted) {
+            anim.frames[i] = converted;
+            if (liveFrame && liveFrame.img && typeof converted === 'string' && converted.startsWith('asset:')) {
+              imageAssetMap.set(liveFrame.img, {
+                assetId: converted.replace('asset:', ''),
+                type: 'animation',
+                projectId
+              });
+            }
+          } else {
+            anim.frames[i] = null;
+          }
+        }
+        anim.frames = anim.frames.filter(Boolean);
+      }
+    }
+
     // Processa inventory (background, toggle icon, item images)
     const inv = updatedProject.inventory;
     if (inv && typeof inv === 'object' && !Array.isArray(inv)) {
@@ -14954,13 +14504,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    console.log(`[Asset] 📊 Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    console.log(`[Asset] ðŸ“Š Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
     
     // Verifica finale: controlla che tutti gli asset siano stati salvati correttamente
     if (errorCount > 0) {
-      console.warn(`[Asset] ⚠️ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
+      console.warn(`[Asset] âš ï¸ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
     } else {
-      console.log(`[Asset] ✅ Tutti gli asset sono stati salvati con successo su Supabase`);
+      console.log(`[Asset] âœ… Tutti gli asset sono stati salvati con successo nello storage locale`);
     }
     
     // Controllo finale: verifica se ci sono ancora dataURL o oggetti Image nel progetto e convertili
@@ -14975,14 +14525,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           continue;
         }
         
-        // Se è un array, processa ogni elemento
+        // Se Ã¨ un array, processa ogni elemento
         if (Array.isArray(value)) {
           for (let i = 0; i < value.length; i++) {
             const item = value[i];
             if (item && typeof item === 'object') {
-              // Se è un oggetto Image, processalo direttamente
+              // Se Ã¨ un oggetto Image, processalo direttamente
               if (item.src || (item.width && item.height)) {
-                console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
+                console.log(`[Asset] ðŸ”„ Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
                 const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
                 if (converted && converted.startsWith('asset:')) {
                   value[i] = converted;
@@ -14994,7 +14544,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             } else if (typeof item === 'string' && item.startsWith('data:image/')) {
               // Trovato un dataURL in un array, convertilo
-              console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}[${i}]`);
+              console.log(`[Asset] ðŸ”„ Conversione dataURL rimanente in ${currentPath}[${i}]`);
               const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
               if (converted && converted.startsWith('asset:')) {
                 value[i] = converted;
@@ -15003,11 +14553,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         } 
-        // Se è un oggetto, verifica se è un oggetto Image
+        // Se Ã¨ un oggetto, verifica se Ã¨ un oggetto Image
         else if (typeof value === 'object') {
-          // Se è un oggetto Image, processalo direttamente
+          // Se Ã¨ un oggetto Image, processalo direttamente
           if (value.src || (value.width && value.height)) {
-            console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}`);
+            console.log(`[Asset] ðŸ”„ Conversione oggetto Image rimanente in ${currentPath}`);
             const converted = await processAsset(value, 'unknown', currentPath);
             if (converted && converted.startsWith('asset:')) {
               obj[key] = converted;
@@ -15018,9 +14568,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             await finalConversion(value, currentPath);
           }
         } 
-        // Se è una stringa dataURL, convertila
+        // Se Ã¨ una stringa dataURL, convertila
         else if (typeof value === 'string' && value.startsWith('data:image/')) {
-          console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}`);
+          console.log(`[Asset] ðŸ”„ Conversione dataURL rimanente in ${currentPath}`);
           const converted = await processAsset(value, 'unknown', currentPath);
           if (converted && converted.startsWith('asset:')) {
             obj[key] = converted;
@@ -15031,207 +14581,393 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
     
     // Esegui la conversione finale su tutto il progetto
-    console.log('[Asset] 🔍 Controllo finale per dataURL rimanenti...');
+    console.log('[Asset] ðŸ” Controllo finale per dataURL rimanenti...');
     await finalConversion(updatedProject, 'project');
-    console.log(`[Asset] ✅ Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
+    console.log(`[Asset] âœ… Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
     
     return updatedProject;
   }
 
-  window.saveCurrentProject = async function saveCurrentProject() {
-    if (!currentUser) {
-      showNotification('Please login to save projects', 'warning');
-      return;
-    }
+  // ================================
+  // .AMNT PROJECT FILE (single file)
+  // ================================
 
-    // Verifica che ci sia un progetto aperto
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProjectName) {
-      showNotification('No project is currently open. Please open or create a project first.', 'warning');
-      return;
-    }
+  const projectFileHandles = new Map();
+  let amiantoDiskSaveTimer = null;
+  let amiantoPersistInProgress = false;
+  const AMIANTO_DISK_SAVE_DEBOUNCE_MS = 2500;
 
-    let projectObj = window.serializeProject();
-    if (!projectObj.settings) projectObj.settings = {};
-
-    const renameFrom = window.__amiantoProjectRenameFrom || null;
-    const projectId = getStableProjectId(projectObj.settings, activeProjectName);
-    projectObj.settings.id = projectId;
-    projectObj.settings.name = activeProjectName;
-    const projectName = activeProjectName;
-    localStorage.setItem('amiantoActiveProjectId', projectId);
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    // Le regole di sicurezza controllano request.auth.uid == userId
-    const userId = currentUser.uid;
-    if (!userId) {
-      console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
-      addDebugMessage('[Firestore] User not authenticated correctly', 'error');
-      // Continua con cache locale come fallback
-    }
-
-    // 0. SALVA TUTTI GLI ASSET NON ANCORA CARICATI
-    showNotification('Saving all assets to storage...', 'info');
-    
-    // DEBUG: Verifica foreground prima del salvataggio asset
-    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
-      projectObj.rooms.forEach(room => {
-        if (Array.isArray(room.foregrounds)) {
-          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground prima del salvataggio asset`);
-        }
-      });
-    }
-    
-    try {
-      console.log('[Save] 🔄 Inizio salvataggio asset su Supabase...');
-      projectObj = await saveAllAssetsToStorage(projectObj, projectId);
-      console.log('[Save] ✅ Tutti gli asset salvati su Supabase');
-      
-      const postAssetPayload = prepareProjectPayloadForFirestore(projectObj);
-      const postAssetEmbedded = collectEmbeddedDataUrlStats(postAssetPayload);
-      const assetIdCount = (JSON.stringify(postAssetPayload).match(/asset:[^"]+/g) || []).length;
-      
-      console.log('[Save] 📊 Statistiche conversione asset:', {
-        dataURLRimanenti: postAssetEmbedded.embeddedAssetCount,
-        embeddedBytes: postAssetEmbedded.embeddedBytes,
-        assetIdTotali: assetIdCount,
-        conversioneCompleta: postAssetEmbedded.embeddedAssetCount === 0
-      });
-      
-      if (postAssetEmbedded.embeddedAssetCount > 0) {
-        const warnMsg = `Salvataggio Firestore bloccato: ${postAssetEmbedded.embeddedAssetCount} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
-        console.warn(`[Save] ⚠️ ${warnMsg}`);
-        addDebugMessage(warnMsg, 'error');
-        showNotification(warnMsg, 'warning');
-        const top = postAssetEmbedded.offenders.slice(0, 3);
-        if (top.length) console.warn('[Save] DataURL trovati:', top);
-      } else {
-        console.log('[Save] ✅ Nessun dataURL nel payload preparato - asset pronti per Firestore');
-      }
-      
-      // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
-      // Tutti i frame che erano nel progetto sono stati salvati con successo
-      unsavedCharacterFrames.clear();
-      unsavedCharacterAssetIds.clear();
-      // Rimuovi anche eventuali frame salvati in sessionStorage (da sessioni precedenti)
-      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
-      console.log('[Save] Set frame non salvati pulito (progetto salvato con successo)');
-    } catch (error) {
-      console.error('[Save] Errore salvataggio asset:', error);
-      showNotification('Warning: Some assets could not be saved', 'warning');
-      // Se il salvataggio fallisce, i frame rimangono in unsavedCharacterFrames per cleanup successivo
-    }
-
-    // DEBUG: Verifica foreground dopo il salvataggio asset e prima di Firestore
-    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
-      projectObj.rooms.forEach(room => {
-        if (Array.isArray(room.foregrounds)) {
-          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground nel JSON da salvare su Firestore`, 
-            room.foregrounds.map(f => ({ id: f.id, name: f.name, image: f.image ? f.image.substring(0, 50) + '...' : 'null' })));
-        } else {
-          console.warn(`[Save] ⚠️ Room ${room.id}: foregrounds non è un array!`, typeof room.foregrounds, room.foregrounds);
-        }
-      });
-    }
-
-    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload canonico (prepareProjectPayloadForFirestore)
-    let firestoreSuccess = false;
-    const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
-    const embeddedStats = assertNoEmbeddedDataUrls(firestorePayload, { warn: true });
-    const embeddedDataUrls = embeddedStats.embeddedAssetCount;
-    if (userId && embeddedDataUrls > 0) {
-      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel payload preparato`);
-    } else if (userId) {
-      console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
-      
-      const projectJsonPreview = JSON.stringify(firestorePayload);
-      const projectSizeBytes = new Blob([projectJsonPreview]).size;
-      const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
-      console.log(`[Save] 📦 Dimensione payload Firestore: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
-      
-      firestoreSuccess = await saveProjectToFirestore(userId, projectId, firestorePayload);
-      
-      if (firestoreSuccess) {
-        console.log('[Save] ✅ Salvataggio Firestore completato con successo');
-      } else {
-        console.warn('[Save] ⚠️ Salvataggio Firestore fallito, uso cache locale come fallback');
-      }
-    } else {
-      console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
-    }
-
-    // 2. CACHE LOCALE (backup temporaneo) - stesso payload canonico Firestore
-    const savePayload = firestorePayload;
-    const jsonString = JSON.stringify(savePayload, null, 2);
-    window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
-    window.__amiantoProjectDirty = false;
-    autosaveToCache(projectName, jsonString);
-
-    // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
-    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-
-    // 4. LIGHTWEIGHT ENTRY PER LISTING - Aggiorna cache usando funzione centralizzata
-    const userProjects = loadProjectsFromCache(currentUser.username);
-    let idx = findProjectCacheIndex(userProjects, { id: projectId, name: projectName });
-    if (idx < 0 && renameFrom) {
-      idx = findProjectCacheIndex(userProjects, { id: projectId, name: renameFrom });
-    }
-    const entry = normalizeProject({ 
-      settings: projectObj.settings,
-      id: projectId,
-      updatedAt: new Date().toISOString(),
-      createdAt: projectObj.createdAt || new Date().toISOString(),
-      source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
-    });
-    if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
-    saveProjectsToCache(currentUser.username, userProjects);
-
-    if (renameFrom && renameFrom !== projectName) {
-      removeProjectLocalBackup(currentUser.username, renameFrom);
-    }
-
-    // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
-    try {
-      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-      localStorage.setItem(projectKey, jsonString);
-      localStorage.setItem('amiantoActiveProjectName', projectName);
-      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-      localStorage.setItem('amiantoActiveProjectId', projectId);
-    } catch (_) {}
-
-    // 6. PERSIST TO OPFS (silent) - GIÀ IMPLEMENTATO
-    saveProjectJsonToOPFS(jsonString, projectName);
-
-    // 7. OFFER FILE SAVE (may prompt user) - GIÀ IMPLEMENTATO
-    // Nota: saveProjectJsonToFile apre un dialog, quindi non lo chiamiamo automaticamente
-    // saveProjectJsonToFile(jsonString, projectName);
-
-    // Messaggio di successo con indicazione della fonte
-    if (firestoreSuccess) {
-      showNotification('Project saved successfully to Firestore!', 'success');
-    } else if (embeddedDataUrls > 0) {
-      showNotification('Progetto salvato in locale; Firestore bloccato (converti gli asset base64).', 'warning');
-    } else {
-      showNotification('Project saved to cache (Firestore unavailable)', 'warning');
-    }
-    
-    // Aggiorna indicatore dimensione progetto dopo il salvataggio
-    updateProjectSizeIndicator();
+  function hasLinkedAmntFilePath(projectName) {
+    if (!projectName) return false;
+    if (projectFileHandles.has(projectName)) return true;
+    const path = getProjectFilePath(projectName);
+    return !!(path && window.amiantoNativeFs);
   }
 
-  // Create new project
-  // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
-  window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
-    if (!currentUser) {
-      showNotification('Please login to create projects', 'warning');
-      return;
+  function scheduleAmiantoDiskPersist() {
+    const projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName || !hasLinkedAmntFilePath(projectName)) return;
+    if (amiantoDiskSaveTimer) clearTimeout(amiantoDiskSaveTimer);
+    amiantoDiskSaveTimer = setTimeout(() => {
+      amiantoDiskSaveTimer = null;
+      if (amiantoPersistInProgress) return;
+      persistEditorProject({ silent: true, promptForLocation: false }).catch((err) => {
+        console.warn('[AutoSave] Failed to write .amnt:', err);
+      });
+    }, AMIANTO_DISK_SAVE_DEBOUNCE_MS);
+  }
+
+  function getProjectFilePathKey(projectName) {
+    return `amiantoProjectFile_${currentUser?.username || 'Local'}:${projectName}`;
+  }
+
+  function setProjectFilePath(projectName, filePath) {
+    if (!projectName || !filePath) return;
+    localStorage.setItem(getProjectFilePathKey(projectName), filePath);
+    localStorage.setItem('amiantoActiveProjectFile', filePath);
+  }
+
+  function getProjectFilePath(projectName) {
+    if (!projectName) return localStorage.getItem('amiantoActiveProjectFile');
+    return localStorage.getItem(getProjectFilePathKey(projectName));
+  }
+
+  function rememberProjectFilePathInCache(projectName, filePath) {
+    if (!currentUser || !projectName || !filePath) return;
+    const list = loadProjectsFromCache(currentUser.username);
+    const idx = findProjectCacheIndex(list, { name: projectName });
+    if (idx >= 0) {
+      list[idx].filePath = filePath;
+      saveProjectsToCache(currentUser.username, list);
+      updateAppState({ projects: list });
+    }
+  }
+
+  function migrateProjectFilePath(oldName, newName) {
+    if (!oldName || !newName || oldName === newName) return;
+    const oldKey = getProjectFilePathKey(oldName);
+    const path = localStorage.getItem(oldKey);
+    if (!path) return;
+    setProjectFilePath(newName, path);
+    try { localStorage.removeItem(oldKey); } catch (_) {}
+    rememberProjectFilePathInCache(newName, path);
+  }
+
+  function collectAssetIdsFromProject(projectObj) {
+    const ids = new Set();
+    const visit = (val) => {
+      if (typeof val === 'string' && val.startsWith('asset:')) {
+        ids.add(val.slice(6));
+      } else if (val && typeof val === 'object') {
+        if (Array.isArray(val)) val.forEach(visit);
+        else Object.values(val).forEach(visit);
+      }
+    };
+    visit(projectObj);
+    return ids;
+  }
+
+  async function pickProjectSaveLocation(projectName) {
+    if (!window.AmiantoAmnt) {
+      showNotification('Project format module not loaded', 'error');
+      return null;
+    }
+    const defaultName = window.AmiantoAmnt.defaultFileName(projectName);
+
+    if (window.amiantoNativeFs) {
+      const filePath = await window.amiantoNativeFs.showSaveDialog(defaultName);
+      return filePath ? { type: 'path', value: filePath } : null;
     }
 
-    // Blocca durante la sincronizzazione
-    if (isSyncingProjects) {
-      showNotification('Please wait for synchronization to complete before creating a project', 'warning');
-      return;
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [{ description: 'Amianto Project', accept: { 'application/json': ['.amnt'] } }]
+        });
+        return { type: 'handle', value: handle };
+      } catch (err) {
+        if (err && err.name === 'AbortError') return null;
+        throw err;
+      }
     }
+
+    showNotification('Choose a save location is not supported in this browser. Use Export after creating.', 'warning');
+    return null;
+  }
+
+  async function writeAmntContent(projectName, text, location) {
+    if (location?.type === 'path' && window.amiantoNativeFs) {
+      await window.amiantoNativeFs.writeFile(location.value, text);
+      setProjectFilePath(projectName, location.value);
+      rememberProjectFilePathInCache(projectName, location.value);
+      return location.value;
+    }
+    if (location?.type === 'handle') {
+      const writable = await location.value.createWritable();
+      await writable.write(text);
+      await writable.close();
+      projectFileHandles.set(projectName, location.value);
+      return location.value.name || window.AmiantoAmnt.defaultFileName(projectName);
+    }
+    const savedPath = getProjectFilePath(projectName)
+      || localStorage.getItem('amiantoActiveProjectFile');
+    if (savedPath && window.amiantoNativeFs) {
+      await window.amiantoNativeFs.writeFile(savedPath, text);
+      setProjectFilePath(projectName, savedPath);
+      return savedPath;
+    }
+    const handle = projectFileHandles.get(projectName);
+    if (handle) {
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      return handle.name || window.AmiantoAmnt.defaultFileName(projectName);
+    }
+    return null;
+  }
+
+  async function buildAmntPackageFromEditor(projectObj) {
+    const source = projectObj || window.serializeProject();
+    const prepared = prepareProjectPayloadForFirestore(source);
+    const projectId = prepared.settings?.id || getActiveProjectId();
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    const assets = (storage && storage.exportAllAssetsForProject && projectId)
+      ? await storage.exportAllAssetsForProject(projectId)
+      : [];
+    const referenced = collectAssetIdsFromProject(prepared);
+    const exported = new Set(assets.map(a => a && a.assetId).filter(Boolean));
+    const missing = [...referenced].filter(id => !exported.has(id));
+    if (missing.length > 0) {
+      console.warn('[Save] Asset refs in project missing from IndexedDB export:', missing.slice(0, 20));
+      addDebugMessage(
+        `[Save] Warning: ${missing.length} asset(s) referenced in project were not found in local storage. Re-save images or use Save Project again.`,
+        'warning'
+      );
+    }
+    return window.AmiantoAmnt.createPackage(prepared, assets);
+  }
+
+  async function saveProjectAsAmnt(projectName, projectObj, location) {
+    const pkg = await buildAmntPackageFromEditor(projectObj);
+    const text = window.AmiantoAmnt.stringify(pkg, true);
+    return await writeAmntContent(projectName, text, location);
+  }
+
+  async function readProjectFileContent(filePath) {
+    if (filePath && window.amiantoNativeFs) {
+      return await window.amiantoNativeFs.readFile(filePath);
+    }
+    return null;
+  }
+
+  async function importAmntContent(text, filePath) {
+    const { project, assets } = window.AmiantoAmnt.parse(text);
+    migrateLegacyInventoryRefsOnLoad(project);
+    const projectName = project?.settings?.name;
+    if (!projectName) throw new Error('Project file has no name');
+
+    const projectId = project.settings.id || normalizeProjectIdFromName(projectName);
+    project.settings.id = projectId;
+
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (storage && storage.importAssetsFromPackage && assets.length) {
+      await storage.importAssetsFromPackage(projectId, assets);
+    }
+
+    const prepared = prepareProjectPayloadForFirestore(project);
+    await applyProjectObject(prepared);
+    const jsonString = JSON.stringify(prepared, null, 2);
+
+    localStorage.setItem('amiantoActiveProjectName', projectName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    localStorage.setItem('amiantoActiveProjectId', projectId);
+    if (filePath) {
+      setProjectFilePath(projectName, filePath);
+      rememberProjectFilePathInCache(projectName, filePath);
+    }
+
+    autosaveToCache(projectName, jsonString);
+
+    const arr = loadProjectsFromCache(currentUser.username);
+    const idx = findProjectCacheIndex(arr, { name: projectName });
+    const entry = normalizeProject({
+      settings: project.settings,
+      id: projectId,
+      updatedAt: new Date().toISOString(),
+      createdAt: project.createdAt || new Date().toISOString(),
+      source: filePath ? 'amnt' : 'import',
+      filePath: filePath || null
+    });
+    if (idx >= 0) {
+      arr[idx] = { ...arr[idx], ...entry };
+    } else {
+      arr.push(entry);
+    }
+    saveProjectsToCache(currentUser.username, arr);
+    updateAppState({ projects: arr });
+
+    if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
+      await window.amiantoResources.refresh();
+    }
+    if (window.amiantoResources && typeof window.amiantoResources.refreshSounds === 'function') {
+      await window.amiantoResources.refreshSounds();
+    }
+
+    enableOtherTabs(true);
+    scheduleProjectSizeIndicatorRefresh(400);
+    return projectName;
+  }
+
+  async function persistEditorProject(options = {}) {
+    const interactive = options.interactive === true;
+    const silent = options.silent === true;
+    const promptForLocation = options.promptForLocation !== false;
+
+    if (amiantoPersistInProgress) {
+      if (interactive) showNotification('Save already in progress...', 'info');
+      return { ok: false, reason: 'in-progress' };
+    }
+
+    amiantoPersistInProgress = true;
+    try {
+      ensureCurrentUser();
+
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        if (interactive) {
+          showNotification('No project is currently open. Please open or create a project first.', 'warning');
+        }
+        return { ok: false, reason: 'no-project' };
+      }
+
+      saveCurrentScriptIfNeeded();
+      syncEditorScriptsToRoomsBeforeSerialize();
+      syncInventoryScriptAttachments();
+
+      let projectObj = window.serializeProject();
+      if (!projectObj.settings) projectObj.settings = {};
+
+      const renameFrom = window.__amiantoProjectRenameFrom || null;
+      if (renameFrom && renameFrom !== activeProjectName) {
+        migrateProjectFilePath(renameFrom, activeProjectName);
+      }
+
+      const projectId = getStableProjectId(projectObj.settings, activeProjectName);
+      projectObj.settings.id = projectId;
+      projectObj.settings.name = activeProjectName;
+      const projectName = activeProjectName;
+      localStorage.setItem('amiantoActiveProjectId', projectId);
+
+      if (interactive && !silent) showNotification('Saving assets...', 'info');
+      try {
+        projectObj = await saveAllAssetsToStorage(projectObj, projectId);
+        unsavedCharacterFrames.clear();
+        unsavedCharacterAssetIds.clear();
+        sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+      } catch (error) {
+        console.error('[Save] Errore salvataggio asset:', error);
+        if (interactive) showNotification('Some assets could not be saved', 'warning');
+      }
+
+      const savePayload = prepareProjectPayloadForFirestore(projectObj);
+      const jsonString = JSON.stringify(savePayload, null, 2);
+      window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
+      window.__amiantoProjectDirty = false;
+      autosaveToCache(projectName, jsonString);
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+
+      const linkedFilePath = getProjectFilePath(projectName);
+      const userProjects = loadProjectsFromCache(currentUser.username);
+      let idx = findProjectCacheIndex(userProjects, { id: projectId, name: projectName });
+      if (idx < 0 && renameFrom) {
+        idx = findProjectCacheIndex(userProjects, { id: projectId, name: renameFrom });
+      }
+      const entry = normalizeProject({
+        settings: projectObj.settings,
+        id: projectId,
+        updatedAt: new Date().toISOString(),
+        createdAt: projectObj.createdAt || new Date().toISOString(),
+        source: linkedFilePath ? 'amnt' : 'local',
+        filePath: linkedFilePath || null
+      });
+      if (idx >= 0) userProjects[idx] = { ...userProjects[idx], ...entry };
+      else userProjects.push(entry);
+      saveProjectsToCache(currentUser.username, userProjects);
+      updateAppState({ projects: userProjects });
+
+      if (renameFrom && renameFrom !== projectName) {
+        removeProjectLocalBackup(currentUser.username, renameFrom);
+      }
+
+      try {
+        localStorage.setItem(`amiantoProject_${currentUser.username}:${projectName}`, jsonString);
+        localStorage.setItem('amiantoActiveProjectName', projectName);
+        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        localStorage.setItem('amiantoActiveProjectId', projectId);
+      } catch (_) {}
+
+      saveProjectJsonToOPFS(jsonString, projectName);
+
+      let amntLocation = null;
+      const hasLinkedPath = hasLinkedAmntFilePath(projectName);
+      const hasFileHandle = projectFileHandles.has(projectName);
+      if (!hasLinkedPath && !hasFileHandle && promptForLocation) {
+        amntLocation = await pickProjectSaveLocation(projectName);
+      }
+
+      let filePath = null;
+      try {
+        if (hasLinkedPath || hasFileHandle || amntLocation) {
+          filePath = await saveProjectAsAmnt(projectName, projectObj, amntLocation);
+        }
+        if (filePath) {
+          rememberProjectFilePathInCache(projectName, filePath);
+          const list = loadProjectsFromCache(currentUser.username);
+          const ci = findProjectCacheIndex(list, { name: projectName });
+          if (ci >= 0) {
+            list[ci].filePath = filePath;
+            list[ci].source = 'amnt';
+            saveProjectsToCache(currentUser.username, list);
+            updateAppState({ projects: list });
+          }
+          window.__amiantoLastDiskSaveAt = new Date().toISOString();
+          if (interactive && !silent) {
+            showNotification(`Project saved to ${filePath}`, 'success');
+          } else if (!silent) {
+            addDebugMessage(`Auto-saved to ${filePath}`, 'success');
+          }
+        } else if (interactive && !silent) {
+          showNotification('Project saved to browser cache. Choose a .amnt file location on next save to write a disk file.', 'warning');
+        }
+      } catch (amntErr) {
+        console.error('[Save] .amnt write failed:', amntErr);
+        if (interactive) {
+          showNotification('Cache updated but .amnt file write failed: ' + (amntErr.message || amntErr), 'danger');
+        }
+        return { ok: false, reason: 'disk-failed', error: amntErr, cacheSaved: true };
+      }
+
+      updateProjectSizeIndicator();
+      return { ok: true, diskPath: filePath, cacheOnly: !filePath };
+    } finally {
+      amiantoPersistInProgress = false;
+    }
+  }
+
+  window.saveCurrentProject = async function saveCurrentProject() {
+    await persistEditorProject({ interactive: true, promptForLocation: true });
+  };
+
+  window.addEventListener('beforeunload', (event) => {
+    if (!window.__amiantoProjectDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  // Create new project
+  window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
+    ensureCurrentUser();
 
     // Se il nome progetto viene passato come parametro (dal modale), usalo
     // Altrimenti chiedi all'utente
@@ -15242,6 +14978,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!projectName || !projectName.trim()) return;
 
     const trimmedName = projectName.trim();
+
+    const saveLocation = await pickProjectSaveLocation(trimmedName);
+    if (!saveLocation) {
+      showNotification('Project creation cancelled — no save location chosen', 'info');
+      return;
+    }
 
     // Crea progetto completo con struttura corretta
     const newProject = {
@@ -15265,12 +15007,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           background: null,
           foregrounds: [],
           sceneObjects: [],
+          animationInstances: [],
           walkableArea: [],
           hotspots: []
         }
       ],
       guis: [],
       characters: [],
+      roomAnimations: [],
       inventory: [],
       scripts: {},
       attachments: {},
@@ -15313,13 +15057,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     userProjects.push(entry);
     saveProjectsToCache(currentUser.username, userProjects);
 
-    // Salva su Firestore se l'utente è autenticato
-    const userId = currentUser.uid;
-    if (userId && window.firebaseDB) {
-      await saveProjectToFirestore(userId, projectId, newProject);
+    try {
+      const filePath = await saveProjectAsAmnt(trimmedName, newProject, saveLocation);
+      if (filePath) {
+        rememberProjectFilePathInCache(trimmedName, filePath);
+        addDebugMessage(`Project file created: ${filePath}`, 'success');
+      }
+    } catch (err) {
+      console.error('[Create] Failed to write .amnt file:', err);
+      showNotification('Project created but file save failed', 'warning');
     }
 
-    // Abilita altre tab ora che c'è un progetto aperto
+    // Abilita altre tab ora che c'Ã¨ un progetto aperto
     enableOtherTabs(true);
     
     // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
@@ -15331,44 +15080,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // ================================
   // ASSET MANAGEMENT SYSTEM
   // ================================
-  // 
-  // Sistema completo per gestione asset (immagini) usando Firebase Storage
-  // 
-  // STRUTTURA STORAGE:
-  // projects/{projectId}/images/filename.png
-  // projects/{projectId}/gui/filename.png
-  // projects/{projectId}/audio/filename.mp3
-  // 
-  // STRUTTURA FIRESTORE:
-  // users/{userId}/projects/{projectId}/assets/{assetId}
-  // {
-  //   assetId: string,
-  //   name: string,
-  //   type: 'background' | 'foreground' | 'sprite' | 'gui' | 'character' | 'cursor',
-  //   storagePath: string,
-  //   projectId: string,
-  //   createdAt: timestamp
-  // }
-  // 
-  // NOTA: Le immagini NON vengono più salvate come base64 nel JSON del progetto.
-  // Vengono salvati solo gli assetId che vengono poi risolti in URL da Firebase Storage.
-  // 
-  // STATO IMPLEMENTAZIONE:
-  // ✅ IMPLEMENTATO:
-  //   - Upload background images
-  //   - Upload foreground layers
-  //   - Upload scene objects (sprites)
-  //   - Serializzazione con assetId
-  //   - Caricamento e risoluzione assetId in URL
-  //   - Gestione errori con fallback locale
-  // 
-  // ⚠️ TODO: not yet implemented:
-  //   - Upload GUI background images
-  //   - Upload GUI button background images
-  //   - Upload character animation frames
-  //   - Upload cursor images
-  //   - Export progetti come ZIP con asset inclusi
-  //   - Re-link asset in runtime.html per esecuzione jailed/iframe
+  //
+  // Sistema per gestione asset (immagini/audio) usando storage locale (IndexedDB).
+  // Le immagini NON vengono salvate come base64 nel JSON del progetto:
+  // vengono salvati solo gli assetId risolti via assetStorage.resolveAssetUrl.
 
   /**
    * Genera un assetId univoco
@@ -15379,8 +15094,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Determina la cartella Storage in base al tipo di asset
-   * Mappatura per Supabase Storage: backgrounds, foregrounds, sprites, audio
+   * Determina la cartella storage in base al tipo di asset
    * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
    * @returns {string} - Nome della cartella (backgrounds, foregrounds, sprites, audio)
    */
@@ -15402,6 +15116,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return 'audio';
       case 'resource':
         return 'resources';
+      case 'animation':
+        return 'animations';
       default:
         // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
         return assetType ? assetType.toLowerCase() : 'sprites';
@@ -15409,13 +15125,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Carica un'immagine su Supabase Storage
-   * 
-   * FALLBACK: Se Supabase non è disponibile:
-   * - Mostra errore chiaro all'utente
-   * - Blocca l'upload del nuovo asset
-   * - Non blocca il caricamento di asset esistenti (che hanno URL validi)
-   * - Non blocca il salvataggio del progetto (gli asset già caricati hanno URL persistenti)
+   * Carica un'immagine nello storage locale
    * 
    * @param {File} file - File immagine da caricare
    * @param {string} projectId - ID del progetto
@@ -15425,12 +15135,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null, subfolder = null) {
     try {
-      // Verifica che Supabase Storage sia disponibile
-      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-        const errorMsg = 'Supabase Storage non disponibile. Impossibile caricare asset. Verifica la configurazione SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js';
-        console.error('[Asset] ❌', errorMsg);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.isAvailable()) {
+        const errorMsg = 'Storage non disponibile. Impossibile caricare asset.';
+        console.error('[Asset] âŒ', errorMsg);
         
-        // Mostra notifica all'utente
         if (typeof showNotification === 'function') {
           showNotification(errorMsg, 'error');
         }
@@ -15452,18 +15161,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Determina categoria (backgrounds, foregrounds, sprites, audio)
       const category = getStorageFolderForType(assetType);
       
-      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId, subfolder });
+      console.log('[Asset] Upload immagine...', { projectId, category, assetType, assetId, subfolder });
 
-      // Usa la funzione uploadAsset da supabase.js
-      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
+      const result = await storage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
       
-      // Costruisci storagePath per compatibilità con il resto del codice
-      // Usa il fileName generato da Supabase (include assetId)
+      // Costruisci storagePath per compatibilitÃ  con il resto del codice
       const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
       const actualFolder = subfolder || category;
       const storagePath = `${projectId}/${actualFolder}/${generatedFileName}`;
       
-      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
+      console.log('[Asset] âœ… Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
       
       return {
         assetId,
@@ -15473,77 +15180,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         subfolder // Includi subfolder per salvare nei metadati
       };
     } catch (error) {
-      console.error('[Asset] ❌ Errore upload immagine:', error);
+      console.error('[Asset] âŒ Errore upload immagine:', error);
       throw error;
     }
   }
 
   /**
-   * Salva metadata asset in Firestore
+   * Salva metadata asset nello storage locale
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID univoco dell'asset
    * @param {string} name - Nome originale del file
    * @param {string} assetType - Tipo di asset
    * @param {string} storagePath - Percorso Storage
-   * @param {string} fileName - Nome file generato (opzionale, per Supabase)
-   * @param {string} publicUrl - URL pubblico dell'asset (opzionale, per Supabase)
+   * @param {string} fileName - Nome file generato (opzionale)
+   * @param {string} publicUrl - URL pubblico dell'asset (opzionale)
    * @returns {Promise<boolean>} - true se salvato con successo
    */
   async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null, subfolder = null) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile');
-        return false;
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.saveAssetMetadata) {
+        return await storage.saveAssetMetadata(projectId, assetId, {
+          assetId, name, type: assetType, storagePath, fileName, publicUrl, subfolder
+        });
       }
-
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return false;
-      }
-
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      // Coerente con la struttura esistente dei progetti
-      const assetRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId);
-
-      const metadata = {
-        assetId,
-        name,
-        type: assetType,
-        storagePath,
-        projectId,
-        // Aggiungi campi per Supabase Storage
-        fileName: fileName || null,
-        publicUrl: publicUrl || null,
-        subfolder: subfolder || null, // Sottocartella opzionale (es: "rooms/roomname")
-        storageProvider: 'supabase', // Indica che usa Supabase Storage
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-
-      await assetRef.set(metadata);
-      
-      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId, fileName, publicUrl });
       return true;
     } catch (error) {
-      console.error('[Asset] ❌ Errore salvataggio metadata:', error);
-      
-      // Se è un errore di permessi, fornisci informazioni utili
-      if (error.code === 'permission-denied') {
-        console.error('[Asset] ⚠️ Errore permessi Firestore. Verifica che le regole Firestore includano:');
-        console.error('[Asset]   match /users/{userId}/projects/{projectId}/assets/{assetId}');
-        console.error('[Asset]   allow write: if request.auth != null && request.auth.uid == userId;');
-        console.error('[Asset] Vedi FIRESTORE_SETUP.md per istruzioni su come deployare le regole.');
-      }
-      
+      console.error('[Asset] âŒ Errore salvataggio metadata:', error);
       return false;
     }
   }
@@ -15555,56 +15218,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function loadProjectAssets(projectId) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile');
-        return [];
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.listProjectAssetMetadata) {
+        return await storage.listProjectAssetMetadata(projectId);
       }
-
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return [];
-      }
-
-      console.log('[Asset] Caricamento asset per progetto:', projectId);
-
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Carica tutti gli asset del progetto
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      const assetsRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets');
-
-      const snapshot = await assetsRef.get();
-      
-      const assets = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        assets.push({
-          assetId: data.assetId || doc.id,
-          name: data.name || '',
-          type: data.type || 'sprite',
-          storagePath: data.storagePath || '',
-          projectId: data.projectId || projectId,
-          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-        });
-      });
-
-      console.log(`[Asset] ✅ Caricati ${assets.length} asset per progetto ${projectId}`);
-      return assets;
+      return [];
     } catch (error) {
-      console.error('[Asset] ❌ Errore caricamento asset:', error);
+      console.error('[Asset] âŒ Errore caricamento asset:', error);
       return [];
     }
   }
 
   /**
-   * Elimina un asset da Supabase Storage dato un'immagine
+   * Elimina un asset dallo storage locale dato un'immagine
    * @param {Image} img - Oggetto Image che rappresenta l'asset
    * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
    */
@@ -15614,245 +15240,107 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return false;
       }
 
-      // Verifica se l'immagine ha un assetId associato
       const assetInfo = imageAssetMap.get(img);
       if (!assetInfo || !assetInfo.assetId) {
-        // Non è un asset caricato su Supabase, potrebbe essere una dataURL o URL esterno
-        console.log('[Asset] Immagine non ha assetId associato, non è necessario eliminarla da Supabase');
-        return true; // Non è un errore, semplicemente non c'è nulla da eliminare
+        console.log('[Asset] Immagine senza assetId associato, nulla da eliminare');
+        return true;
       }
 
       const { assetId, type, projectId, fileName } = assetInfo;
-
-      // Verifica che Supabase Storage sia disponibile
-      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-        console.warn('[Asset] Supabase Storage non disponibile, impossibile eliminare asset:', assetId);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.isAvailable || !storage.isAvailable()) {
+        console.warn('[Asset] Storage locale non disponibile, impossibile eliminare asset:', assetId);
         return false;
       }
 
-      // Se non abbiamo fileName o subfolder, cerchiamo prima nei metadata Firestore
       let finalFileName = fileName;
       let subfolder = assetInfo.subfolder || null;
-      let firebaseStoragePath = null; // Path per Firebase Storage legacy
-      let isFirebaseLegacy = false; // Flag per asset legacy Firebase
-      if ((!finalFileName || !subfolder) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userId = window.firebaseAuth.currentUser.uid;
-          const assetRef = window.firebaseDB
-            .collection('users')
-            .doc(userId)
-            .collection('projects')
-            .doc(projectId)
-            .collection('assets')
-            .doc(assetId);
 
-          const doc = await assetRef.get();
-          if (doc.exists) {
-            const data = doc.data();
-            if (data && data.fileName && !finalFileName) {
+      if ((!finalFileName || !subfolder) && storage.getAssetMetadata) {
+        try {
+          const data = await storage.getAssetMetadata(projectId, assetId);
+          if (data) {
+            if (data.fileName && !finalFileName) {
               finalFileName = data.fileName;
-              console.log(`[Asset] fileName recuperato da Firestore per eliminazione: ${finalFileName}`);
             }
-            if (data && data.subfolder && !subfolder) {
+            if (data.subfolder && !subfolder) {
               subfolder = data.subfolder;
-              console.log(`[Asset] subfolder recuperato da Firestore per eliminazione: ${subfolder}`);
-            }
-            // Controlla se è un asset legacy Firebase Storage
-            if (data && data.storagePath && !data.storageProvider) {
-              // Asset legacy: ha storagePath ma non storageProvider (o storageProvider !== 'supabase')
-              firebaseStoragePath = data.storagePath;
-              isFirebaseLegacy = true;
-              console.log(`[Asset] ⚠️ Asset legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
-            } else if (data && data.storagePath && data.storageProvider && data.storageProvider !== 'supabase') {
-              // Asset con storageProvider diverso da 'supabase'
-              firebaseStoragePath = data.storagePath;
-              isFirebaseLegacy = true;
-              console.log(`[Asset] ⚠️ Asset con storageProvider "${data.storageProvider}" rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
             }
           }
         } catch (metaErr) {
-          console.warn('[Asset] Impossibile recuperare metadata da Firestore per eliminazione asset:', metaErr);
+          console.warn('[Asset] Impossibile recuperare metadata per eliminazione asset:', metaErr);
         }
       }
-      
-      // Se non abbiamo subfolder ma la categoria è background/foreground/sprite, 
-      // costruisci il subfolder dal roomName corrente
+
       if (!subfolder && (type === 'background' || type === 'foreground' || type === 'sprite')) {
         const room = rooms.get(currentRoomId);
         if (room) {
           const roomName = room.name || room.id || currentRoomId;
           subfolder = `rooms/${roomName}`;
-          console.log(`[Asset] subfolder costruito dal roomName corrente: ${subfolder}`);
         }
       }
 
-      // Come ultimo fallback, prova a ricostruire il nome file dall'URL dell'immagine
       if (!finalFileName) {
         if (img.src && img.src.includes('.')) {
           const ext = img.src.split('.').pop().split('?')[0].toLowerCase();
           finalFileName = `${assetId}.${ext}`;
         } else {
-          // Fallback storico: usa png come estensione predefinita
           finalFileName = `${assetId}.png`;
         }
-        console.log(`[Asset] fileName non trovato nei metadata, ricostruito da URL: ${finalFileName}`);
       }
 
-      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
+      console.log(`[Asset] Eliminazione asset locale: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
 
-      // Elimina da Supabase Storage (passa userId e subfolder per path corretto)
-      let userIdOverride = null;
-      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
-        userIdOverride = window.firebaseAuth.currentUser.uid;
-      }
+      const deleted = await storage.deleteAsset(projectId, type, finalFileName, null, subfolder);
 
-      // PRIMA: elimina da Firebase Storage se è un asset legacy
-      let firebaseDeleted = true; // Default true se non è un asset legacy
-      if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
-        try {
-          console.log(`[Asset] Eliminazione asset legacy da Firebase Storage: ${firebaseStoragePath}`);
-          const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
-          await storageRef.delete();
-          firebaseDeleted = true;
-          console.log(`[Asset] ✅ Asset eliminato da Firebase Storage: ${firebaseStoragePath}`);
-        } catch (firebaseError) {
-          console.warn(`[Asset] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
-          // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
-          firebaseDeleted = false;
-        }
-      }
-
-      // POI: elimina da Supabase Storage (passa userId e subfolder per path corretto)
-      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride, subfolder);
-      
-      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
-      // (potrebbe essere solo su Supabase o solo su Firebase legacy)
-      if (deleted || firebaseDeleted) {
-        if (deleted) {
-          console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
-        }
-        if (firebaseDeleted && isFirebaseLegacy) {
-          console.log(`[Asset] ✅ Asset legacy eliminato da Firebase Storage: ${assetId}`);
-        }
-        
-        // Rimuovi anche da imageAssetMap
+      if (deleted) {
+        console.log(`[Asset] âœ… Asset eliminato: ${assetId}`);
         imageAssetMap.delete(img);
-        
-        // Opzionale: elimina anche da Firestore se disponibile
-        if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          try {
-            const userId = window.firebaseAuth.currentUser.uid;
-            const assetRef = window.firebaseDB
-              .collection('users')
-              .doc(userId)
-              .collection('projects')
-              .doc(projectId)
-              .collection('assets')
-              .doc(assetId);
-            
-            await assetRef.delete();
-            console.log(`[Asset] ✅ Metadata eliminato da Firestore: ${assetId}`);
-          } catch (firestoreError) {
-            console.warn(`[Asset] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
-            // Non blocchiamo il successo se Firestore fallisce
-          }
-        }
-        
-        // Aggiorna i counter dopo eliminazione asset
+
         if (typeof updateProjectSizeIndicator === 'function') {
           updateProjectSizeIndicator();
         }
-        
+
         return true;
-      } else {
-        console.warn(`[Asset] ⚠️ Impossibile eliminare asset da Supabase: ${assetId}`);
-        return false;
       }
+
+      console.warn(`[Asset] âš ï¸ Impossibile eliminare asset: ${assetId}`);
+      return false;
     } catch (error) {
-      console.error('[Asset] ❌ Errore eliminazione asset:', error);
+      console.error('[Asset] âŒ Errore eliminazione asset:', error);
       return false;
     }
   }
 
   /**
-   * Risolve un assetId in un URL di download da Supabase Storage
+   * Risolve un assetId in un URL dallo storage locale
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID dell'asset
    * @returns {Promise<string|null>} - URL di download o null se non trovato
    */
   async function resolveAssetUrl(projectId, assetId) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile per risolvere asset:', assetId);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.resolveAssetUrl) {
         return null;
       }
 
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return null;
+      const url = await storage.resolveAssetUrl(projectId, assetId);
+      if (url) {
+        console.log('[Asset] âœ… Asset risolto da storage locale:', { assetId });
+        return url;
       }
 
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Carica metadata asset da Firestore
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      const assetRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId);
-
-      const doc = await assetRef.get();
-      
-      if (!doc.exists) {
-        console.warn('[Asset] Asset non trovato in Firestore:', assetId);
-        return null;
-      }
-
-      const data = doc.data();
-      
-      // Se abbiamo già l'URL pubblico salvato (per Supabase), usalo direttamente
-      if (data.publicUrl) {
-        console.log('[Asset] ✅ Asset risolto da metadata (Supabase):', { assetId, publicUrl: data.publicUrl });
-        return data.publicUrl;
-      }
-
-      // Fallback: prova a ricostruire l'URL da Supabase Storage
-      if (data.fileName && data.type && window.supabaseStorage && window.supabaseStorage.isAvailable()) {
-        const category = getStorageFolderForType(data.type);
-        // Passa userId per asset nuovi (con userId nel path), null per asset legacy
-        const publicUrl = window.supabaseStorage.getAssetPublicUrl(userId, projectId, category, data.fileName);
-        if (publicUrl) {
-          console.log('[Asset] ✅ Asset risolto da Supabase Storage:', { assetId, publicUrl });
-          return publicUrl;
-        }
-      }
-
-      // Se non è un asset Supabase, potrebbe essere un asset Firebase legacy
-      // In questo caso, prova a usare Firebase Storage come fallback
-      if (data.storagePath && window.firebaseStorage) {
-        console.warn('[Asset] ⚠️ Asset legacy Firebase rilevato, uso Firebase Storage come fallback:', assetId);
-        const storageRef = window.firebaseStorage.ref(data.storagePath);
-        const downloadURL = await storageRef.getDownloadURL();
-        console.log('[Asset] ✅ Asset risolto da Firebase Storage (legacy):', { assetId, downloadURL });
-        return downloadURL;
-      }
-
-      console.warn('[Asset] Impossibile risolvere asset:', assetId);
       return null;
     } catch (error) {
-      console.warn('[Asset] ⚠️ Errore risoluzione asset:', assetId, error.message);
+      console.warn('[Asset] âš ï¸ Errore risoluzione asset:', assetId, error.message);
       return null;
     }
   }
 
   /**
-   * Carica un'immagine da un URL (helper per compatibilità)
-   * @param {string} url - URL dell'immagine (può essere dataURL o URL Storage)
+   * Carica un'immagine da un URL (helper per compatibilitÃ )
+   * @param {string} url - URL dell'immagine (puÃ² essere dataURL o URL Storage)
    * @returns {Promise<Image|null>} - Oggetto Image o null se errore
    */
   async function loadImageFromUrl(url) {
@@ -15860,13 +15348,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (!url) {
         resolve(null);
         return;
-      }
-      
-      // Controlla se l'URL è un URL Firebase Storage diretto senza token
-      // Se è così, potrebbe causare problemi CORS
-      if (url.includes('firebasestorage.googleapis.com') && !url.includes('token=')) {
-        console.warn('[Asset] ⚠️ URL Firebase Storage senza token rilevato. Questo potrebbe causare errori CORS:', url);
-        console.warn('[Asset] Suggerimento: usa assetId invece di URL diretto per evitare problemi CORS');
       }
       
       const img = new Image();
@@ -15888,7 +15369,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         // Se fallisce con crossOrigin, prova senza (per dataURL o URL locali)
         if (img.crossOrigin === 'anonymous' && !url.startsWith('data:')) {
-          console.warn('[Asset] ⚠️ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
+          console.warn('[Asset] âš ï¸ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
           
           // Crea una nuova immagine senza crossOrigin
           const imgNoCors = new Image();
@@ -15901,14 +15382,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           imgNoCors.onerror = (error2) => {
             if (!resolved) {
               resolved = true;
-              console.error('[Asset] ❌ Errore definitivo caricamento immagine:', url, error2);
+              console.error('[Asset] âŒ Errore definitivo caricamento immagine:', url, error2);
               resolve(null);
             }
           };
           imgNoCors.src = url;
         } else {
           resolved = true;
-          console.error('[Asset] ❌ Errore caricamento immagine:', url, error);
+          console.error('[Asset] âŒ Errore caricamento immagine:', url, error);
           resolve(null);
         }
       };
@@ -15927,7 +15408,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   async function uploadImage(file, projectId, assetType, options = {}) {
     try {
       const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null, subfolder = null } = options || {};
-      // Upload su Supabase Storage
       const { assetId: finalAssetId, storagePath, downloadURL, fileName, subfolder: resultSubfolder } = await uploadImageToStorage(
         file,
         projectId,
@@ -15938,13 +15418,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         subfolder
       );
       
-      // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
-      // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
-      // perché l'asset è già caricato su Supabase Storage
       const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL, resultSubfolder || subfolder);
       
       if (!metadataSaved) {
-        console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
+        console.warn('[Asset] âš ï¸ Upload completato, ma salvataggio metadati fallito.');
       }
       
       // Aggiorna i counter dopo upload asset
@@ -15954,7 +15431,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       return { assetId: finalAssetId, downloadURL, fileName };
     } catch (error) {
-      console.error('[Asset] ❌ Errore upload immagine completo:', error);
+      console.error('[Asset] âŒ Errore upload immagine completo:', error);
       throw error;
     }
   }
@@ -15983,7 +15460,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (!navigator.storage || !navigator.storage.getDirectory) return false;
       const root = await navigator.storage.getDirectory();
       const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
-      // FileSystemDirectoryHandle.removeEntry è disponibile su alcuni browser
+      // FileSystemDirectoryHandle.removeEntry Ã¨ disponibile su alcuni browser
       if (dir.removeEntry) {
         await dir.removeEntry(sanitizeProjectFileName(projectName));
         return true;
@@ -15998,7 +15475,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   /**
    * Carica un'immagine da URL o assetId
    * @param {string} urlOrAssetId - URL (dataURL o HTTP) oppure assetId con prefisso "asset:"
-   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId è un assetId)
+   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId Ã¨ un assetId)
    * @returns {Promise<Image|null>} - Oggetto Image o null se errore
    */
   async function createImageFromDataUrl(urlOrAssetId, projectId = null) {
@@ -16006,7 +15483,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return null;
     }
 
-    // Se è un assetId (prefisso "asset:"), risolvi da Supabase Storage (o Firebase Storage legacy)
+    // Se Ã¨ un assetId (prefisso "asset:"), risolvi dallo storage locale
     if (urlOrAssetId.startsWith('asset:')) {
       const assetId = urlOrAssetId.replace('asset:', '');
       
@@ -16023,7 +15500,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return null;
       }
 
-      // Risolvi assetId in URL (funziona sia per Supabase che Firebase legacy)
+      // Risolvi assetId in URL
       const downloadURL = await resolveAssetUrl(projectId, assetId);
       if (!downloadURL) {
         console.warn('[Asset] Impossibile risolvere asset:', assetId);
@@ -16034,28 +15511,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return await loadImageFromUrl(downloadURL);
     }
 
-    // Se è un URL Supabase Storage, caricalo direttamente
-    if (urlOrAssetId.includes('supabase.co/storage/v1/object/public/')) {
-      console.log('[Asset] URL Supabase Storage rilevato:', urlOrAssetId);
-      return await loadImageFromUrl(urlOrAssetId);
-    }
-
-    // Se è un URL Firebase Storage diretto senza token, avvisa l'utente
-    if (urlOrAssetId.includes('firebasestorage.googleapis.com') && !urlOrAssetId.includes('token=')) {
-      console.error('[Asset] ❌ URL Firebase Storage diretto rilevato (senza token). Questo causerà errori CORS.');
-      console.error('[Asset] URL problematico:', urlOrAssetId);
-      console.error('[Asset] Suggerimento: il progetto potrebbe essere stato salvato con URL diretti invece di assetId.');
-      console.error('[Asset] Prova a ricaricare l\'immagine dal progetto per generare un nuovo assetId.');
-      
-      // Prova comunque a caricarlo (potrebbe funzionare se le regole CORS sono configurate)
-      const img = await loadImageFromUrl(urlOrAssetId);
-      if (!img) {
-        showNotification('CORS error: image could not be loaded. Re-import the image from the project.', 'error');
-      }
-      return img;
-    }
-
-    // Fallback: tratta come URL normale (dataURL o HTTP)
+    // Fallback: tratta come URL normale (dataURL, blob: o HTTP)
     return await loadImageFromUrl(urlOrAssetId);
   }
 
@@ -16072,7 +15528,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       // Ottieni projectId dal progetto (necessario per risolvere assetId)
       const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
-      const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      const projectId = (projectObj.settings && projectObj.settings.id)
+        ? String(projectObj.settings.id)
+        : normalizeProjectIdFromName(projectName);
       
       // Pulisci mappa asset prima di caricare nuovo progetto
       imageAssetMap.clear();
@@ -16129,6 +15587,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 enabled
               };
             }) : [],
+            animationInstances: Array.isArray(r.animationInstances) ? r.animationInstances.map(inst => ({
+              id: inst.id || uid('ainst'),
+              animationId: inst.animationId,
+              name: inst.name || inst.id || 'Animation',
+              x: Number(inst.x) || 0,
+              y: Number(inst.y) || 0,
+              layer: inst.layer === 'foreground' ? 'foreground' : 'background',
+              visible: inst.visible !== false,
+              autoPlay: inst.autoPlay === true
+            })) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
             hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
               const hotspotObj = {
@@ -16138,7 +15606,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 visible: (typeof h.visible === 'boolean') ? h.visible : true
               };
               
-              // ⚠️ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
+              // âš ï¸ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
               // BUG FIX: Inizializza sempre la struttura scripts.onClick per garantire consistenza
               hotspotObj.scripts = {};
           if (h.scripts && h.scripts.onClick) {
@@ -16155,17 +15623,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             
             const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
                 
-                // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
-                // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+                // AUTOMATIZZAZIONE: Se c'Ã¨ codice, enabled deve essere sempre true
+                // L'obiettivo Ã¨ eliminare il blocco "enabled = false" per hotspot con codice
                 let normalizedEnabled;
                 if (hasCode) {
-                  // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+                  // Se c'Ã¨ codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
                   normalizedEnabled = true;
                   if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
                     console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
                   }
                 } else {
-                  // Se non c'è codice, enabled può essere false
+                  // Se non c'Ã¨ codice, enabled puÃ² essere false
                   normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
                 }
                 
@@ -16174,7 +15642,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   enabled: normalizedEnabled
                 };
               } else {
-                // Se non c'è script, imposta struttura vuota e disabilitata
+                // Se non c'Ã¨ script, imposta struttura vuota e disabilitata
                 hotspotObj.scripts.onClick = {
                   code: '',
                   enabled: false
@@ -16203,11 +15671,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 
                 if (width && height) {
                   roomVal.background = img;
-                  // Se è la stanza corrente, aggiorna anche il background globale
+                  // Se Ã¨ la stanza corrente, aggiorna anche il background globale
                   if (roomId === currentRoomId) {
                     background = img;
                   }
-                  // Se è un assetId, registra nella mappa
+                  // Se Ã¨ un assetId, registra nella mappa
                   if (r.background && r.background.startsWith('asset:')) {
                     const assetId = r.background.replace('asset:', '');
                     imageAssetMap.set(img, { assetId, type: 'background', projectId });
@@ -16252,8 +15720,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   img: img,
                   x: Number(x) || 0,
                   y: Number(y) || 0,
-                  offsetX: Number(x) || 0, // Mantieni per compatibilità
-                  offsetY: Number(y) || 0, // Mantieni per compatibilità
+                  offsetX: Number(x) || 0, // Mantieni per compatibilitÃ 
+                  offsetY: Number(y) || 0, // Mantieni per compatibilitÃ 
                   rotationRad: Number(f.rotationRad) || 0,
                   scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
                   scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
@@ -16262,22 +15730,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 
                 out.push(foregroundObj);
                 
-                // Se è un assetId, registra nella mappa
+                // Se Ã¨ un assetId, registra nella mappa
                 if (f.image && f.image.startsWith('asset:')) {
                   const assetId = f.image.replace('asset:', '');
                   imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
                 }
                 
-                console.log(`[Load] ✓ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
+                console.log(`[Load] âœ“ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
               }
               
               console.log(`[Load] Foreground caricati per room ${roomId}: ${out.length}/${r.foregrounds.length}`);
               roomVal.foregrounds = out;
               
-              // IMPORTANTE: Se questa è la room corrente, aggiorna anche lo stato globale
+              // IMPORTANTE: Se questa Ã¨ la room corrente, aggiorna anche lo stato globale
               if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 foregrounds = out;
-                console.log(`[Load] ✓ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
+                console.log(`[Load] âœ“ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
               }
               
               if (!isStaleProjectLoad(loadGen)) {
@@ -16285,7 +15753,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 redraw();
               }
             } else {
-              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non è un array o è vuoto)`);
+              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non Ã¨ un array o Ã¨ vuoto)`);
             }
             if (Array.isArray(r.sceneObjects)) {
               for (let i = 0; i < r.sceneObjects.length; i++) {
@@ -16296,7 +15764,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   const img = await createImageFromDataUrl(src.image, projectId);
                   if (isStaleProjectLoad(loadGen)) return;
                   dst.img = img;
-                  // Se è un assetId, registra nella mappa
+                  // Se Ã¨ un assetId, registra nella mappa
                   if (img && src.image.startsWith('asset:')) {
                     const assetId = src.image.replace('asset:', '');
                     imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
@@ -16306,7 +15774,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               // ricrea lista oggetti
               if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 sceneObjects = roomVal.sceneObjects;
+                animationInstances = roomVal.animationInstances;
                 refreshSceneObjectsListUI();
+                refreshRoomAnimationInstancesListUI();
                 redraw();
               }
             }
@@ -16319,7 +15789,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } else {
         // assicura almeno una stanza
         const rid = uid('room');
-        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
       // Seleziona prima stanza e sincronizza riferimenti (walkable/hotspot del progetto corrente)
       const firstRoom = rooms.keys().next().value;
@@ -16328,6 +15798,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (isStaleProjectLoad(loadGen)) return;
       refreshForegroundListUI();
       refreshSceneObjectsListUI();
+      refreshRoomAnimationInstancesListUI();
       refreshHotspotsListUI();
       refreshRoomsSelector();
       try { refreshStartRoomSelector(); } catch(_) {}
@@ -16446,6 +15917,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.error('[Load] Errore caricamento character:', error);
       }
 
+      // Room animations catalog
+      try {
+        await loadRoomAnimationsCatalogFromData(projectObj.roomAnimations, projectId);
+      } catch (error) {
+        console.error('[Load] Errore caricamento room animations:', error);
+      }
+
       // Inventory (layout + items)
       try {
         inventoryItems = [];
@@ -16558,9 +16036,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       try {
         jsScripts.clear();
         
-        // ⚠️ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
-        // Questo assicura che anche se la cache del browser non è stata svuotata,
-        // l'editor sarà vuoto quando si crea un nuovo progetto
+        // âš ï¸ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
+        // Questo assicura che anche se la cache del browser non Ã¨ stata svuotata,
+        // l'editor sarÃ  vuoto quando si crea un nuovo progetto
         currentScriptName = null;
         ensureLargeScriptEditor();
         ensureScriptEditor();
@@ -16605,7 +16083,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           selector.appendChild(opt0);
         }
         
-        // ⚠️ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
+        // âš ï¸ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
         // Questo previene che script di progetti eliminati compaiano in progetti nuovi
         try {
           const projectScriptNames = new Set();
@@ -16669,7 +16147,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         roomScripts.clear();
         characterScripts.clear();
         inventoryScripts.clear();
-        hotspotScripts.clear(); // ⚠️ hotspotScripts Map non più usata per gli hotspot (script salvati in hotspot.scripts.onClick)
+        hotspotScripts.clear(); // âš ï¸ hotspotScripts Map non piÃ¹ usata per gli hotspot (script salvati in hotspot.scripts.onClick)
         if (projectObj.attachments && typeof projectObj.attachments === 'object') {
           const A = projectObj.attachments;
           if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
@@ -16681,7 +16159,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
-          // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
+          // âš ï¸ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
         }
         inventoryItems.forEach(item => {
           if (String(item.scriptName || '').trim()) syncInventoryItemScript(item);
@@ -16754,7 +16232,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       } catch(_) {}
 
-      // ⚠️ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
+      // âš ï¸ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
       // Questo assicura che gli hotspot con codice siano sempre attivi, anche se il progetto salvato aveva enabled=false
       try {
         let cleanedCount = 0;
@@ -16794,7 +16272,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         
         if (cleanedCount > 0) {
-          console.log(`[Cleanup] ✅ Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
+          console.log(`[Cleanup] âœ… Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
         }
       } catch (cleanupError) {
         console.warn('[Cleanup] Errore durante pulizia hotspot:', cleanupError);
@@ -16863,71 +16341,46 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   };
 
-  // MODIFICATO: Ora carica prima da Firestore, poi fallback su cache locale
   async function openProjectByName(projectName) {
-    if (!currentUser) { 
-      showNotification('Please login to open projects', 'warning'); 
-      return; 
-    }
+    ensureCurrentUser();
     if (!projectName) return;
 
-    // Blocca durante la sincronizzazione
-    if (isSyncingProjects) {
-      showNotification('Please wait for synchronization to complete before opening a project', 'warning');
-      return;
+    const userProjects = loadProjectsFromCache(currentUser.username);
+    const cacheIdx = findProjectCacheIndex(userProjects, { name: projectName });
+    const linkedFilePath = getProjectFilePath(projectName)
+      || (cacheIdx >= 0 && userProjects[cacheIdx].filePath)
+      || null;
+
+    if (linkedFilePath) {
+      try {
+        const text = await readProjectFileContent(linkedFilePath);
+        if (text) {
+          await importAmntContent(text, linkedFilePath);
+          showNotification(`Project "${projectName}" opened`, 'success');
+          return;
+        }
+      } catch (err) {
+        console.warn('[Load] Failed to open linked .amnt file, using cache:', err);
+      }
     }
 
-    // Se il progetto è stato rinominato, l'ID stabile NON coincide più col nome.
-    // Prima prova a recuperare l'ID dalla cache progetti.
     let projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    // Le regole di sicurezza controllano request.auth.uid == userId
-    const userId = currentUser.uid;
 
     let projectObj = null;
     let loadedFrom = null;
 
-    // 1. PROVA FIRESTORE PRIMA (fonte ufficiale) - AGGIUNTO
-    // Verifica che l'utente sia autenticato e che Firestore sia disponibile
-    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid === userId) {
-        console.log('[Load] Tentativo caricamento da Firestore...', { userId, projectId });
-        projectObj = await loadProjectFromFirestore(userId, projectId);
-        if (projectObj) {
-          loadedFrom = 'firestore';
-          console.log('[Load] ✅ Caricato da Firestore');
-          addDebugMessage('Loaded from Firestore', 'success');
-          if (projectObj.settings) {
-            projectId = getStableProjectId(projectObj.settings, projectName);
-          }
-        } else {
-          console.log('[Load] Progetto non trovato su Firestore, uso fallback');
-        }
-      } else {
-        console.warn('[Load] UID non corrisponde, salto Firestore', { userId, currentAuthUid });
-      }
-    } else {
-      console.log('[Load] Firestore non disponibile o utente non autenticato, uso fallback');
-    }
-
-    // 2. FALLBACK: OPFS - GIÀ IMPLEMENTATO
-    if (!projectObj) {
-      const json = await loadProjectJsonFromOPFS(projectName);
-      if (json) {
-        try {
-          projectObj = JSON.parse(json);
-          loadedFrom = 'opfs';
-          console.log('[Load] Caricato da OPFS');
-          addDebugMessage('Loaded from OPFS (fallback)', 'info');
-        } catch (e) {
-          console.error('[Load] Errore parsing OPFS:', e);
-        }
+    const jsonFromOpfs = await loadProjectJsonFromOPFS(projectName);
+    if (jsonFromOpfs) {
+      try {
+        projectObj = JSON.parse(jsonFromOpfs);
+        loadedFrom = 'opfs';
+        console.log('[Load] Caricato da OPFS');
+        addDebugMessage('Loaded from OPFS', 'info');
+      } catch (e) {
+        console.error('[Load] Errore parsing OPFS:', e);
       }
     }
 
-    // 3. FALLBACK: LOCALSTORAGE CACHE - GIÀ IMPLEMENTATO
     if (!projectObj) {
       const key = `amiantoProject_${currentUser.username}:${projectName}`;
       const json = localStorage.getItem(key);
@@ -16936,14 +16389,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           projectObj = JSON.parse(json);
           loadedFrom = 'cache';
           console.log('[Load] Caricato da cache locale');
-          addDebugMessage('Loaded from cache (fallback)', 'warning');
+          addDebugMessage('Loaded from cache', 'info');
         } catch (e) {
           console.error('[Load] Errore parsing cache:', e);
         }
       }
     }
 
-    // 4. FALLBACK FINALE: Progetto vuoto - GIÀ IMPLEMENTATO
     if (!projectObj) {
       projectObj = {
         format: 'amianto-game',
@@ -16974,9 +16426,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    // Stabilizza progetti legacy: assicura settings.id persistito (coerente con Firestore/Storage)
-    // IMPORTANTE: per progetti esistenti, usa il projectId già determinato (di default normalizzato dal nome
-    // oppure recuperato da settings.id quando caricato da Firestore).
+    // Stabilizza progetti legacy: assicura settings.id persistito
     try {
       if (!projectObj.settings) projectObj.settings = {};
       if (!projectObj.settings.id) {
@@ -16998,20 +16448,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
     localStorage.setItem('amiantoActiveProjectId', projectId);
 
-    // Abilita altre tab ora che c'è un progetto aperto
+    // Abilita altre tab ora che c'Ã¨ un progetto aperto
     enableOtherTabs(true);
     
     // Aggiorna indicatore dimensione progetto
     updateProjectSizeIndicator();
     
     // Mostra notifica con fonte di caricamento
-    if (loadedFrom === 'firestore') {
-      showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
-    } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
+    if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
       showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
     }
     
-    // Il modale verrà chiuso dal chiamante dopo questa funzione completa
+    // Il modale verrÃ  chiuso dal chiamante dopo questa funzione completa
   }
 
   let projectSizeIndicatorTimer = null;
@@ -17043,32 +16491,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       const projectObj = window.serializeProject();
       const preparedPayload = prepareProjectPayloadForFirestore(projectObj);
-      const firestoreBytes = new Blob([JSON.stringify(preparedPayload)]).size;
+      const payloadBytes = new Blob([JSON.stringify(preparedPayload)]).size;
       const embeddedInPayload = collectEmbeddedDataUrlStats(preparedPayload);
       const pendingBytes = measurePendingAssetDataUrlBytes(projectObj);
       const pendingCount = countPendingAssetDataUrls(projectObj);
       const isDirty = !!window.__amiantoProjectDirty;
 
-      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
-      const percentageUsed = parseFloat(((firestoreBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1));
+      const PAYLOAD_MAX_SIZE = 1048487; // ~1MB in bytes
+      const percentageUsed = parseFloat(((payloadBytes / PAYLOAD_MAX_SIZE) * 100).toFixed(1));
 
       const dirtySuffix = isDirty ? ' *' : '';
-      const parts = [`Firestore: ${formatProjectSizeLabel(firestoreBytes)} (${percentageUsed}%)${dirtySuffix}`];
+      const parts = [`Payload: ${formatProjectSizeLabel(payloadBytes)} (${percentageUsed}%)${dirtySuffix}`];
       if (pendingBytes > 0) {
         const assetLabel = pendingCount === 1 ? '1 asset' : `${pendingCount} asset`;
         parts.push(`da caricare: ${formatProjectSizeLabel(pendingBytes)} (${assetLabel})`);
       }
       if (embeddedInPayload.embeddedAssetCount > 0) {
-        parts.push(`⚠ ${embeddedInPayload.embeddedAssetCount} embedded`);
+        parts.push(`âš  ${embeddedInPayload.embeddedAssetCount} embedded`);
       }
 
-      sizeText.textContent = parts.join(' · ');
-      let titleBase = 'Firestore: dimensione del payload canonico (stesso JSON salvato su Firestore). * = modifiche non salvate.';
+      sizeText.textContent = parts.join(' Â· ');
+      let titleBase = 'Payload: dimensione del JSON canonico del progetto. * = modifiche non salvate.';
       if (pendingBytes > 0) {
         titleBase += ' "Da caricare": base64 negli asset live non ancora su storage.';
       }
       if (embeddedInPayload.embeddedAssetCount > 0) {
-        titleBase += ` ⚠ ${embeddedInPayload.embeddedAssetCount} base64 ancora nel payload preparato (${formatProjectSizeLabel(embeddedInPayload.embeddedBytes)}) — Firestore bloccato finché non fai Save con upload.`;
+        titleBase += ` âš  ${embeddedInPayload.embeddedAssetCount} base64 ancora nel payload preparato (${formatProjectSizeLabel(embeddedInPayload.embeddedBytes)}) â€” salva con upload prima di esportare.`;
       }
       indicator.title = titleBase;
 
@@ -17086,13 +16534,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         ? String(projectObj.settings.id)
         : activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
 
-      if (window.supabaseStorage && typeof window.supabaseStorage.getProjectStorageSize === 'function') {
-        const storage = await window.supabaseStorage.getProjectStorageSize(projectId);
-        if (storage && storage.totalBytes > 0) {
-          const storageLabel = formatProjectSizeLabel(storage.totalBytes);
-          const fileLabel = storage.fileCount === 1 ? '1 file' : `${storage.fileCount} file`;
-          sizeText.textContent = `${parts.join(' · ')} · Storage: ${storageLabel} (${fileLabel})`;
-          indicator.title = (indicator.title || '') + ` Storage Supabase: ${storageLabel}, ${fileLabel}.`;
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && typeof storage.getProjectStorageSize === 'function') {
+        const storageResult = await storage.getProjectStorageSize(projectId);
+        const totalBytes = typeof storageResult === 'number' ? storageResult : (storageResult?.totalBytes || 0);
+        const fileCount = typeof storageResult === 'object' && storageResult
+          ? (storageResult.fileCount || 0)
+          : ((storage.listProjectAssetMetadata ? await storage.listProjectAssetMetadata(projectId) : []).length);
+        if (totalBytes > 0) {
+          const storageLabel = formatProjectSizeLabel(totalBytes);
+          const fileLabel = fileCount === 1 ? '1 file' : `${fileCount} file`;
+          sizeText.textContent = `${parts.join(' Â· ')} Â· Storage: ${storageLabel} (${fileLabel})`;
+          indicator.title = (indicator.title || '') + ` Storage locale: ${storageLabel}, ${fileLabel}.`;
         }
       }
     } catch (error) {
@@ -17103,173 +16556,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // Esponi funzione globalmente
   window.updateProjectSizeIndicator = updateProjectSizeIndicator;
 
-  /**
-   * Elimina completamente un progetto da Firestore, incluse tutte le subcollezioni
-   * IMPORTANTE: In Firestore, eliminare un documento padre NON elimina automaticamente le subcollezioni
-   * Questa funzione elimina prima tutte le subcollezioni, poi il documento principale
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto
-   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
-   */
-  async function deleteProjectFromFirestoreCompletely(userId, projectId) {
-    if (!userId || !projectId || !window.firebaseDB) {
-      console.warn('[Firestore] Parametri mancanti per eliminazione completa progetto');
-      return false;
-    }
-
-    try {
-      // Ottieni riferimento a Firebase per accedere a batch()
-      const firebaseObj = window.firebase || firebase;
-      if (!firebaseObj) {
-        console.error('[Firestore] Firebase non disponibile');
-        return false;
-      }
-
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      // STEP 1: Elimina tutte le subcollezioni (es: assets)
-      // Firestore non supporta eliminazione ricorsiva automatica, quindi dobbiamo farlo manualmente
-      const subcollections = ['assets']; // Aggiungi altre subcollezioni se necessario
-      
-      for (const subcollectionName of subcollections) {
-        try {
-          const subcollectionRef = projectRef.collection(subcollectionName);
-          
-          // Elenca tutti i documenti nella subcollezione
-          // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
-          const snapshot = await subcollectionRef.get({ source: 'server' });
-          
-          if (!snapshot.empty) {
-            console.log(`[Firestore] Eliminazione ${snapshot.size} documenti dalla subcollezione '${subcollectionName}'...`);
-            
-            // Elimina tutti i documenti in batch (Firestore supporta batch fino a 500 operazioni)
-            const BATCH_SIZE = 500;
-            const batches = [];
-            let currentBatch = window.firebaseDB.batch();
-            let operationCount = 0;
-            
-            snapshot.forEach((doc) => {
-              currentBatch.delete(doc.ref);
-              operationCount++;
-              
-              if (operationCount >= BATCH_SIZE) {
-                batches.push(currentBatch);
-                currentBatch = window.firebaseDB.batch();
-                operationCount = 0;
-              }
-            });
-            
-            // Aggiungi l'ultimo batch se ha operazioni
-            if (operationCount > 0) {
-              batches.push(currentBatch);
-            }
-            
-            // Esegui tutti i batch
-            for (const batch of batches) {
-              await batch.commit();
-            }
-            
-            console.log(`[Firestore] ✅ Subcollezione '${subcollectionName}' eliminata completamente`);
-          } else {
-            console.log(`[Firestore] Subcollezione '${subcollectionName}' già vuota`);
-          }
-        } catch (subError) {
-          console.error(`[Firestore] Errore eliminazione subcollezione '${subcollectionName}':`, subError);
-          // Continua anche se una subcollezione fallisce
-        }
-      }
-
-      // STEP 2: Verifica che il documento esista prima di eliminarlo
-      // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
-      const projectDoc = await projectRef.get({ source: 'server' });
-      
-      if (!projectDoc.exists) {
-        console.log(`[Firestore] Progetto ${projectId} non esiste già su Firestore`);
-        return true; // Considera come successo se non esiste
-      }
-
-      // STEP 3: Elimina il documento principale
-      await projectRef.delete();
-      
-      // STEP 4: Verifica che l'eliminazione sia stata applicata (forza lettura dal server)
-      // Questo previene problemi con la cache offline di Firestore
-      // Attendi un breve momento per permettere la propagazione
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const verifyDoc = await projectRef.get({ source: 'server' });
-      
-      if (verifyDoc.exists) {
-        console.error(`[Firestore] ⚠️ ATTENZIONE: Il progetto ${projectId} esiste ancora dopo l'eliminazione!`);
-        addDebugMessage(`[Firestore] ⚠️ Project may not have been permanently deleted`, 'warning');
-        return false;
-      }
-      
-      console.log(`[Firestore] ✅ Progetto ${projectId} eliminato permanentemente da Firestore`);
-      return true;
-    } catch (error) {
-      console.error('[Firestore] Errore eliminazione completa progetto:', error);
-      addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
-      return false;
-    }
-  }
-
-  // MODIFICATO: Ora elimina anche da Firestore (con eliminazione completa delle subcollezioni)
   async function deleteProjectByName(projectName) {
-    if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
+    ensureCurrentUser();
     if (!projectName) return;
-    if (!confirm(`Delete project "${projectName}"? This action cannot be undone.`)) return;
-    
-    // Se rinominato, l'ID stabile potrebbe non coincidere col nome
+    if (!confirm(
+      `Remove "${projectName}" from the editor?\n\n` +
+      'Local cache, IndexedDB assets, and editor backups will be deleted.\n' +
+      'Your .amnt file on disk (if any) will NOT be deleted — remove it manually if needed.'
+    )) return;
+
     const projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    const userId = currentUser.uid;
 
-    // 1. ELIMINA COMPLETAMENTE DA FIRESTORE (incluse subcollezioni) - MODIFICATO
-    if (userId && window.firebaseDB) {
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (storage && storage.deleteProjectFolder) {
       try {
-        const deleted = await deleteProjectFromFirestoreCompletely(userId, projectId);
-        if (deleted) {
-          console.log(`[Firestore] Progetto eliminato permanentemente: ${projectName}`);
-          addDebugMessage(`[Firestore] Project permanently deleted: ${projectName}`, 'success');
-        } else {
-          console.error(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`);
-          addDebugMessage(`[Firestore] Could not permanently delete project: ${projectName}`, 'error');
-          // Continua comunque con l'eliminazione locale
+        await storage.deleteProjectFolder(projectId);
+        if (typeof updateProjectSizeIndicator === 'function') {
+          updateProjectSizeIndicator();
         }
       } catch (error) {
-        console.error('[Firestore] Errore eliminazione:', error);
-        addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
-        // Continua comunque con l'eliminazione locale
+        console.error('[Asset] Errore eliminazione asset progetto:', error);
       }
     }
 
-    // 1.5. ELIMINA CARTELLA PROGETTO DA SUPABASE STORAGE (se disponibile) - AGGIUNTO
-    if (userId && window.supabaseStorage && window.supabaseStorage.deleteProjectFolder) {
-      try {
-        const deleted = await window.supabaseStorage.deleteProjectFolder(projectId);
-        if (deleted) {
-          console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
-          addDebugMessage(`[Supabase] Project folder deleted: ${projectName}`, 'success');
-          
-          // Aggiorna i counter dopo eliminazione cartella progetto
-          if (typeof updateProjectSizeIndicator === 'function') {
-            updateProjectSizeIndicator();
-          }
-        } else {
-          console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
-          addDebugMessage(`[Supabase] Could not delete project folder: ${projectName}`, 'warning');
-        }
-      } catch (error) {
-        console.error('[Supabase] Errore eliminazione cartella progetto:', error);
-        addDebugMessage(`[Supabase] Folder delete error: ${error.message || error}`, 'error');
-      }
-    }
-    
-    // 2. Carica il JSON del progetto per ottenere la lista degli script da rimuovere - GIÀ IMPLEMENTATO
     const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
     let scriptsToRemove = [];
     try {
@@ -17280,123 +16589,62 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           scriptsToRemove = Object.keys(projectObj.scripts);
         }
       }
-    } catch(_) {}
-    
-    // 3. Rimuovi dalla lista progetti usando funzione centralizzata
+    } catch (_) {}
+
     const list = loadProjectsFromCache(currentUser.username);
-    const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
-    saveProjectsToCache(currentUser.username, filtered);
-    
-    // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
-    try { localStorage.removeItem(projectKey); } catch(_) {}
-    try { localStorage.removeItem(`${projectKey}_meta`); } catch(_) {} // Rimuovi anche metadata cache
-    
-    // 5. Rimuovi tutti gli script associati al progetto da localStorage - GIÀ IMPLEMENTATO
-    scriptsToRemove.forEach(scriptName => {
-      try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+    const filtered = list.filter((p) => {
+      if (!p) return false;
+      const pName = (p.settings && p.settings.name) ? p.settings.name : '';
+      const pId = p.id || (p.settings && p.settings.id) || normalizeProjectIdFromName(pName);
+      if (pName === projectName) return false;
+      if (projectId && pId === projectId) return false;
+      return true;
     });
-    
-    // 6. Se è il progetto corrente aperto, pulisci anche jsScripts in memoria - GIÀ IMPLEMENTATO
-    const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (currentProjectName === projectName) {
-      jsScripts.clear();
-      // Pulisci anche le mappe di attachment
-      objectScripts.clear();
-      roomScripts.clear();
-      characterScripts.clear();
-      inventoryScripts.clear();
-      hotspotScripts.clear();
-      if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
-      // Ricostruisci la lista script nell'UI
-      refreshScriptSelector();
-      rebuildScriptsTree();
+    saveProjectsToCache(currentUser.username, filtered);
+    updateAppState({ projects: filtered });
+
+    const wasActiveProject = localStorage.getItem('amiantoActiveProjectName') === projectName
+      || (projectId && localStorage.getItem('amiantoActiveProjectId') === projectId);
+
+    removeProjectFromEditorCache(projectName, projectId);
+
+    scriptsToRemove.forEach((scriptName) => {
+      try { localStorage.removeItem(`script-${scriptName}`); } catch (_) {}
+    });
+
+    if (wasActiveProject) {
+      clearInMemoryProjectState();
     }
-    
-    // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
-    try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
-    
-    // 8. Se è il progetto corrente aperto, rimuovi anche il progetto attivo
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (activeProjectName === projectName) {
-      localStorage.removeItem('amiantoActiveProjectName');
-      localStorage.removeItem('amiantoActiveProjectOwner');
-      // Nascondi indicatore dimensione progetto
-      const indicator = document.getElementById('projectSizeIndicator');
-      if (indicator) {
-        indicator.style.display = 'none';
-      }
-    }
-    
-    // 9. Verifica se ci sono ancora progetti dopo la cancellazione
-    // Sincronizza con Firestore per avere la lista aggiornata
-    let remainingProjects = [];
-    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      try {
-        await syncProjectsFromFirestore(userId);
-        remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      } catch (error) {
-        console.error('[Delete] Errore sincronizzazione dopo cancellazione:', error);
-        // Fallback: usa la lista locale già filtrata
-        remainingProjects = filtered;
-      }
-    } else {
-      // Fallback: usa la lista locale già filtrata
-      remainingProjects = filtered;
-    }
-    
-    showNotification('Project deleted', 'success');
-    
-    // 10. Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
+
+    try { await deleteProjectFileFromOPFS(projectName); } catch (_) {}
+
+    const remainingProjects = filtered;
+
+    showNotification(
+      'Project removed from editor. The .amnt file on disk was not deleted.',
+      'success'
+    );
+
     if (remainingProjects.length === 0) {
-      console.log('[Delete] Nessun progetto rimasto, mostro modale selezione');
-      // Rimuovi progetto attivo se ancora presente
+      clearEditorWorkspaceAfterProjectRemoved();
       localStorage.removeItem('amiantoActiveProjectName');
       localStorage.removeItem('amiantoActiveProjectOwner');
-      // Pulisci l'editor
-      rooms = new Map();
-      currentRoomId = null;
-      background = null;
-      foregrounds = [];
-      sceneObjects = [];
-      guis = [];
-      characters = [];
-      contextualCursors = [];
-      
-      // Disabilita altre tab (non c'è più un progetto aperto)
-      enableOtherTabs(false);
-      
-      // Torna alla tab Projects
+      localStorage.removeItem('amiantoActiveProjectId');
+
       if (typeof showSectionById === 'function') {
         showSectionById('projects', false);
       } else {
-        // Fallback: usa il bottone direttamente
-        const projectsButton = document.querySelector(`[data-section="projects"]`);
-        if (projectsButton) {
-          projectsButton.click();
-        }
+        const projectsButton = document.querySelector('[data-section="projects"]');
+        if (projectsButton) projectsButton.click();
       }
-      
-      // Mostra il modale (forzato, anche se c'era un progetto attivo)
+
       await showProjectSelectionModal(true);
     }
   }
 
   // Show project list (modal)
   window.showProjectList = async function() {
-    if (!currentUser) {
-      showNotification('Please login to view projects', 'warning');
-      return;
-    }
-    
-    // Ricarica progetti da Firestore per avere dati aggiornati
-    if (currentUser.uid && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      try {
-        console.log('[ProjectList] Ricarica progetti da Firestore...');
-        await syncProjectsFromFirestore(currentUser.uid);
-      } catch (error) {
-        console.error('[ProjectList] Errore ricarica progetti:', error);
-      }
-    }
+    ensureCurrentUser();
     
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     // Crea modale
@@ -17408,7 +16656,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     modal.setAttribute('aria-hidden', 'true');
     const count = userProjects.length;
     const itemsHtml = count === 0 ? `
-      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu Profilo > File.</div>
+      <div class="text-center text-muted py-4">No projects found. Create a new project from Profile &gt; File menu.</div>
     ` : userProjects.map((p, i) => {
       const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
       const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
@@ -17473,13 +16721,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         try {
           await openProjectByName(name);
           
-          // Chiudi il modale DOPO che il progetto è stato caricato con successo
+          // Chiudi il modale DOPO che il progetto Ã¨ stato caricato con successo
           const inst = bootstrap.Modal.getInstance(modal);
           if (inst) {
             inst.hide();
-            // Il listener hidden.bs.modal già presente rimuoverà il modale dal DOM
+            // Il listener hidden.bs.modal giÃ  presente rimuoverÃ  il modale dal DOM
           } else {
-            // Fallback: chiudi manualmente se Bootstrap non è disponibile
+            // Fallback: chiudi manualmente se Bootstrap non Ã¨ disponibile
             modal.classList.remove('show');
             modal.style.display = 'none';
             document.body.classList.remove('modal-open');
@@ -17507,8 +16755,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Verifica se ci sono ancora progetti dopo l'eliminazione
         const remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
         if (remainingProjects.length === 0) {
-          // Se non ci sono più progetti, chiudi il modale "My Projects"
-          // Il modale di selezione verrà mostrato automaticamente da deleteProjectByName
+          // Se non ci sono piÃ¹ progetti, chiudi il modale "My Projects"
+          // Il modale di selezione verrÃ  mostrato automaticamente da deleteProjectByName
           const projectListModal = document.getElementById('projectListModal');
           if (projectListModal) {
             const bsModal = bootstrap.Modal.getInstance(projectListModal);
@@ -17585,13 +16833,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       arr.push(entry);
       localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
 
-      // Salva su Firestore se l'utente è autenticato
-      const userId = currentUser.uid;
-      if (userId && window.firebaseDB) {
-        const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        await saveProjectToFirestore(userId, projectId, newProject);
-      }
-
       showNotification(`Project "${trimmedName}" created and opened!`, 'success');
       
       // Chiudi il modale
@@ -17634,149 +16875,60 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Delete current project
   window.deleteCurrentProject = async function() {
-    if (!currentUser) {
-      showNotification('Please login to delete projects', 'warning');
-      return;
-    }
+    ensureCurrentUser();
 
-    // Ottieni il nome del progetto da localStorage o dal campo input (se esiste)
     let projectName = localStorage.getItem('amiantoActiveProjectName');
     if (!projectName) {
       const projectNameInput = document.getElementById('projectName');
       projectName = projectNameInput ? projectNameInput.value : null;
     }
     if (!projectName) {
-      // Fallback: cerca nell'oggetto serializzato
       try {
         const projectObj = window.serializeProject();
         projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : null;
       } catch (_) {}
     }
     if (!projectName) {
-      projectName = 'Untitled Project';
-    }
-    if (confirm(`Are you sure you want to delete project "${projectName}"?`)) {
-      // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
-      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-      let scriptsToRemove = [];
-      try {
-        const projectJson = localStorage.getItem(projectKey);
-        if (projectJson) {
-          const projectObj = JSON.parse(projectJson);
-          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
-            scriptsToRemove = Object.keys(projectObj.scripts);
-          }
-        }
-      } catch(_) {}
-      
-      // Rimuovi dalla lista progetti
-      const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      const filteredProjects = userProjects.filter(p => p.settings.name !== projectName);
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filteredProjects));
-      
-      // Rimuovi il backup locale del progetto
-      try { localStorage.removeItem(projectKey); } catch(_) {}
-      
-      // Rimuovi tutti gli script associati al progetto da localStorage
-      scriptsToRemove.forEach(scriptName => {
-        try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
-      });
-      
-      // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
-      const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
-      if (currentProjectName === projectName) {
-        jsScripts.clear();
-        // Pulisci anche le mappe di attachment
-        objectScripts.clear();
-        roomScripts.clear();
-        characterScripts.clear();
-        inventoryScripts.clear();
-        hotspotScripts.clear();
-        if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
-        // Ricostruisci la lista script nell'UI
-        refreshScriptSelector();
-        rebuildScriptsTree();
-        
-        // Rimuovi progetto attivo
-        localStorage.removeItem('amiantoActiveProjectName');
-        localStorage.removeItem('amiantoActiveProjectOwner');
-      }
-      
-      // Verifica se ci sono ancora progetti dopo la cancellazione
-      // Sincronizza con Firestore per avere la lista aggiornata
-      const userId = currentUser.uid;
-      let remainingProjects = [];
-      if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          await syncProjectsFromFirestore(userId);
-          remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-        } catch (error) {
-          console.error('[DeleteCurrent] Errore sincronizzazione dopo cancellazione:', error);
-          // Fallback: usa la lista locale già filtrata
-          remainingProjects = filteredProjects;
-        }
-      } else {
-        // Fallback: usa la lista locale già filtrata
-        remainingProjects = filteredProjects;
-      }
-      
-      showNotification('Project deleted successfully!', 'success');
-      
-      // Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
-      if (remainingProjects.length === 0) {
-        console.log('[DeleteCurrent] Nessun progetto rimasto, mostro modale selezione');
-        // Rimuovi progetto attivo se ancora presente
-        localStorage.removeItem('amiantoActiveProjectName');
-        localStorage.removeItem('amiantoActiveProjectOwner');
-        // Pulisci l'editor
-        rooms = new Map();
-        currentRoomId = null;
-        background = null;
-        foregrounds = [];
-        sceneObjects = [];
-        guis = [];
-        characters = [];
-        contextualCursors = [];
-        
-        // Disabilita altre tab (non c'è più un progetto aperto)
-        enableOtherTabs(false);
-        
-        // Torna alla tab Projects
-        if (typeof showSectionById === 'function') {
-          showSectionById('projects', false);
-        } else {
-          // Fallback: usa il bottone direttamente
-          const projectsButton = document.querySelector(`[data-section="projects"]`);
-          if (projectsButton) {
-            projectsButton.click();
-          }
-        }
-        
-        // Mostra il modale (forzato, anche se c'era un progetto attivo)
-        await showProjectSelectionModal(true);
-      }
-    }
-  };
-
-  // Export project (placeholder)
-  window.exportProject = function() {
-    if (!currentUser) {
-      showNotification('Please login to export projects', 'warning');
+      showNotification('No project is open to delete', 'warning');
       return;
     }
-    const raw = window.serializeProject();
-    const prepared = prepareProjectPayloadForFirestore(raw);
-    const embedded = collectEmbeddedDataUrlStats(prepared);
-    if (embedded.embeddedAssetCount > 0) {
-      showNotification(
-        `Export: ${embedded.embeddedAssetCount} asset ancora embedded — salva su storage prima per un export leggero`,
-        'warning'
-      );
+
+    await deleteProjectByName(projectName);
+    await loadAndRenderProjectsTab();
+  };
+
+  // Export project as .amnt (full bundle)
+  window.exportProject = async function() {
+    ensureCurrentUser();
+    if (!window.AmiantoAmnt) {
+      showNotification('Project format module not loaded', 'error');
+      return;
     }
-    const jsonString = JSON.stringify(prepared, null, 2);
-    const fileName = (raw.settings && raw.settings.name ? raw.settings.name : 'amianto-project') + '.amianto.json';
-    downloadBlob(jsonString, fileName, 'application/json');
-    showNotification('Project exported as JSON', 'success');
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open', 'warning');
+      return;
+    }
+
+    let projectObj = window.serializeProject();
+    try {
+      projectObj = await saveAllAssetsToStorage(projectObj, getStableProjectId(projectObj.settings, activeProjectName));
+    } catch (_) {}
+
+    const pkg = await buildAmntPackageFromEditor(projectObj);
+    const text = window.AmiantoAmnt.stringify(pkg, true);
+    const defaultName = window.AmiantoAmnt.defaultFileName(activeProjectName);
+
+    const location = await pickProjectSaveLocation(activeProjectName);
+    if (location) {
+      const written = await writeAmntContent(activeProjectName, text, location);
+      showNotification(written ? `Exported to ${written}` : 'Project exported', 'success');
+      return;
+    }
+
+    downloadBlob(text, defaultName, 'application/json');
+    showNotification('Project exported as .amnt', 'success');
   };
 
   // Debug function to test coordinate conversion
@@ -18038,7 +17190,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!cursor) return;
 
     if (!currentUser) {
-      showNotification('Please log in', 'warning');
+      showNotification('Open a project first', 'warning');
       return;
     }
     if (!getActiveProjectId()) {
@@ -18171,8 +17323,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       item.className = `list-group-item list-group-item-action ${selectedCursorId === cursor.id ? 'active' : ''}`;
       item.dataset.cursorId = cursor.id;
       
-      const hasImage = cursor.cursorImage ? '✅' : '❌';
-      const hasScript = cursor.scriptName ? '📜' : '';
+      const hasImage = cursor.cursorImage ? 'âœ…' : 'âŒ';
+      const hasScript = cursor.scriptName ? 'ðŸ“œ' : '';
       
       item.innerHTML = `
         <div class="d-flex justify-content-between align-items-center">
@@ -18364,7 +17516,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
   }
 
-  // Inizializza il resize handle quando il DOM è pronto
+  // Inizializza il resize handle quando il DOM Ã¨ pronto
   initializeConsoleResize();
 
   // ============================================
@@ -18432,7 +17584,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
   }
 
-  // Inizializza il toggle quando il DOM è pronto
+  // Inizializza il toggle quando il DOM Ã¨ pronto
   initializeConsoleLogToggle();
 
   // Gestione sottomenu File nel dropdown del profilo

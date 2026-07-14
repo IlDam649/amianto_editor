@@ -2,9 +2,7 @@
 
 **Obiettivo:** una sola superficie API usabile da Play Test (`main.js` → iframe `runtime.js`), `runtime.html` standalone e documentazione (`README.md` / esempi script).
 
-**Stato (maggio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Gli script usano `getScriptApiBindings()` + `buildScriptExecutor()`; gli handler eseguono in `with (scriptScope)` via `buildHandlerExecutionScope()` / `runHandlerWithExecutionScope()`. `sandboxApi` e `gameInventory` editor sono stati rimossi da `main.js`.
-
-**Residuo (giugno 2026):** test manuali Fase E (checklist sotto).
+**Stato (luglio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Editor **offline**; script sandbox in `runtime-sandbox.html` (iframe) o `runtime.html` (Play Test window). Residuo: test manuali Fase E (checklist sotto).
 
 ---
 
@@ -66,6 +64,8 @@ Legenda azione:
 | `load_room`, `get_current_room`, `get_room_objects`, `set_room_background` | ✅ | ✅ | ✅ | |
 | `get_var` / `set_var` / `has_var` / `toggle_var`, `Game.getVar` | ✅ | ✅ | ✅ | `Game` = `GameAPI` |
 | Personaggi (spawn, walk, `play_character_animation`, …) | ✅ | ✅ | ✅ | |
+| Animazioni stanza (`play_animation`, `stop_animation`) | ✅ | ✅ | ✅ | |
+| Audio (`play_music`, `play_sound`, …) | ✅ | ✅ | ✅ | |
 | Dialoghi (`show_dialogue`, `end_dialogue`, …) | ✅ | ✅ | ✅ | |
 | Handler `on_*` (8 eventi) | ✅ | compile + scope | ✅ | `SUPPORTED_SCRIPT_HANDLERS` |
 | `sandboxApi` in `main.js` | — | — | — | **Rimosso** (Fase D) |
@@ -117,6 +117,39 @@ async function on_object_click(objectId, x, y) {
 
 - [ ] Animazione visibile; messaggio dopo il ciclo
 - [ ] `walk_character` interrompe animazione custom in corso
+
+---
+
+## Animazioni stanza (background / foreground) — editor ↔ runtime
+
+### Editor (`index.html` + `main.js`)
+- Tab **Animations** (`Ctrl+5`): catalogo globale `roomAnimationsCatalog` — nome, frame, FPS, layer (`background` | `foreground`), loop default, preview canvas.
+- Tab **Rooms → Room Animations**: istanze per stanza (`animationInstances[]`) — `animationId`, `name`, `x`, `y`, `layer`, `visible`, `autoPlay`.
+- Primo frame trascinabile sul canvas (come scene objects).
+- Serializzazione: `project.roomAnimations[]` + `rooms[].animationInstances[]` in `serializeProject()`.
+
+### Runtime (`runtime.js`)
+- Caricamento: `loadRoomAnimationDefinitions(projectData.roomAnimations)` → `gameState.roomAnimationDefinitions`.
+- `changeRoom`: costruisce `currentRoom.animationInstances` con stato playback (`currentFrame`, `frameTime`, `playing`).
+- Render: layer background dopo sfondo, layer foreground dopo scene objects.
+- Game loop: `updateRoomAnimationInstance()` (stessa logica loop di `parseAudioLoopOption`).
+- Script: `play_animation(instanceIdOrName, loop?)`, `stop_animation(instanceIdOrName?)`.
+
+### Esempio script (Fase E)
+
+```javascript
+function on_room_change(oldRoom, newRoom) {
+  play_animation("waterfall_main", true);
+}
+
+function on_hotspot_click(hotspotId) {
+  play_animation("torch_flicker", false);
+}
+```
+
+- [ ] Animazione visibile in play test (autoPlay o `play_animation`)
+- [ ] Layer background dietro oggetti; layer foreground davanti
+- [ ] `stop_animation()` ferma il ciclo frame
 
 ---
 
@@ -230,9 +263,9 @@ Checklist (completata — vedi `getScriptApiBindings()` / `buildScriptExecutor()
 - [x] Finestra PLAY: `PLAYTEST_RUNTIME_READY` + push contesto; reload mantiene inventario editor
 - [x] `on_room_change` allineato in editor e runtime (non più `on_room_enter`)
 
-#### 2.5 CodeMirror hints (~6040–6047)
+#### 2.5 CodeMirror hints (~7100)
 
-- [x] `GAME_API_COMPLETIONS` allineato a `getScriptApiBindings()` + 8 handler + alias `Game.*` / `GameAPI.*` — giugno 2026
+- [x] `GAME_API_COMPLETIONS` allineato a `getScriptApiBindings()` + 8 handler + `play_animation` / `stop_animation` + alias `Game.*` / `GameAPI.*`
 
 #### 2.6 Serializzazione progetto (~11881)
 
@@ -241,10 +274,11 @@ Checklist (completata — vedi `getScriptApiBindings()` / `buildScriptExecutor()
 
 ---
 
-### 3. `index.html` / `runtime.html`
+### 3. `index.html` / `runtime.html` / `runtime-sandbox.html`
 
-- [ ] Nessun cambio obbligatorio per unificazione API
-- [ ] Verificare che Play Test iframe carichi solo `runtime.js` (già sandbox)
+- [x] Play Test finestra: `runtime.html` + `JS/runtime.js`
+- [x] Sandbox editor: `runtime-sandbox.html` (minimo) + `postMessage` `RUNTIME_READY` / `SANDBOX_PING`
+- [x] Stesse API script in iframe e standalone (`getScriptApiBindings`)
 
 ---
 
@@ -252,9 +286,9 @@ Checklist (completata — vedi `getScriptApiBindings()` / `buildScriptExecutor()
 
 | File | Azione |
 |------|--------|
-| `README.md` | [x] Allineato giugno 2026 (API, tab, shortcut, Fasi A–D) |
-| `ROADMAP.md` | [x] Stato runtime/inventario/cursori aggiornato |
-| `JS/docs-panel.js` | [x] Guida in-app (allineata a runtime) |
+| `README.md` | [x] Allineato luglio 2026 (offline, `.amnt`, Electron, API) |
+| `ROADMAP.md` | [x] Architettura offline, export desktop editor, stato runtime |
+| `JS/docs-panel.js` | [x] Guida in-app: tab Animations, room animations API, runtime-sandbox |
 | `# 🎮 Funzioni da Implementare - Amianto editor.md` | [x] Legenda backlog vs ✅ runtime |
 
 ---
@@ -425,6 +459,25 @@ async function on_hotspot_click(hotspotId) {
 
 - [ ] Ciclo `wave` visibile; posa idle walking dopo
 - [ ] Con `await`, `show_message` solo a fine animazione
+
+### Script 4c — Animazione stanza
+
+Prerequisito: in editor, tab **Animations** → animazione con frame; tab **Rooms** → istanza posizionata (nome es. `waterfall_main`).
+
+```javascript
+function on_game_start() {
+  play_animation("waterfall_main", true);
+}
+
+function on_hotspot_click(hotspotId) {
+  if (hotspotId === "toggle_water") {
+    stop_animation("waterfall_main");
+  }
+}
+```
+
+- [ ] Ciclo frame visibile in play test
+- [ ] `stop_animation` ferma l'animazione
 
 ### Script 5 — Stanza
 

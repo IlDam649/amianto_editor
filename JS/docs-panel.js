@@ -8,19 +8,21 @@
 <article class="docs-article">
   <section id="doc-overview" class="docs-section">
     <h2>Overview</h2>
-    <p><strong>Amianto Editor</strong> is a browser-based point-and-click adventure game editor. You build rooms, place interactive objects, define walkable areas and hotspots, manage characters and inventory, design GUI overlays, and drive game logic with <strong>JavaScript</strong> scripts executed in a sandboxed runtime.</p>
+    <p><strong>Amianto Editor</strong> is an offline point-and-click adventure game editor (Windows Electron app or browser). You build rooms, place interactive objects, define walkable areas and hotspots, manage characters and inventory, design GUI overlays, and drive game logic with <strong>JavaScript</strong> scripts executed in a sandboxed runtime.</p>
     <ul>
-      <li><strong>Editor</strong> (<code>index.html</code>) — design and save projects (Firestore / local cache).</li>
-      <li><strong>Runtime</strong> (<code>runtime.html</code> + <code>JS/runtime.js</code>) — plays exported JSON and runs your scripts with the same API as Play Test.</li>
+      <li><strong>Editor</strong> (<code>index.html</code>) — design projects; save as <code>.amnt</code> files.</li>
+      <li><strong>Runtime (Play Test window)</strong> (<code>runtime.html</code> + <code>JS/runtime.js</code>) — full-screen test player.</li>
+      <li><strong>Script sandbox (in editor)</strong> (<code>runtime-sandbox.html</code> + <code>JS/runtime.js</code>) — isolated iframe for script execution with the same API.</li>
     </ul>
-    <p>Open a project from <strong>Projects</strong> before using design tabs. <strong>Docs</strong> is always available without a project.</p>
+    <p>Open or create a project from <strong>Projects</strong> before using design tabs. Use <strong>Save Project</strong> (header) to write the <code>.amnt</code> file. <strong>Docs</strong> is always available without a project.</p>
   </section>
 
   <section id="doc-quickstart" class="docs-section">
     <h2>Quick start</h2>
     <ol>
-      <li>Log in and open <strong>Projects</strong> → create or select a project.</li>
-      <li><strong>Rooms</strong> — create a room, add background, scene objects, walkable polygon, hotspots.</li>
+      <li><strong>Projects</strong> → create (pick <code>.amnt</code> save path) or <strong>Load Project</strong>.</li>
+      <li><strong>Rooms</strong> — create a room, add background, scene objects, walkable polygon, hotspots; place <strong>room animations</strong> (see <strong>Animations</strong> tab).</li>
+      <li><strong>Animations</strong> — create looping frame sequences for background or foreground layers; preview on canvas.</li>
       <li><strong>Characters</strong> — create the player, upload <strong>walking</strong> frames (8 directions), add optional <strong>custom animations</strong> (e.g. <code>wave</code>), set start room/position.</li>
       <li><strong>Inventory</strong> — define items (keys, tools, etc.).</li>
       <li><strong>Scripts</strong> — write <code>on_game_start</code>, attach scripts to objects/hotspots/GUI.</li>
@@ -38,11 +40,12 @@ function on_game_start() {
     <table class="docs-table">
       <thead><tr><th>Tab</th><th>Purpose</th></tr></thead>
       <tbody>
-        <tr><td><strong>Projects</strong></td><td>Create, open, refresh projects. Required before other tabs.</td></tr>
-        <tr><td><strong>Resources</strong></td><td>Central image/sound library (Supabase). Import once, pick assets everywhere.</td></tr>
-        <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, scene objects, walkable area, hotspots.</td></tr>
+        <tr><td><strong>Projects</strong></td><td>Create <code>.amnt</code> projects, load from disk, manage local project list.</td></tr>
+        <tr><td><strong>Resources</strong></td><td>Central image/sound library (local storage). Import once, pick assets everywhere.</td></tr>
+        <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, <strong>room animation placements</strong>, scene objects, walkable area, hotspots.</td></tr>
         <tr><td><strong>Inventory</strong></td><td>Inventory items and slot grid for the player UI.</td></tr>
         <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
+        <tr><td><strong>Animations</strong></td><td>Room/environment animations: frame sequences, FPS, layer (background/foreground), loop default, canvas preview.</td></tr>
         <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), <strong>DialogBox</strong> (speech balloon style), buttons with optional scripts.</td></tr>
         <tr><td><strong>Scripts</strong></td><td>CodeMirror editor, script tree, game variables, Run/Stop sandbox.</td></tr>
         <tr><td><strong>Docs</strong></td><td>This guide.</td></tr>
@@ -51,7 +54,7 @@ function on_game_start() {
     </table>
     <h3>Keyboard shortcuts</h3>
     <ul>
-      <li><kbd>Ctrl</kbd>+<kbd>0</kbd> Projects · <kbd>1</kbd> Resources · <kbd>2</kbd> Rooms · <kbd>3</kbd> Inventory · <kbd>4</kbd> Characters · <kbd>5</kbd> GUI · <kbd>6</kbd> Scripts · <kbd>7</kbd> Docs · <kbd>8</kbd> PLAY</li>
+      <li><kbd>Ctrl</kbd>+<kbd>0</kbd> Projects · <kbd>1</kbd> Resources · <kbd>2</kbd> Rooms · <kbd>3</kbd> Inventory · <kbd>4</kbd> Characters · <kbd>5</kbd> Animations · <kbd>6</kbd> GUI · <kbd>7</kbd> Scripts · <kbd>8</kbd> Docs · <kbd>9</kbd> PLAY</li>
       <li><kbd>Ctrl</kbd>+<kbd>S</kbd> — save current script (Scripts tab)</li>
       <li><kbd>Ctrl</kbd>+<kbd>Space</kbd> — autocomplete game API in script editor</li>
       <li>Canvas: mouse wheel zoom, <kbd>Ctrl</kbd>+click pan, click-drag objects</li>
@@ -66,7 +69,17 @@ function on_game_start() {
       <li><strong>Walkable area</strong>: Start Drawing → click vertices → Finish. Players pathfind only inside this polygon.</li>
       <li><strong>Hotspots</strong>: polygon click regions for doors, items, NPCs. Use <strong>Is active?</strong> for the default state; toggle at runtime with <code>enableHotspot</code> / <code>disableHotspot</code>.</li>
       <li><strong>Scene objects</strong>: draggable images; position on canvas or via inspector.</li>
+      <li><strong>Room animations</strong>: create definitions in <strong>Animations</strong>, then in <strong>Rooms → Room Animations</strong> add an instance and drag the first frame on the canvas. <strong>Background</strong> layer draws behind scene objects; <strong>foreground</strong> layer draws in front.</li>
     </ul>
+    <h3>Animations (room / environment)</h3>
+    <p>Unlike <strong>Characters</strong> (8-direction walking), room animations are a single frame strip for props and ambience (water, fire, flags, etc.).</p>
+    <ol>
+      <li><strong>Animations</strong> → <strong>Add Animation</strong> → name, upload frames from <strong>Resources</strong>, set FPS and default layer.</li>
+      <li><strong>Start Preview</strong> to test on the canvas; enable <strong>Loop by default</strong> for ambient effects.</li>
+      <li><strong>Rooms</strong> → <strong>Room Animations</strong> → pick animation → <strong>Add Animation to Room</strong> → drag to position.</li>
+      <li>In play test, animations show frame 0 until you call <code>play_animation</code> / <code>stop_animation</code> in scripts.</li>
+    </ol>
+    <p>Instance <code>name</code> (e.g. <code>waterfall_room1</code>) is what you pass to <code>play_animation</code>. Saved in project JSON as <code>roomAnimations[]</code> (catalog) and <code>rooms[].animationInstances[]</code> (placements).</p>
     <h3>Resources</h3>
     <p>Import images to the shared library, then use the resource picker in Rooms, GUI, Characters, etc. Keeps paths consistent and reduces duplicate uploads.</p>
     <h3>Characters</h3>
@@ -207,6 +220,39 @@ if (Game.getVar("door_open")) {
       <li><code>get_var(key)</code> / <code>set_var(key, value)</code> / <code>has_var(key)</code> / <code>toggle_var(key)</code></li>
       <li><code>Game.getVar(key)</code> / <code>Game.setVar(key, value)</code> / <code>Game.hasVar(key)</code> / <code>Game.toggleVar(key)</code></li>
     </ul>
+
+    <h3>Audio</h3>
+    <p>Import MP3/OGG/WAV in <strong>Resources → Audio</strong>. Reference by file name (<code>theme.mp3</code>), display name, asset id, or <code>asset:…</code>.</p>
+    <ul>
+      <li><code>play_music(trackId, loop?)</code> — background music (one track at a time). Default loop: <code>true</code>.</li>
+      <li><code>play_sound(soundId, loop?)</code> — sound effect (can overlap). Default loop: <code>false</code>.</li>
+      <li><code>stop_music()</code> — stop background music</li>
+      <li><code>stop_sound(soundId?)</code> — stop a looping SFX, or all looping SFX if omitted</li>
+    </ul>
+    <p><strong>Loop parameter:</strong> <code>true</code> / <code>'loop'</code> / <code>'infinite'</code> = repeat forever; <code>false</code> / <code>'once'</code> = play once; number <code>N</code> &gt; 1 = play N times.</p>
+    <pre class="docs-code"><code>function on_game_start() {
+  play_music("theme.mp3", true);
+}
+
+function on_hotspot_click() {
+  play_sound("door_open.ogg", false);
+}</code></pre>
+
+    <h3>Room animations</h3>
+    <p>Create animations in <strong>Animations</strong>, place them in <strong>Rooms → Room Animations</strong>, then control them from script.</p>
+    <ul>
+      <li><code>play_animation(instanceIdOrName, loop?)</code> — start or restart a placed room animation. <code>loop</code> uses the same rules as audio (default: animation's loop setting).</li>
+      <li><code>stop_animation(instanceIdOrName?)</code> — stop one instance, or all room animations if omitted</li>
+    </ul>
+    <p><strong>Editor setup:</strong> Animations tab → frames + layer; Rooms tab → placement + drag first frame. In play test, animations stay on frame 0 until you call <code>play_animation()</code> from script.</p>
+    <pre class="docs-code"><code>function on_room_change(oldRoom, newRoom) {
+  play_animation("waterfall_room1", true);
+}
+
+function on_hotspot_click() {
+  play_animation("torch_flicker", false);
+  stop_animation("waterfall_room1");
+}</code></pre>
   </section>
 
   <section id="doc-examples" class="docs-section">
@@ -290,6 +336,22 @@ function on_character_click(character_id) {
   show_message("The hero waves hello!");
 }</code></pre>
 
+    <h3>5c — Room animation (waterfall, torch, etc.)</h3>
+    <p>Create the animation in <strong>Animations</strong>, place it in <strong>Rooms → Room Animations</strong>, then reference the instance <strong>name</strong> in script.</p>
+    <pre class="docs-code"><code>function on_room_change(oldRoom, newRoom) {
+  if (newRoom === "cave") {
+    play_animation("waterfall_cave", true);
+  } else {
+    stop_animation("waterfall_cave");
+  }
+}
+
+function on_hotspot_click(hotspot_id) {
+  if (hotspot_id === "torch_switch") {
+    play_animation("wall_torch", 1); // play once
+  }
+}</code></pre>
+
     <h3>6 — Spawn temporary object</h3>
     <pre class="docs-code"><code>function on_hotspot_click(hotspot_id) {
   if (hotspot_id === "sparkle") {
@@ -365,15 +427,31 @@ function on_use_with(targetType, targetId) {
 }</code></pre>
   </section>
 
+  <section id="doc-projects" class="docs-section">
+    <h2>Projects &amp; saving</h2>
+    <h3><code>.amnt</code> file format</h3>
+    <p>A project is stored as a single <strong><code>.amnt</code></strong> file: JSON containing the project structure plus embedded assets (images/sounds as base64). One file = one game project, easy to back up and share.</p>
+    <ul>
+      <li><strong>Create</strong> — Projects tab → new name → choose where to save the <code>.amnt</code> file (native dialog in the desktop app).</li>
+      <li><strong>Save Project</strong> — header button (top right) updates the linked file.</li>
+      <li><strong>Project Settings</strong> — header button next to Save; canvas size, name, author, etc.</li>
+      <li><strong>Load Project</strong> — open an existing <code>.amnt</code> or legacy <code>.json</code> file.</li>
+      <li><strong>Export</strong> — export full <code>.amnt</code> bundle from the Projects tab when needed.</li>
+    </ul>
+    <p>Assets are also cached in <strong>IndexedDB</strong> for fast editing. Legacy <code>.json</code> projects (without embedded assets) are still supported for import.</p>
+    <h3>Desktop app</h3>
+    <p>Run <code>npm start</code> for the Electron editor, or <code>npm run dist</code> to build a Windows installer. No internet connection required.</p>
+  </section>
+
   <section id="doc-playtest" class="docs-section">
     <h2>Play test &amp; export</h2>
     <ul>
-      <li><strong>Start Test</strong> — embedded runtime with rendering, clicks, pathfinding, scripts.</li>
+      <li><strong>Start Test</strong> — embedded canvas + script sandbox; full window opens <code>runtime.html</code>.</li>
       <li><strong>Script console</strong> — shows <code>print</code> / errors from sandbox.</li>
-      <li><strong>Export</strong> — File menu → Export project JSON for <code>runtime.html</code>.</li>
-      <li>Standalone runtime: load JSON file or last saved; scripts use the same API bindings as Play Test.</li>
+      <li><strong>Export</strong> — save <code>.amnt</code> or JSON for use in <code>runtime.html</code> standalone.</li>
+      <li>Standalone runtime: load <code>.amnt</code> / JSON file or last saved; same script API as Play Test.</li>
     </ul>
-    <p>Sandbox uses <code>sandbox="allow-scripts"</code> — scripts cannot access the parent DOM; only the exposed game API.</p>
+    <p>In-editor scripts run in <code>runtime-sandbox.html</code> (hidden iframe, <code>allow-scripts allow-same-origin</code>). Scripts cannot access the parent DOM; only the exposed game API.</p>
   </section>
 
   <section id="doc-tips" class="docs-section">
@@ -386,8 +464,8 @@ function on_use_with(targetType, targetId) {
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
       <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
-      <li>Dialogue: use <code>show_dialogue</code> (balloon on character). Branching choices (<code>show_dialogue_choices</code>) not implemented yet — see <code>ROADMAP.md</code>.</li>
-      <li>Features on roadmap (not in runtime yet): audio API, save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
+      <li>Branching dialogue choices (<code>show_dialogue_choices</code>) not implemented yet — see <code>ROADMAP.md</code>.</li>
+      <li>Features on roadmap: save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
     </ul>
   </section>
 </article>`;

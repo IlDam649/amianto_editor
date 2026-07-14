@@ -42,40 +42,8 @@
     return deps.getProjectId ? deps.getProjectId() : null;
   }
 
-  async function mergeFirestoreMetadata(projectId, storageEntries, assetType = 'resource') {
-    if (!window.firebaseDB || !window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      return storageEntries;
-    }
-    try {
-      const userId = window.firebaseAuth.currentUser.uid;
-      const snap = await window.firebaseDB
-        .collection('users').doc(userId)
-        .collection('projects').doc(projectId)
-        .collection('assets')
-        .where('type', '==', assetType)
-        .get();
-
-      const metaById = new Map();
-      snap.forEach(doc => {
-        const d = doc.data();
-        const id = d.assetId || doc.id;
-        metaById.set(id, d);
-      });
-
-      return storageEntries.map(entry => {
-        const meta = metaById.get(entry.assetId);
-        if (!meta) return entry;
-        return {
-          ...entry,
-          displayName: meta.name || entry.name,
-          publicUrl: meta.publicUrl || entry.publicUrl,
-          firestoreId: meta.assetId || entry.assetId
-        };
-      });
-    } catch (err) {
-      console.warn('[Resources] Could not load Firestore metadata:', err);
-      return storageEntries;
-    }
+  async function mergeFirestoreMetadata(projectId, storageEntries) {
+    return storageEntries;
   }
 
   async function loadResources() {
@@ -91,17 +59,17 @@
       return [];
     }
 
-    if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-      if (status) status.textContent = 'Supabase Storage is not configured.';
+    if (!window.assetStorage || !window.assetStorage.isAvailable()) {
+      if (status) status.textContent = 'Local storage is not available.';
       return [];
     }
 
     state.loading = true;
-    if (status) status.textContent = 'Loading images from Supabase...';
+    if (status) status.textContent = 'Loading images...';
     if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
 
     try {
-      let entries = await window.supabaseStorage.listProjectResources(projectId);
+      let entries = await window.assetStorage.listProjectResources(projectId);
       entries = await mergeFirestoreMetadata(projectId, entries);
       entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
       state.entries = entries;
@@ -281,17 +249,17 @@
       return [];
     }
 
-    if (!window.supabaseStorage?.listProjectAudio) {
-      if (status) status.textContent = 'Supabase Storage is not configured.';
+    if (!window.assetStorage?.listProjectAudio) {
+      if (status) status.textContent = 'Local storage is not configured.';
       return [];
     }
 
     soundState.loading = true;
-    if (status) status.textContent = 'Loading audio from Supabase...';
+    if (status) status.textContent = 'Loading audio...';
     if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
 
     try {
-      let entries = await window.supabaseStorage.listProjectAudio(projectId);
+      let entries = await window.assetStorage.listProjectAudio(projectId);
       entries = await mergeFirestoreMetadata(projectId, entries, 'audio');
       entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
       soundState.entries = entries;
@@ -626,8 +594,8 @@
       const entry = state.entries.find(e => e.assetId === assetId);
       if (!entry) continue;
 
-      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
-        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      if (entry.storagePath && window.assetStorage.deleteFileByPath) {
+        await window.assetStorage.deleteFileByPath(entry.storagePath);
       }
 
       if (deps.deleteFirestoreAsset) {
@@ -716,8 +684,8 @@
       const entry = soundState.entries.find(e => e.assetId === assetId);
       if (!entry) continue;
 
-      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
-        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      if (entry.storagePath && window.assetStorage.deleteFileByPath) {
+        await window.assetStorage.deleteFileByPath(entry.storagePath);
       }
 
       if (deps.deleteFirestoreAsset) {
@@ -858,9 +826,9 @@
   }
 
   async function loadResourcesForPicker() {
-    if (!window.supabaseStorage?.listProjectResources) return [];
+    if (!window.assetStorage?.listProjectResources) return [];
     const projectId = getProjectId();
-    let entries = await window.supabaseStorage.listProjectResources(projectId);
+    let entries = await window.assetStorage.listProjectResources(projectId);
     return mergeFirestoreMetadata(projectId, entries);
   }
 

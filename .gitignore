@@ -1,7 +1,4 @@
-# Firebase
-.firebase/
-firebase-debug.log
-firebase-debug.*.log
+# Firebase (rimosso — app 100% locale)
 
 # Dependencies
 node_modules/
