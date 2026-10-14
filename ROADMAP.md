@@ -13,7 +13,7 @@
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**✅ Nota (luglio 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi base ✅**, **animazioni stanza ✅**, **audio base ✅** (`play_music`/`play_sound`), inventario runtime parziale. Prossimi step: scelte dialogo, mixer audio, cursori in playtest, transizioni, save slot gioco.
+**✅ Nota (ottobre 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi balloon + `start_dialogue` v1 ✅**, **save/load gioco** (`save_game` / `load_game`, localStorage) ✅, **autosave progetto periodico + indicatore** ✅, animazioni stanza ✅, audio base ✅, cursori runtime ✅. Prossimi step: node editor dialogo, condizioni, mixer audio, transizioni, UI slot save in-game.
 
 ---
 
@@ -32,11 +32,12 @@
 - Utente locale (`Local`) — nessun login cloud
 
 #### 🟡 **Parzialmente Implementato**
-- **Salvataggio automatico**: Esiste debounce OPFS ma non autosave periodico
-  - **Prossimo passo**: Implementare autosave ogni 30-60 secondi con indicatore visivo
+- **Salvataggio automatico**: ✅ Debounce su `.amnt` collegato (2.5s) + **autosave periodico 45s** se dirty + indicatore header (`Saved` / `Unsaved` / `Autosaving…`)
+  - Persiste cache browser sempre; scrive `.amnt` se path/handle collegato
+  - **Prossimo passo**: backup timestamped multipli (versioning)
 
 #### ❌ **Mancante**
-- **Versionamento progetti**: Nessun sistema di backup/versioni
+- **Versionamento progetti**: Nessun sistema di backup/versioni multiple
   - **Prossimo passo**: Aggiungere timestamped backups in localStorage/OPFS
 - **Template progetti**: Nessun sistema di template predefiniti
   - **Prossimo passo**: Creare template base (empty, tutorial, example)
@@ -93,10 +94,13 @@
   - **Prossimo passo**: Sistema di scaling/anchoring per GUI responsive
 
 #### 🟡 **Parzialmente Implementato**
-- **Sistema di dialogo GUI**: Balloon su personaggio via script (`show_dialogue`)
+- **Sistema di dialogo GUI**: Balloon + grafo ramificato v1
   - ✅ Rendering balloon (testo, colori, immagine opzionale da GUI DialogBox)
   - ✅ Balloon segue il personaggio; chiusura con click
-  - **Prossimo passo**: Scelte ramificate (`show_dialogue_choices`), `start_dialogue` session
+  - ✅ `start_dialogue(idOrName)` — grafo `line` / `choice` / `end` in `project.dialogues`
+  - ✅ Editor form-based in tab Scripts → Dialogues (persistito in `.amnt`)
+  - ✅ Scelte clickable in playtest e export HTML (stesso `runtime.js`)
+  - **Prossimo passo**: editor nodi visuale; condizioni; once-only; action/jump; ritratti
 - **Sistema inventario GUI**: Inventory GUI parziale
   - ✅ Rendering pannello, slot, oggetto in mano (carriedItem)
   - ✅ Combinazioni use-with (hotspot, object, character, inventory)
@@ -116,13 +120,14 @@
 - **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
 - **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with` (click con `usedItemId` opzionale dove applicabile)
 - **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
-- **Dialoghi (base):** `show_dialogue`, `show_dialogue_text`, `end_dialogue`
+- **Dialoghi:** `show_dialogue`, `show_dialogue_text`, `end_dialogue`, `start_dialogue` (grafo)
 - **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
 - **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
 - **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
 - **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (animazioni custom da editor)
 - **Animazioni stanza:** `play_animation`, `stop_animation` (istanze posizionate in editor)
 - **Audio:** `play_music`, `play_sound`, `stop_music`, `stop_sound`
+- **Save gioco:** `save_game`, `load_game`, `delete_save`, `get_save_info` (localStorage, slot 1–10)
 - Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
 
 #### ✅ **API runtime (Fase B completata)**
@@ -133,10 +138,10 @@
 - Test manuali checklist Fase E (`await` + inventario nello stesso handler)
 
 #### ❌ **Mancante (backlog)**
-- Dialoghi avanzati: `start_dialogue()`, `show_dialogue_choices()`, mood/relazioni
+- Dialoghi avanzati: editor nodi visuale, condizioni/flag, once-only choices, action/jump nodes, mood/relazioni
 - Audio avanzato: volumi, ambient, fade musica
 - Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
-- Salvataggio gioco: `save_game()`, `load_game()`, slot, metadata
+- Save gioco: UI menu slot in-game; IndexedDB; screenshot metadata
 - Utility: `distance()`, `angle_between()`, `lerp()`, `shuffle_array()`
 - AI personaggi: patrol, follow (oltre a `walk_character` già presente)
 
@@ -204,13 +209,12 @@
   - ✅ Rendering GUI inventario parziale (pannello, slot, oggetto in mano, combinazioni)
   - **Prossimo passo**: drag&drop slot, tooltip, sync `UPDATE_CONTEXT` editor↔runtime
 - **Sistema cursori contestuali**
-  - ✅ Definizione e hover sul **canvas editor** (`checkContextualCursor` in `main.js`)
-  - ❌ Cambio cursore dinamico in **playtest/runtime** (cursore `pointer` o custom inventario)
-  - **Prossimo passo**: Hover detection runtime + immagini cursore da progetto
+  - ✅ Definizione in editor + hover canvas editor
+  - ✅ Cambio cursore dinamico in playtest/runtime (categorie + action text)
 
 #### ❌ **Mancante**
-- **Sistema dialogo visuale**: 🟡 Balloon base implementato (`show_dialogue`)
-  - **Prossimo passo**: Scelte ramificate, animazioni GUI dialogo avanzate
+- **Sistema dialogo visuale (node canvas)**: 🟡 Grafo + form editor + runtime ✅; manca editor a nodi
+  - **Prossimo passo**: canvas nodi, condizioni, action nodes
 - **Sistema audio runtime**: 🟡 `play_music` / `play_sound` base implementati
   - **Prossimo passo**: Mixer volumi, ambient layers, fade
 - **Sistema transizioni**: Nessun sistema di transizioni tra stanze
@@ -247,17 +251,21 @@
 ### 7. SALVATAGGIO (Sistema Salvataggio Gioco)
 
 #### ✅ **Già Implementato**
-- Salvataggio progetto editor (`.amnt`, cache locale)
+- Salvataggio progetto editor (`.amnt`, cache locale, autosave periodico)
+- **Save/load stato gioco (API)**: `save_game(slot, label?)`, `load_game(slot)`, `delete_save(slot)`, `get_save_info(slot?)`
+  - Formato `amianto-save` v1 in `localStorage` (`amianto-gamesave:v1:{projectId}:{slot}`)
+  - Persiste: room, variables, inventory (+ carried), characters, object/hotspot overrides
+  - `load_game` non riesegue `on_room_change` / `on_game_start` (`skipRoomScripts`)
+  - Stesso runtime → playtest + export HTML
+
+#### 🟡 **Parzialmente Implementato**
+- **Save metadata**: timestamp + label + roomId; ❌ screenshot
+- **Storage**: localStorage (ok per stato piccolo); ❌ IndexedDB per quota elevate
 
 #### ❌ **Mancante**
-- **Sistema salvataggi gioco**: Nessun sistema per salvare stato gioco durante il gameplay
-  - **Prossimo passo**: Sistema slot salvataggi (1-10), serializzazione stato gioco
-- **Auto-save**: Nessun autosave durante gameplay
-  - **Prossimo passo**: Autosave periodico (ogni 5 minuti) con indicatore
-- **Save metadata**: Nessuna info su salvataggi (data, screenshot, progresso)
-  - **Prossimo passo**: Metadata salvataggi con timestamp, screenshot, nome slot
-- **Load game menu**: Nessun menu per caricare salvataggi
-  - **Prossimo passo**: Menu GUI per visualizzare/caricare/eliminare salvataggi
+- **Auto-save gameplay**: Nessun autosave periodico durante la partita
+- **Load game menu**: Nessuna GUI slot predefinita (usare script / GUI custom)
+- **Screenshot metadata** su slot
 
 ---
 
@@ -271,8 +279,8 @@
 - **App editor desktop** Electron (Windows installer via `npm run dist`)
 
 #### 🟡 **Parzialmente Implementato**
-- **Export standalone HTML**: Nessun export completo del *gioco* come HTML standalone
-  - **Prossimo passo**: Generare HTML standalone con progetto embedded, runtime incluso
+- **Export standalone HTML**: ✅ Export Game (HTML) one-click — singolo file con runtime + progetto + asset embedded (`JS/export-standalone.js`)
+  - **Prossimo passo**: minificazione JS/CSS, compressione asset nell'export
 
 #### ❌ **Mancante**
 - **Export PWA**: Nessun export del gioco come Progressive Web App
@@ -412,27 +420,26 @@
 - **Tempo impiegato**: Completato
 
 #### 2.3 Sistema Cursori Contestuali Runtime
-- **Stato**: 🟡 Parzialmente implementato
-- **Problema**: Cursori definiti ma cambio dinamico non implementato
-- **Implementazione attuale**:
-  - ✅ Cursor fisso 'pointer' implementato
-  - ❌ Cambio cursore in base a hover su hotspot/character/object non funzionante
-- **Soluzione**:
-  - Hit detection hover per hotspot/character/object
-  - Cambio cursore dinamico in base a hover
-  - Visual feedback con action text
-- **Tempo stimato**: 3-4 giorni
+- **Stato**: ✅ Completato (luglio 2026)
+- **Implementazione**:
+  - ✅ Caricamento cursori per categoria da progetto (`loadCursors`)
+  - ✅ Hover detection runtime (inventario, GUI, hotspot, oggetto, personaggio, walkable)
+  - ✅ Categorie: `use` / `talk` / `grab` / `exit` / `walk` / `wait` / `default` con fallback
+  - ✅ Action text overlay in playtest
+  - ✅ Cursore `wait` durante input lock; nascosto con oggetto inventario in mano
+- **Tempo impiegato**: Completato
 
-#### 2.4 Sistema Dialoghi Base
-- **Stato**: 🟡 Parziale (maggio 2026)
+#### 2.4 Sistema Dialoghi Base + slice ramificato v1
+- **Stato**: 🟡 Parziale (slice v1 implementato — ott 2026)
 - **Completato**:
-  - API scripting: `show_dialogue(character, text)`, `show_dialogue_text(text, speaker)`, `end_dialogue()`
-  - Rendering balloon DialogBox (colori, immagine balloon, `appear`: instant/fade/slide)
-  - Balloon segue il personaggio in play test; chiusura con click; coda comandi
-- **Mancante**:
-  - `start_dialogue()`, `show_dialogue_choices()`, risposta giocatore
-  - Sistema di scelte ramificate e mood/relazioni
-- **Tempo stimato residuo**: 4-6 giorni
+  - API: `show_dialogue`, `show_dialogue_text`, `end_dialogue`, `start_dialogue(idOrName)`
+  - Rendering balloon DialogBox; coda comandi; click per avanzare
+  - Grafo persistito in `project.dialogues` (nodi `line` / `choice` / `end`)
+  - Editor form-based (Scripts → Dialogues); playtest + export HTML allineati
+- **Mancante / non verificato in CI** (nessuna suite automatica):
+  - Editor nodi visuale; condizioni; once-only; action/jump; mood/relazioni
+  - Test manuali playtest/export consigliati su ogni progetto
+- **Tempo stimato residuo (avanzato)**: 4-8 giorni
 
 **Totale Fase 2**: ~20-27 giorni lavorativi
 
@@ -464,15 +471,14 @@
 - **Tempo stimato**: 5-7 giorni (solo parti AI/stato)
 
 #### 3.4 Sistema Salvataggi Gioco
-- **Stato**: ❌ Mancante
-- **Problema**: Nessun sistema per salvare stato gioco
-- **Soluzione**:
-  - API scripting: `save_game()`, `load_game()`, `delete_save()`, `get_save_info()`
-  - Sistema slot salvataggi (1-10)
-  - Serializzazione stato gioco completo
-  - Menu GUI per salvataggi
-  - Auto-save periodico
-- **Tempo stimato**: 6-8 giorni
+- **Stato**: 🟡 API v1 implementata (ottobre 2026) — UI menu / autosave partita ancora da fare
+- **Completato**:
+  - API: `save_game`, `load_game`, `delete_save`, `get_save_info`
+  - Slot 1–10 (o id stringa); formato versionato `amianto-save`
+  - Stato: room, vars, inventory, characters, oggetti/hotspot
+- **Mancante**:
+  - Menu GUI slot, autosave periodico in partita, screenshot, IndexedDB
+- **Tempo stimato residuo**: 3–5 giorni
 
 **Totale Fase 3**: ~24-32 giorni lavorativi
 
@@ -501,13 +507,10 @@
 - **Tempo stimato**: 3-4 giorni
 
 #### 4.3 Autosave e Versionamento
-- **Stato**: 🟡 Parzialmente implementato (debounce OPFS)
-- **Problema**: Nessun autosave periodico, nessun versionamento
-- **Soluzione**:
-  - Autosave ogni 30-60 secondi con indicatore
-  - Sistema backup timestamped
-  - Ripristino versioni precedenti
-- **Tempo stimato**: 3-4 giorni
+- **Stato**: 🟡 Autosave periodico ✅ / versionamento ❌
+- **Completato**: debounce `.amnt` (2.5s) + interval 45s se dirty + status header
+- **Mancante**: backup timestamped multipli e ripristino versioni
+- **Tempo stimato residuo**: 2-3 giorni
 
 #### 4.4 Validazione e Template
 - **Stato**: ❌ Mancante
@@ -527,13 +530,14 @@
 **Obiettivo**: Permettere distribuzione giochi creati.
 
 #### 5.1 Export Standalone HTML
-- **Stato**: 🟡 Parzialmente implementato
-- **Problema**: Export base ma non ottimizzato
-- **Soluzione**:
-  - Generare HTML standalone con progetto embedded
-  - Runtime incluso, nessuna dipendenza esterna
-  - Minificazione JS/CSS
-- **Tempo stimato**: 3-4 giorni
+- **Stato**: ✅ Completato (base, luglio 2026)
+- **Implementazione**:
+  - ✅ Pulsante **Export Game (HTML)** in tab Projects
+  - ✅ File unico: shell player + `runtime.js` inline + progetto + asset base64
+  - ✅ Shim `assetStorage` embedded per risolvere `asset:` offline
+  - ✅ Dialogo salvataggio Electron / File System Access / download browser
+- **Residuo**: minificazione, compressione asset, PWA
+- **Tempo impiegato**: Completato (MVP)
 
 #### 5.2 Export PWA
 - **Stato**: ❌ Mancante
@@ -607,18 +611,19 @@
 1. ✅ Unificazione API Fasi A–D — COMPLETATO
 2. ⏳ Test manuali Fase E (`API_UNIFICATION_CHECKLIST.md`)
 3. Inventario GUI: drag&drop, tooltip, sync contesto
-4. Cursori contestuali in runtime/playtest (Fase 2.3)
-5. ~~Dialoghi base~~ ✅ balloon + `show_dialogue`
+4. ✅ Cursori contestuali in runtime/playtest (Fase 2.3)
+5. ✅ Dialoghi: balloon + `start_dialogue` slice v1
+6. ✅ Save/load gioco API v1 + autosave progetto periodico
 
 ### **Breve Termine**
-6. Scelte dialogo ramificate (resto Fase 2.4)
-7. Sistema audio runtime (Fase 3.1)
+7. Dialoghi avanzati (node editor, condizioni) + UI slot save in-game
+8. Sistema audio runtime avanzato (Fase 3.1)
 
 ### **Medio Termine (Settimane 9-16)**
-9. Scelte dialogo ramificate (Fase 2.4 resto)
+9. Condizioni dialogo / once-only (resto Fase 2.4)
 10. Sistema audio (Fase 3.1)
 11. Sistema effetti visivi (Fase 3.2)
-12. Sistema salvataggi gioco (Fase 3.4)
+12. Save gioco: menu GUI + IndexedDB + autosave partita
 
 ### **Lungo Termine (Settimane 17+)**
 13. Migliorie editor (Fase 4)
@@ -631,14 +636,14 @@
 **Amianto Editor** dovrebbe permettere di:
 1. ✅ Creare stanze, oggetti, personaggi, GUI, libreria Resources (completato)
 2. ✅ Scrivere script JavaScript nel Play Test con API unificate (inventario, oggetti, stanze, variabili, dialoghi)
-3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, inventario GUI parziale ✅; audio/transizioni/save gioco ❌)
-4. 🟡 Distribuzione: editor desktop `.exe` + `.amnt` ✅; export *gioco* standalone HTML/PWA ❌
+3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, inventario GUI parziale ✅; save gioco API ✅; audio/transizioni/UI save ❌)
+4. 🟡 Distribuzione: editor desktop `.exe` + `.amnt` ✅; export *gioco* HTML standalone ✅ (PWA/desktop-game wrapper ❌)
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
 
 ---
 
-*Roadmap aggiornata: Luglio 2026*
+*Roadmap aggiornata: Ottobre 2026*
 *Versione progetto: 1.0.0 (offline / Electron)*
-*Ultimo aggiornamento: editor offline, formato .amnt, rimozione stack cloud, runtime-sandbox.html*
+*Ultimo aggiornamento: `save_game`/`load_game` API v1, autosave progetto 45s + indicatore, dialoghi v1*
 

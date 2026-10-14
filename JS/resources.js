@@ -140,7 +140,7 @@
     if (!els.empty) return;
     const isSound = tab === 'sounds';
     if (els.emptyIcon) {
-      els.emptyIcon.className = isSound ? 'fas fa-music' : 'fas fa-image';
+      els.emptyIcon.textContent = isSound ? 'Sound' : 'Image';
     }
     if (els.emptyText) {
       els.emptyText.textContent = isSound
@@ -191,8 +191,24 @@
     if (els.soundSize) els.soundSize.textContent = formatBytes(entry.size);
     if (els.soundId) els.soundId.textContent = entry.assetId || '—';
     if (els.audio && entry.publicUrl) {
-      els.audio.src = entry.publicUrl;
-      els.audio.load();
+      const name = entry.name || entry.fileName || '';
+      const setSrc = (url) => {
+        els.audio.src = url;
+        els.audio.load();
+      };
+      setSrc(entry.publicUrl);
+      // Se il blob ha MIME generico, riassegna audio/ogg per i file OGG
+      if (/\.(ogg|oga|opus)$/i.test(name) && entry.publicUrl.startsWith('blob:')) {
+        fetch(entry.publicUrl)
+          .then((res) => res.blob())
+          .then((blob) => {
+            const t = String(blob.type || '').toLowerCase();
+            if (!t || t === 'application/octet-stream' || t === 'application/ogg') {
+              setSrc(URL.createObjectURL(new Blob([blob], { type: 'audio/ogg' })));
+            }
+          })
+          .catch(() => {});
+      }
     }
   }
 
@@ -214,8 +230,8 @@
 
     const imagesPane = document.getElementById('resources-images-pane');
     const soundsPane = document.getElementById('resources-sounds-pane');
-    if (imagesPane) imagesPane.style.display = tab === 'images' ? 'flex' : 'none';
-    if (soundsPane) soundsPane.style.display = tab === 'sounds' ? 'flex' : 'none';
+    if (imagesPane) imagesPane.style.display = tab === 'images' ? 'block' : 'none';
+    if (soundsPane) soundsPane.style.display = tab === 'sounds' ? 'block' : 'none';
 
     document.querySelectorAll('[data-resource-tab]').forEach(btn => {
       const isActive = btn.getAttribute('data-resource-tab') === tab;
@@ -302,11 +318,55 @@
   function playSoundPreview(entry) {
     if (!entry?.publicUrl) return;
     stopSoundPreview();
-    const audio = new Audio(entry.publicUrl);
-    soundState.previewAudio = audio;
-    audio.play().catch(() => {
-      deps.showNotification('Could not play audio file', 'warning');
-    });
+
+    const playBuffer = async (arrayBuffer) => {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error('No AudioContext');
+      const ctx = new AC();
+      if (ctx.state === 'suspended') await ctx.resume();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      soundState.previewAudio = {
+        pause: () => {
+          try { source.stop(0); } catch (_) {}
+          try { ctx.close(); } catch (_) {}
+        },
+        _ctx: ctx,
+        _source: source
+      };
+      source.addEventListener('ended', () => {
+        try { ctx.close(); } catch (_) {}
+        if (soundState.previewAudio && soundState.previewAudio._source === source) {
+          soundState.previewAudio = null;
+        }
+      });
+    };
+
+    (async () => {
+      try {
+        const res = await fetch(entry.publicUrl);
+        const arrayBuffer = await res.arrayBuffer();
+        await playBuffer(arrayBuffer);
+      } catch (err) {
+        // Fallback HTMLAudio con MIME forzato
+        try {
+          const res = await fetch(entry.publicUrl);
+          const blob = await res.blob();
+          const name = entry.name || entry.fileName || '';
+          const mime = /\.(ogg|oga|opus)$/i.test(name) ? 'audio/ogg'
+            : (/\.mp3$/i.test(name) ? 'audio/mpeg' : (blob.type || 'audio/ogg'));
+          const url = URL.createObjectURL(new Blob([blob], { type: mime }));
+          const audio = new Audio(url);
+          soundState.previewAudio = audio;
+          await audio.play();
+        } catch (_) {
+          deps.showNotification('Could not play audio file (unsupported codec?)', 'warning');
+        }
+      }
+    })();
   }
 
   function renderSoundsGrid(entries) {
@@ -331,7 +391,7 @@
 
       const thumb = document.createElement('div');
       thumb.className = 'resource-thumb';
-      thumb.innerHTML = '<i class="fas fa-volume-up" aria-hidden="true"></i>';
+      thumb.innerHTML = 'Audio';
 
       const meta = document.createElement('div');
       meta.className = 'resource-meta';
@@ -343,7 +403,7 @@
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.className = 'btn btn-outline-success btn-sm resource-play-btn w-100';
-      playBtn.innerHTML = '<i class="fas fa-play"></i> Play';
+      playBtn.innerHTML = 'Play';
       playBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         playSoundPreview(entry);
@@ -525,12 +585,13 @@
 
   function toResourcePayload(entry) {
     const projectId = getProjectId();
+    const originalName = entry.displayName || entry.name || entry.fileName;
     return {
       assetId: entry.assetId,
-      fileName: entry.name,
+      fileName: originalName,
       publicUrl: entry.publicUrl,
       storagePath: entry.storagePath,
-      displayName: entry.displayName || entry.name,
+      displayName: originalName,
       projectId,
       type: 'resource',
       subfolder: null
@@ -561,11 +622,12 @@
       await loadResources();
       const entry = state.entries.find(e => e.assetId === finalId) || {
         assetId: finalId,
-        name: fileName,
-        displayName: file.name,
+        name: file.name || fileName,
+        fileName: fileName || file.name,
+        displayName: file.name || fileName,
         publicUrl: downloadURL,
         storagePath: null,
-        relativePath: 'resources/' + fileName
+        relativePath: 'resources/' + (file.name || fileName)
       };
 
       deps.showNotification('Image imported to Resources', 'success');
@@ -628,7 +690,7 @@
   function triggerAudioFileInput(multiple, onFiles) {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'audio/*,.mp3,.ogg,.wav,.m4a,.aac,.flac,.webm';
+    input.accept = 'audio/*,.mp3,.ogg,.oga,.opus,.wav,.m4a,.aac,.flac,.webm';
     input.multiple = !!multiple;
     input.onchange = () => {
       const files = Array.from(input.files || []);
@@ -907,16 +969,18 @@
     const inspectorPlayBtn = document.getElementById('resources-inspector-play-btn');
     if (inspectorPlayBtn) {
       inspectorPlayBtn.addEventListener('click', () => {
+        const assetId = soundState.selectedIds.values().next().value;
+        const entry = soundState.entries.find(e => e.assetId === assetId);
+        if (entry) {
+          playSoundPreview(entry);
+          return;
+        }
         const els = getInspectorEls();
         if (els.audio?.src) {
           els.audio.play().catch(() => {
             deps.showNotification('Could not play audio file', 'warning');
           });
-          return;
         }
-        const assetId = soundState.selectedIds.values().next().value;
-        const entry = soundState.entries.find(e => e.assetId === assetId);
-        if (entry) playSoundPreview(entry);
       });
     }
 
@@ -942,23 +1006,29 @@
 
   /** Snapshot per Play Test / runtime (nomi file → assetId + publicUrl). */
   function getResourcesCatalog() {
-    return state.entries.map(entry => ({
-      assetId: entry.assetId,
-      name: entry.name || '',
-      displayName: entry.displayName || entry.name || '',
-      fileName: entry.fileName || entry.name || '',
-      publicUrl: entry.publicUrl || null
-    }));
+    return state.entries.map(entry => {
+      const originalName = entry.displayName || entry.name || entry.fileName || '';
+      return {
+        assetId: entry.assetId,
+        name: originalName,
+        displayName: originalName,
+        fileName: originalName,
+        publicUrl: entry.publicUrl || null
+      };
+    });
   }
 
   /** Solo metadati (senza publicUrl) per Firestore — URL da Supabase/Firestore assets a runtime. */
   function getResourcesCatalogSlim() {
-    return state.entries.map(entry => ({
-      assetId: entry.assetId,
-      name: entry.name || '',
-      displayName: entry.displayName || entry.name || '',
-      fileName: entry.fileName || entry.name || ''
-    }));
+    return state.entries.map(entry => {
+      const originalName = entry.displayName || entry.name || entry.fileName || '';
+      return {
+        assetId: entry.assetId,
+        name: originalName,
+        displayName: originalName,
+        fileName: originalName
+      };
+    });
   }
 
   window.amiantoResources = {
@@ -972,12 +1042,23 @@
     uploadSound: uploadSoundFile,
     loadImageFromResource: async function (resource) {
       if (!resource || !resource.publicUrl) return null;
+      const url = resource.publicUrl;
+      const skipCors = url.startsWith('data:') || url.startsWith('blob:');
       return new Promise((resolve, reject) => {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
+        if (!skipCors) img.crossOrigin = 'anonymous';
         img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Could not load image'));
-        img.src = resource.publicUrl;
+        img.onerror = () => {
+          if (!skipCors) {
+            const retry = new Image();
+            retry.onload = () => resolve(retry);
+            retry.onerror = () => reject(new Error('Could not load image'));
+            retry.src = url;
+            return;
+          }
+          reject(new Error('Could not load image'));
+        };
+        img.src = url;
       });
     },
     registerImageAsset: function (img, resource) {

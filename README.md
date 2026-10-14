@@ -85,10 +85,11 @@ Amianto Editor runs **fully offline**:
 - GUI Editor
   - Create GUIs; background images
   - Draw, move and delete buttons; list buttons
-- Contextual Cursors (editor)
-  - Define cursor per target type (hotspot/character/scene object) with hover feedback on the **editor** canvas
-  - Upload cursor image, optional action text; list active cursors
-  - Runtime/playtest: fixed pointer (dynamic contextual cursors — roadmap)
+- Cursors
+  - Dedicated **Cursors** tab: one cursor per interaction category (`default`, `look`, `use`, `talk`, `grab`, `exit`, `walk`, `wait`, `inactive`)
+  - Canvas preview with movable **click point** (pivot), like character feet
+  - Browse / clear image from Resources; optional action text
+  - Runtime/playtest: hover switches category cursors (`use`/`talk`/`grab`/`exit`/`walk`/`wait`/…) with optional action text; inventory “item in hand” hides the system cursor
 - Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
   - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
@@ -104,9 +105,10 @@ Amianto Editor runs **fully offline**:
   - Start/Pause/Stop test session; debug console; quick test actions
 - Projects & Resources
   - **Projects** tab: create, load (`.amnt` / `.json`), open linked file, delete from local list
+  - **Export Game (HTML)**: one self-contained `.html` file (runtime + project + assets) playable without the editor
   - **Resources** tab: central image/sound library in IndexedDB (import, search, picker in other editors)
 - Header actions
-  - **Project Settings** and **Save Project** (top right); project size indicator
+  - **Project Settings** and **Save Project** (top right); project size indicator; **autosave status** (Saved / Unsaved / Autosaving… every ~45s when dirty)
 - Standalone Runtime & Play Test
   - `runtime.html` loads and renders exported JSON via `JS/runtime.js`
   - Load JSON file, load last saved (OPFS/localStorage), download JSON
@@ -147,7 +149,11 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`show_message(text)`** - Shows notification messages to the user
 - **`show_dialogue(characterIdOrName, text)`** - Speech balloon on a character (uses first **DialogBox** GUI in project); click to dismiss; sequential command queue
 - **`show_dialogue_text(text, speaker)`** - Roadmap alias (text first, then character name/id)
-- **`end_dialogue()`** - Closes the active dialogue balloon immediately
+- **`start_dialogue(dialogueIdOrName)`** - Runs a branching dialogue graph from **Scripts → Dialogues** (`line` / `choice` / `end`); click choices on-screen; Promise resolves when finished
+- **`end_dialogue()`** - Closes the active balloon and aborts any `start_dialogue` session
+- **`save_game(slot?, label?)`** - Save player game state (room, vars, inventory, characters, objects/hotspots) to `localStorage` slot 1–10
+- **`load_game(slot?)`** - Restore a save slot (does not re-run `on_game_start` / `on_room_change`)
+- **`delete_save(slot)`** / **`get_save_info(slot?)`** - Delete slot or read metadata (omit slot to list all)
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
 ### Event System APIs
@@ -303,7 +309,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Not yet in runtime (roadmap):** branching dialogue choices, save/load slots, visual transitions (`fade_in`, …). Basic speech balloons: `show_dialogue` / `end_dialogue`. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md).
+**Not yet in runtime (roadmap):** dialogue conditions / visual node editor, in-game save menu UI, visual transitions (`fade_in`, …). Branching dialogues v1 + `save_game`/`load_game` API ✅. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -368,14 +374,14 @@ npm run dist       # build Windows installer in dist/
 - ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
-- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
+- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (graph v1 + form editor) — ❌ visual node editor, conditions, mood
 - 🟡 **Audio System (partial)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ volume mixer, ambient layers
 - ✅ **Room animations**: Animations tab + room placements; `play_animation()`, `stop_animation()`
 - **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Phase 3 - Advanced Features (Low Priority)**
-- **Game System**: `get_game_variable()`, `set_game_variable()`, `save_game()`, `load_game()`, `add_score()`
+- **Game System**: ✅ `save_game()`, `load_game()`, `delete_save()`, `get_save_info()` — ❌ in-game slot menu UI, `add_score()`
 - **UI System**: `show_tooltip()`, `show_notification()`, `open_menu()`, `show_modal()`
 - **Debug System**: `log_info()`, `log_warning()`, `log_error()`, `show_debug_info()`
 - **Utility System**: `distance()`, `angle_between()`, `format_string()`, `shuffle_array()`
@@ -418,10 +424,14 @@ window.gameAPI = {
 - [x] **Phase 1**: Core event system (8 handlers), inventory, objects, rooms, variables ✅
 - [x] **Phase 1**: API unification A–D (`getScriptApiBindings`, scope handler) ✅
 - [x] **Phase 2**: Basic dialogue balloons (`show_dialogue`, `end_dialogue`) ✅
-- [ ] **Phase 2**: Branching dialogue, audio, contextual cursors in runtime
-- [ ] **Phase 2**: Visual transitions (`fade_in`, …)
-- [ ] **Phase 3**: Save/load slots, advanced UI helpers, utility math APIs
-- [ ] **Bonus**: Standalone export/PWA, autosave versioning
+- [x] **Phase 2**: Branching dialogue v1 (`start_dialogue` + form editor) ✅ — visual node editor still TODO
+- [x] **Phase 2**: Contextual cursors in runtime ✅
+- [ ] **Phase 2**: Audio mixer / ambient; visual transitions (`fade_in`, …)
+- [x] **Phase 3**: Save/load game API (`save_game` / `load_game`) ✅ — slot menu UI still TODO
+- [ ] **Phase 3**: Advanced UI helpers, utility math APIs
+- [x] **Bonus**: Project periodic autosave + status indicator ✅ — timestamped versioning still TODO
+- [ ] **Bonus**: PWA, minify nell'export HTML
+- [x] **Bonus**: Export gioco HTML standalone (`Export Game (HTML)`) ✅
 
 See `# 🎮 Funzioni da Implementare - Amianto editor.md` for the complete list of functions to implement.
 
@@ -502,9 +512,10 @@ Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure br
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
 - Progetti & Risorse
   - Tab **Projects**: crea, carica (`.amnt` / `.json`), elimina dalla lista locale
+  - **Export Game (HTML)**: un solo file `.html` autosufficiente (runtime + progetto + asset) giocabile senza editor
   - Tab **Resources**: libreria immagini/suoni in IndexedDB
 - Header
-  - **Project Settings** e **Save Project**; indicatore dimensione progetto
+  - **Project Settings** e **Save Project**; indicatore dimensione; **stato autosave** (Saved / Unsaved / Autosaving… ogni ~45s se ci sono modifiche)
 - Runtime Standalone & Play Test
   - `runtime.html` + `JS/runtime.js` per caricare/eseguire JSON di progetto
   - Carica file JSON, Carica ultimo salvataggio (OPFS/localStorage), Download JSON
@@ -543,7 +554,11 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`show_message(text)`** - Mostra notifiche all'utente
 - **`show_dialogue(characterIdOrName, text)`** - Balloon di dialogo sul personaggio (prima GUI **DialogBox** del progetto); click per chiudere; coda comandi sequenziale
 - **`show_dialogue_text(text, speaker)`** - Alias roadmap (prima il testo, poi nome/id personaggio)
-- **`end_dialogue()`** - Chiude subito il balloon attivo
+- **`start_dialogue(dialogueIdOrName)`** - Esegue un dialogo ramificato da **Scripts → Dialogues** (nodi `line` / `choice` / `end`)
+- **`end_dialogue()`** - Chiude il balloon e interrompe eventuali sessioni `start_dialogue`
+- **`save_game(slot?, label?)`** - Salva stato partita (stanza, variabili, inventario, personaggi, oggetti) in `localStorage`
+- **`load_game(slot?)`** - Carica uno slot (non riesegue `on_game_start` / `on_room_change`)
+- **`delete_save(slot)`** / **`get_save_info(slot?)`** - Elimina o legge metadata (senza slot = lista)
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
 ### API Sistema Eventi
@@ -658,7 +673,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Non ancora nel runtime:** scelte dialogo ramificate, salvataggi, transizioni visive. Dialoghi base: `show_dialogue` / `end_dialogue`. Audio: `play_music` / `play_sound` ✅ (senza mixer volumi). Vedi [ROADMAP.md](ROADMAP.md).
+**Non ancora nel runtime:** editor nodi dialogo / condizioni, menu UI salvataggi, transizioni visive. Dialoghi v1 + API `save_game`/`load_game` ✅. Audio: `play_music` / `play_sound` ✅ (senza mixer volumi). Vedi [ROADMAP.md](ROADMAP.md).
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -705,14 +720,14 @@ on_room_change(function(oldRoom, newRoom) {
 - ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
-- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()` — ❌ `start_dialogue()`, `show_dialogue_choices()`, `get_character_mood()`
+- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (grafo v1) — ❌ editor nodi visuale, condizioni, mood
 - 🟡 **Sistema Audio (parziale)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ mixer volumi, ambient
 - ✅ **Animazioni di stanza**: tab Animations + posizionamento in Rooms; `play_animation()`, `stop_animation()`
 - **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Fase 3 - Funzionalità Avanzate (Priorità Bassa)**
-- **Sistema Gioco**: `get_game_variable()`, `set_game_variable()`, `save_game()`, `load_game()`, `add_score()`
+- **Sistema Gioco**: ✅ `save_game()`, `load_game()`, `delete_save()`, `get_save_info()` — ❌ menu slot in-game, `add_score()`
 - **Sistema UI**: `show_tooltip()`, `show_notification()`, `open_menu()`, `show_modal()`
 - **Sistema Debug**: `log_info()`, `log_warning()`, `log_error()`, `show_debug_info()`
 - **Sistema Utilità**: `distance()`, `angle_between()`, `format_string()`, `shuffle_array()`
@@ -756,11 +771,13 @@ window.gameAPI = {
 - [x] **Fase 1**: Gestione oggetti e stanze avanzata ✅
 - [x] **Fase 1**: Sistema variabili di gioco ✅
 - [x] **Fase 2**: Dialoghi base (balloon su personaggio) ✅
-- [ ] **Fase 2**: Scelte dialogo, audio
-- [ ] **Fase 2**: Gestione personaggi e effetti visivi
-- [ ] **Fase 3**: Sistema gioco completo e UI avanzata
-- [ ] **Fase 3**: Debug tools e funzioni di utilità
-- [ ] **Bonus**: Persistenza dati e export/import progetti
+- [x] **Fase 2**: Dialoghi ramificati v1 (`start_dialogue`) ✅ — editor nodi ancora TODO
+- [ ] **Fase 2**: Mixer audio, effetti visivi
+- [x] **Fase 3**: Save/load gioco API ✅ — menu slot ancora TODO
+- [ ] **Fase 3**: UI avanzata, debug tools e utilità
+- [x] **Bonus**: Autosave progetto periodico ✅ — versioning timestamped ancora TODO
+- [ ] **Bonus**: PWA, minify export
+- [x] **Bonus**: Export gioco HTML standalone (`Export Game (HTML)`) ✅
 
 Vedi `# 🎮 Funzioni da Implementare - Amianto editor.md` per la lista completa delle funzioni da implementare.
 

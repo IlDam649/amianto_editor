@@ -420,13 +420,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (btnCreateProject && !btnCreateProject.hasAttribute('data-listener-attached')) {
       btnCreateProject.setAttribute('data-listener-attached', 'true');
       btnCreateProject.addEventListener('click', async () => {
-        const projectName = prompt('Enter project name:');
-        if (!projectName || !projectName.trim()) return;
-        
         try {
-          await window.createNewProject(projectName.trim(), true);
-          // Ricarica la lista progetti
-          await loadAndRenderProjectsTab();
+          const created = await window.createNewProject(null, true);
+          if (created && created.ok) {
+            await loadAndRenderProjectsTab();
+          }
         } catch (error) {
           console.error('[ProjectsTab] Errore creazione progetto:', error);
           showNotification('Error creating project', 'error');
@@ -452,6 +450,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
     }
+
+    // Export Game: bound via onclick on #btn-export-standalone (avoids double-fire / missed setTimeout)
   }, 1000);
 
   // Expose global functions for external use
@@ -463,7 +463,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // Safe stub to avoid early ReferenceError when tabs fire before full initialization
-  let updateCursorTargets = function() {};
+  let updateCursorTargets = function() {}; // legacy no-op (cursors are per-category now)
   window.updateCursorTargets = updateCursorTargets;
 
 
@@ -559,8 +559,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const imageAssetMap = new Map();
   window.amiantoImageAssetMap = imageAssetMap;
   
-  // Contextual cursors management
-  let contextualCursors = []; // Array of cursor objects: { id, targetType, targetId, cursorImage, actionText, scriptName }
+  // Category cursors: one definition per interaction category
+  // { id, category, cursorImage, actionText, scriptName, pivotX, pivotY }
+  const CURSOR_CATEGORIES = ['default', 'look', 'use', 'talk', 'grab', 'exit', 'walk', 'wait', 'inactive'];
+  const CURSOR_CATEGORY_LABELS = {
+    default: 'default — normal pointer',
+    look: 'look — examine',
+    use: 'use — interact',
+    talk: 'talk — speak',
+    grab: 'grab — take / hold',
+    exit: 'exit — leave room',
+    walk: 'walk — move',
+    wait: 'wait — busy',
+    inactive: 'inactive — not interactive'
+  };
+  let contextualCursors = [];
   let selectedCursorId = null;
   let resizeHandle = null; // 'nw', 'ne', 'sw', 'se'
   // Walkable area polygon and visibility
@@ -697,7 +710,7 @@ document.addEventListener("DOMContentLoaded", () => {
       bindRoomRefs();
       refreshRoomsSelector();
     }
-    requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+    requestAnimationFrame(() => alignEditorViewTopLeft());
   }
 
   // ===== Character scaling controls & UI =====
@@ -775,15 +788,21 @@ document.addEventListener("DOMContentLoaded", () => {
     
     sceneObjects = Array.isArray(r.sceneObjects) ? r.sceneObjects : [];
     animationInstances = Array.isArray(r.animationInstances) ? r.animationInstances : [];
-    selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
-    selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
-    selectedAnimationInstanceId = animationInstances && animationInstances.length ? animationInstances[0].id : null;
+    // Keep selection only if still valid; do not auto-select (toggle must allow empty selection)
+    if (selectedForegroundId && !foregrounds.some(f => f.id === selectedForegroundId)) {
+      selectedForegroundId = null;
+    }
+    if (selectedSceneObjectId && !sceneObjects.some(o => o.id === selectedSceneObjectId)) {
+      selectedSceneObjectId = null;
+    }
+    if (selectedAnimationInstanceId && !animationInstances.some(i => i.id === selectedAnimationInstanceId)) {
+      selectedAnimationInstanceId = null;
+    }
     walkableArea = Array.isArray(r.walkableArea) ? r.walkableArea : [];
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
-    // auto select first hotspot if none or if previous selection non valido
-    if (!activeHotspotId || !hotspots.some(h => h.id === activeHotspotId)) {
-      activeHotspotId = hotspots.length > 0 ? hotspots[0].id : null;
+    if (activeHotspotId && !hotspots.some(h => h.id === activeHotspotId)) {
+      activeHotspotId = null;
     }
     // Load character scaling data
     try {
@@ -1006,24 +1025,48 @@ document.addEventListener("DOMContentLoaded", () => {
     return frame && frame.img ? frame.img : null;
   }
 
-  function getAnimationInstanceAtPoint(worldX, worldY) {
-    const checkList = (list) => {
-      for (let i = list.length - 1; i >= 0; i--) {
-        const inst = list[i];
-        if (!inst || inst.visible === false) continue;
-        const img = getRoomAnimationFirstFrameImg(inst.animationId);
-        if (!img) continue;
-        const ix = inst.x || 0;
-        const iy = inst.y || 0;
-        if (worldX >= ix && worldX <= ix + img.width && worldY >= iy && worldY <= iy + img.height) {
-          return inst;
-        }
+  function getImageDrawSize(img) {
+    if (!img) return { w: 0, h: 0 };
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    return { w, h };
+  }
+
+  function findAnimationInListAtPoint(list, worldX, worldY) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const inst = list[i];
+      if (!inst || inst.visible === false) continue;
+      const img = getRoomAnimationFirstFrameImg(inst.animationId);
+      if (!img) continue;
+      const { w, h } = getImageDrawSize(img);
+      if (!w || !h) continue;
+      const ix = inst.x || 0;
+      const iy = inst.y || 0;
+      if (worldX >= ix && worldX <= ix + w && worldY >= iy && worldY <= iy + h) {
+        return inst;
       }
-      return null;
-    };
+    }
+    return null;
+  }
+
+  function getAnimationInstanceAtPoint(worldX, worldY) {
     const fgInstances = animationInstances.filter(i => (i.layer || 'background') === 'foreground');
     const bgInstances = animationInstances.filter(i => (i.layer || 'background') !== 'foreground');
-    return checkList(fgInstances) || checkList(bgInstances);
+    return findAnimationInListAtPoint(fgInstances, worldX, worldY)
+      || findAnimationInListAtPoint(bgInstances, worldX, worldY);
+  }
+
+  /** Hit-test in draw order: foreground anims → scene objects → background anims */
+  function getTopRoomDraggableAtPoint(worldX, worldY) {
+    const fgInstances = animationInstances.filter(i => (i.layer || 'background') === 'foreground');
+    const fgAnim = findAnimationInListAtPoint(fgInstances, worldX, worldY);
+    if (fgAnim) return { type: 'animation', target: fgAnim };
+    const obj = getObjectAtPoint(worldX, worldY);
+    if (obj) return { type: 'object', target: obj };
+    const bgInstances = animationInstances.filter(i => (i.layer || 'background') !== 'foreground');
+    const bgAnim = findAnimationInListAtPoint(bgInstances, worldX, worldY);
+    if (bgAnim) return { type: 'animation', target: bgAnim };
+    return null;
   }
 
   function drawRoomAnimationInstance(inst, frameIndex) {
@@ -1034,15 +1077,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const frame = animDef.frames[idx];
     const img = frame && frame.img ? frame.img : null;
     if (!img) return;
+    const { w, h } = getImageDrawSize(img);
+    if (!w || !h) return;
     const ix = inst.x || 0;
     const iy = inst.y || 0;
-    ctx.drawImage(img, ix, iy, img.width, img.height);
+    ctx.drawImage(img, ix, iy, w, h);
     if (inst.id === selectedAnimationInstanceId) {
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)';
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 4]);
-      ctx.strokeRect(ix, iy, img.width, img.height);
+      ctx.strokeRect(ix, iy, w, h);
       ctx.restore();
     }
     if (isDraggingAnimationInstance && draggedAnimationInstance && draggedAnimationInstance.id === inst.id) {
@@ -1050,7 +1095,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
       ctx.lineWidth = 3;
       ctx.setLineDash([5, 5]);
-      ctx.strokeRect(ix, iy, img.width, img.height);
+      ctx.strokeRect(ix, iy, w, h);
       ctx.restore();
     }
   }
@@ -1246,6 +1291,104 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
       ctx.restore();
       return; // skip rooms rendering
+    }
+
+    if (activeTab === 'cursors') {
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cursor = selectedCursorId
+        ? contextualCursors.find(c => c.id === selectedCursorId)
+        : null;
+      const cursorImg = cursor && cursor.cursorImage ? cursor.cursorImage : null;
+
+      if (!cursor) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Select or create a cursor category to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      if (!cursorImg || !cursorImg.complete || cursorImg.naturalWidth <= 0) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(cursorImg ? 'Loading cursor image...' : 'Browse Resources to set a cursor image', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      // Draw cursor image at (0,0) like character frames
+      const dx = 0;
+      const dy = 0;
+      ctx.drawImage(cursorImg, Math.round(dx), Math.round(dy));
+
+      // Ensure pivot defaults (click point) — top-left is CSS cursor default
+      if (cursor.pivotX === undefined || cursor.pivotY === undefined) {
+        cursor.pivotX = 0;
+        cursor.pivotY = 0;
+      }
+
+      const pivotX = dx + cursor.pivotX;
+      const pivotY = dy + cursor.pivotY;
+      const pivotRadius = 8 / editorState.zoom;
+      const crosshairSize = 12 / editorState.zoom;
+      const pivotLineWidth = Math.max(1, 2 / editorState.zoom);
+      const crosshairLineWidth = Math.max(0.5, 1.5 / editorState.zoom);
+
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+      ctx.beginPath();
+      ctx.arc(Math.round(pivotX), Math.round(pivotY), pivotRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = pivotLineWidth;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.lineWidth = crosshairLineWidth;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(pivotX - crosshairSize), Math.round(pivotY));
+      ctx.lineTo(Math.round(pivotX + crosshairSize), Math.round(pivotY));
+      ctx.moveTo(Math.round(pivotX), Math.round(pivotY - crosshairSize));
+      ctx.lineTo(Math.round(pivotX), Math.round(pivotY + crosshairSize));
+      ctx.stroke();
+
+      // Overlay info
+      ctx.save();
+      ctx.resetTransform();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(10, 10, 280, 65);
+      ctx.fillStyle = '#39ff14';
+      ctx.font = '12px monospace';
+      ctx.fillText(`Category: ${cursor.category}`, 15, 28);
+      ctx.fillText(`Size: ${cursorImg.naturalWidth}×${cursorImg.naturalHeight}`, 15, 45);
+      ctx.fillText(`Click point: (${cursor.pivotX}, ${cursor.pivotY})`, 15, 62);
+      ctx.restore();
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
     }
 
     if (activeTab === 'animations') {
@@ -1454,13 +1597,16 @@ document.addEventListener("DOMContentLoaded", () => {
           ctx.restore();
         }
 
-        // Draw selection outline if this is the dragged object
-        // Only draw outline if no hotspot is selected (scene objects are locked)
-        if (!activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id) {
+        // Draw selection / drag outline for scene objects
+        const isObjSelected = !activeHotspotId && obj.id === selectedSceneObjectId;
+        const isObjDragging = !activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id;
+        if (isObjSelected || isObjDragging) {
           ctx.save();
-          ctx.strokeStyle = runtimeVisible ? 'rgba(57,255,20,0.8)' : 'rgba(160,160,160,0.9)';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([5, 5]);
+          ctx.strokeStyle = runtimeVisible
+            ? (isObjDragging ? 'rgba(57,255,20,0.8)' : 'rgba(57,255,20,0.9)')
+            : 'rgba(160,160,160,0.9)';
+          ctx.lineWidth = isObjDragging ? 3 : 2;
+          ctx.setLineDash(isObjDragging ? [5, 5] : [4, 4]);
           ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
           ctx.restore();
         }
@@ -1795,6 +1941,21 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton && !isDrawingInventorySlot) { // Left click without Ctrl
         // Check for character pivot interaction (only in characters tab)
         const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+        if (activeTab === 'cursors') {
+          const cursor = selectedCursorId
+            ? contextualCursors.find(c => c.id === selectedCursorId)
+            : null;
+          if (cursor && cursor.cursorImage && cursor.cursorImage.complete && cursor.cursorImage.naturalWidth > 0) {
+            const worldPos = screenToWorld(e.clientX, e.clientY);
+            e.preventDefault();
+            e.stopPropagation();
+            cursor.pivotX = Math.round(worldPos.x);
+            cursor.pivotY = Math.round(worldPos.y);
+            updateCursorPivotLabel(cursor);
+            redraw();
+            return;
+          }
+        }
         if (activeTab === 'characters') {
           const sel = document.getElementById('character-selector');
           const who = sel ? sel.value : '';
@@ -1937,56 +2098,88 @@ document.addEventListener("DOMContentLoaded", () => {
             return; // Exit early to prevent other handlers
           }
         }
-        // Check if clicking on a scene object (rooms tab only)
+        // Check if clicking on a scene object or room animation (rooms tab only)
         if (activeTab === 'rooms') {
           const worldPos = screenToWorld(e.clientX, e.clientY);
-          const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
-          
-          if (clickedObject) {
-            // Lock scene objects if a hotspot is selected
-            if (activeHotspotId) {
-              return;
+          // Lock scene objects / animations if a hotspot is selected
+          if (activeHotspotId) {
+            return;
+          }
+
+          // Selection locks the other type so overlapping items don't steal the drag
+          const animLocked = !!selectedSceneObjectId;
+          const objectLocked = !!selectedAnimationInstanceId;
+
+          let hit = null;
+          if (objectLocked && !animLocked) {
+            const animHit = getAnimationInstanceAtPoint(worldPos.x, worldPos.y);
+            if (animHit) hit = { type: 'animation', target: animHit };
+          } else if (animLocked && !objectLocked) {
+            const objHit = getObjectAtPoint(worldPos.x, worldPos.y);
+            if (objHit) hit = { type: 'object', target: objHit };
+          } else {
+            hit = getTopRoomDraggableAtPoint(worldPos.x, worldPos.y);
+          }
+
+          // Prefer the currently selected item when the click is on it
+          if (selectedAnimationInstanceId && !animLocked) {
+            const selectedAnim = animationInstances.find(i => i.id === selectedAnimationInstanceId);
+            if (selectedAnim && findAnimationInListAtPoint([selectedAnim], worldPos.x, worldPos.y)) {
+              hit = { type: 'animation', target: selectedAnim };
             }
+          } else if (selectedSceneObjectId && !objectLocked) {
+            const selectedObj = sceneObjects.find(o => o.id === selectedSceneObjectId);
+            if (selectedObj && selectedObj.img) {
+              const ox = selectedObj.x || 0;
+              const oy = selectedObj.y || 0;
+              const { w, h } = getImageDrawSize(selectedObj.img);
+              if (w && h && worldPos.x >= ox && worldPos.x <= ox + w && worldPos.y >= oy && worldPos.y <= oy + h) {
+                hit = { type: 'object', target: selectedObj };
+              }
+            }
+          }
+
+          if (hit && hit.type === 'object') {
+            const clickedObject = hit.target;
             e.preventDefault();
             isDraggingObject = true;
             draggedObject = clickedObject;
-            
-            // Calculate offset from object center
+            selectedSceneObjectId = clickedObject.id;
+            selectedAnimationInstanceId = null;
             const objX = (clickedObject.x || 0);
             const objY = (clickedObject.y || 0);
             dragOffset.x = worldPos.x - objX;
             dragOffset.y = worldPos.y - objY;
-            
+            refreshSceneObjectsListUI();
+            refreshRoomAnimationInstancesListUI();
             canvas.style.cursor = 'grabbing';
             redraw();
-          } else {
-            const clickedAnim = getAnimationInstanceAtPoint(worldPos.x, worldPos.y);
-            if (clickedAnim && !activeHotspotId) {
-              e.preventDefault();
-              isDraggingAnimationInstance = true;
-              draggedAnimationInstance = clickedAnim;
-              selectedAnimationInstanceId = clickedAnim.id;
-              animationInstanceDragOffset.x = worldPos.x - (clickedAnim.x || 0);
-              animationInstanceDragOffset.y = worldPos.y - (clickedAnim.y || 0);
-              refreshRoomAnimationInstancesListUI();
-              canvas.style.cursor = 'grabbing';
-              redraw();
-            }
+          } else if (hit && hit.type === 'animation') {
+            const clickedAnim = hit.target;
+            e.preventDefault();
+            isDraggingAnimationInstance = true;
+            draggedAnimationInstance = clickedAnim;
+            selectedAnimationInstanceId = clickedAnim.id;
+            selectedSceneObjectId = null;
+            animationInstanceDragOffset.x = worldPos.x - (clickedAnim.x || 0);
+            animationInstanceDragOffset.y = worldPos.y - (clickedAnim.y || 0);
+            refreshSceneObjectsListUI();
+            refreshRoomAnimationInstancesListUI();
+            canvas.style.cursor = 'grabbing';
+            redraw();
           }
         }
       }
     });
 
     canvas.addEventListener('mousemove', function(e) {
-      // Check for contextual cursor changes
-      checkContextualCursor(e);
-      
-      // Check for scaling line cursor changes (before hotspot to have priority)
-      const scalingCursorSet = updateScalingCursor(e);
-      
-      // Check for hotspot vertex editing cursor changes (only if scaling didn't set cursor)
-      if (!scalingCursorSet) {
-        updateHotspotCursor(e);
+      // Don't override cursor / hit hints while dragging room items
+      if (!isDraggingObject && !isDraggingAnimationInstance && !isDraggingScalingLine && !editorState.isPanning) {
+        checkContextualCursor(e);
+        const scalingCursorSet = updateScalingCursor(e);
+        if (!scalingCursorSet) {
+          updateHotspotCursor(e);
+        }
       }
       
       if (editorState.isPanning) {
@@ -2064,6 +2257,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Update UI position info
         updateSceneObjectUI(draggedObject);
         
+        canvas.style.cursor = 'grabbing';
         redraw();
       } else if (isDraggingAnimationInstance && draggedAnimationInstance) {
         if (!isRoomCanvasActive()) {
@@ -2085,6 +2279,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const r = rooms.get(currentRoomId);
         if (r) r.animationInstances = animationInstances;
         updateAnimationInstanceUI(draggedAnimationInstance);
+        canvas.style.cursor = 'grabbing';
         redraw();
       } else if (isDraggingGuiButton && draggedGuiButton) {
         e.preventDefault();
@@ -2382,8 +2577,24 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener('click', (e) => {
     const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
     
-    // Handle character pivot movement first (in characters tab)
-    // Works like polygon points - always moves pivot on click
+    // Handle character / cursor pivot movement first
+    if (activeTab === 'cursors' && !e.ctrlKey) {
+      const cursor = selectedCursorId
+        ? contextualCursors.find(c => c.id === selectedCursorId)
+        : null;
+      if (cursor && cursor.cursorImage && cursor.cursorImage.complete && cursor.cursorImage.naturalWidth > 0) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        e.preventDefault();
+        e.stopPropagation();
+        cursor.pivotX = Math.round(worldPos.x);
+        cursor.pivotY = Math.round(worldPos.y);
+        updateCursorPivotLabel(cursor);
+        redraw();
+        showNotification(`Click point moved to (${cursor.pivotX}, ${cursor.pivotY})`, 'info');
+        return;
+      }
+    }
+
     if (activeTab === 'characters' && !e.ctrlKey) {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
@@ -2709,7 +2920,7 @@ document.addEventListener("DOMContentLoaded", () => {
       copyBtn.type = 'button';
       copyBtn.className = 'btn btn-outline-secondary btn-sm btn-copy-hotspot-id py-0 px-1';
       copyBtn.title = 'Copy ID';
-      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+      copyBtn.innerHTML = 'Copy';
       copyBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const text = hs.id;
@@ -2772,22 +2983,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnSelect = document.createElement('button');
       btnSelect.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
-      btnSelect.title = 'Select';
+      btnSelect.title = isSelected ? 'Click to deselect' : 'Select hotspot (locks objects & animations)';
       btnSelect.textContent = isSelected ? 'Selected' : 'Select';
       btnSelect.addEventListener('click', () => {
-        activeHotspotId = hs.id;
-        selectedSceneObjectId = null; // Lock scene objects when hotspot is selected
-        isDrawingHotspot = false; // stop drawing when switching
-        selectedHotspotVertexIndex = -1;
+        if (activeHotspotId === hs.id) {
+          activeHotspotId = null;
+          selectedHotspotVertexIndex = -1;
+        } else {
+          activeHotspotId = hs.id;
+          selectedSceneObjectId = null;
+          selectedAnimationInstanceId = null;
+          isDrawingHotspot = false;
+          selectedHotspotVertexIndex = -1;
+        }
         refreshHotspotsListUI();
         refreshSceneObjectsListUI();
+        refreshRoomAnimationInstancesListUI();
         redraw();
       });
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
       btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
-      btnEdit.textContent = 'âœï¸';
+      btnEdit.textContent = 'Rename';
       btnEdit.disabled = !isSelected;
       btnEdit.addEventListener('click', () => {
         if (!isSelected) {
@@ -2806,7 +3024,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
       btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
-      btnClear.textContent = 'ðŸ§¹';
+      btnClear.textContent = 'Clear';
       btnClear.disabled = !isSelected;
       btnClear.addEventListener('click', () => {
         if (!isSelected) {
@@ -2823,7 +3041,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
       btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
-      btnDelete.textContent = 'ðŸ—‘ï¸';
+      btnDelete.textContent = 'Delete';
       btnDelete.disabled = !isSelected;
       btnDelete.addEventListener('click', () => {
         if (!isSelected) {
@@ -3243,9 +3461,8 @@ document.addEventListener("DOMContentLoaded", () => {
     ul.className = "list-group";
     ul.style.background = "transparent";
 
-    if (foregrounds.length > 0 && (!selectedForegroundId || !foregrounds.some(f => f.id === selectedForegroundId))) {
-      selectedForegroundId = foregrounds[0].id || uid('fg');
-      foregrounds[0].id = selectedForegroundId;
+    if (foregrounds.length > 0 && selectedForegroundId && !foregrounds.some(f => f.id === selectedForegroundId)) {
+      selectedForegroundId = null;
     }
     if (foregrounds.length === 0) {
       selectedForegroundId = null;
@@ -3275,9 +3492,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const selectBtn = document.createElement("button");
       selectBtn.className = isSelected ? "btn btn-sm btn-success me-1" : "btn btn-sm btn-outline-success me-1";
       selectBtn.textContent = isSelected ? "Selected" : "Select";
-      selectBtn.title = isSelected ? "Active layer" : "Make this layer editable";
+      selectBtn.title = isSelected ? "Click to deselect" : "Make this layer editable";
       selectBtn.addEventListener("click", () => {
-        selectedForegroundId = layerId;
+        selectedForegroundId = isSelected ? null : layerId;
         refreshForegroundListUI();
         redraw();
       });
@@ -3285,7 +3502,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // delete
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-danger ms-2";
-      del.textContent = "âœ•";
+      del.textContent = "Delete";
       del.title = "Delete layer";
       del.addEventListener("click", async () => {
         if (!isSelected) {
@@ -3319,7 +3536,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // optional: move up/down buttons (keyboard users)
       const up = document.createElement("button");
       up.className = "btn btn-sm btn-outline-light me-1";
-      up.textContent = "â†‘";
+      up.textContent = "Up";
       up.title = "Move up";
       up.addEventListener("click", () => {
         if (!isSelected) {
@@ -3336,7 +3553,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const down = document.createElement("button");
       down.className = "btn btn-sm btn-outline-light me-1";
-      down.textContent = "â†“";
+      down.textContent = "Down";
       down.title = "Move down";
       down.addEventListener("click", () => {
         if (!isSelected) {
@@ -3536,6 +3753,11 @@ document.addEventListener("DOMContentLoaded", () => {
 window.selectRoom = function(roomId) {
     if (!rooms.has(roomId)) return;
     const prevRoomId = currentRoomId;
+    const roomScript = roomScripts.get(roomId);
+    if (prevRoomId !== roomId && roomScript) {
+      const content = jsScripts.get(roomScript);
+      executeScriptHandler(content, 'on_before_room_change', [prevRoomId, roomId]);
+    }
     currentRoomId = roomId;
     bindRoomRefs();
     refreshForegroundListUI();
@@ -3555,7 +3777,6 @@ window.selectRoom = function(roomId) {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(roomId);
     if (roomScript) {
       const content = jsScripts.get(roomScript);
       executeScriptHandler(content, 'on_room_change', [prevRoomId, roomId]);
@@ -3642,6 +3863,7 @@ window.selectRoom = function(roomId) {
     selectedRoomAnimationId = null;
     characters = [];
     contextualCursors = [];
+    selectedCursorId = null;
     enableOtherTabs(false);
     const indicator = document.getElementById('projectSizeIndicator');
     if (indicator) indicator.style.display = 'none';
@@ -4459,10 +4681,10 @@ window.selectRoom = function(roomId) {
           <br><small>${btn.x}, ${btn.y} â€” ${btn.w}Ã—${btn.h}</small>
         </div>
         <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Rename">âœï¸</button>
-          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">ðŸ–¼ï¸</button>
-          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">ðŸ“</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete">ðŸ—‘ï¸</button>
+          <button class="btn btn-sm btn-outline-light me-1" title="Rename">Rename</button>
+          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">Image</button>
+          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">Text</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete">Delete</button>
         </div>
       `;
       const [btnEdit, btnImage, btnText, btnDel] = item.querySelectorAll('button');
@@ -5048,24 +5270,35 @@ window.selectRoom = function(roomId) {
   setupInventoryEditorUI();
   // Functions for Scene Objects (in Rooms tab)
   function ensureSceneObjectSelection() {
-    // Don't auto-select scene objects if a hotspot is active
-    if (activeHotspotId) {
+    // Mutual exclusion: hotspot or animation selection locks scene objects
+    if (activeHotspotId || selectedAnimationInstanceId) {
       selectedSceneObjectId = null;
       return;
     }
-    if (sceneObjects.length > 0 && (!selectedSceneObjectId || !sceneObjects.some(o => o.id === selectedSceneObjectId))) {
-      selectedSceneObjectId = sceneObjects[0].id;
-    }
-    if (sceneObjects.length === 0) {
+    if (selectedSceneObjectId && !sceneObjects.some(o => o.id === selectedSceneObjectId)) {
       selectedSceneObjectId = null;
     }
   }
 
-  function selectSceneObject(objectId) {
-    selectedSceneObjectId = objectId;
-    activeHotspotId = null; // Lock hotspots when scene object is selected
+  function refreshRoomSelectionLists() {
     refreshSceneObjectsListUI();
+    refreshRoomAnimationInstancesListUI();
     refreshHotspotsListUI();
+    if (typeof refreshForegroundListUI === 'function') refreshForegroundListUI();
+  }
+
+  function selectSceneObject(objectId) {
+    // Toggle: click Selected again to deselect
+    if (selectedSceneObjectId === objectId) {
+      selectedSceneObjectId = null;
+    } else {
+      selectedSceneObjectId = objectId;
+      selectedAnimationInstanceId = null;
+      activeHotspotId = null;
+      selectedHotspotVertexIndex = -1;
+      isDrawingHotspot = false;
+    }
+    refreshRoomSelectionLists();
     redraw();
   }
 
@@ -5112,14 +5345,14 @@ window.selectRoom = function(roomId) {
 
     const selectBtn = document.createElement('button');
     selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
-    selectBtn.title = isSelected ? 'Active object' : 'Select to edit';
+    selectBtn.title = isSelected ? 'Click to deselect' : 'Select to edit / drag (locks animations)';
     selectBtn.textContent = isSelected ? 'Selected' : 'Select';
     selectBtn.addEventListener('click', () => selectSceneObject(sceneObject.id));
 
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-sm btn-outline-light me-1';
     editBtn.title = isSelected ? 'Edit' : 'Select before editing';
-    editBtn.textContent = 'âœï¸';
+    editBtn.textContent = 'Edit';
     editBtn.disabled = !isSelected;
     editBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -5132,7 +5365,7 @@ window.selectRoom = function(roomId) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'btn btn-sm btn-outline-danger';
     deleteBtn.title = isSelected ? 'Delete' : 'Select before editing';
-    deleteBtn.textContent = 'ðŸ—‘ï¸';
+    deleteBtn.textContent = 'Delete';
     deleteBtn.disabled = !isSelected;
     deleteBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -5202,8 +5435,10 @@ window.selectRoom = function(roomId) {
       const r = rooms.get(currentRoomId);
       if (r) r.sceneObjects = sceneObjects;
       selectedSceneObjectId = sceneObject.id;
+      selectedAnimationInstanceId = null;
+      activeHotspotId = null;
 
-      refreshSceneObjectsListUI();
+      refreshRoomSelectionLists();
       redraw();
       showNotification(`Scene object "${objectName}" added`, 'success');
       notifyEditorProjectChanged();
@@ -5235,7 +5470,7 @@ window.selectRoom = function(roomId) {
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-      selectedSceneObjectId = sceneObjects[0] ? sceneObjects[0].id : null;
+      selectedSceneObjectId = null;
       
       // Remove from UI
       refreshSceneObjectsListUI();
@@ -5383,7 +5618,7 @@ window.selectRoom = function(roomId) {
       selectBtn.addEventListener('click', () => selectCharacterFromList(characterName));
       const editBtn = document.createElement('button');
       editBtn.className = 'btn btn-sm btn-outline-light me-1';
-      editBtn.textContent = 'Rename';
+      editBtn.textContent = 'Edit';
       editBtn.addEventListener('click', () => window.editCharacter(editBtn));
       const dialogBtn = document.createElement('button');
       dialogBtn.className = 'btn btn-sm btn-outline-warning me-1';
@@ -5627,14 +5862,14 @@ window.selectRoom = function(roomId) {
   let currentDirection = 'south'; // Default direction
 
   const DIRECTION_LABELS = {
-    north: 'North (â†‘)',
-    northeast: 'Northeast (â†—)',
-    east: 'East (â†’)',
-    southeast: 'Southeast (â†˜)',
-    south: 'South (â†“)',
-    southwest: 'Southwest (â†™)',
-    west: 'West (â†)',
-    northwest: 'Northwest (â†–)'
+    north: 'North',
+    northeast: 'Northeast',
+    east: 'East',
+    southeast: 'Southeast',
+    south: 'South',
+    southwest: 'Southwest',
+    west: 'West',
+    northwest: 'Northwest'
   };
 
   function getSelectedCharacterAnimationKey() {
@@ -6419,7 +6654,7 @@ window.selectRoom = function(roomId) {
       characterFrames.set(who, charData);
       
       if (successCount > 0) {
-        showNotification(`âœ… ${successCount} frame(s) uploaded and saved to storage`, 'success');
+        showNotification(`${successCount} frame(s) uploaded and saved to storage`, 'success');
         updateDirectionInfo();
         // Initialize pivot if it doesn't exist
         initializePivotForCharacter(charData, direction);
@@ -6818,7 +7053,10 @@ window.selectRoom = function(roomId) {
     animDef.frames.forEach((frameData, index) => {
       const frameItem = document.createElement('div');
       frameItem.className = 'frame-item';
+      frameItem.draggable = true;
+      frameItem.dataset.frameIndex = index;
       const img = document.createElement('img');
+      img.draggable = false;
       if (frameData && frameData.img) {
         img.src = frameData.img.src || frameData.img;
       }
@@ -6840,6 +7078,50 @@ window.selectRoom = function(roomId) {
       frameItem.appendChild(frameNumber);
       frameItem.appendChild(frameFileName);
       container.appendChild(frameItem);
+    });
+    initializeRoomAnimationFrameDragDrop();
+  }
+
+  function initializeRoomAnimationFrameDragDrop() {
+    const container = document.getElementById('room-animation-frames-preview');
+    if (!container) return;
+
+    let draggedIndex = null;
+
+    container.querySelectorAll('.frame-item').forEach((item) => {
+      item.addEventListener('dragstart', (e) => {
+        draggedIndex = parseInt(item.dataset.frameIndex, 10);
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(draggedIndex)); } catch (_) {}
+      });
+
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        draggedIndex = null;
+      });
+
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      });
+
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const targetIndex = parseInt(item.dataset.frameIndex, 10);
+        const fromIndex = draggedIndex;
+        if (fromIndex === null || Number.isNaN(targetIndex) || fromIndex === targetIndex) return;
+        const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+        if (!anim || !Array.isArray(anim.frames)) return;
+        const frames = anim.frames;
+        const [draggedFrame] = frames.splice(fromIndex, 1);
+        frames.splice(targetIndex, 0, draggedFrame);
+        frames.forEach((f, i) => { if (f && typeof f === 'object') f.orderIndex = i; });
+        refreshRoomAnimationFramesPreview();
+        redraw();
+        showNotification(`Frame moved from position ${fromIndex + 1} to ${targetIndex + 1}`, 'success');
+        notifyEditorProjectChanged();
+      });
     });
   }
 
@@ -7047,8 +7329,17 @@ window.selectRoom = function(roomId) {
   };
 
   function selectRoomAnimationInstance(instanceId) {
-    selectedAnimationInstanceId = instanceId;
-    refreshRoomAnimationInstancesListUI();
+    // Toggle: click Selected again to deselect
+    if (selectedAnimationInstanceId === instanceId) {
+      selectedAnimationInstanceId = null;
+    } else {
+      selectedAnimationInstanceId = instanceId;
+      selectedSceneObjectId = null;
+      activeHotspotId = null;
+      selectedHotspotVertexIndex = -1;
+      isDrawingHotspot = false;
+    }
+    refreshRoomSelectionLists();
     redraw();
   }
 
@@ -7061,7 +7352,7 @@ window.selectRoom = function(roomId) {
     item.dataset.animationInstanceId = inst.id;
     const info = document.createElement('div');
     const animName = animDef ? animDef.name : inst.animationId;
-    info.innerHTML = `<strong>${inst.name || animName}</strong><br><small class="text-muted">${inst.layer || 'background'} layer</small><br><small class="animation-instance-position text-muted">Position: ${Math.round(inst.x || 0)}, ${Math.round(inst.y || 0)}</small>`;
+    info.innerHTML = `<strong>${inst.name || animName}</strong><br><small class="text-muted">Script name: <code>${inst.name || inst.id}</code></small><br><small class="text-muted">${inst.layer || 'background'} layer</small><br><small class="animation-instance-position text-muted">Position: ${Math.round(inst.x || 0)}, ${Math.round(inst.y || 0)}</small>`;
     const visibleWrap = document.createElement('div');
     visibleWrap.className = 'form-check form-check-inline small mt-1';
     const visibleChk = document.createElement('input');
@@ -7083,6 +7374,7 @@ window.selectRoom = function(roomId) {
     const controls = document.createElement('div');
     const selectBtn = document.createElement('button');
     selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+    selectBtn.title = isSelected ? 'Click to deselect' : 'Select to drag (locks scene objects)';
     selectBtn.textContent = isSelected ? 'Selected' : 'Select';
     selectBtn.addEventListener('click', () => selectRoomAnimationInstance(inst.id));
     const delBtn = document.createElement('button');
@@ -7132,7 +7424,9 @@ window.selectRoom = function(roomId) {
     const r = rooms.get(currentRoomId);
     if (r) r.animationInstances = animationInstances;
     selectedAnimationInstanceId = instance.id;
-    refreshRoomAnimationInstancesListUI();
+    selectedSceneObjectId = null;
+    activeHotspotId = null;
+    refreshRoomSelectionLists();
     redraw();
     showNotification(`Animation "${animDef.name}" placed in room`, 'success');
     notifyEditorProjectChanged();
@@ -7143,7 +7437,7 @@ window.selectRoom = function(roomId) {
     animationInstances = animationInstances.filter(inst => inst.id !== instanceId);
     const r = rooms.get(currentRoomId);
     if (r) r.animationInstances = animationInstances;
-    selectedAnimationInstanceId = animationInstances[0] ? animationInstances[0].id : null;
+    selectedAnimationInstanceId = null;
     refreshRoomAnimationInstancesListUI();
     redraw();
     showNotification('Animation placement removed', 'info');
@@ -7487,6 +7781,7 @@ window.selectRoom = function(roomId) {
       frameItem.dataset.frameIndex = index;
       
       const img = document.createElement('img');
+      img.draggable = false;
       let frameName = `Frame ${index + 1}`; // Nome di default
       let isMirrored = false;
       
@@ -7636,7 +7931,7 @@ window.selectRoom = function(roomId) {
         draggedIndex = parseInt(item.dataset.frameIndex);
         item.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/html', item.outerHTML);
+        try { e.dataTransfer.setData('text/plain', String(draggedIndex)); } catch (_) {}
       });
 
       item.addEventListener('dragend', (e) => {
@@ -7652,6 +7947,7 @@ window.selectRoom = function(roomId) {
 
       item.addEventListener('drop', (e) => {
         e.preventDefault();
+        e.stopPropagation();
         const targetIndex = parseInt(item.dataset.frameIndex);
         
         if (draggedIndex !== null && draggedIndex !== targetIndex) {
@@ -7663,12 +7959,14 @@ window.selectRoom = function(roomId) {
             const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
             if (charData && activeDirections && activeDirections[currentDirection]) {
               const frames = activeDirections[currentDirection].frames;
-              const draggedFrame = frames.splice(draggedIndex, 1)[0];
+              const fromIndex = draggedIndex;
+              const draggedFrame = frames.splice(fromIndex, 1)[0];
               frames.splice(targetIndex, 0, draggedFrame);
               
               // Refresh the preview
               refreshFramesPreview();
-              showNotification(`Frame moved from position ${draggedIndex + 1} to ${targetIndex + 1}`, 'success');
+              redraw();
+              showNotification(`Frame moved from position ${fromIndex + 1} to ${targetIndex + 1}`, 'success');
             }
           }
         }
@@ -7965,11 +8263,13 @@ window.selectRoom = function(roomId) {
     'Game', 'GameAPI',
     'Game.getVar', 'Game.setVar', 'Game.hasVar', 'Game.toggleVar',
     'GameAPI.print', 'GameAPI.error', 'GameAPI.getVariable', 'GameAPI.setVariable',
-    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click',
+    'on_game_start', 'on_before_room_change', 'on_room_change', 'on_object_click', 'on_character_click',
     'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with',
-    'print', 'log', 'show_message', 'showText',     'show_dialogue', 'show_dialogue_text', 'end_dialogue',
+    'print', 'log', 'wait', 'show_message', 'showText',
+    'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'start_dialogue',
+    'save_game', 'load_game', 'delete_save', 'get_save_info',
     'play_music', 'play_sound', 'stop_music', 'stop_sound',
-    'play_animation', 'stop_animation',
+    'play_animation', 'stop_animation', 'show_animation', 'hide_animation',
     'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
     'load_room', 'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
     'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
@@ -8051,12 +8351,13 @@ window.selectRoom = function(roomId) {
   const SCRIPT_EVENTS = {
     Global: [
       { id: 'on_game_start', label: 'onGameStart' },
-      { id: 'on_room_change', label: 'onRoomChange' },
+      { id: 'on_before_room_change', label: 'Before room load' },
+      { id: 'on_room_change', label: 'After room load' },
       { id: 'on_inventory_use_with', label: 'onInventoryUseWith' }
     ],
     Room: [
-      // Anche disponibile a livello globale; mantenuto qui per comoditÃ  UI
-      { id: 'on_room_change', label: 'onRoomChange' }
+      { id: 'on_before_room_change', label: 'Before room load' },
+      { id: 'on_room_change', label: 'After room load' }
     ],
     Object: [{ id: 'on_object_click', label: 'onClick' }],
     Character: [{ id: 'on_character_click', label: 'onClick' }],
@@ -8214,6 +8515,7 @@ window.selectRoom = function(roomId) {
     const handlers = new Set();
     [
       'on_game_start',
+      'on_before_room_change',
       'on_room_change',
       'on_object_click',
       'on_character_click',
@@ -8222,7 +8524,7 @@ window.selectRoom = function(roomId) {
       'on_use_with',
       'on_inventory_use_with'
     ].forEach(h => {
-      const re = new RegExp(`function\\s+${h}\\s*\\(`);
+      const re = new RegExp(`(?:async\\s+)?function\\s+${h}\\s*\\(`);
       if (re.test(content)) handlers.add(h);
     });
     return handlers;
@@ -8444,7 +8746,7 @@ window.selectRoom = function(roomId) {
           type: 'room',
           scope: 'Room',
           target: roomId,
-          label: `ðŸ“‹ Room: ${room.name || roomId}`,
+          label: `Room: ${room.name || roomId}`,
           handlers: handlerNames,
           hasContent: roomContent.trim().length > 0
         });
@@ -8461,7 +8763,7 @@ window.selectRoom = function(roomId) {
               type: 'object',
               scope: 'Object',
               target: obj.id,
-              label: `ðŸ“¦ Object: ${obj.name || obj.id}`,
+              label: `Object: ${obj.name || obj.id}`,
               handlers: handlerNames,
               hasContent: objContent.trim().length > 0
             });
@@ -8481,7 +8783,7 @@ window.selectRoom = function(roomId) {
               scope: 'Hotspot',
               target: hotspot.id,
               roomId: roomId,
-              label: `ðŸ–±ï¸ Hotspot: ${hotspot.name || hotspot.id}`,
+              label: `Hotspot: ${hotspot.name || hotspot.id}`,
               handlers: handlerNames,
               hasContent: hotspotCode.trim().length > 0
             });
@@ -8510,7 +8812,7 @@ window.selectRoom = function(roomId) {
       const roomGroup = document.createElement('div');
       roomGroup.className = 'mb-3';
       const h = document.createElement('div');
-      h.textContent = `ðŸ  ${roomData.roomName}`;
+      h.textContent = roomData.roomName;
       h.style.color = '#39ff14';
       h.style.fontWeight = '600';
       h.style.fontSize = '14px';
@@ -8552,7 +8854,7 @@ window.selectRoom = function(roomId) {
         inventoryScriptItems.push({
           scope: 'Inventory',
           target: item.name,
-          label: `ðŸŽ’ Item: ${item.name}`,
+          label: `Item: ${item.name}`,
           handlers: handlerNames,
           hasContent: content.trim().length > 0
         });
@@ -8598,7 +8900,7 @@ window.selectRoom = function(roomId) {
         characterScriptItems.push({
           scope: 'Character',
           target: charName,
-          label: `ðŸ§ Character: ${charName}`,
+          label: `Character: ${charName}`,
           handlers: handlerNames,
           hasContent: content.trim().length > 0
         });
@@ -8836,8 +9138,15 @@ window.selectRoom = function(roomId) {
     const handlerId = eventSel.value || 'on_game_start';
     const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
 
-    const key = migrateLegacyScriptKey(normalizeScriptKey(scope, target));
-    let content = getScriptContent(key);
+    const { key, content: loadedContent } = loadEditorScriptContent(scope, target);
+    let content = loadedContent;
+
+    // One script per scope + target + event
+    const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerId}\\s*\\(`);
+    if (handlerRegex.test(content)) {
+      showNotification('Script already exists', 'warning');
+      return;
+    }
 
     // Ensure header
     if (!content) {
@@ -8849,42 +9158,41 @@ window.selectRoom = function(roomId) {
       content = header;
     }
 
-    // Insert handler skeleton if missing
-    const handlerRegex = new RegExp(`function\\s+${handlerId}\\s*\\(`);
-    if (!handlerRegex.test(content)) {
-      let skeleton = '\n';
-      skeleton += `// Event: ${eventDef.label}\n`;
-      if (handlerId === 'on_game_start') {
-        skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
-      } else if (handlerId === 'on_room_change') {
-        skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_object_click') {
-        skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_character_click') {
-        skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_hotspot_click') {
-        skeleton += `function on_hotspot_click(hotspotId, x, y, usedItemId){\n`;
-        skeleton += `  // usedItemId valorizzato solo con combinazione inventario; return true se gestita\n`;
-        skeleton += `  return false;\n}\n`;
-      } else if (handlerId === 'on_use_with') {
-        skeleton += `function on_use_with(targetType, targetId, x, y){\n`;
-        skeleton += `  // Handler per script item inventario (Scope Inventory)\n`;
-        skeleton += `  // targetType: hotspot | object | character | inventory\n`;
-        skeleton += `  // targetId: id dell'hotspot/oggetto/item (non il name, salvo coincidano)\n`;
-        skeleton += `  if (targetType !== "hotspot" || targetId !== "hotspot_id_here") return false;\n`;
-        skeleton += `  show_message("Combinazione riuscita.");\n`;
-        skeleton += `  return true;\n`;
-        skeleton += `}\n`;
-      } else if (handlerId === 'on_inventory_use_with') {
-        skeleton += `function on_inventory_use_with(itemId, targetType, targetId, x, y){\n`;
-        skeleton += `  // Solo script Global (fallback). Sugli item inventario usare on_use_with.\n`;
-        skeleton += `  return false;\n`;
-        skeleton += `}\n`;
-      } else {
-        skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
-      }
-      content = content.replace(/\s*$/, '') + '\n' + skeleton;
+    // Insert handler skeleton
+    let skeleton = '\n';
+    skeleton += `// Event: ${eventDef.label}\n`;
+    if (handlerId === 'on_game_start') {
+      skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
+    } else if (handlerId === 'on_before_room_change') {
+      skeleton += `function on_before_room_change(oldRoomId, newRoomId){\n  // runs before the new room is loaded (old room still active)\n}\n`;
+    } else if (handlerId === 'on_room_change') {
+      skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // runs after the new room is fully loaded\n}\n`;
+    } else if (handlerId === 'on_object_click') {
+      skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
+    } else if (handlerId === 'on_character_click') {
+      skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
+    } else if (handlerId === 'on_hotspot_click') {
+      skeleton += `function on_hotspot_click(hotspotId, x, y, usedItemId){\n`;
+      skeleton += `  // usedItemId valorizzato solo con combinazione inventario; return true se gestita\n`;
+      skeleton += `  return false;\n}\n`;
+    } else if (handlerId === 'on_use_with') {
+      skeleton += `function on_use_with(targetType, targetId, x, y){\n`;
+      skeleton += `  // Handler per script item inventario (Scope Inventory)\n`;
+      skeleton += `  // targetType: hotspot | object | character | inventory\n`;
+      skeleton += `  // targetId: id dell'hotspot/oggetto/item (non il name, salvo coincidano)\n`;
+      skeleton += `  if (targetType !== "hotspot" || targetId !== "hotspot_id_here") return false;\n`;
+      skeleton += `  show_message("Combinazione riuscita.");\n`;
+      skeleton += `  return true;\n`;
+      skeleton += `}\n`;
+    } else if (handlerId === 'on_inventory_use_with') {
+      skeleton += `function on_inventory_use_with(itemId, targetType, targetId, x, y){\n`;
+      skeleton += `  // Solo script Global (fallback). Sugli item inventario usare on_use_with.\n`;
+      skeleton += `  return false;\n`;
+      skeleton += `}\n`;
+    } else {
+      skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
     }
+    content = content.replace(/\s*$/, '') + '\n' + skeleton;
 
     // Save and attach
     jsScripts.set(key, content);
@@ -8950,6 +9258,9 @@ window.selectRoom = function(roomId) {
   
   // Definizioni delle variabili (per editor UI e validazione)
   window.gameVariableDefinitions = window.gameVariableDefinitions || [];
+
+  /** Dialoghi ramificati del progetto (grafo line/choice/end). Persistiti in .amnt come project.dialogues */
+  window.projectDialogues = window.projectDialogues || [];
   
   // API Game State
   window.Game.setVar = function(key, value) {
@@ -9587,8 +9898,8 @@ window.selectRoom = function(roomId) {
             <br><small class="text-muted">Initial: ${JSON.stringify(varDef.initialValue)}</small>
           </div>
           <div class="btn-group btn-group-sm">
-            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">âœï¸</button>
-            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">ðŸ—‘ï¸</button>
+            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">Edit</button>
+            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">Delete</button>
           </div>
         </div>
       `;
@@ -9690,11 +10001,282 @@ window.selectRoom = function(roomId) {
     refreshVariablesList();
     showNotification(`Variable "${varDef.name}" deleted`, 'info');
   };
+
+  // ============================================
+  // DIALOGUES EDITOR (form-based graph)
+  // ============================================
+  let selectedDialogueId = null;
+
+  function getSelectedDialogue() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    if (!selectedDialogueId) return null;
+    return list.find(d => d.id === selectedDialogueId) || null;
+  }
+
+  function uidDialogue(prefix) {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function escapeHtmlAttr(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  window.renderDialoguesEditor = function renderDialoguesEditor() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    const select = document.getElementById('dialogue-select');
+    const body = document.getElementById('dialogue-editor-body');
+    const empty = document.getElementById('dialogue-editor-empty');
+    if (!select) return;
+
+    if (!selectedDialogueId || !list.some(d => d.id === selectedDialogueId)) {
+      selectedDialogueId = list.length ? list[0].id : null;
+    }
+
+    select.innerHTML = '';
+    if (!list.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(none)';
+      select.appendChild(opt);
+      if (body) body.style.display = 'none';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+
+    if (empty) empty.style.display = 'none';
+    if (body) body.style.display = 'block';
+
+    list.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      opt.textContent = `${d.name || d.id} (${d.id})`;
+      if (d.id === selectedDialogueId) opt.selected = true;
+      select.appendChild(opt);
+    });
+
+    const dlg = getSelectedDialogue();
+    const startInput = document.getElementById('dialogue-start-node');
+    if (startInput) startInput.value = dlg ? (dlg.startNodeId || '') : '';
+    renderDialogueNodesList();
+  };
+
+  function renderDialogueNodesList() {
+    const container = document.getElementById('dialogue-nodes-list');
+    if (!container) return;
+    const dlg = getSelectedDialogue();
+    container.innerHTML = '';
+    if (!dlg) return;
+
+    const nodes = dlg.nodes || {};
+    const ids = Object.keys(nodes);
+    if (!ids.length) {
+      container.innerHTML = '<div class="text-muted text-center py-2"><small>No nodes. Add Line, Choice, or End.</small></div>';
+      return;
+    }
+
+    ids.forEach(nid => {
+      const node = nodes[nid];
+      const card = document.createElement('div');
+      card.className = 'mb-2 p-2';
+      card.style.cssText = 'background:#222;border:1px solid #444;border-radius:6px;';
+
+      const typeBadge = String(node.type || 'end');
+      let fields = `
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span><code style="color:#39ff14">${escapeHtmlAttr(node.id)}</code>
+            <span class="badge bg-secondary ms-1">${escapeHtmlAttr(typeBadge)}</span>
+            ${dlg.startNodeId === node.id ? '<span class="badge bg-success ms-1">start</span>' : ''}
+          </span>
+          <button type="button" class="btn btn-outline-danger btn-sm" data-del-node="${escapeHtmlAttr(node.id)}">Del</button>
+        </div>`;
+
+      if (node.type === 'line') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Speaker (character name/id)</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="speaker" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.speaker || '')}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Text</label>
+          <textarea class="form-control form-control-sm mb-1" rows="2" data-dlg-field="text" data-node="${escapeHtmlAttr(node.id)}">${escapeHtmlAttr(node.text || '')}</textarea>
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />`;
+      } else if (node.type === 'choice') {
+        const opts = Array.isArray(node.options) ? node.options : [];
+        fields += `<div class="mb-1" data-choice-opts="${escapeHtmlAttr(node.id)}">`;
+        opts.forEach((opt, oi) => {
+          fields += `
+            <div class="border border-secondary rounded p-1 mb-1" data-opt-index="${oi}">
+              <div class="d-flex justify-content-between mb-1">
+                <small class="text-muted">Option ${oi + 1}</small>
+                <button type="button" class="btn btn-outline-danger btn-sm py-0" data-del-opt="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}">×</button>
+              </div>
+              <input type="text" class="form-control form-control-sm mb-1" placeholder="Choice text" data-dlg-opt="text" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.text || '')}" />
+              <input type="text" class="form-control form-control-sm" placeholder="Next node ID" data-dlg-opt="next" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.next || '')}" />
+            </div>`;
+        });
+        fields += `</div>
+          <button type="button" class="btn btn-outline-success btn-sm" data-add-opt="${escapeHtmlAttr(node.id)}">+ Option</button>`;
+      } else {
+        fields += `<small class="text-muted">Ends the dialogue session.</small>`;
+      }
+
+      card.innerHTML = fields;
+      container.appendChild(card);
+    });
+
+    container.querySelectorAll('[data-dlg-field]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-field');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        n[field] = el.value;
+      });
+    });
+    container.querySelectorAll('[data-dlg-opt]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-opt');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        n.options[oi][field] = el.value;
+      });
+    });
+    container.querySelectorAll('[data-del-node]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-del-node');
+        if (!nodeId || !dlg.nodes[nodeId]) return;
+        if (!confirm(`Delete node "${nodeId}"?`)) return;
+        delete dlg.nodes[nodeId];
+        if (dlg.startNodeId === nodeId) {
+          const keys = Object.keys(dlg.nodes);
+          dlg.startNodeId = keys[0] || '';
+        }
+        renderDialoguesEditor();
+      });
+    });
+    container.querySelectorAll('[data-add-opt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-add-opt');
+        const n = dlg.nodes[nodeId];
+        if (!n || n.type !== 'choice') return;
+        if (!Array.isArray(n.options)) n.options = [];
+        n.options.push({ id: uidDialogue('opt'), text: 'New choice', next: '' });
+        renderDialogueNodesList();
+      });
+    });
+    container.querySelectorAll('[data-del-opt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-del-opt');
+        const oi = Number(btn.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options)) return;
+        n.options.splice(oi, 1);
+        renderDialogueNodesList();
+      });
+    });
+  }
+
+  window.onDialogueSelectChange = function() {
+    const select = document.getElementById('dialogue-select');
+    selectedDialogueId = select && select.value ? select.value : null;
+    renderDialoguesEditor();
+  };
+
+  window.onDialogueStartNodeChange = function() {
+    const dlg = getSelectedDialogue();
+    const input = document.getElementById('dialogue-start-node');
+    if (!dlg || !input) return;
+    dlg.startNodeId = String(input.value || '').trim();
+    renderDialogueNodesList();
+  };
+
+  window.addProjectDialogue = function() {
+    const name = prompt('Dialogue name:', 'New Dialogue');
+    if (!name || !name.trim()) return;
+    const id = uidDialogue('dlg');
+    const endId = 'n_end';
+    const lineId = 'n1';
+    const choiceId = 'n2';
+    const lineOutA = 'n3';
+    const dialogue = {
+      id,
+      name: name.trim(),
+      startNodeId: lineId,
+      nodes: {
+        [lineId]: { id: lineId, type: 'line', speaker: 'NPC', text: 'Hello!', next: choiceId },
+        [choiceId]: {
+          id: choiceId,
+          type: 'choice',
+          options: [
+            { id: 'opt_a', text: 'Tell me more.', next: lineOutA },
+            { id: 'opt_b', text: 'Goodbye.', next: endId }
+          ]
+        },
+        [lineOutA]: { id: lineOutA, type: 'line', speaker: 'NPC', text: 'There is nothing more to say.', next: endId },
+        [endId]: { id: endId, type: 'end' }
+      }
+    };
+    if (!Array.isArray(window.projectDialogues)) window.projectDialogues = [];
+    window.projectDialogues.push(dialogue);
+    selectedDialogueId = id;
+    renderDialoguesEditor();
+    showNotification(`Dialogue "${dialogue.name}" created — use start_dialogue("${dialogue.name}")`, 'success');
+  };
+
+  window.renameProjectDialogue = function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    const name = prompt('Dialogue name:', dlg.name || dlg.id);
+    if (!name || !name.trim()) return;
+    dlg.name = name.trim();
+    renderDialoguesEditor();
+  };
+
+  window.deleteProjectDialogue = function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    if (!confirm(`Delete dialogue "${dlg.name || dlg.id}"?`)) return;
+    window.projectDialogues = (window.projectDialogues || []).filter(d => d.id !== dlg.id);
+    selectedDialogueId = null;
+    renderDialoguesEditor();
+    showNotification('Dialogue deleted', 'info');
+  };
+
+  window.addDialogueNode = function(type) {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    if (!dlg.nodes) dlg.nodes = {};
+    const t = String(type || 'end').toLowerCase();
+    const id = uidDialogue(t === 'choice' ? 'ch' : (t === 'line' ? 'ln' : 'end'));
+    if (t === 'line') {
+      dlg.nodes[id] = { id, type: 'line', speaker: '', text: '', next: '' };
+    } else if (t === 'choice') {
+      dlg.nodes[id] = {
+        id,
+        type: 'choice',
+        options: [
+          { id: uidDialogue('opt'), text: 'Option A', next: '' },
+          { id: uidDialogue('opt'), text: 'Option B', next: '' }
+        ]
+      };
+    } else {
+      dlg.nodes[id] = { id, type: 'end' };
+    }
+    if (!dlg.startNodeId) dlg.startNodeId = id;
+    renderDialoguesEditor();
+  };
   
-  // Refresh variables list quando si carica la sezione Scripts
+  // Refresh variables/dialogues list quando si carica la sezione Scripts
   document.addEventListener('tabChanged', function(e) {
     if (e.detail.currentTab === 'scripts') {
       refreshVariablesList();
+      if (typeof window.renderDialoguesEditor === 'function') {
+        window.renderDialoguesEditor();
+      }
     }
   });
 
@@ -10010,7 +10592,7 @@ window.selectRoom = function(roomId) {
     if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
     if (canvasContainer) canvasContainer.style.display = showCanvas ? 'block' : 'none';
     if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
-    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'flex' : 'none';
+    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'grid' : 'none';
     if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
   }
 
@@ -10224,6 +10806,11 @@ window.selectRoom = function(roomId) {
       case 'gui':
         disableRoomCanvasEditing();
         refreshGuiButtonsList();
+        redraw();
+        break;
+      case 'cursors':
+        disableRoomCanvasEditing();
+        refreshCursorsList();
         redraw();
         break;
       case 'characters':
@@ -10614,8 +11201,11 @@ window.selectRoom = function(roomId) {
     if (embeddedRuntime.gameState.currentRoomId) {
       const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
       if (scripts[roomScriptName]) {
-        sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
         const newRoomId = embeddedRuntime.gameState.currentRoomId;
+        sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
+        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_before_room_change', [null, newRoomId], {
+          roomId: newRoomId
+        });
         executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
           roomId: newRoomId
         });
@@ -10952,6 +11542,65 @@ window.selectRoom = function(roomId) {
     runtimeWindow: null
   };
 
+  function createElectronRuntimeWindowProxy() {
+    const native = window.amiantoNativeFs;
+    if (!native || typeof native.openRuntimeWindow !== 'function') return null;
+    return {
+      _electronRuntime: true,
+      closed: false,
+      postMessage(message) {
+        if (typeof native.postToRuntime === 'function') {
+          native.postToRuntime(message);
+        }
+      },
+      focus() {
+        if (typeof native.focusRuntimeWindow === 'function') {
+          native.focusRuntimeWindow();
+        }
+      },
+      close() {
+        this.closed = true;
+        if (typeof native.closeRuntimeWindow === 'function') {
+          native.closeRuntimeWindow();
+        }
+      }
+    };
+  }
+
+  async function openPlaytestRuntimeWindow(runtimeUrl, projectData) {
+    // Preferisci window.open: condivide localStorage + window.opener con l'editor
+    // (necessario perché il Runtime carica il progetto da amiantoLastSavedProjectJson).
+    // La policy autoplay è impostata in setWindowOpenHandler (electron/main.js).
+    const opened = window.open(
+      runtimeUrl,
+      'AmiantoRuntime',
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+    if (opened) return opened;
+
+    // Fallback: BrowserWindow gestita dal main process
+    const native = window.amiantoNativeFs;
+    if (native && typeof native.openRuntimeWindow === 'function') {
+      try {
+        await native.openRuntimeWindow(runtimeUrl);
+        const proxy = createElectronRuntimeWindowProxy();
+        if (proxy && projectData) {
+          // La finestra IPC non ha opener/localStorage condiviso in modo affidabile:
+          // invia il progetto esplicitamente.
+          setTimeout(() => {
+            try {
+              proxy.postMessage({ type: 'START_PLAYTEST', projectData });
+            } catch (_) {}
+          }, 500);
+        }
+        return proxy;
+      } catch (err) {
+        console.warn('[PlayTest] openRuntimeWindow IPC failed:', err);
+      }
+    }
+    return null;
+  }
+
   window.startPlayTest = async function() {
     const runtimeWasAlreadyOpen = playTestState.isRunning
       && playTestState.runtimeWindow
@@ -10960,6 +11609,19 @@ window.selectRoom = function(roomId) {
     if (playTestState.isRunning && playTestState.runtimeWindow && playTestState.runtimeWindow.closed) {
       playTestState.isRunning = false;
       playTestState.runtimeWindow = null;
+    }
+
+    // Sync closed state for Electron-managed runtime window
+    if (playTestState.runtimeWindow && playTestState.runtimeWindow._electronRuntime &&
+        window.amiantoNativeFs && typeof window.amiantoNativeFs.isRuntimeWindowClosed === 'function') {
+      try {
+        const closed = await window.amiantoNativeFs.isRuntimeWindowClosed();
+        if (closed) {
+          playTestState.runtimeWindow.closed = true;
+          playTestState.isRunning = false;
+          playTestState.runtimeWindow = null;
+        }
+      } catch (_) {}
     }
 
     const currentUser = AppState.user;
@@ -11025,13 +11687,13 @@ window.selectRoom = function(roomId) {
       saveGameJsonLocal(jsonString);
     }
 
-    // Apri runtime.html in una nuova finestra
+    // Apri runtime.html (window.open: localStorage + opener condivisi con l'editor)
     const runtimeUrl = getRuntimePageUrl();
-    const runtimeWindow = window.open(
-      runtimeUrl,
-      'AmiantoRuntime',
-      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
-    );
+    // Chiudi eventuale Runtime IPC residuo (sessioni precedenti)
+    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+      try { await window.amiantoNativeFs.closeRuntimeWindow(); } catch (_) {}
+    }
+    const runtimeWindow = await openPlaytestRuntimeWindow(runtimeUrl, projectObj);
 
     if (!runtimeWindow) {
       showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
@@ -11051,8 +11713,16 @@ window.selectRoom = function(roomId) {
     addDebugMessage('Project saved to localStorage; the runtime will load it automatically', 'info');
 
     // Monitora se la finestra viene chiusa
-    const checkWindowClosed = setInterval(() => {
-      if (runtimeWindow.closed) {
+    const checkWindowClosed = setInterval(async () => {
+      let closed = !!(runtimeWindow.closed);
+      if (runtimeWindow._electronRuntime && window.amiantoNativeFs &&
+          typeof window.amiantoNativeFs.isRuntimeWindowClosed === 'function') {
+        try {
+          closed = await window.amiantoNativeFs.isRuntimeWindowClosed();
+          runtimeWindow.closed = closed;
+        } catch (_) {}
+      }
+      if (closed) {
         clearInterval(checkWindowClosed);
         playTestState.isRunning = false;
         playTestState.runtimeWindow = null;
@@ -11084,6 +11754,9 @@ window.selectRoom = function(roomId) {
     // Chiudi la finestra runtime se aperta
     if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
       playTestState.runtimeWindow.close();
+    }
+    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+      window.amiantoNativeFs.closeRuntimeWindow();
     }
     
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
@@ -12200,42 +12873,63 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        
-        // Blocca durante il caricamento
+
         if (AppState.loading) {
           showNotification('Please wait for loading to complete', 'warning');
           return false;
         }
-        
-        const projectName = prompt('Enter the new project name:');
-        if (projectName && projectName.trim()) {
-          showNotification(`Creating project "${projectName.trim()}"...`, 'info');
-          
-          await window.createNewProject(projectName.trim(), false);
-          
-          showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
-          
-          const currentBsModal = bootstrap.Modal.getInstance(modal);
-          if (currentBsModal) {
-            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
-            if (modalBody) {
-              renderProjectsList(AppState.projects || [], modalBody);
-            }
-          }
-          
-          // Chiudi il modale solo se il progetto Ã¨ stato aperto con successo
-          const activeProject = localStorage.getItem('amiantoActiveProjectName');
-          if (activeProject === projectName.trim() && currentBsModal) {
-            currentBsModal.hide();
-          }
-        } else if (projectName !== null) {
-          // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
-          showNotification('Project name cannot be empty', 'warning');
+
+        const nameInput = modal.querySelector('#new-project-name-input');
+        const projectName = (nameInput && nameInput.value ? nameInput.value : '').trim();
+        if (!projectName) {
+          showNotification('Enter a project name first', 'warning');
+          if (nameInput) nameInput.focus();
+          return false;
         }
-        // Se projectName === null, l'utente ha annullato, non fare nulla
+
+        showNotification('Creating project "' + projectName + '"...', 'info');
+
+        // Nascondi il modale PRIMA dei dialoghi nativi (non rimuoverlo dal DOM)
+        try {
+          const bsInst = bootstrap.Modal.getInstance(modal);
+          if (bsInst) {
+            await new Promise(function(resolve) {
+              var done = false;
+              var finish = function() { if (done) return; done = true; resolve(); };
+              modal.addEventListener('hidden.bs.modal', finish, { once: true });
+              bsInst.hide();
+              setTimeout(finish, 450);
+            });
+          } else {
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+            document.querySelectorAll('.modal-backdrop').forEach(function(b) { b.remove(); });
+            document.body.classList.remove('modal-open');
+            await new Promise(function(r) { setTimeout(r, 200); });
+          }
+        } catch (_) {
+          await new Promise(function(r) { setTimeout(r, 200); });
+        }
+
+        try {
+          const created = await window.createNewProject(projectName, true);
+          if (!created || !created.ok) {
+            if (!localStorage.getItem('amiantoActiveProjectName')) {
+              try { await showProjectSelectionModal(true); } catch (_) {}
+            }
+            return false;
+          }
+          await loadAndRenderProjectsTab();
+        } catch (err) {
+          console.error('[ProjectModal] Errore creazione progetto:', err);
+          showNotification('Error creating project: ' + (err && err.message ? err.message : err), 'danger');
+          if (!localStorage.getItem('amiantoActiveProjectName')) {
+            try { await showProjectSelectionModal(true); } catch (_) {}
+          }
+        }
         return false;
       }
-      
+
       // Previeni chiusura tramite click sul backdrop (area esterna al modale)
       if (e.target === modal) {
         e.preventDefault();
@@ -12934,9 +13628,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     mergeLegacyHotspotScriptsIntoRooms(projectObj);
   }
 
+  /** Sincronizza lo stato live della stanza corrente prima di serializzare/playtest. */
+  function syncEditorRoomStateBeforeSerialize() {
+    try {
+      if (!currentRoomId || !rooms.has(currentRoomId)) return;
+      const r = rooms.get(currentRoomId);
+      if (!r) return;
+      r.animationInstances = animationInstances;
+      r.sceneObjects = sceneObjects;
+      r.foregrounds = foregrounds;
+      r.hotspots = hotspots;
+      r.walkableArea = walkableArea;
+    } catch (e) {
+      console.warn('[Serialize] syncEditorRoomStateBeforeSerialize:', e);
+    }
+  }
+
   /** Payload progetto pronto per runtime / playtest (stato live editor). */
   function buildPlaytestProjectPayload() {
     saveCurrentScriptIfNeeded();
+    syncEditorRoomStateBeforeSerialize();
     syncEditorScriptsToRoomsBeforeSerialize();
     syncInventoryScriptAttachments();
     const projectObj = window.serializeProject();
@@ -12994,10 +13705,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   function serializeCursors() {
     return Array.isArray(contextualCursors) ? contextualCursors.map(c => ({
       id: c.id,
-      targetType: c.targetType,
-      targetId: c.targetId,
+      category: c.category || 'default',
       actionText: c.actionText || '',
       scriptName: c.scriptName || '',
+      pivotX: typeof c.pivotX === 'number' ? c.pivotX : 0,
+      pivotY: typeof c.pivotY === 'number' ? c.pivotY : 0,
       cursorImage: serializeImage(c.cursorImage)
     })) : [];
   }
@@ -13034,6 +13746,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (settings.startRoomId && !settings.startRoom) {
       settings.startRoom = settings.startRoomId;
     }
+    // Cursor action text overlay (optional)
+    const actionTextToggle = document.getElementById('show-cursor-action-text');
+    if (actionTextToggle) {
+      settings.showCursorActionText = !!actionTextToggle.checked;
+    } else if (typeof settings.showCursorActionText === 'undefined') {
+      settings.showCursorActionText = false;
+    }
     return settings;
   }
 
@@ -13046,6 +13765,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       })),
       state: Game.getState()
     };
+  }
+
+  function serializeDialogues() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    return list.map(d => normalizeDialogueForSerialize(d)).filter(Boolean);
+  }
+
+  function normalizeDialogueForSerialize(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || '').trim();
+    if (!id) return null;
+    const name = String(raw.name || id).trim() || id;
+    const nodesIn = (raw.nodes && typeof raw.nodes === 'object') ? raw.nodes : {};
+    const nodes = {};
+    Object.keys(nodesIn).forEach(nid => {
+      const n = normalizeDialogueNodeForSerialize(nodesIn[nid], nid);
+      if (n) nodes[n.id] = n;
+    });
+    let startNodeId = String(raw.startNodeId || '').trim();
+    if (!startNodeId || !nodes[startNodeId]) {
+      const keys = Object.keys(nodes);
+      startNodeId = keys.length ? keys[0] : '';
+    }
+    return { id, name, startNodeId, nodes };
+  }
+
+  function normalizeDialogueNodeForSerialize(raw, fallbackId) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || fallbackId || '').trim();
+    if (!id) return null;
+    const type = String(raw.type || 'end').toLowerCase();
+    if (type === 'line') {
+      return {
+        id,
+        type: 'line',
+        speaker: String(raw.speaker || '').trim(),
+        text: String(raw.text != null ? raw.text : ''),
+        next: String(raw.next || '').trim()
+      };
+    }
+    if (type === 'choice') {
+      const options = Array.isArray(raw.options) ? raw.options.map((opt, i) => ({
+        id: String((opt && opt.id) || `opt_${i}`).trim(),
+        text: String((opt && opt.text) != null ? opt.text : '').trim(),
+        next: String((opt && opt.next) || '').trim()
+      })).filter(o => o.id) : [];
+      return { id, type: 'choice', options };
+    }
+    return { id, type: 'end' };
   }
   
   function serializeEventConditions() {
@@ -13074,6 +13842,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   window.serializeProject = function() {
+    syncEditorRoomStateBeforeSerialize();
     syncEditorScriptsToRoomsBeforeSerialize();
     const projectObj = {
       format: 'amianto-game',
@@ -13093,6 +13862,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
       variables: serializeVariables(),
+      dialogues: serializeDialogues(),
       eventConditions: serializeEventConditions(),
       resourcesCatalog: (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function')
         ? window.amiantoResources.getCatalog()
@@ -13702,11 +14472,84 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.debugProjectPayloadSize = debugProjectPayloadSize;
   window.markAmiantoProjectDirty = function() {
     window.__amiantoProjectDirty = true;
+    updateProjectSaveStatusUI('dirty');
     scheduleProjectSizeIndicatorRefresh(350);
     if (typeof scheduleAmiantoDiskPersist === 'function') {
       scheduleAmiantoDiskPersist();
     }
   };
+
+  const AMIANTO_PERIODIC_AUTOSAVE_MS = 45000;
+  let amiantoPeriodicAutosaveTimer = null;
+
+  function updateProjectSaveStatusUI(state, detail) {
+    const el = document.getElementById('projectSaveStatus');
+    if (!el) return;
+    const active = localStorage.getItem('amiantoActiveProjectName');
+    if (!active) {
+      el.textContent = 'No project open';
+      el.style.color = '#666';
+      return;
+    }
+    if (state === 'saving') {
+      el.textContent = 'Autosaving…';
+      el.style.color = '#ffaa00';
+      return;
+    }
+    if (state === 'dirty') {
+      el.textContent = 'Unsaved changes';
+      el.style.color = '#ff8844';
+      return;
+    }
+    if (state === 'error') {
+      el.textContent = 'Autosave failed' + (detail ? `: ${detail}` : '');
+      el.style.color = '#ff4444';
+      return;
+    }
+    // saved
+    const when = detail || window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt;
+    if (when) {
+      try {
+        const d = new Date(when);
+        el.textContent = 'Saved ' + d.toLocaleTimeString();
+      } catch (_) {
+        el.textContent = 'Saved';
+      }
+    } else {
+      el.textContent = 'Saved';
+    }
+    el.style.color = '#39ff14';
+  }
+
+  function startAmiantoPeriodicAutosave() {
+    if (amiantoPeriodicAutosaveTimer) return;
+    amiantoPeriodicAutosaveTimer = setInterval(() => {
+      if (!window.__amiantoProjectDirty) return;
+      if (amiantoPersistInProgress) return;
+      const projectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!projectName) return;
+      updateProjectSaveStatusUI('saving');
+      persistEditorProject({ silent: true, promptForLocation: false })
+        .then((result) => {
+          if (result && result.ok === false && result.reason === 'in-progress') return;
+          window.__amiantoLastCacheSaveAt = new Date().toISOString();
+          updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt);
+        })
+        .catch((err) => {
+          console.warn('[AutoSave] Periodic save failed:', err);
+          updateProjectSaveStatusUI('error', err && err.message ? err.message : 'error');
+        });
+    }, AMIANTO_PERIODIC_AUTOSAVE_MS);
+  }
+
+  // Avvia autosave periodico (cache + .amnt se collegato)
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startAmiantoPeriodicAutosave);
+    } else {
+      startAmiantoPeriodicAutosave();
+    }
+  }
 
   /** Progetti legacy: script solo in scripts['Hotspot:id'] â†’ hotspot.scripts.onClick */
   function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
@@ -13798,14 +14641,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 <strong>${name}</strong>
                 ${isActive ? ' <span class="badge bg-success">Active</span>' : ''}
                 ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
-                ${filePath ? `<br><small class="text-muted" title="${filePath}">📁 ${filePath}</small>` : ''}
+                ${filePath ? `<br><small class="text-muted" title="${filePath}">File: ${filePath}</small>` : ''}
               </div>
               <div class="btn-group btn-group-sm ms-2">
                 <button class="btn btn-success" data-action="open" data-project-name="${name}" ${isActive ? 'disabled' : ''}>
-                  <i class="fas fa-folder-open"></i> ${isActive ? 'Active' : 'Open'}
+                  ${isActive ? 'Active' : 'Open'}
                 </button>
                 <button class="btn btn-outline-danger" data-action="delete" data-project-name="${name}">
-                  <i class="fas fa-trash"></i>
+                  Delete
                 </button>
               </div>
             </div>
@@ -13817,7 +14660,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     } else {
       container.innerHTML = `
         <div class="text-center py-4">
-          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
           <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `;
@@ -13860,7 +14702,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function enableOtherTabs(enabled) {
-    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'scripts'].forEach(tabId => {
+    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'cursors', 'scripts'].forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
         button.disabled = !enabled;
@@ -13893,7 +14735,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
             </div>
             <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
-              <i class="fas fa-folder-open"></i> Open
+              Open
             </button>
           </li>
         `;
@@ -13908,16 +14750,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         </div>
       ` : `
         <div class="text-center py-4">
-          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
           <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `}
+      <div class="mb-3">
+        <label class="form-label text-muted" for="new-project-name-input">New project name</label>
+        <input type="text" class="form-control form-control-lg bg-dark text-light border-secondary" id="new-project-name-input" placeholder="My Adventure" autocomplete="off">
+      </div>
       <div class="d-grid gap-2">
-        <button class="btn btn-primary btn-lg" id="btn-create-new-project">
-          <i class="fas fa-plus"></i> New Project
+        <button class="btn btn-primary btn-lg" id="btn-create-new-project" type="button">
+          Create Project
         </button>
-        <button class="btn btn-outline-light btn-lg" id="btn-load-project-modal">
-          <i class="fas fa-file-import"></i> Load Project
+        <button class="btn btn-outline-light btn-lg" id="btn-load-project-modal" type="button">
+          Load Project
         </button>
       </div>
     `;
@@ -13965,7 +14810,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (window.amiantoNativeFs) {
       filePath = await window.amiantoNativeFs.showOpenDialog();
       if (!filePath) return;
-      text = await window.amiantoNativeFs.readFile(filePath);
+      text = await readLargeTextFile(filePath);
     } else if (window.showOpenFilePicker) {
       const [handle] = await window.showOpenFilePicker({
         types: [{ description: 'Amianto Project', accept: { 'application/json': ['.amnt', '.json'] } }],
@@ -13993,12 +14838,37 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       });
     }
 
+    if (!text || !String(text).trim()) {
+      showNotification('Selected project file is empty or unreadable', 'danger');
+      return;
+    }
+
     try {
+      showNotification('Loading project…', 'info');
       await importAmntContent(text, filePath);
     } catch (amntErr) {
       if (amntErr && amntErr.name === 'AbortError') return;
-      await window.importProjectFromJson(text);
-      await registerImportedProject(text);
+      console.error('[Load] importAmntContent failed:', amntErr);
+      // Legacy plain amianto-game JSON (not .amnt package)
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.format === 'amianto-amnt') {
+          throw amntErr;
+        }
+        if (parsed && parsed.format === 'amianto-game') {
+          await window.importProjectFromJson(text);
+          await registerImportedProject(text);
+        } else {
+          throw amntErr;
+        }
+      } catch (fallbackErr) {
+        console.error('[Load] Project load failed:', fallbackErr);
+        showNotification(
+          'Failed to load project: ' + (fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr),
+          'danger'
+        );
+        return;
+      }
     }
 
     const loadedName = localStorage.getItem('amiantoActiveProjectName');
@@ -14010,6 +14880,36 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     await loadAndRenderProjectsTab();
     showNotification('Project loaded', 'success');
   };
+
+  /** Legge file di testo grandi via IPC a chunk (Electron). */
+  async function readLargeTextFile(filePath) {
+    const fsApi = window.amiantoNativeFs;
+    if (!fsApi) throw new Error('Native FS unavailable');
+
+    if (typeof fsApi.readFileChunkedBegin === 'function') {
+      const { id, length } = await fsApi.readFileChunkedBegin(filePath);
+      try {
+        const CHUNK = 512 * 1024;
+        const parts = [];
+        let done = false;
+        while (!done) {
+          const next = await fsApi.readFileChunkedNext(id, CHUNK);
+          if (next.chunk) parts.push(next.chunk);
+          done = !!next.done;
+        }
+        const text = parts.join('');
+        if (typeof length === 'number' && length > 0 && text.length !== length) {
+          console.warn('[Load] Chunked read length mismatch:', text.length, 'vs', length);
+        }
+        return text;
+      } catch (err) {
+        try { await fsApi.readFileChunkedAbort(id); } catch (_) {}
+        throw err;
+      }
+    }
+
+    return await fsApi.readFile(filePath);
+  }
 
   /**
    * Autosave su cache locale (localStorage) come fallback temporaneo
@@ -14698,14 +15598,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   async function writeAmntContent(projectName, text, location) {
     if (location?.type === 'path' && window.amiantoNativeFs) {
-      await window.amiantoNativeFs.writeFile(location.value, text);
+      await writeLargeTextFile(location.value, text);
       setProjectFilePath(projectName, location.value);
       rememberProjectFilePathInCache(projectName, location.value);
       return location.value;
     }
     if (location?.type === 'handle') {
       const writable = await location.value.createWritable();
-      await writable.write(text);
+      await writable.write(new Blob([String(text || '')], { type: 'application/json' }));
       await writable.close();
       projectFileHandles.set(projectName, location.value);
       return location.value.name || window.AmiantoAmnt.defaultFileName(projectName);
@@ -14713,14 +15613,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const savedPath = getProjectFilePath(projectName)
       || localStorage.getItem('amiantoActiveProjectFile');
     if (savedPath && window.amiantoNativeFs) {
-      await window.amiantoNativeFs.writeFile(savedPath, text);
+      await writeLargeTextFile(savedPath, text);
       setProjectFilePath(projectName, savedPath);
       return savedPath;
     }
     const handle = projectFileHandles.get(projectName);
     if (handle) {
       const writable = await handle.createWritable();
-      await writable.write(text);
+      await writable.write(new Blob([String(text || '')], { type: 'application/json' }));
       await writable.close();
       return handle.name || window.AmiantoAmnt.defaultFileName(projectName);
     }
@@ -14756,7 +15656,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   async function readProjectFileContent(filePath) {
     if (filePath && window.amiantoNativeFs) {
-      return await window.amiantoNativeFs.readFile(filePath);
+      return await readLargeTextFile(filePath);
     }
     return null;
   }
@@ -14771,8 +15671,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     project.settings.id = projectId;
 
     const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
-    if (storage && storage.importAssetsFromPackage && assets.length) {
-      await storage.importAssetsFromPackage(projectId, assets);
+    if (storage) {
+      if (typeof storage.init === 'function') {
+        await storage.init();
+      }
+      if (storage.importAssetsFromPackage && assets.length) {
+        const imported = await storage.importAssetsFromPackage(projectId, assets);
+        console.log('[Load] Imported ' + imported + ' asset(s) from .amnt into IndexedDB');
+      }
+    } else if (assets.length) {
+      console.warn('[Load] Asset storage unavailable; .amnt assets were not imported');
     }
 
     const prepared = prepareProjectPayloadForFirestore(project);
@@ -14874,8 +15782,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const jsonString = JSON.stringify(savePayload, null, 2);
       window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
       window.__amiantoProjectDirty = false;
+      window.__amiantoLastCacheSaveAt = new Date().toISOString();
       autosaveToCache(projectName, jsonString);
       localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      if (!interactive || silent) {
+        updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt);
+      } else {
+        updateProjectSaveStatusUI('saved', window.__amiantoLastCacheSaveAt);
+      }
 
       const linkedFilePath = getProjectFilePath(projectName);
       const userProjects = loadProjectsFromCache(currentUser.username);
@@ -14932,6 +15846,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             updateAppState({ projects: list });
           }
           window.__amiantoLastDiskSaveAt = new Date().toISOString();
+          updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
           if (interactive && !silent) {
             showNotification(`Project saved to ${filePath}`, 'success');
           } else if (!silent) {
@@ -14969,30 +15884,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
     ensureCurrentUser();
 
-    // Se il nome progetto viene passato come parametro (dal modale), usalo
-    // Altrimenti chiedi all'utente
     let projectName = projectNameFromModal;
     if (!projectName) {
-      projectName = prompt('Enter project name:');
+      projectName = await askProjectNameDialog('Enter project name:');
     }
-    if (!projectName || !projectName.trim()) return;
-
-    const trimmedName = projectName.trim();
-
-    const saveLocation = await pickProjectSaveLocation(trimmedName);
-    if (!saveLocation) {
-      showNotification('Project creation cancelled — no save location chosen', 'info');
-      return;
+    if (!projectName || !String(projectName).trim()) {
+      return { ok: false, reason: 'empty-name' };
     }
 
-    // Crea progetto completo con struttura corretta
+    const trimmedName = String(projectName).trim();
+
+    const existing = loadProjectsFromCache(currentUser.username);
+    if (findProjectCacheIndex(existing, { name: trimmedName }) >= 0) {
+      showNotification('A project named "' + trimmedName + '" already exists', 'warning');
+      return { ok: false, reason: 'duplicate' };
+    }
+
     const newProject = {
       format: 'amianto-game',
       version: 1,
       meta: {
         exportedAt: new Date().toISOString(),
         editor: 'Amianto Editor',
-        editorVersion: '0.1'
+        editorVersion: '1.0.0'
       },
       settings: {
         id: trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_'),
@@ -15023,6 +15937,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         definitions: [],
         state: {}
       },
+      dialogues: [],
       resourcesCatalog: [],
       eventConditions: {
         objects: {},
@@ -15033,49 +15948,149 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     };
 
-    // Apri il progetto nell'editor
     await applyProjectObject(newProject);
 
     const projectId = newProject.settings.id;
 
-    // Imposta come progetto attivo
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
     localStorage.setItem('amiantoActiveProjectId', projectId);
-    
-    // Aggiorna indicatore dimensione progetto
+
     updateProjectSizeIndicator();
 
-    // Aggiungi alla lista progetti utente usando funzione centralizzata
     const userProjects = loadProjectsFromCache(currentUser.username);
     const entry = normalizeProject({
       settings: newProject.settings,
       id: projectId,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      source: 'local'
     });
     userProjects.push(entry);
     saveProjectsToCache(currentUser.username, userProjects);
+    updateAppState({ projects: userProjects });
 
     try {
-      const filePath = await saveProjectAsAmnt(trimmedName, newProject, saveLocation);
-      if (filePath) {
-        rememberProjectFilePathInCache(trimmedName, filePath);
-        addDebugMessage(`Project file created: ${filePath}`, 'success');
+      const prepared = prepareProjectPayloadForRestore(newProject);
+      autosaveToCache(trimmedName, JSON.stringify(prepared, null, 2));
+    } catch (_) {}
+
+    enableOtherTabs(true);
+
+    // .amnt su disco: opzionale (dopo che il progetto e gia aperto in editor)
+    let diskOk = false;
+    try {
+      await ensureNativeDialogsCanOpen();
+      const saveLocation = await pickProjectSaveLocation(trimmedName);
+      if (saveLocation) {
+        const filePath = await saveProjectAsAmnt(trimmedName, newProject, saveLocation);
+        if (filePath) {
+          rememberProjectFilePathInCache(trimmedName, filePath);
+          diskOk = true;
+          addDebugMessage('Project file created: ' + filePath, 'success');
+        }
+      } else {
+        showNotification('Project created in editor. Use Save Project to write a .amnt file.', 'info');
       }
     } catch (err) {
       console.error('[Create] Failed to write .amnt file:', err);
-      showNotification('Project created but file save failed', 'warning');
+      showNotification('Project created but file save failed: ' + (err && err.message ? err.message : err), 'warning');
     }
 
-    // Abilita altre tab ora che c'Ã¨ un progetto aperto
-    enableOtherTabs(true);
-    
-    // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
     if (showSuccessNotification) {
-      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+      showNotification(
+        diskOk
+          ? 'Project "' + trimmedName + '" created and saved!'
+          : 'Project "' + trimmedName + '" created and opened!',
+        'success'
+      );
     }
+    return { ok: true, name: trimmedName, projectId, diskOk };
   };
+
+  async function ensureNativeDialogsCanOpen() {
+    const sel = document.getElementById('projectSelectionModal');
+    if (sel && sel.classList.contains('show')) {
+      try {
+        const bsInst = bootstrap.Modal.getInstance(sel);
+        if (bsInst) {
+          await new Promise(function(resolve) {
+            var done = false;
+            var finish = function() { if (done) return; done = true; resolve(); };
+            sel.addEventListener('hidden.bs.modal', finish, { once: true });
+            bsInst.hide();
+            setTimeout(finish, 450);
+          });
+        } else {
+          sel.classList.remove('show');
+          sel.style.display = 'none';
+          document.querySelectorAll('.modal-backdrop').forEach(function(b) { b.remove(); });
+          document.body.classList.remove('modal-open');
+          await new Promise(function(r) { setTimeout(r, 200); });
+        }
+      } catch (_) {}
+    }
+    try { hideLoadingOverlay(); } catch (_) {}
+  }
+
+  function askProjectNameDialog(message) {
+    return new Promise(function(resolve) {
+      const existing = document.getElementById('amiantoAskNameModal');
+      if (existing) existing.remove();
+
+      let settled = false;
+      const finish = function(value) {
+        if (settled) return;
+        settled = true;
+        try { bs.hide(); } catch (_) {}
+        setTimeout(function() { try { el.remove(); } catch (_) {} }, 400);
+        resolve(value);
+      };
+
+      const el = document.createElement('div');
+      el.className = 'modal fade';
+      el.id = 'amiantoAskNameModal';
+      el.tabIndex = -1;
+      el.innerHTML =
+        '<div class="modal-dialog modal-dialog-centered">' +
+        '<div class="modal-content bg-dark text-light">' +
+        '<div class="modal-header border-secondary">' +
+        '<h5 class="modal-title"></h5>' +
+        '<button type="button" class="btn-close btn-close-white" data-amianto-cancel="1" aria-label="Close"></button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<input type="text" class="form-control bg-dark text-light border-secondary" id="amianto-ask-name-input" placeholder="My Adventure" autocomplete="off">' +
+        '</div>' +
+        '<div class="modal-footer border-secondary">' +
+        '<button type="button" class="btn btn-secondary" data-amianto-cancel="1">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="amianto-ask-name-ok">Create</button>' +
+        '</div></div></div>';
+
+      document.body.appendChild(el);
+      el.querySelector('.modal-title').textContent = message || 'Project name';
+
+      const bs = new bootstrap.Modal(el, { backdrop: 'static', keyboard: true });
+      const getInput = function() { return el.querySelector('#amianto-ask-name-input'); };
+
+      el.querySelector('#amianto-ask-name-ok').addEventListener('click', function() {
+        const v = (getInput().value || '').trim();
+        finish(v || null);
+      });
+      el.querySelectorAll('[data-amianto-cancel]').forEach(function(btn) {
+        btn.addEventListener('click', function() { finish(null); });
+      });
+      getInput().addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          const v = (getInput().value || '').trim();
+          finish(v || null);
+        }
+      });
+
+      bs.show();
+      setTimeout(function() { getInput().focus(); }, 200);
+    });
+  }
 
   // ================================
   // ASSET MANAGEMENT SYSTEM
@@ -15152,11 +16167,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         assetId = generateAssetId();
       }
 
-      let forcedFileName = fileNameOverride;
-      if (!forcedFileName && overwriteExisting && assetId) {
-        const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop() : 'png';
-        forcedFileName = `${assetId}.${(ext || 'png').toLowerCase()}`;
-      }
+      // Mantieni sempre il nome originale del file (mai assetId.ext)
+      const forcedFileName = fileNameOverride || (file && file.name) || null;
 
       // Determina categoria (backgrounds, foregrounds, sprites, audio)
       const category = getStorageFolderForType(assetType);
@@ -15166,17 +16178,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const result = await storage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
       
       // Costruisci storagePath per compatibilitÃ  con il resto del codice
-      const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
+      const originalFileName = result.fileName || forcedFileName || (file && file.name) || (result.url && result.url.split('/').pop().split('?')[0]);
       const actualFolder = subfolder || category;
-      const storagePath = `${projectId}/${actualFolder}/${generatedFileName}`;
+      const storagePath = `${projectId}/${actualFolder}/${originalFileName}`;
       
-      console.log('[Asset] âœ… Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
+      console.log('[Asset] âœ… Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: originalFileName, subfolder });
       
       return {
         assetId,
         storagePath,
         downloadURL: result.url,
-        fileName: generatedFileName, // Nome file generato (con assetId) per risoluzione futura
+        fileName: originalFileName,
         subfolder // Includi subfolder per salvare nei metadati
       };
     } catch (error) {
@@ -15351,9 +16363,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
       
       const img = new Image();
-      
-      // Prova prima con crossOrigin per supportare CORS
-      img.crossOrigin = 'anonymous';
+      const skipCors = url.startsWith('data:') || url.startsWith('blob:');
+
+      if (!skipCors) {
+        img.crossOrigin = 'anonymous';
+      }
       
       let resolved = false;
       
@@ -15368,7 +16382,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (resolved) return;
         
         // Se fallisce con crossOrigin, prova senza (per dataURL o URL locali)
-        if (img.crossOrigin === 'anonymous' && !url.startsWith('data:')) {
+        if (img.crossOrigin === 'anonymous' && !skipCors) {
           console.warn('[Asset] âš ï¸ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
           
           // Crea una nuova immagine senza crossOrigin
@@ -15488,11 +16502,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const assetId = urlOrAssetId.replace('asset:', '');
       
       if (!projectId) {
-        // Prova a ottenere projectId dal progetto corrente
-        const projectName = localStorage.getItem('amiantoActiveProjectName');
-        if (projectName) {
-          projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        }
+        projectId = getActiveProjectId();
       }
 
       if (!projectId) {
@@ -15531,6 +16541,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const projectId = (projectObj.settings && projectObj.settings.id)
         ? String(projectObj.settings.id)
         : normalizeProjectIdFromName(projectName);
+
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.reassignAssetsToProject) {
+        try {
+          const referencedAssetIds = collectAssetIdsFromProject(projectObj);
+          const reassigned = await storage.reassignAssetsToProject(projectId, [...referencedAssetIds]);
+          if (reassigned > 0) {
+            console.log(`[Load] ${reassigned} asset(s) reindexed under projectId "${projectId}"`);
+          }
+        } catch (reindexErr) {
+          console.warn('[Load] Asset reindex skipped:', reindexErr);
+        }
+      }
       
       // Pulisci mappa asset prima di caricare nuovo progetto
       imageAssetMap.clear();
@@ -15555,6 +16578,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         // persisti impostazioni progetto
         localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+        if (typeof syncShowCursorActionTextCheckbox === 'function') {
+          syncShowCursorActionTextCheckbox(s);
+        }
       }
 
       // Rooms
@@ -16184,6 +17210,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
         }
       } catch(_) {}
+
+      // Branching dialogues (graph)
+      try {
+        window.projectDialogues = [];
+        if (Array.isArray(projectObj.dialogues)) {
+          window.projectDialogues = projectObj.dialogues
+            .map(d => normalizeDialogueForSerialize(d))
+            .filter(Boolean);
+        }
+        if (typeof window.renderDialoguesEditor === 'function') {
+          window.renderDialoguesEditor();
+        }
+      } catch (_) {
+        window.projectDialogues = [];
+      }
       
       // Event Conditions
       try {
@@ -16278,11 +17319,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         console.warn('[Cleanup] Errore durante pulizia hotspot:', cleanupError);
       }
 
-      // Cursors contestuali
+      // Category cursors
       try {
         contextualCursors = [];
         if (Array.isArray(projectObj.cursors)) {
           for (const c of projectObj.cursors) {
+            // Skip legacy per-target cursor entries (targetType/targetId without category)
+            const category = c.category || null;
+            if (!category || !CURSOR_CATEGORIES.includes(category)) continue;
+
             const cursorImg = c.cursorImage ? await createImageFromDataUrl(c.cursorImage, projectId) : null;
             if (cursorImg && c.cursorImage && c.cursorImage.startsWith('asset:')) {
               const assetId = c.cursorImage.replace('asset:', '');
@@ -16290,20 +17335,22 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
             contextualCursors.push({
               id: c.id || uid('cursor'),
-              targetType: c.targetType || 'hotspot',
-              targetId: c.targetId || '',
+              category,
               cursorImage: cursorImg,
               actionText: c.actionText || '',
-              scriptName: c.scriptName || ''
+              scriptName: c.scriptName || '',
+              pivotX: typeof c.pivotX === 'number' ? c.pivotX : 0,
+              pivotY: typeof c.pivotY === 'number' ? c.pivotY : 0
             });
           }
         }
+        selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
         refreshCursorsList();
       } catch(_) {}
 
-      // Centra la preview rooms/inventory dopo il caricamento (evita pan obsoleto fuori schermo)
+      // Zoom 100% con (0,0) in alto a sinistra dopo il caricamento
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+        requestAnimationFrame(() => alignEditorViewTopLeft());
       });
 
       // Ricarica risorse/suoni del progetto attivo (evita catalogo del progetto precedente)
@@ -16332,6 +17379,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.importProjectFromJson = async function(jsonString) {
     try {
       const obj = JSON.parse(jsonString);
+      // Pacchetto .amnt: progetto + asset embedded — non trattarlo come amianto-game nudo
+      if (obj && obj.format === 'amianto-amnt') {
+        await importAmntContent(jsonString, null);
+        return;
+      }
       migrateLegacyInventoryRefsOnLoad(obj);
       await applyProjectObject(obj);
       scheduleProjectSizeIndicatorRefresh(400);
@@ -16351,6 +17403,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       || (cacheIdx >= 0 && userProjects[cacheIdx].filePath)
       || null;
 
+    let linkedFileError = null;
     if (linkedFilePath) {
       try {
         const text = await readProjectFileContent(linkedFilePath);
@@ -16359,8 +17412,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           showNotification(`Project "${projectName}" opened`, 'success');
           return;
         }
+        linkedFileError = new Error('Linked .amnt file is empty or unreadable');
       } catch (err) {
-        console.warn('[Load] Failed to open linked .amnt file, using cache:', err);
+        linkedFileError = err;
+        console.warn('[Load] Failed to open linked .amnt file, trying cache:', err);
       }
     }
 
@@ -16397,6 +17452,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
 
     if (!projectObj) {
+      if (linkedFileError) {
+        showNotification(
+          'Failed to load project file: ' + (linkedFileError.message || linkedFileError),
+          'danger'
+        );
+        return;
+      }
       projectObj = {
         format: 'amianto-game',
         version: 1,
@@ -16426,12 +17488,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    // Stabilizza progetti legacy: assicura settings.id persistito
+    // Stabilizza progetti legacy: assicura settings.id persistito (deve coincidere con IndexedDB)
     try {
       if (!projectObj.settings) projectObj.settings = {};
       if (!projectObj.settings.id) {
         projectObj.settings.id = projectId;
       }
+      projectId = getStableProjectId(projectObj.settings, projectName);
+      projectObj.settings.id = projectId;
     } catch (_) {}
 
     // Applica il progetto caricato
@@ -16440,6 +17504,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     try {
       window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(window.serializeProject());
       window.__amiantoProjectDirty = false;
+      window.__amiantoLastCacheSaveAt = new Date().toISOString();
     } catch (_) {}
 
     // IMPORTANTE: Salva il progetto attivo PRIMA di qualsiasi altra operazione
@@ -16448,11 +17513,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
     localStorage.setItem('amiantoActiveProjectId', projectId);
 
-    // Abilita altre tab ora che c'Ã¨ un progetto aperto
+    // Abilita altre tab ora che c'è un progetto aperto
     enableOtherTabs(true);
     
     // Aggiorna indicatore dimensione progetto
     updateProjectSizeIndicator();
+    updateProjectSaveStatusUI('saved', window.__amiantoLastCacheSaveAt);
     
     // Mostra notifica con fonte di caricamento
     if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
@@ -16780,62 +17846,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const projectName = prompt('Enter project name:');
       if (!projectName || !projectName.trim()) return;
 
-      const trimmedName = projectName.trim();
+      const created = await window.createNewProject(projectName.trim(), true);
+      if (!created || !created.ok) return;
 
-      // Crea progetto completo con struttura corretta
-      const newProject = {
-        format: 'amianto-game',
-        version: 1,
-        meta: {
-          exportedAt: new Date().toISOString(),
-          editor: 'Amianto Editor',
-          editorVersion: '0.1'
-        },
-        settings: {
-          name: trimmedName,
-          canvasWidth: 800,
-          canvasHeight: 600
-        },
-        rooms: [],
-        guis: [],
-        characters: [],
-        inventory: [],
-        scripts: {},
-        attachments: {},
-        cursors: [],
-        variables: {
-          definitions: [],
-          state: {}
-        },
-        eventConditions: {
-          objects: {},
-          hotspots: {},
-          characters: {},
-          guiButtons: {},
-          inventory: {}
-        }
-      };
-
-      // Apri il progetto nell'editor
-      await applyProjectObject(newProject);
-
-      // Imposta come progetto attivo
-      localStorage.setItem('amiantoActiveProjectName', trimmedName);
-      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-
-      // Aggiungi alla lista progetti utente
-      const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      const entry = {
-        settings: newProject.settings,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      arr.push(entry);
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
-
-      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
-      
-      // Chiudi il modale
       const inst = bootstrap.Modal.getInstance(modal);
       if (inst) inst.hide();
     });
@@ -16848,9 +17861,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         });
         const file = await handle.getFile();
         const text = await file.text();
-        await importProjectFromJson(text);
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch (_) {}
+        if (parsed && parsed.format === 'amianto-amnt') {
+          await importAmntContent(text, null);
+        } else {
+          await importProjectFromJson(text);
+        }
         const nameGuess = (() => {
-          try { const o = JSON.parse(text); return (o && o.settings && o.settings.name) ? o.settings.name : null; } catch (_) { return null; }
+          try {
+            const o = parsed || JSON.parse(text);
+            if (o && o.format === 'amianto-amnt' && o.project && o.project.settings) {
+              return o.project.settings.name || null;
+            }
+            return (o && o.settings && o.settings.name) ? o.settings.name : null;
+          } catch (_) { return null; }
         })();
         if (nameGuess) {
           // aggiungi alla lista utente se manca
@@ -16930,6 +17955,180 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     downloadBlob(text, defaultName, 'application/json');
     showNotification('Project exported as .amnt', 'success');
   };
+
+  /**
+   * Export a single self-contained HTML game (runtime + project + assets).
+   * Open the file in a browser — no editor required.
+   */
+  window.exportStandaloneGame = async function exportStandaloneGame() {
+    try {
+      ensureCurrentUser();
+      if (!window.AmiantoStandaloneExport || typeof window.AmiantoStandaloneExport.buildStandaloneHtml !== 'function') {
+        showNotification('Standalone export module not loaded — restart the app', 'error');
+        return;
+      }
+      if (!window.AmiantoAmnt) {
+        showNotification('Project format module not loaded', 'error');
+        return;
+      }
+
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        showNotification('Open a project before exporting the game', 'warning');
+        return;
+      }
+
+      const base = window.AmiantoStandaloneExport.safeFileBase(activeProjectName);
+      const defaultName = `${base}.html`;
+
+      // 1) Chiedi subito dove salvare (feedback immediato)
+      let targetPath = null;
+      let downloadFallback = false;
+
+      if (window.amiantoNativeFs && typeof window.amiantoNativeFs.showSaveDialog === 'function') {
+        try {
+          targetPath = await window.amiantoNativeFs.showSaveDialog(defaultName, { kind: 'html' });
+        } catch (dialogErr) {
+          console.error('[ExportGame] Native save dialog failed:', dialogErr);
+          showNotification('Save dialog failed: ' + (dialogErr.message || dialogErr), 'error');
+          return;
+        }
+        if (!targetPath) {
+          showNotification('Export cancelled', 'info');
+          return;
+        }
+      } else if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: defaultName,
+            types: [{ description: 'HTML Game', accept: { 'text/html': ['.html'] } }]
+          });
+          targetPath = handle;
+        } catch (pickerErr) {
+          if (pickerErr && pickerErr.name === 'AbortError') {
+            showNotification('Export cancelled', 'info');
+            return;
+          }
+          downloadFallback = true;
+        }
+      } else {
+        downloadFallback = true;
+      }
+
+      showNotification('Building standalone HTML… (may take a moment)', 'info');
+
+      let projectObj = window.serializeProject();
+      try {
+        projectObj = await saveAllAssetsToStorage(
+          projectObj,
+          getStableProjectId(projectObj.settings, activeProjectName)
+        );
+      } catch (_) {}
+
+      const pkg = await buildAmntPackageFromEditor(projectObj);
+      const runtimeSource = await loadRuntimeSourceForExport();
+      if (!runtimeSource) {
+        showNotification('Could not load JS/runtime.js for export', 'error');
+        return;
+      }
+
+      const html = window.AmiantoStandaloneExport.buildStandaloneHtml(pkg, runtimeSource, {
+        title: activeProjectName
+      });
+
+      if (typeof targetPath === 'string' && window.amiantoNativeFs) {
+        const written = await writeLargeTextFile(targetPath, html);
+        const mb = (written.bytes / (1024 * 1024)).toFixed(1);
+        showNotification(`Game exported (${mb} MB): ${targetPath}`, 'success');
+        return;
+      }
+
+      if (targetPath && typeof targetPath.createWritable === 'function') {
+        const writable = await targetPath.createWritable();
+        await writable.write(html);
+        await writable.close();
+        showNotification('Game exported as HTML', 'success');
+        return;
+      }
+
+      if (downloadFallback || !targetPath) {
+        downloadBlob(html, defaultName, 'text/html;charset=utf-8');
+        showNotification('Game exported as HTML (download started)', 'success');
+      }
+    } catch (err) {
+      console.error('[ExportGame] Failed:', err);
+      showNotification('Export failed: ' + (err && err.message ? err.message : err), 'error');
+    }
+  };
+
+  /** Scrive HTML grandi a chunk via IPC (un solo invoke fallisce oltre pochi MB). */
+  async function writeLargeTextFile(filePath, content) {
+    const text = String(content || '');
+    const fsApi = window.amiantoNativeFs;
+    if (!fsApi) throw new Error('Native FS unavailable');
+
+    if (typeof fsApi.writeFileChunkedBegin === 'function') {
+      const CHUNK = 512 * 1024; // 512 KB per messaggio IPC
+      const id = await fsApi.writeFileChunkedBegin(filePath);
+      try {
+        for (let i = 0; i < text.length; i += CHUNK) {
+          await fsApi.writeFileChunkedAppend(id, text.slice(i, i + CHUNK));
+        }
+        return await fsApi.writeFileChunkedEnd(id);
+      } catch (err) {
+        try {
+          if (typeof fsApi.writeFileChunkedAbort === 'function') {
+            await fsApi.writeFileChunkedAbort(id);
+          } else {
+            await fsApi.writeFileChunkedEnd(id);
+          }
+        } catch (_) {}
+        throw err;
+      }
+    }
+
+    await fsApi.writeFile(filePath, text);
+    return { bytes: new Blob([text]).size, filePath };
+  }
+
+  async function loadRuntimeSourceForExport() {
+    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.readAppFile === 'function') {
+      try {
+        const text = await window.amiantoNativeFs.readAppFile('JS/runtime.js');
+        if (text && text.length > 100) return text;
+      } catch (err) {
+        console.warn('[ExportGame] readAppFile failed, trying fetch:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('JS/runtime.js', { cache: 'no-store' });
+      if (res.ok) {
+        const text = await res.text();
+        if (text && text.length > 100) return text;
+      }
+    } catch (err) {
+      console.warn('[ExportGame] fetch runtime.js failed:', err);
+    }
+
+    return await new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', 'JS/runtime.js', true);
+        xhr.onload = () => {
+          if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
+            resolve(xhr.responseText && xhr.responseText.length > 100 ? xhr.responseText : null);
+          } else {
+            resolve(null);
+          }
+        };
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
 
   // Debug function to test coordinate conversion
   window.debugCoordinateConversion = function() {
@@ -17120,47 +18319,100 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   } catch(_) {}
 
-  // Contextual cursors management functions
-  window.createCursor = function() {
-    const targetType = document.getElementById('cursor-target-type').value;
-    const targetId = document.getElementById('cursor-target-selector').value;
-    const actionText = document.getElementById('cursor-action-text').value;
-    
-    if (!targetId) {
-      showNotification('Please select a target object', 'warning');
+  // Category cursors management
+  function getCursorByCategory(category) {
+    return contextualCursors.find(c => c.category === category) || null;
+  }
+
+  function updateCursorPivotLabel(cursor) {
+    const label = document.getElementById('cursor-pivot-label');
+    if (!label) return;
+    if (!cursor) {
+      label.textContent = '—';
       return;
     }
-    
+    const px = typeof cursor.pivotX === 'number' ? cursor.pivotX : 0;
+    const py = typeof cursor.pivotY === 'number' ? cursor.pivotY : 0;
+    label.textContent = `(${px}, ${py})`;
+  }
+
+  function applyCursorCssStyle(cursor) {
+    if (cursor && cursor.cursorImage && cursor.cursorImage.src) {
+      const px = typeof cursor.pivotX === 'number' ? cursor.pivotX : 0;
+      const py = typeof cursor.pivotY === 'number' ? cursor.pivotY : 0;
+      canvas.style.cursor = `url(${cursor.cursorImage.src}) ${px} ${py}, auto`;
+      return true;
+    }
+    return false;
+  }
+
+  window.createCursor = function() {
+    const categoryEl = document.getElementById('cursor-category');
+    const category = categoryEl ? categoryEl.value : 'default';
+    if (!CURSOR_CATEGORIES.includes(category)) {
+      showNotification('Invalid cursor category', 'warning');
+      return;
+    }
+
+    if (getCursorByCategory(category)) {
+      showNotification(`A cursor for category "${category}" already exists`, 'warning');
+      return;
+    }
+
+    const actionTextEl = document.getElementById('cursor-action-text');
     const newCursor = {
       id: uid('cursor'),
-      targetType: targetType,
-      targetId: targetId,
+      category,
       cursorImage: null,
-      actionText: actionText || '',
-      scriptName: ''
+      actionText: actionTextEl ? (actionTextEl.value || '') : '',
+      scriptName: '',
+      pivotX: 0,
+      pivotY: 0
     };
-    
+
     contextualCursors.push(newCursor);
+    selectedCursorId = newCursor.id;
     refreshCursorsList();
-    showNotification(`Cursor created for ${targetType}: ${targetId}`, 'success');
+    redraw();
+    showNotification(`Cursor created for category: ${category}`, 'success');
+  };
+
+  window.onCursorCategoryChange = function() {
+    const categoryEl = document.getElementById('cursor-category');
+    const category = categoryEl ? categoryEl.value : null;
+    if (!category || !CURSOR_CATEGORIES.includes(category)) return;
+
+    if (!selectedCursorId) return;
+
+    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
+    if (!cursor) return;
+    if (cursor.category === category) return;
+
+    const existing = getCursorByCategory(category);
+    if (existing && existing.id !== cursor.id) {
+      showNotification(`Category "${category}" is already used by another cursor`, 'warning');
+      categoryEl.value = cursor.category;
+      return;
+    }
+
+    cursor.category = category;
+    refreshCursorsList();
+    redraw();
+    showNotification(`Cursor category set to: ${category}`, 'info');
   };
 
   window.editCursor = function() {
-    if (!selectedCursorId) {
-      showNotification('No cursor selected', 'warning');
-      return;
-    }
-    
+    // Kept for compatibility — meta updates happen via updateSelectedCursorMeta / select
+    window.updateSelectedCursorMeta();
+  };
+
+  window.updateSelectedCursorMeta = function() {
+    if (!selectedCursorId) return;
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
-    
-    // Update cursor properties from form
-    cursor.targetType = document.getElementById('cursor-target-type').value;
-    cursor.targetId = document.getElementById('cursor-target-selector').value;
-    cursor.actionText = document.getElementById('cursor-action-text').value;
-    
+    const actionTextEl = document.getElementById('cursor-action-text');
+    if (actionTextEl) cursor.actionText = actionTextEl.value || '';
     refreshCursorsList();
-    showNotification(`Cursor updated for ${cursor.targetType}: ${cursor.targetId}`, 'success');
   };
 
   window.deleteCursor = function() {
@@ -17168,21 +18420,35 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       showNotification('No cursor selected', 'warning');
       return;
     }
-    
+
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
-    
-    if (!confirm(`Delete cursor for ${cursor.targetType}: ${cursor.targetId}?`)) return;
-    
+
+    if (!confirm(`Delete cursor for category "${cursor.category}"?`)) return;
+
     contextualCursors = contextualCursors.filter(c => c.id !== selectedCursorId);
-    selectedCursorId = null;
+    selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
     refreshCursorsList();
+    redraw();
     showNotification('Cursor deleted', 'success');
+  };
+
+  window.clearCursorImage = function() {
+    if (!selectedCursorId) {
+      showNotification('Select a cursor first', 'warning');
+      return;
+    }
+    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
+    if (!cursor) return;
+    cursor.cursorImage = null;
+    refreshCursorsList();
+    redraw();
+    showNotification('Cursor image cleared', 'info');
   };
 
   window.uploadCursorImage = async function() {
     if (!selectedCursorId) {
-      showNotification('Select a cursor first', 'warning');
+      showNotification('Select or create a cursor first', 'warning');
       return;
     }
 
@@ -17205,8 +18471,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const img = await loadImageFromResourceEntry(resource);
       if (!img) throw new Error('Failed to load image from Resources');
       cursor.cursorImage = img;
-      showNotification(`Cursor set: ${cursor.targetType} / ${cursor.targetId}`, 'success');
+      // Keep existing pivot if set; otherwise default click point to (0,0)
+      if (cursor.pivotX === undefined || cursor.pivotY === undefined) {
+        cursor.pivotX = 0;
+        cursor.pivotY = 0;
+      }
+      showNotification(`Cursor image set for category: ${cursor.category}`, 'success');
       refreshCursorsList();
+      redraw();
     } catch (error) {
       console.error('[Asset] Errore cursore da Resources:', error);
       showNotification(`Error: ${error.message}`, 'error');
@@ -17218,122 +18490,61 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     btnCursorBrowse.addEventListener('click', () => window.uploadCursorImage());
   }
 
-  updateCursorTargets = function() {
-    const targetType = document.getElementById('cursor-target-type').value;
-    const selector = document.getElementById('cursor-target-selector');
-    
-    let placeholderText = 'Select target...';
-    let hasOptions = false;
-    
-    switch (targetType) {
-      case 'hotspot':
-        if (hotspots.length === 0) {
-          placeholderText = 'No hotspots available';
-        } else {
-          placeholderText = 'Select hotspot...';
-          hasOptions = true;
-        }
-        break;
-        
-      case 'character':
-        const characters = document.querySelectorAll('#characters-list .list-group-item strong');
-        if (characters.length === 0) {
-          placeholderText = 'No characters available';
-        } else {
-          placeholderText = 'Select character...';
-          hasOptions = true;
-        }
-        break;
-        
-      case 'scene-object':
-        if (sceneObjects.length === 0) {
-          placeholderText = 'No scene objects available';
-        } else {
-          placeholderText = 'Select scene object...';
-          hasOptions = true;
-        }
-        break;
-    }
-    
-    selector.innerHTML = `<option value="">${placeholderText}</option>`;
-    
-    if (hasOptions) {
-      switch (targetType) {
-        case 'hotspot':
-          hotspots.forEach(hotspot => {
-            const opt = document.createElement('option');
-            opt.value = hotspot.id;
-            opt.textContent = hotspot.name || hotspot.id;
-            selector.appendChild(opt);
-          });
-          break;
-          
-        case 'character':
-          document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-            const name = s.textContent.trim();
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            selector.appendChild(opt);
-          });
-          break;
-          
-        case 'scene-object':
-          sceneObjects.forEach(obj => {
-            const opt = document.createElement('option');
-            opt.value = obj.id;
-            opt.textContent = obj.name || obj.id;
-            selector.appendChild(opt);
-          });
-          break;
-      }
-    }
-  };
+  // Legacy no-op: targets are no longer used
+  updateCursorTargets = function() {};
   window.updateCursorTargets = updateCursorTargets;
 
   window.attachScriptToCursor = function() {
-    const cursorId = document.getElementById('cursor-script-target').value;
+    const cursorId = document.getElementById('cursor-script-target')
+      ? document.getElementById('cursor-script-target').value
+      : selectedCursorId;
     if (!cursorId) {
       showNotification('Please select a cursor', 'warning');
       return;
     }
-    
+
     const scriptName = document.getElementById('script-selector').value;
     if (!scriptName) {
       showNotification('Please select a script', 'warning');
       return;
     }
-    
+
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
+
     cursor.scriptName = scriptName;
     refreshCursorsList();
-    showNotification(`Script "${scriptName}" attached to cursor ${cursor.targetType}: ${cursor.targetId}`, 'success');
+    showNotification(`Script "${scriptName}" attached to cursor category: ${cursor.category}`, 'success');
   };
 
   function refreshCursorsList() {
     const list = document.getElementById('cursors-list');
     if (!list) return;
-    
+
     list.innerHTML = '';
-    
-    contextualCursors.forEach(cursor => {
+
+    // Sort by category order
+    const sorted = [...contextualCursors].sort((a, b) => {
+      return CURSOR_CATEGORIES.indexOf(a.category) - CURSOR_CATEGORIES.indexOf(b.category);
+    });
+
+    sorted.forEach(cursor => {
       const item = document.createElement('div');
       item.className = `list-group-item list-group-item-action ${selectedCursorId === cursor.id ? 'active' : ''}`;
       item.dataset.cursorId = cursor.id;
-      
-      const hasImage = cursor.cursorImage ? 'âœ…' : 'âŒ';
-      const hasScript = cursor.scriptName ? 'ðŸ“œ' : '';
-      
+
+      const hasImage = cursor.cursorImage ? 'Has image' : 'No image';
+      const hasScript = cursor.scriptName ? ' · Has script' : '';
+      const label = CURSOR_CATEGORY_LABELS[cursor.category] || cursor.category;
+
       item.innerHTML = `
         <div class="d-flex justify-content-between align-items-center">
           <div>
-            <strong>${cursor.targetType}: ${cursor.targetId}</strong>
+            <strong>${label}</strong>
             <br>
             <small class="text-muted">
-              ${hasImage} Image ${hasScript} Script
-              ${cursor.actionText ? `| "${cursor.actionText}"` : ''}
+              ${hasImage}${hasScript}${cursor.actionText ? ` | "${cursor.actionText}"` : ''}
+              · click (${typeof cursor.pivotX === 'number' ? cursor.pivotX : 0}, ${typeof cursor.pivotY === 'number' ? cursor.pivotY : 0})
             </small>
           </div>
           <div class="btn-group btn-group-sm" role="group">
@@ -17342,28 +18553,40 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           </div>
         </div>
       `;
-      
+
       item.addEventListener('click', () => selectCursor(cursor.id));
       list.appendChild(item);
     });
+
+    const selected = selectedCursorId
+      ? contextualCursors.find(c => c.id === selectedCursorId)
+      : null;
+    const categoryEl = document.getElementById('cursor-category');
+    const actionEl = document.getElementById('cursor-action-text');
+    if (selected) {
+      if (categoryEl) categoryEl.value = selected.category;
+      if (actionEl) actionEl.value = selected.actionText || '';
+      updateCursorPivotLabel(selected);
+    } else {
+      updateCursorPivotLabel(null);
+      if (actionEl) actionEl.value = '';
+    }
   }
 
   function selectCursor(cursorId) {
     selectedCursorId = cursorId;
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
-    // Update form with cursor data
-    document.getElementById('cursor-target-type').value = cursor.targetType;
-    document.getElementById('cursor-target-selector').value = cursor.targetId;
-    document.getElementById('cursor-action-text').value = cursor.actionText || '';
-    
-    // Update target selector
-    updateCursorTargets();
-    document.getElementById('cursor-target-selector').value = cursor.targetId;
-    
+
+    const categoryEl = document.getElementById('cursor-category');
+    const actionEl = document.getElementById('cursor-action-text');
+    if (categoryEl) categoryEl.value = cursor.category;
+    if (actionEl) actionEl.value = cursor.actionText || '';
+    updateCursorPivotLabel(cursor);
+
     refreshCursorsList();
-    showNotification(`Selected cursor for ${cursor.targetType}: ${cursor.targetId}`, 'info');
+    redraw();
+    showNotification(`Selected cursor: ${cursor.category}`, 'info');
   }
 
   window.selectCursor = selectCursor;
@@ -17371,77 +18594,72 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.deleteCursorById = function(cursorId) {
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
-    if (!confirm(`Delete cursor for ${cursor.targetType}: ${cursor.targetId}?`)) return;
-    
+
+    if (!confirm(`Delete cursor for category "${cursor.category}"?`)) return;
+
     contextualCursors = contextualCursors.filter(c => c.id !== cursorId);
-    if (selectedCursorId === cursorId) selectedCursorId = null;
+    if (selectedCursorId === cursorId) {
+      selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
+    }
     refreshCursorsList();
+    redraw();
     showNotification('Cursor deleted', 'success');
   };
 
   function refreshCursorScriptTargets() {
     const sel = document.getElementById('cursor-script-target');
     if (!sel) return;
-    
+
     sel.innerHTML = '<option value="">Select cursor...</option>';
-    
-    // Add available cursors
+
     contextualCursors.forEach(cursor => {
       const opt = document.createElement('option');
       opt.value = cursor.id;
-      opt.textContent = `${cursor.targetType}: ${cursor.targetId}`;
+      opt.textContent = CURSOR_CATEGORY_LABELS[cursor.category] || cursor.category;
       sel.appendChild(opt);
     });
   }
 
-  // Contextual cursor detection function
+  // Category cursor hint while hovering interactive elements on the rooms canvas
   function checkContextualCursor(e) {
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    if (activeTab === 'cursors' || activeTab === 'characters' || activeTab === 'animations' || activeTab === 'inventory') {
+      return;
+    }
+
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
-    let foundCursor = null;
-    
-    // Check hotspots
-    hotspots.forEach(hotspot => {
+    let hoveringInteractive = false;
+
+    for (const hotspot of hotspots) {
       if (isPointInHotspot(x, y, hotspot)) {
-        const cursor = contextualCursors.find(c => c.targetType === 'hotspot' && c.targetId === hotspot.id);
-        if (cursor) foundCursor = cursor;
+        hoveringInteractive = true;
+        break;
       }
-    });
-    
-    // Check characters
-    if (!foundCursor) {
-      document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-        const charName = s.textContent.trim();
-        // Simple character hit detection (you might want to improve this)
-        const charRect = getCharacterBounds(charName);
-        if (charRect && x >= charRect.x && x <= charRect.x + charRect.w && y >= charRect.y && y <= charRect.y + charRect.h) {
-          const cursor = contextualCursors.find(c => c.targetType === 'character' && c.targetId === charName);
-          if (cursor) foundCursor = cursor;
-        }
-      });
     }
-    
-    // Check scene objects
-    if (!foundCursor) {
-      sceneObjects.forEach(obj => {
+
+    if (!hoveringInteractive) {
+      for (const obj of sceneObjects) {
         if (x >= obj.x && x <= obj.x + obj.w && y >= obj.y && y <= obj.y + obj.h) {
-          const cursor = contextualCursors.find(c => c.targetType === 'scene-object' && c.targetId === obj.id);
-          if (cursor) foundCursor = cursor;
+          hoveringInteractive = true;
+          break;
         }
-      });
+      }
     }
-    
-    // Apply cursor if found
-    if (foundCursor && foundCursor.cursorImage) {
-      canvas.style.cursor = `url(${foundCursor.cursorImage.src}) 0 0, auto`;
-    } else {
-      canvas.style.cursor = 'default';
+
+    let category = hoveringInteractive ? 'use' : 'default';
+    if (hoveringInteractive && !getCursorByCategory('use')) {
+      category = getCursorByCategory('look') ? 'look' : 'default';
+    }
+
+    const cursor = getCursorByCategory(category) || getCursorByCategory('default');
+    if (!applyCursorCssStyle(cursor)) {
+      canvas.style.cursor = hoveringInteractive ? 'pointer' : 'default';
     }
   }
 
   function isPointInHotspot(x, y, hotspot) {
     if (!hotspot.points || hotspot.points.length < 3) return false;
-    
+
     // Simple point-in-polygon test
     let inside = false;
     for (let i = 0, j = hotspot.points.length - 1; i < hotspot.points.length; j = i++) {
@@ -17460,8 +18678,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Initialize cursor system
+  function syncShowCursorActionTextCheckbox(settings) {
+    const el = document.getElementById('show-cursor-action-text');
+    if (!el) return;
+    const src = settings || (() => {
+      try { return JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) { return null; }
+    })();
+    el.checked = !!(src && src.showCursorActionText);
+  }
+
+  window.onShowCursorActionTextChange = function onShowCursorActionTextChange() {
+    const el = document.getElementById('show-cursor-action-text');
+    let settings = null;
+    try { settings = JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) {}
+    if (!settings || typeof settings !== 'object') settings = {};
+    settings.showCursorActionText = !!(el && el.checked);
+    localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
+    showNotification(
+      settings.showCursorActionText
+        ? 'Action text on hover enabled (save project to keep)'
+        : 'Action text on hover disabled (save project to keep)',
+      'info'
+    );
+  };
+
   function initializeCursorSystem() {
-    updateCursorTargets();
+    syncShowCursorActionTextCheckbox();
+    refreshCursorsList();
   }
 
   initializeCursorSystem();
@@ -17524,11 +18767,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // ============================================
   function initializeConsoleLogToggle() {
     const toggleBtn = document.getElementById('console-log-toggle');
-    const toggleIcon = document.getElementById('console-log-toggle-icon');
+    const toggleLabel = document.getElementById('console-log-toggle-icon');
     const logsContainer = document.getElementById('logs-container');
     const resizeHandle = document.getElementById('console-resize-handle');
     
-    if (!toggleBtn || !toggleIcon || !logsContainer || !resizeHandle) {
+    if (!toggleBtn || !toggleLabel || !logsContainer || !resizeHandle) {
       return;
     }
 
@@ -17549,16 +18792,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (visible) {
         logsContainer.style.display = 'flex';
         resizeHandle.style.display = 'flex';
-        toggleIcon.classList.remove('fa-eye-slash');
-        toggleIcon.classList.add('fa-eye');
-        toggleBtn.title = 'Nascondi console log';
+        toggleLabel.textContent = 'Hide';
+        toggleBtn.title = 'Hide console logs';
         if (wrapper) wrapper.classList.remove('console-hidden');
       } else {
         logsContainer.style.display = 'none';
         resizeHandle.style.display = 'none';
-        toggleIcon.classList.remove('fa-eye');
-        toggleIcon.classList.add('fa-eye-slash');
-        toggleBtn.title = 'Mostra console log';
+        toggleLabel.textContent = 'Show';
+        toggleBtn.title = 'Show console logs';
         if (wrapper) wrapper.classList.add('console-hidden');
       }
     }

@@ -47,6 +47,8 @@ function on_game_start() {
         <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
         <tr><td><strong>Animations</strong></td><td>Room/environment animations: frame sequences, FPS, layer (background/foreground), loop default, canvas preview.</td></tr>
         <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), <strong>DialogBox</strong> (speech balloon style), buttons with optional scripts.</td></tr>
+        <tr><td><strong>GUI</strong></td><td>Buttons, overlays, dialogue balloon settings.</td></tr>
+        <tr><td><strong>Cursors</strong></td><td>One cursor image per interaction category; click-point pivot on the canvas.</td></tr>
         <tr><td><strong>Scripts</strong></td><td>CodeMirror editor, script tree, game variables, Run/Stop sandbox.</td></tr>
         <tr><td><strong>Docs</strong></td><td>This guide.</td></tr>
         <tr><td><strong>PLAY</strong></td><td>Live play test with script console and debug tools.</td></tr>
@@ -54,7 +56,7 @@ function on_game_start() {
     </table>
     <h3>Keyboard shortcuts</h3>
     <ul>
-      <li><kbd>Ctrl</kbd>+<kbd>0</kbd> Projects · <kbd>1</kbd> Resources · <kbd>2</kbd> Rooms · <kbd>3</kbd> Inventory · <kbd>4</kbd> Characters · <kbd>5</kbd> Animations · <kbd>6</kbd> GUI · <kbd>7</kbd> Scripts · <kbd>8</kbd> Docs · <kbd>9</kbd> PLAY</li>
+      <li><kbd>Ctrl</kbd>+<kbd>0</kbd> Projects · <kbd>1</kbd> Resources · <kbd>2</kbd> Rooms · <kbd>3</kbd> Inventory · <kbd>4</kbd> Characters · <kbd>5</kbd> Animations · <kbd>6</kbd> GUI · <kbd>7</kbd> Cursors · <kbd>8</kbd> Docs · <kbd>9</kbd> PLAY</li>
       <li><kbd>Ctrl</kbd>+<kbd>S</kbd> — save current script (Scripts tab)</li>
       <li><kbd>Ctrl</kbd>+<kbd>Space</kbd> — autocomplete game API in script editor</li>
       <li>Canvas: mouse wheel zoom, <kbd>Ctrl</kbd>+click pan, click-drag objects</li>
@@ -88,7 +90,7 @@ function on_game_start() {
     <p>Set FPS for preview. Configure <strong>game start</strong>: starting character, room, and coordinates.</p>
     <h3>GUI &amp; cursors</h3>
     <p>GUI buttons can run scripts on click (<code>on_gui_click</code> in runtime). Create a <strong>DialogBox</strong> GUI to configure speech balloons (colors, optional balloon image, appear effect). In scripts use <code>show_dialogue(character, text)</code> — the balloon follows the speaking character.</p>
-    <p><strong>Contextual cursors</strong> are defined in the editor and update on hover on the <strong>editor canvas</strong> only. During Play Test the runtime uses a fixed <code>pointer</code> (plus the inventory “item in hand” cursor). Dynamic runtime cursors are on the roadmap — see <code>ROADMAP.md</code>.</p>
+    <p>In the <strong>Cursors</strong> tab define one cursor per interaction category (<code>default</code>, <code>look</code>, <code>use</code>, <code>talk</code>, <code>grab</code>, <code>exit</code>, <code>walk</code>, <code>wait</code>, <code>inactive</code>) — not per object or hotspot. Click the canvas preview to set the <strong>click point</strong> (pivot). Optional <strong>Action Text</strong> per category; enable <strong>Show action text on hover</strong> to display it in Play Test / exported games (off by default). Runtime hover picks: inventory → <code>grab</code>, GUI → <code>use</code>, hotspot → <code>use</code>/<code>exit</code>, object → <code>use</code>, character → <code>talk</code>, walkable area → <code>walk</code>, input lock → <code>wait</code>.</p>
   </section>
 
   <section id="doc-scripting" class="docs-section">
@@ -112,8 +114,12 @@ function on_game_start() {
   add_to_inventory("map", 1);
 });
 
+on_before_room_change(function(oldRoom, newRoom) {
+  print("Leaving " + oldRoom + ", loading " + newRoom);
+});
+
 on_room_change(function(oldRoom, newRoom) {
-  print("Room " + oldRoom + " -> " + newRoom);
+  print("Room loaded: " + newRoom);
 });</code></pre>
     <h3>Game variables</h3>
     <p>Define variables in the Scripts panel. Use in code:</p>
@@ -122,14 +128,21 @@ if (Game.getVar("door_open")) {
   load_room("hall");
 }</code></pre>
     <p>Aliases: <code>get_var</code>, <code>set_var</code>, <code>has_var</code>, <code>toggle_var</code>, and <code>GameAPI.getVariable</code> / <code>setVariable</code>.</p>
-    <h3>Debugging</h3>
+    <h3>Debugging &amp; timing</h3>
     <ul>
       <li><code>print(...)</code> — script log (Play Test / runtime console)</li>
       <li><code>GameAPI.error(...)</code> — error level log</li>
+      <li><code>wait(ms)</code> — pause for a fixed time in milliseconds; use with <code>await</code> in <code>async</code> handlers (e.g. <code>await wait(1500)</code>)</li>
       <li><code>show_message(text)</code> — on-screen notification overlay</li>
       <li><code>show_dialogue(character, text)</code> — speech balloon on character (click to close)</li>
+      <li><code>start_dialogue(idOrName)</code> — branching dialogue from Scripts → Dialogues</li>
       <li><strong>Test Game Start</strong> (PLAY tab) — runs <code>on_game_start</code> without full runtime UI</li>
     </ul>
+    <pre class="docs-code"><code>async function on_game_start() {
+  show_message("Something happens...");
+  await wait(2000);
+  hide_animation("secret_eye");
+}</code></pre>
   </section>
 
   <section id="doc-events" class="docs-section">
@@ -138,7 +151,8 @@ if (Game.getVar("door_open")) {
       <thead><tr><th>Event</th><th>When it runs</th><th>Handler arguments</th></tr></thead>
       <tbody>
         <tr><td><code>on_game_start</code></td><td>Game / play test starts</td><td>none</td></tr>
-        <tr><td><code>on_room_change</code></td><td>After changing room</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
+        <tr><td><code>on_before_room_change</code></td><td>Before a room change finishes loading (previous room still active)</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
+        <tr><td><code>on_room_change</code></td><td>After the new room is fully loaded</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
         <tr><td><code>on_object_click</code></td><td>Scene object clicked</td><td><code>objectId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_character_click</code></td><td>Character clicked</td><td><code>characterId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_hotspot_click</code></td><td>Hotspot clicked</td><td><code>hotspotId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
@@ -161,7 +175,11 @@ if (Game.getVar("door_open")) {
       <li><code>show_message(text)</code> — fixed notification overlay (~3s)</li>
       <li><code>show_dialogue(characterIdOrName, text)</code> — speech balloon above a character; uses the first <strong>DialogBox</strong> GUI in the project (colors, optional balloon image). Follows the character while moving. Click anywhere to dismiss. Queued like <code>show_message</code>.</li>
       <li><code>show_dialogue_text(text, speaker)</code> — same as <code>show_dialogue(speaker, text)</code></li>
-      <li><code>end_dialogue()</code> — close the active balloon immediately</li>
+      <li><code>start_dialogue(dialogueIdOrName)</code> — run a branching dialogue graph from <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>end</code>). Player picks choices on-screen. Promise resolves when the dialogue ends.</li>
+      <li><code>end_dialogue()</code> — close the active balloon and abort any running <code>start_dialogue</code> session</li>
+      <li><code>save_game(slot?, label?)</code> — save player state (room, variables, inventory, characters, objects/hotspots) to <code>localStorage</code> (slots 1–10). Separate from editor project save.</li>
+      <li><code>load_game(slot?)</code> — restore a save; does not re-fire <code>on_game_start</code> / <code>on_room_change</code></li>
+      <li><code>delete_save(slot)</code> / <code>get_save_info(slot?)</code> — delete or inspect slots (omit slot to list all for this project)</li>
     </ul>
 
     <h3>Inventory</h3>
@@ -224,14 +242,14 @@ if (Game.getVar("door_open")) {
     <h3>Audio</h3>
     <p>Import MP3/OGG/WAV in <strong>Resources → Audio</strong>. Reference by file name (<code>theme.mp3</code>), display name, asset id, or <code>asset:…</code>.</p>
     <ul>
-      <li><code>play_music(trackId, loop?)</code> — background music (one track at a time). Default loop: <code>true</code>.</li>
+      <li><code>play_music(trackId)</code> — background music in infinite loop (one track at a time). Keeps playing across rooms/clicks until <code>stop_music()</code>.</li>
       <li><code>play_sound(soundId, loop?)</code> — sound effect (can overlap). Default loop: <code>false</code>.</li>
       <li><code>stop_music()</code> — stop background music</li>
       <li><code>stop_sound(soundId?)</code> — stop a looping SFX, or all looping SFX if omitted</li>
     </ul>
-    <p><strong>Loop parameter:</strong> <code>true</code> / <code>'loop'</code> / <code>'infinite'</code> = repeat forever; <code>false</code> / <code>'once'</code> = play once; number <code>N</code> &gt; 1 = play N times.</p>
+    <p><strong>SFX loop parameter:</strong> <code>true</code> / <code>'loop'</code> / <code>'infinite'</code> = repeat forever; <code>false</code> / <code>'once'</code> = play once; number <code>N</code> &gt; 1 = play N times. Music always loops until <code>stop_music()</code>.</p>
     <pre class="docs-code"><code>function on_game_start() {
-  play_music("theme.mp3", true);
+  play_music("theme.mp3");
 }
 
 function on_hotspot_click() {
@@ -241,17 +259,31 @@ function on_hotspot_click() {
     <h3>Room animations</h3>
     <p>Create animations in <strong>Animations</strong>, place them in <strong>Rooms → Room Animations</strong>, then control them from script.</p>
     <ul>
-      <li><code>play_animation(instanceIdOrName, loop?)</code> — start or restart a placed room animation. <code>loop</code> uses the same rules as audio (default: animation's loop setting).</li>
+      <li><code>play_animation(instanceIdOrName, loop?, waitForCompletion?)</code> — start or restart a placed room animation. With <code>loop</code> once or a number (e.g. <code>2</code>), use <code>await</code> to wait for completion before the next line. Pass <code>false</code> as 3rd arg to fire-and-forget.</li>
       <li><code>stop_animation(instanceIdOrName?)</code> — stop one instance, or all room animations if omitted</li>
+      <li><code>show_animation(instanceIdOrName)</code> — show a hidden animation instance</li>
+      <li><code>hide_animation(instanceIdOrName?)</code> — hide one instance (and stop playback), or all if omitted</li>
     </ul>
     <p><strong>Editor setup:</strong> Animations tab → frames + layer; Rooms tab → placement + drag first frame. In play test, animations stay on frame 0 until you call <code>play_animation()</code> from script.</p>
-    <pre class="docs-code"><code>function on_room_change(oldRoom, newRoom) {
-  play_animation("waterfall_room1", true);
+    <pre class="docs-code"><code>async function on_game_start() {
+  show_animation("occhio_stanza1");
+  await play_animation("occhio_stanza1", 2);
+  hide_animation("occhio_stanza1");
+}
+
+function on_before_room_change(oldRoom, newRoom) {
+  // fade out, stop music, etc. — old room still visible
+}
+
+function on_room_change(oldRoom, newRoom) {
+  play_animation("waterfall_room1", true, false); // loop forever, don't block script
 }
 
 function on_hotspot_click() {
   play_animation("torch_flicker", false);
   stop_animation("waterfall_room1");
+  hide_animation("secret_glow");
+  show_animation("waterfall_room1");
 }</code></pre>
   </section>
 
@@ -300,7 +332,13 @@ function on_object_click(object_id) {
 // Hotspot "bridge_crossing" starts inactive (Is active? unchecked in Rooms tab)</code></pre>
 
     <h3>4 — Room entry cutscene flag</h3>
-    <pre class="docs-code"><code>on_room_change(function(oldRoom, newRoom) {
+    <pre class="docs-code"><code>function on_before_room_change(oldRoom, newRoom) {
+  if (newRoom === "cellar") {
+    show_message("You hear dripping water...");
+  }
+}
+
+on_room_change(function(oldRoom, newRoom) {
   if (newRoom === "cellar" && !Game.getVar("cellar_visited")) {
     show_message("The air smells damp...");
     Game.setVar("cellar_visited", true);
@@ -328,6 +366,30 @@ function on_character_click(character_id) {
   show_dialogue(character_id, "Second line — click after each.");
 }</code></pre>
 
+    <h3>5a2 — Branching dialogue (<code>start_dialogue</code>)</h3>
+    <p>Create a dialogue under <strong>Scripts → Dialogues</strong> (template includes one line, two choices, two outcomes). Speakers must match character names/ids in the room. Then:</p>
+    <pre class="docs-code"><code>function on_character_click(character_id) {
+  start_dialogue("New Dialogue"); // name or id from Dialogues list
+}</code></pre>
+
+    <h3>5a3 — Save / load game</h3>
+    <p>Player saves are stored in the browser <code>localStorage</code> per project id (also works in standalone HTML export). Not the same as <strong>Save Project</strong> in the editor.</p>
+    <pre class="docs-code"><code>function on_gui_click(button_id) {
+  if (button_id === "btn_save") {
+    save_game(1, "Checkpoint");
+    show_message("Game saved.");
+  }
+  if (button_id === "btn_load") {
+    load_game(1).then(function(result) {
+      if (result && result.ok) show_message("Game loaded.");
+      else show_message("No save found.");
+    });
+  }
+}
+
+// List slots:
+print(get_save_info());</code></pre>
+
     <h3>5b — Custom animation (e.g. wave)</h3>
     <p>Requires a custom animation named <code>wave</code> with frames for the chosen direction, created under <strong>Characters</strong> → Animation → <strong>+</strong>.</p>
     <pre class="docs-code"><code>async function on_hotspot_click(hotspot_id) {
@@ -337,7 +399,7 @@ function on_character_click(character_id) {
 }</code></pre>
 
     <h3>5c — Room animation (waterfall, torch, etc.)</h3>
-    <p>Create the animation in <strong>Animations</strong>, place it in <strong>Rooms → Room Animations</strong>, then reference the instance <strong>name</strong> in script.</p>
+    <p>Create the animation in <strong>Animations</strong>, place it in <strong>Rooms → Room Animations</strong>, then reference the instance <strong>name</strong> in script. Use <code>on_room_change</code> (after load) to start ambient loops.</p>
     <pre class="docs-code"><code>function on_room_change(oldRoom, newRoom) {
   if (newRoom === "cave") {
     play_animation("waterfall_cave", true);
@@ -353,13 +415,11 @@ function on_hotspot_click(hotspot_id) {
 }</code></pre>
 
     <h3>6 — Spawn temporary object</h3>
-    <pre class="docs-code"><code>function on_hotspot_click(hotspot_id) {
+    <pre class="docs-code"><code>async function on_hotspot_click(hotspot_id) {
   if (hotspot_id === "sparkle") {
     spawn_object("glint", 150, 200, "sparkle.png");
-    // or: spawn_object("glint", 150, 200, "asset:asset_…");
-    setTimeout(function() {
-      despawn_object("glint");
-    }, 2000);
+    await wait(2000);
+    despawn_object("glint");
   }
 }</code></pre>
 
@@ -437,6 +497,7 @@ function on_use_with(targetType, targetId) {
       <li><strong>Project Settings</strong> — header button next to Save; canvas size, name, author, etc.</li>
       <li><strong>Load Project</strong> — open an existing <code>.amnt</code> or legacy <code>.json</code> file.</li>
       <li><strong>Export</strong> — export full <code>.amnt</code> bundle from the Projects tab when needed.</li>
+      <li><strong>Export Game (HTML)</strong> — Projects tab: one self-contained <code>.html</code> file (runtime + assets) playable in any modern browser without the editor. Press <kbd>L</kbd> for the runtime log.</li>
     </ul>
     <p>Assets are also cached in <strong>IndexedDB</strong> for fast editing. Legacy <code>.json</code> projects (without embedded assets) are still supported for import.</p>
     <h3>Desktop app</h3>
@@ -448,7 +509,8 @@ function on_use_with(targetType, targetId) {
     <ul>
       <li><strong>Start Test</strong> — embedded canvas + script sandbox; full window opens <code>runtime.html</code>.</li>
       <li><strong>Script console</strong> — shows <code>print</code> / errors from sandbox.</li>
-      <li><strong>Export</strong> — save <code>.amnt</code> or JSON for use in <code>runtime.html</code> standalone.</li>
+      <li><strong>Export Game (HTML)</strong> — single-file game player from the Projects tab (no editor required).</li>
+      <li><strong>Export .amnt</strong> — project bundle for editing / backup.</li>
       <li>Standalone runtime: load <code>.amnt</code> / JSON file or last saved; same script API as Play Test.</li>
     </ul>
     <p>In-editor scripts run in <code>runtime-sandbox.html</code> (hidden iframe, <code>allow-scripts allow-same-origin</code>). Scripts cannot access the parent DOM; only the exposed game API.</p>
@@ -464,8 +526,9 @@ function on_use_with(targetType, targetId) {
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
       <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
-      <li>Branching dialogue choices (<code>show_dialogue_choices</code>) not implemented yet — see <code>ROADMAP.md</code>.</li>
-      <li>Features on roadmap: save slots, fade transitions — see <code>ROADMAP.md</code>.</li>
+      <li>Branching dialogues: use <code>start_dialogue</code> with graphs from Scripts → Dialogues. Visual node editor / conditions still on the roadmap.</li>
+      <li>Game saves: <code>save_game</code> / <code>load_game</code> API ready; build a GUI menu yourself for slots. Fade transitions still on the roadmap.</li>
+      <li>Editor header shows project autosave status (Saved / Unsaved / Autosaving… every ~45s when dirty).</li>
     </ul>
   </section>
 </article>`;

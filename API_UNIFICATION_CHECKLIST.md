@@ -66,7 +66,8 @@ Legenda azione:
 | Personaggi (spawn, walk, `play_character_animation`, …) | ✅ | ✅ | ✅ | |
 | Animazioni stanza (`play_animation`, `stop_animation`) | ✅ | ✅ | ✅ | |
 | Audio (`play_music`, `play_sound`, …) | ✅ | ✅ | ✅ | |
-| Dialoghi (`show_dialogue`, `end_dialogue`, …) | ✅ | ✅ | ✅ | |
+| Dialoghi (`show_dialogue`, `end_dialogue`, `start_dialogue`, …) | ✅ | ✅ | ✅ | |
+| Save gioco (`save_game`, `load_game`, `delete_save`, `get_save_info`) | ✅ | ✅ | ✅ | localStorage per projectId |
 | Handler `on_*` (8 eventi) | ✅ | compile + scope | ✅ | `SUPPORTED_SCRIPT_HANDLERS` |
 | `sandboxApi` in `main.js` | — | — | — | **Rimosso** (Fase D) |
 
@@ -76,10 +77,11 @@ Legenda azione:
 
 - [x] `GameAPI.show_dialogue(characterIdOrName, text)` — coda comandi, balloon segue personaggio
 - [x] `show_dialogue_text(text, speaker)` — alias roadmap
-- [x] `end_dialogue()`
+- [x] `end_dialogue()` — chiude balloon e abortisce sessione grafo
+- [x] `start_dialogue(idOrName)` — grafo `project.dialogues` (line/choice/end); playtest + export
 - [x] Rendering da prima GUI `DialogBox` (colori, `balloon` asset, `appear`)
 - [x] `getScriptApiBindings()` + `GAME_API_COMPLETIONS` in `main.js`
-- [ ] `show_dialogue_choices`, `start_dialogue`, mood/relazioni — backlog
+- [ ] Editor nodi visuale, condizioni, mood/relazioni — backlog
 
 **Setup progetto:** tab GUI → tipo **DialogBox** → colori / immagine balloon.
 

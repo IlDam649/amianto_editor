@@ -9,10 +9,78 @@
   const DB_VERSION = 1;
   const STORE_ASSETS = 'assets';
   const IMAGE_FILE_PATTERN = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
-  const AUDIO_FILE_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac)$/i;
+  const AUDIO_FILE_PATTERN = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|webm)$/i;
 
   let dbPromise = null;
   const blobUrlCache = new Map();
+
+  /** MIME da estensione: su Windows file.type per .ogg è spesso vuoto o application/ogg. */
+  function guessMimeTypeFromFileName(fileName) {
+    const ext = String(fileName || '').split('.').pop().toLowerCase();
+    switch (ext) {
+      case 'ogg':
+      case 'oga':
+        return 'audio/ogg';
+      case 'opus':
+        return 'audio/ogg';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'aac':
+        return 'audio/aac';
+      case 'flac':
+        return 'audio/flac';
+      case 'webm':
+        return 'audio/webm';
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'bmp':
+        return 'image/bmp';
+      case 'svg':
+        return 'image/svg+xml';
+      default:
+        return null;
+    }
+  }
+
+  function isGenericOrUnplayableMime(mime) {
+    const t = String(mime || '').toLowerCase().trim();
+    return !t ||
+      t === 'application/octet-stream' ||
+      t === 'application/ogg' ||
+      t === 'binary/octet-stream';
+  }
+
+  function resolveAssetMimeType(fileOrBlob, fileName) {
+    const fromName = guessMimeTypeFromFileName(fileName);
+    const fromFile = fileOrBlob && fileOrBlob.type ? String(fileOrBlob.type) : '';
+    if (fromName && (isGenericOrUnplayableMime(fromFile) || fromFile === 'application/ogg')) {
+      return fromName;
+    }
+    if (fromFile && !isGenericOrUnplayableMime(fromFile)) return fromFile;
+    return fromName || fromFile || 'application/octet-stream';
+  }
+
+  function ensureTypedBlob(blob, fileName, mimeHint) {
+    if (!blob) return blob;
+    const mime = resolveAssetMimeType(
+      { type: mimeHint || blob.type },
+      fileName
+    );
+    if (!mime || mime === 'application/octet-stream') return blob;
+    if (blob.type === mime) return blob;
+    return new Blob([blob], { type: mime });
+  }
 
   function getLocalUserId() {
     if (window.getAmiantoLocalUser) return window.getAmiantoLocalUser().uid;
@@ -61,7 +129,16 @@
     return `${userId}/${projectId}/${folder}/${fileName}`;
   }
 
-  function generateUniqueFileName(originalName, assetId) {
+  /** Solo basename: non rinomina mai l'asset. Path separatori rimossi per sicurezza storage. */
+  function preserveOriginalFileName(originalName) {
+    const raw = String(originalName || '').trim();
+    if (!raw) return 'unnamed';
+    const base = raw.split(/[/\\]/).pop();
+    return (base && base.trim()) || 'unnamed';
+  }
+
+  /** Compatibilità con asset legacy salvati come assetId.ext */
+  function legacyUniqueFileName(originalName, assetId) {
     const ext = (originalName && originalName.includes('.'))
       ? originalName.split('.').pop().toLowerCase()
       : 'png';
@@ -81,7 +158,16 @@
     if (!record || !record.blob) return null;
     const key = record.id;
     if (blobUrlCache.has(key)) return blobUrlCache.get(key);
-    const url = URL.createObjectURL(record.blob);
+    const mime = resolveAssetMimeType(
+      { type: record.mimeType || (record.blob && record.blob.type) },
+      record.fileName || record.name
+    );
+    let typed = record.blob;
+    if (mime && mime !== 'application/octet-stream' && String(record.blob.type || '') !== mime) {
+      // Copia esplicita: alcuni blob IndexedDB restano con type vuoto
+      typed = new Blob([record.blob], { type: mime });
+    }
+    const url = URL.createObjectURL(typed);
     blobUrlCache.set(key, url);
     return url;
   }
@@ -154,7 +240,7 @@
 
     const userId = getLocalUserId();
     const folder = getSupabaseFolderForType(category);
-    const fileName = fileNameOverride || generateUniqueFileName(file.name, assetId);
+    const fileName = preserveOriginalFileName(fileNameOverride || file.name);
     const storagePath = buildStoragePath(userId, projectId, folder, fileName, subfolder);
     const id = assetKey(projectId, assetId);
 
@@ -171,6 +257,13 @@
 
     if (existing) revokeBlobUrl(id);
 
+    const mimeType = resolveAssetMimeType(file, file.name || fileName);
+    const typedBlob = ensureTypedBlob(file, file.name || fileName, mimeType);
+    const typedFile = typedBlob instanceof File
+      ? typedBlob
+      : new File([typedBlob], file.name || fileName, { type: mimeType, lastModified: file.lastModified || Date.now() });
+
+    const originalName = preserveOriginalFileName(file.name || fileName);
     const record = {
       id,
       projectId,
@@ -180,11 +273,11 @@
       type: category,
       subfolder: subfolder || null,
       fileName,
-      name: file.name,
-      mimeType: file.type || 'application/octet-stream',
+      name: originalName,
+      mimeType,
       storagePath,
       storageProvider: 'local',
-      blob: file,
+      blob: typedFile,
       publicUrl: null,
       createdAt: new Date().toISOString()
     };
@@ -194,11 +287,11 @@
     record.publicUrl = url;
     await putAsset(record);
 
-    console.log('[LocalStorage] Asset salvato:', { assetId, storagePath });
+    console.log('[LocalStorage] Asset salvato:', { assetId, storagePath, fileName });
 
     return {
       id: assetId,
-      name: file.name,
+      name: originalName,
       type: category,
       url,
       fileName
@@ -207,6 +300,20 @@
 
   function getAssetPublicUrl(userId, projectId, category, fileName, subfolder = null) {
     return null;
+  }
+
+  async function findAssetRecordByAssetId(assetId) {
+    if (!assetId) return null;
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_ASSETS, 'readonly');
+      const req = tx.objectStore(STORE_ASSETS).getAll();
+      req.onsuccess = () => {
+        const all = req.result || [];
+        resolve(all.find(r => r.assetId === assetId) || null);
+      };
+      req.onerror = () => reject(req.error);
+    });
   }
 
   async function resolveAssetUrl(projectId, assetId, category, originalFileName = null, userIdOverride = null, subfolder = null) {
@@ -221,9 +328,26 @@
     if (match) return getBlobUrl(match);
 
     if (originalFileName) {
-      const fileName = generateUniqueFileName(originalFileName, assetId);
-      const found = all.find(r => r.fileName === fileName);
+      const original = preserveOriginalFileName(originalFileName);
+      let found = all.find(r => r.fileName === original || r.name === original);
+      if (!found) {
+        const legacyName = legacyUniqueFileName(originalFileName, assetId);
+        found = all.find(r => r.fileName === legacyName);
+      }
       if (found) return getBlobUrl(found);
+    }
+
+    const globalMatch = await findAssetRecordByAssetId(assetId);
+    if (globalMatch) {
+      const url = getBlobUrl(globalMatch);
+      if (url) {
+        console.warn('[LocalStorage] Asset risolto con projectId alternativo:', {
+          assetId,
+          requestedProjectId: projectId,
+          foundProjectId: globalMatch.projectId
+        });
+        return url;
+      }
     }
 
     return null;
@@ -266,10 +390,12 @@
   }
 
   function entryFromRecord(record, assetType) {
+    const originalName = record.name || record.fileName;
     return {
       assetId: record.assetId,
-      name: record.name || record.fileName,
-      fileName: record.fileName,
+      name: originalName,
+      fileName: record.fileName || record.name,
+      displayName: originalName,
       publicUrl: getBlobUrl(record),
       size: record.blob ? record.blob.size : 0,
       type: assetType || record.type || record.category,
@@ -288,7 +414,8 @@
     return all
       .filter(r => {
         const folder = r.subfolder || getSupabaseFolderForType(r.category);
-        return folder === folderPath && IMAGE_FILE_PATTERN.test(r.fileName || '');
+        const nameProbe = `${r.fileName || ''} ${r.name || ''}`;
+        return folder === folderPath && IMAGE_FILE_PATTERN.test(nameProbe);
       })
       .map(r => entryFromRecord(r, assetType));
   }
@@ -302,8 +429,14 @@
     const re = pattern || AUDIO_FILE_PATTERN;
     return all
       .filter(r => {
-        const folder = r.subfolder || getSupabaseFolderForType(r.category);
-        return folder === folderPath && re.test(r.fileName || '');
+        const folder = r.subfolder || getSupabaseFolderForType(r.category || r.type);
+        const inFolder = folder === folderPath ||
+          r.category === assetType ||
+          r.type === assetType ||
+          getSupabaseFolderForType(r.category || r.type) === folderPath;
+        if (!inFolder) return false;
+        const nameProbe = `${r.fileName || ''} ${r.name || ''}`;
+        return re.test(r.fileName || '') || re.test(r.name || '') || re.test(nameProbe);
       })
       .map(r => entryFromRecord(r, assetType));
   }
@@ -401,7 +534,10 @@
       assets.push({
         assetId: record.assetId,
         fileName: record.fileName,
-        mimeType: record.mimeType || record.blob.type || 'application/octet-stream',
+        mimeType: resolveAssetMimeType(
+          { type: record.mimeType || (record.blob && record.blob.type) },
+          record.fileName || record.name
+        ),
         category: record.category || record.type,
         subfolder: record.subfolder || null,
         name: record.name || record.fileName,
@@ -416,7 +552,10 @@
     let count = 0;
     for (const entry of assets) {
       if (!entry || !entry.assetId || !entry.data) continue;
-      const mime = entry.mimeType || 'application/octet-stream';
+      const mime = resolveAssetMimeType(
+        { type: entry.mimeType },
+        entry.fileName || entry.name
+      );
       const blob = (window.AmiantoAmnt && window.AmiantoAmnt.base64ToBlob)
         ? window.AmiantoAmnt.base64ToBlob(entry.data, mime)
         : (() => {
@@ -436,6 +575,38 @@
         entry.fileName,
         entry.subfolder || null
       );
+      count++;
+    }
+    return count;
+  }
+
+  async function reassignAssetsToProject(canonicalProjectId, assetIds) {
+    if (!canonicalProjectId || !assetIds || assetIds.length === 0) return 0;
+    let count = 0;
+    for (const assetId of assetIds) {
+      if (!assetId) continue;
+      const existing = await getAssetById(canonicalProjectId, assetId);
+      if (existing && existing.blob) continue;
+
+      const globalMatch = await findAssetRecordByAssetId(assetId);
+      if (!globalMatch || !globalMatch.blob || globalMatch.projectId === canonicalProjectId) continue;
+
+      const category = globalMatch.category || globalMatch.type || 'resource';
+      const newRecord = {
+        ...globalMatch,
+        id: assetKey(canonicalProjectId, assetId),
+        projectId: canonicalProjectId,
+        storagePath: buildStoragePath(
+          globalMatch.userId || getLocalUserId(),
+          canonicalProjectId,
+          getSupabaseFolderForType(category),
+          globalMatch.fileName,
+          globalMatch.subfolder
+        ),
+        publicUrl: null
+      };
+      await putAsset(newRecord);
+      getBlobUrl(newRecord);
       count++;
     }
     return count;
@@ -463,8 +634,10 @@
     listProjectAssetMetadata,
     exportAllAssetsForProject,
     importAssetsFromPackage,
+    reassignAssetsToProject,
     IMAGE_FILE_PATTERN,
-    AUDIO_FILE_PATTERN
+    AUDIO_FILE_PATTERN,
+    guessMimeTypeFromFileName
   };
 
   window.assetStorage = api;
