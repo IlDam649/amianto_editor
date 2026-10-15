@@ -66,8 +66,8 @@ Legenda azione:
 | Personaggi (spawn, walk, `play_character_animation`, …) | ✅ | ✅ | ✅ | |
 | Animazioni stanza (`play_animation`, `stop_animation`) | ✅ | ✅ | ✅ | |
 | Audio (`play_music`, `play_sound`, …) | ✅ | ✅ | ✅ | |
-| Dialoghi (`show_dialogue`, `end_dialogue`, `start_dialogue`, …) | ✅ | ✅ | ✅ | |
-| Save gioco (`save_game`, `load_game`, `delete_save`, `get_save_info`) | ✅ | ✅ | ✅ | localStorage per projectId |
+| Dialoghi (`show_dialogue`, `end_dialogue`, `start_dialogue`, …) | ✅ | ✅ | ✅ | line/choice/jump/action/end + conditions/once |
+| Save gioco (`save_game`, `load_game`, `delete_save`, `get_save_info`) | ✅ | ✅ | ✅ | localStorage; validate/migrate; dialogueConsumed |
 | Handler `on_*` (8 eventi) | ✅ | compile + scope | ✅ | `SUPPORTED_SCRIPT_HANDLERS` |
 | `sandboxApi` in `main.js` | — | — | — | **Rimosso** (Fase D) |
 
@@ -78,7 +78,7 @@ Legenda azione:
 - [x] `GameAPI.show_dialogue(characterIdOrName, text)` — coda comandi, balloon segue personaggio
 - [x] `show_dialogue_text(text, speaker)` — alias roadmap
 - [x] `end_dialogue()` — chiude balloon e abortisce sessione grafo
-- [x] `start_dialogue(idOrName)` — grafo `project.dialogues` (line/choice/end); playtest + export
+- [x] `start_dialogue(idOrName)` — grafo `project.dialogues` (line/choice/jump/action/end + conditions/once); playtest + export
 - [x] Rendering da prima GUI `DialogBox` (colori, `balloon` asset, `appear`)
 - [x] `getScriptApiBindings()` + `GAME_API_COMPLETIONS` in `main.js`
 - [ ] Editor nodi visuale, condizioni, mood/relazioni — backlog
@@ -231,7 +231,7 @@ Checklist (completata — vedi `getScriptApiBindings()` / `buildScriptExecutor()
 #### 1.10 Reset e load
 
 - [x] `RESET`: clear `gameState.inventory`, `compiledScripts`
-- [ ] `initRuntime`: reset inventario da save slot (futuro `load_game`)
+- [x] `load_game` / `save_game` — stato partita in localStorage (inclusi inventory + dialogueConsumed); non via initRuntime slot
 
 ---
 

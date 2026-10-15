@@ -152,7 +152,7 @@ if (Game.getVar("door_open")) {
       <tbody>
         <tr><td><code>on_game_start</code></td><td>Game / play test starts</td><td>none</td></tr>
         <tr><td><code>on_before_room_change</code></td><td>Before a room change finishes loading (previous room still active)</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
-        <tr><td><code>on_room_change</code></td><td>After the new room is fully loaded</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
+        <tr><td><code>on_room_change</code></td><td>After the new room is loaded and the player is placed. Does not block arriving from the previous room (<code>load_room</code> completes first).</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
         <tr><td><code>on_object_click</code></td><td>Scene object clicked</td><td><code>objectId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_character_click</code></td><td>Character clicked</td><td><code>characterId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_hotspot_click</code></td><td>Hotspot clicked</td><td><code>hotspotId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
@@ -173,13 +173,13 @@ if (Game.getVar("door_open")) {
       <li><code>print(...)</code> — log to script console</li>
       <li><code>GameAPI.print(...)</code> / <code>GameAPI.error(...)</code></li>
       <li><code>show_message(text)</code> — fixed notification overlay (~3s)</li>
-      <li><code>show_dialogue(characterIdOrName, text)</code> — speech balloon above a character; uses the first <strong>DialogBox</strong> GUI in the project (colors, optional balloon image). Follows the character while moving. Click anywhere to dismiss. Queued like <code>show_message</code>.</li>
+      <li><code>show_dialogue(character, text)</code> — speech balloon above a character (two args required). Click to dismiss. In hotspot/object scripts, <code>await show_dialogue(...)</code> waits until closed. In <code>on_room_change</code> / <code>on_before_room_change</code> it does <strong>not</strong> block <code>load_room</code> (balloon still shows after the room is ready).</li>
       <li><code>show_dialogue_text(text, speaker)</code> — same as <code>show_dialogue(speaker, text)</code></li>
-      <li><code>start_dialogue(dialogueIdOrName)</code> — run a branching dialogue graph from <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>end</code>). Player picks choices on-screen. Promise resolves when the dialogue ends.</li>
+      <li><code>start_dialogue(dialogueIdOrName)</code> — branching graph from <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices may have <code>condition</code>, <code>once</code>, <code>actions</code>. Promise resolves when the dialogue ends.</li>
       <li><code>end_dialogue()</code> — close the active balloon and abort any running <code>start_dialogue</code> session</li>
-      <li><code>save_game(slot?, label?)</code> — save player state (room, variables, inventory, characters, objects/hotspots) to <code>localStorage</code> (slots 1–10). Separate from editor project save.</li>
+      <li><code>save_game(slot?, label?)</code> — save player state (room, variables, inventory, characters, objects/hotspots, dialogue once-only) to <code>localStorage</code> (slots 1–10 or string). Not stored in <code>.amnt</code>. Quota-limited by the browser.</li>
       <li><code>load_game(slot?)</code> — restore a save; does not re-fire <code>on_game_start</code> / <code>on_room_change</code></li>
-      <li><code>delete_save(slot)</code> / <code>get_save_info(slot?)</code> — delete or inspect slots (omit slot to list all for this project)</li>
+      <li><code>delete_save(slot)</code> — delete a slot (<strong>slot required</strong>). <code>get_save_info(slot?)</code> — inspect one slot or list all for this project</li>
     </ul>
 
     <h3>Inventory</h3>
@@ -224,9 +224,10 @@ if (Game.getVar("door_open")) {
 
     <h3>Characters</h3>
     <ul>
-      <li><code>spawn_character(name, x, y, direction?, id?)</code> — spawns in current room; returns character id</li>
+      <li><code>spawn_character(name, x, y, direction?, id?)</code> — spawns in current room; <strong>id = name</strong> (editor + runtime)</li>
       <li><code>move_character(idOrName, x, y)</code> — instant teleport</li>
-      <li><code>walk_character(idOrName, x, y, wait?)</code> — pathfinding on walkable area; <code>wait</code> default true → Promise; stops custom animation if playing</li>
+      <li><code>spawn_character(name, x, y, direction?)</code> — spawns a character; <strong>runtime id is always equal to name</strong> (use the name in scripts / <code>Game.getVar("playerId")</code>)</li>
+      <li><code>walk_character(idOrName, x, y, wait?)</code> — pathfinding on walkable area; <code>wait</code> default true → Promise; stops custom animation if playing. Pass the character <strong>name</strong> (same as id).</li>
       <li><code>set_character_direction(idOrName, direction)</code> — facing: <code>north</code>, <code>northeast</code>, <code>east</code>, <code>southeast</code>, <code>south</code>, <code>southwest</code>, <code>west</code>, <code>northwest</code></li>
       <li><code>play_character_animation(idOrName, animationName, direction, wait?)</code> — plays one full cycle of a <strong>custom</strong> animation defined in the editor (<strong>Characters</strong> → Animation → <strong>+</strong>). Uses <code>characterDefinitions.animations[animationName]</code>. Stops movement; when finished returns to walking idle. <code>wait</code> default true → blocks input until done (like <code>walk_character</code>).</li>
       <li><code>animate_character(idOrName, enabled?)</code> — reserved hook</li>
@@ -367,13 +368,16 @@ function on_character_click(character_id) {
 }</code></pre>
 
     <h3>5a2 — Branching dialogue (<code>start_dialogue</code>)</h3>
-    <p>Create a dialogue under <strong>Scripts → Dialogues</strong> (template includes one line, two choices, two outcomes). Speakers must match character names/ids in the room. Then:</p>
+    <p>Create a dialogue under <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices support <em>Once only</em>, condition JSON (<code>has_item</code>, <code>var</code>, <code>and</code>/<code>or</code>/<code>not</code>), and actions JSON. Speakers must match character names/ids. Then:</p>
     <pre class="docs-code"><code>function on_character_click(character_id) {
   start_dialogue("New Dialogue"); // name or id from Dialogues list
-}</code></pre>
+}
+// Example choice condition: {"type":"has_item","itemId":"brass_key"}
+// Example var condition: {"type":"var","key":"met_npc","op":"truthy"}
+// once: true → consumed for the playthrough and stored in save_game</code></pre>
 
     <h3>5a3 — Save / load game</h3>
-    <p>Player saves are stored in the browser <code>localStorage</code> per project id (also works in standalone HTML export). Not the same as <strong>Save Project</strong> in the editor.</p>
+    <p>Player saves use browser <code>localStorage</code> per project id (playtest + standalone HTML). Separate from editor <strong>Save Project</strong> / <code>.amnt</code>. Subject to browser storage quota. Format <code>amianto-save</code> v1 includes <code>dialogueConsumed</code> for once-only choices.</p>
     <pre class="docs-code"><code>function on_gui_click(button_id) {
   if (button_id === "btn_save") {
     save_game(1, "Checkpoint");
@@ -526,9 +530,9 @@ function on_use_with(targetType, targetId) {
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
       <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
-      <li>Branching dialogues: use <code>start_dialogue</code> with graphs from Scripts → Dialogues. Visual node editor / conditions still on the roadmap.</li>
+      <li>Branching dialogues: <code>start_dialogue</code> with conditions, once-only, jump/action. Visual node editor still on the roadmap (<code>docs/DIALOGUE_VISUAL_EDITOR.md</code>).</li>
       <li>Game saves: <code>save_game</code> / <code>load_game</code> API ready; build a GUI menu yourself for slots. Fade transitions still on the roadmap.</li>
-      <li>Editor header shows project autosave status (Saved / Unsaved / Autosaving… every ~45s when dirty).</li>
+      <li>Editor header autosave: Saved to disk / Saved to cache / Unsaved / Autosaving… / Disk save failed (cache OK).</li>
     </ul>
   </section>
 </article>`;

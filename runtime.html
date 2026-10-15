@@ -319,7 +319,12 @@
 
   <script src="JS/app-mode.js"></script>
   <script src="JS/local-storage.js"></script>
-  <script src="JS/runtime.js"></script>
+  <script src="JS/lib/game-save-format.js"></script>
+  <script src="JS/lib/dialogue-logic.js"></script>
+  <script>
+    // Cache-bust runtime.js (la finestra PLAY restava altrimenti sul JS vecchio)
+    document.write('<script src="JS/runtime.js?v=' + Date.now() + '"><\/script>');
+  </script>
   <script>
     // Carica ultimo salvataggio da localStorage (play test dall'editor)
     function loadLastSavedProject() {

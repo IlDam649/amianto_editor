@@ -1077,15 +1077,18 @@
                 </div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
                   <strong style="color:#ccc;font-size:0.9em;">Nodes</strong>
-                  <div class="btn-group btn-group-sm">
+                  <div class="btn-group btn-group-sm flex-wrap">
                     <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('line')">+ Line</button>
                     <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('choice')">+ Choice</button>
+                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('jump')">+ Jump</button>
+                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('action')">+ Action</button>
                     <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('end')">+ End</button>
                   </div>
                 </div>
                 <div id="dialogue-nodes-list" style="max-height:40vh;overflow:auto;"></div>
                 <small class="text-muted d-block mt-2">
-                  Call from scripts with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>end</code>. Saved in the <code>.amnt</code> project.
+                  Call with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>.
+                  Choices support <em>Once only</em>, condition JSON (<code>has_item</code> / <code>var</code> / <code>and</code> / <code>or</code> / <code>not</code>), and actions JSON.
                 </small>
               </div>
               <div id="dialogue-editor-empty" class="text-muted text-center py-2">
@@ -1132,6 +1135,8 @@
   <script src="JS/amnt-format.js"></script>
   <script src="JS/export-standalone.js"></script>
   <script src="JS/local-storage.js"></script>
+  <script src="JS/lib/game-save-format.js"></script>
+  <script src="JS/lib/dialogue-logic.js"></script>
   <script src="JS/device-detector.js"></script>
   <script src="JS/resources.js"></script>
   <script src="JS/docs-panel.js"></script>

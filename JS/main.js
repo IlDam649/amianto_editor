@@ -5696,13 +5696,24 @@ window.selectRoom = function(roomId) {
     };
   }
 
-  function createEmptyCharacterData() {
+  function createEmptyCharacterData(name) {
+    const n = name != null ? String(name).trim() : '';
     return {
+      id: n, // sempre uguale al name (chiave Map / runtime)
+      name: n,
       directions: {},
       animations: {},
       currentFrame: 0,
       spawnSettings: getDefaultCharacterSpawnSettings()
     };
+  }
+
+  /** Garantisce id === name sul record character in editor */
+  function ensureCharacterIdEqualsName(charData, name) {
+    if (!charData) return;
+    const n = String(name || charData.name || charData.id || '').trim();
+    charData.id = n;
+    charData.name = n;
   }
 
   function ensureCharacterSpawnSettings(charData) {
@@ -5717,7 +5728,7 @@ window.selectRoom = function(roomId) {
       showNotification('Character name already in use', 'warning');
       return;
     }
-    characterFrames.set(name, createEmptyCharacterData());
+    characterFrames.set(name, createEmptyCharacterData(name));
     selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
     notifyEditorProjectChanged();
@@ -5823,6 +5834,7 @@ window.selectRoom = function(roomId) {
       }
       if (characterFrames.has(oldName)) {
         const data = characterFrames.get(oldName);
+        ensureCharacterIdEqualsName(data, trimmedNewName);
         characterFrames.delete(oldName);
         characterFrames.set(trimmedNewName, data);
       }
@@ -5831,13 +5843,32 @@ window.selectRoom = function(roomId) {
         characterScripts.delete(oldName);
         characterScripts.set(trimmedNewName, script);
       }
+      // Rinomina script key Character:old → Character:new
+      try {
+        const oldKey = `Character:${oldName}`;
+        const newKey = `Character:${trimmedNewName}`;
+        if (jsScripts && jsScripts.has(oldKey)) {
+          jsScripts.set(newKey, jsScripts.get(oldKey));
+          jsScripts.delete(oldKey);
+        }
+      } catch (_) {}
+      // Sync starting player / spawn id=name
+      try {
+        let s = null;
+        try { s = JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) { s = null; }
+        if (s && s.startingPlayer === oldName) {
+          persistStartSettings({ startingPlayer: trimmedNewName });
+        }
+      } catch (_) {}
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
         loadCharacterDirections();
       }
       refreshCharactersListUI();
-      showNotification(`Character renamed to "${trimmedNewName}"`, 'success');
+      try { if (typeof refreshScriptsTree === 'function') refreshScriptsTree(); } catch (_) {}
+      notifyEditorProjectChanged();
+      showNotification(`Character renamed to "${trimmedNewName}" (id=name)`, 'success');
     }
   };
 
@@ -5971,7 +6002,7 @@ window.selectRoom = function(roomId) {
     }
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = createEmptyCharacterData();
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
     if (!charData.animations) charData.animations = {};
@@ -6103,6 +6134,25 @@ window.selectRoom = function(roomId) {
     if (Object.prototype.hasOwnProperty.call(partial, 'startX')) s.startX = Number(partial.startX) || 0;
     if (Object.prototype.hasOwnProperty.call(partial, 'startY')) s.startY = Number(partial.startY) || 0;
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+
+    // Mantieni allineati spawnSettings del player (runtime usa quelli se isPlayer)
+    try {
+      const playerName = s.startingPlayer
+        || [...characterFrames.keys()].find(n => {
+          const d = characterFrames.get(n);
+          return d && d.spawnSettings && d.spawnSettings.isPlayer === true;
+        });
+      if (playerName && characterFrames.has(playerName)) {
+        const charData = characterFrames.get(playerName);
+        ensureCharacterSpawnSettings(charData);
+        if (Object.prototype.hasOwnProperty.call(partial, 'startX')) charData.spawnSettings.x = s.startX;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startY')) charData.spawnSettings.y = s.startY;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startRoomId')) charData.spawnSettings.roomId = s.startRoomId || charData.spawnSettings.roomId;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startingPlayer')) {
+          charData.spawnSettings.isPlayer = true;
+        }
+      }
+    } catch (_) {}
   }
 
   // Build radio list of characters for selecting the starting player
@@ -6369,6 +6419,28 @@ window.selectRoom = function(roomId) {
         charData.spawnSettings.moveSpeed = 100; // valore di default se non valido
       }
     }
+
+    // Se è il player, sincronizza anche Start Position legacy (settings.startX/Y)
+    if (charData.spawnSettings.isPlayer === true) {
+      // Un solo player: spegni isPlayer sugli altri
+      characterFrames.forEach((other, otherName) => {
+        if (otherName !== characterName && other && other.spawnSettings) {
+          other.spawnSettings.isPlayer = false;
+        }
+      });
+      persistStartSettings({
+        startingPlayer: characterName,
+        startRoomId: charData.spawnSettings.roomId || null,
+        startX: charData.spawnSettings.x,
+        startY: charData.spawnSettings.y
+      });
+      const startPositionInput = document.getElementById('start-position');
+      if (startPositionInput) {
+        startPositionInput.value = formatPositionString(charData.spawnSettings.x, charData.spawnSettings.y);
+      }
+      try { refreshStartingPlayerUI(); } catch (_) {}
+      try { refreshStartRoomSelector(); } catch (_) {}
+    }
     
     // Salva nel characterFrames
     characterFrames.set(characterName, charData);
@@ -6511,7 +6583,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = createEmptyCharacterData();
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
 
@@ -6765,7 +6837,7 @@ window.selectRoom = function(roomId) {
         ensureCharacterSpawnSettings(charData);
         characterFrames.set(who, charData);
       } else {
-        characterFrames.set(who, createEmptyCharacterData());
+        characterFrames.set(who, createEmptyCharacterData(who));
       }
       
       // Reset dell'indice della preview
@@ -7727,7 +7799,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = createEmptyCharacterData();
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
 
@@ -10074,7 +10146,7 @@ window.selectRoom = function(roomId) {
     const nodes = dlg.nodes || {};
     const ids = Object.keys(nodes);
     if (!ids.length) {
-      container.innerHTML = '<div class="text-muted text-center py-2"><small>No nodes. Add Line, Choice, or End.</small></div>';
+      container.innerHTML = '<div class="text-muted text-center py-2"><small>No nodes. Add Line, Choice, Jump, Action, or End.</small></div>';
       return;
     }
 
@@ -10101,7 +10173,9 @@ window.selectRoom = function(roomId) {
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Text</label>
           <textarea class="form-control form-control-sm mb-1" rows="2" data-dlg-field="text" data-node="${escapeHtmlAttr(node.id)}">${escapeHtmlAttr(node.text || '')}</textarea>
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
-          <input type="text" class="form-control form-control-sm" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />`;
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON (optional)</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"set_var","key":"met_npc","value":true}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />`;
       } else if (node.type === 'choice') {
         const opts = Array.isArray(node.options) ? node.options : [];
         fields += `<div class="mb-1" data-choice-opts="${escapeHtmlAttr(node.id)}">`;
@@ -10109,15 +10183,31 @@ window.selectRoom = function(roomId) {
           fields += `
             <div class="border border-secondary rounded p-1 mb-1" data-opt-index="${oi}">
               <div class="d-flex justify-content-between mb-1">
-                <small class="text-muted">Option ${oi + 1}</small>
+                <small class="text-muted">Option ${oi + 1} <code style="color:#888">${escapeHtmlAttr(opt.id || '')}</code></small>
                 <button type="button" class="btn btn-outline-danger btn-sm py-0" data-del-opt="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}">×</button>
               </div>
               <input type="text" class="form-control form-control-sm mb-1" placeholder="Choice text" data-dlg-opt="text" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.text || '')}" />
-              <input type="text" class="form-control form-control-sm" placeholder="Next node ID" data-dlg-opt="next" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.next || '')}" />
+              <input type="text" class="form-control form-control-sm mb-1" placeholder="Next node ID" data-dlg-opt="next" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.next || '')}" />
+              <label class="form-check form-check-inline mb-1" style="font-size:0.8em;color:#ccc;">
+                <input type="checkbox" class="form-check-input" data-dlg-opt-once="1" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" ${opt.once ? 'checked' : ''} />
+                Once only
+              </label>
+              <input type="text" class="form-control form-control-sm mb-1" placeholder='Condition JSON e.g. {"type":"has_item","itemId":"key"}' data-dlg-opt-json="condition" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(dialogueConditionToEditorString(opt.condition))}" />
+              <input type="text" class="form-control form-control-sm" placeholder='Actions JSON (optional)' data-dlg-opt-json="actions" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(dialogueActionsToEditorString(opt.actions))}" />
             </div>`;
         });
         fields += `</div>
           <button type="button" class="btn btn-outline-success btn-sm" data-add-opt="${escapeHtmlAttr(node.id)}">+ Option</button>`;
+      } else if (node.type === 'jump') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Target node ID</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field="target" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.target || '')}" />`;
+      } else if (node.type === 'action') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"set_var","key":"flag","value":1}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />`;
       } else {
         fields += `<small class="text-muted">Ends the dialogue session.</small>`;
       }
@@ -10133,6 +10223,21 @@ window.selectRoom = function(roomId) {
         const n = dlg.nodes[nodeId];
         if (!n) return;
         n[field] = el.value;
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-field-json]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-field-json');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        if (field === 'actions') {
+          const parsed = parseDialogueActionsFromEditor(el.value);
+          if (parsed) n.actions = parsed;
+          else delete n.actions;
+        }
+        markDialoguesDirty();
       });
     });
     container.querySelectorAll('[data-dlg-opt]').forEach(el => {
@@ -10143,6 +10248,37 @@ window.selectRoom = function(roomId) {
         const n = dlg.nodes[nodeId];
         if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
         n.options[oi][field] = el.value;
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-opt-once]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        if (el.checked) n.options[oi].once = true;
+        else delete n.options[oi].once;
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-opt-json]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-opt-json');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        if (field === 'condition') {
+          const parsed = parseDialogueConditionFromEditor(el.value);
+          if (parsed) n.options[oi].condition = parsed;
+          else delete n.options[oi].condition;
+        } else if (field === 'actions') {
+          const parsed = parseDialogueActionsFromEditor(el.value);
+          if (parsed) n.options[oi].actions = parsed;
+          else delete n.options[oi].actions;
+        }
+        markDialoguesDirty();
       });
     });
     container.querySelectorAll('[data-del-node]').forEach(btn => {
@@ -10155,6 +10291,7 @@ window.selectRoom = function(roomId) {
           const keys = Object.keys(dlg.nodes);
           dlg.startNodeId = keys[0] || '';
         }
+        markDialoguesDirty();
         renderDialoguesEditor();
       });
     });
@@ -10165,6 +10302,7 @@ window.selectRoom = function(roomId) {
         if (!n || n.type !== 'choice') return;
         if (!Array.isArray(n.options)) n.options = [];
         n.options.push({ id: uidDialogue('opt'), text: 'New choice', next: '' });
+        markDialoguesDirty();
         renderDialogueNodesList();
       });
     });
@@ -10175,6 +10313,7 @@ window.selectRoom = function(roomId) {
         const n = dlg.nodes[nodeId];
         if (!n || !Array.isArray(n.options)) return;
         n.options.splice(oi, 1);
+        markDialoguesDirty();
         renderDialogueNodesList();
       });
     });
@@ -10191,6 +10330,7 @@ window.selectRoom = function(roomId) {
     const input = document.getElementById('dialogue-start-node');
     if (!dlg || !input) return;
     dlg.startNodeId = String(input.value || '').trim();
+    markDialoguesDirty();
     renderDialogueNodesList();
   };
 
@@ -10223,6 +10363,7 @@ window.selectRoom = function(roomId) {
     if (!Array.isArray(window.projectDialogues)) window.projectDialogues = [];
     window.projectDialogues.push(dialogue);
     selectedDialogueId = id;
+    markDialoguesDirty();
     renderDialoguesEditor();
     showNotification(`Dialogue "${dialogue.name}" created — use start_dialogue("${dialogue.name}")`, 'success');
   };
@@ -10233,6 +10374,7 @@ window.selectRoom = function(roomId) {
     const name = prompt('Dialogue name:', dlg.name || dlg.id);
     if (!name || !name.trim()) return;
     dlg.name = name.trim();
+    markDialoguesDirty();
     renderDialoguesEditor();
   };
 
@@ -10242,6 +10384,7 @@ window.selectRoom = function(roomId) {
     if (!confirm(`Delete dialogue "${dlg.name || dlg.id}"?`)) return;
     window.projectDialogues = (window.projectDialogues || []).filter(d => d.id !== dlg.id);
     selectedDialogueId = null;
+    markDialoguesDirty();
     renderDialoguesEditor();
     showNotification('Dialogue deleted', 'info');
   };
@@ -10251,10 +10394,12 @@ window.selectRoom = function(roomId) {
     if (!dlg) return;
     if (!dlg.nodes) dlg.nodes = {};
     const t = String(type || 'end').toLowerCase();
-    const id = uidDialogue(t === 'choice' ? 'ch' : (t === 'line' ? 'ln' : 'end'));
+    let id;
     if (t === 'line') {
+      id = uidDialogue('ln');
       dlg.nodes[id] = { id, type: 'line', speaker: '', text: '', next: '' };
     } else if (t === 'choice') {
+      id = uidDialogue('ch');
       dlg.nodes[id] = {
         id,
         type: 'choice',
@@ -10263,10 +10408,18 @@ window.selectRoom = function(roomId) {
           { id: uidDialogue('opt'), text: 'Option B', next: '' }
         ]
       };
+    } else if (t === 'jump') {
+      id = uidDialogue('jmp');
+      dlg.nodes[id] = { id, type: 'jump', target: '' };
+    } else if (t === 'action') {
+      id = uidDialogue('act');
+      dlg.nodes[id] = { id, type: 'action', next: '', actions: [] };
     } else {
+      id = uidDialogue('end');
       dlg.nodes[id] = { id, type: 'end' };
     }
     if (!dlg.startNodeId) dlg.startNodeId = id;
+    markDialoguesDirty();
     renderDialoguesEditor();
   };
   
@@ -10885,10 +11038,13 @@ window.selectRoom = function(roomId) {
   }
 
   function getRuntimePageUrl() {
+    // Cache-bust: altrimenti la finestra PLAY tiene il vecchio runtime.js e i fix non si applicano
     try {
-      return new URL('runtime.html', window.location.href).href;
+      const u = new URL('runtime.html', window.location.href);
+      u.searchParams.set('v', String(Date.now()));
+      return u.href;
     } catch (_) {
-      return 'runtime.html';
+      return 'runtime.html?v=' + Date.now();
     }
   }
 
@@ -11657,12 +11813,30 @@ window.selectRoom = function(roomId) {
     if (runtimeWasAlreadyOpen) {
       try {
         localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-        playTestState.runtimeWindow.postMessage({ type: 'RELOAD_PLAYTEST_PROJECT' }, '*');
-        playTestState.runtimeWindow.focus();
-        addDebugMessage('Playtest: project reloaded in runtime window (scripts recompiled)', 'success');
-        updateGameStatus('Test running...');
-        setTimeout(() => pushPlaytestContextToRuntimeWindow(), 800);
-        return;
+        const runtimeUrl = getRuntimePageUrl();
+        // Hard reload della finestra: RELOAD_PLAYTEST_PROJECT non ricaricava runtime.js
+        if (playTestState.runtimeWindow._electronRuntime) {
+          playTestState.isRunning = false;
+          playTestState.runtimeWindow = null;
+          if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+            try { await window.amiantoNativeFs.closeRuntimeWindow(); } catch (_) {}
+          }
+          // ricade sull'apertura nuova finestra sotto
+        } else if (playTestState.runtimeWindow.location) {
+          playTestState.runtimeWindow.location.href = runtimeUrl;
+          playTestState.runtimeWindow.focus();
+          addDebugMessage('Playtest: runtime window hard-reloaded (nuovo runtime.js + progetto)', 'success');
+          updateGameStatus('Test running...');
+          setTimeout(() => pushPlaytestContextToRuntimeWindow(), 1000);
+          return;
+        } else {
+          playTestState.runtimeWindow.postMessage({ type: 'RELOAD_PLAYTEST_PROJECT' }, '*');
+          playTestState.runtimeWindow.focus();
+          addDebugMessage('Playtest: project reloaded in runtime window (scripts recompiled)', 'success');
+          updateGameStatus('Test running...');
+          setTimeout(() => pushPlaytestContextToRuntimeWindow(), 800);
+          return;
+        }
       } catch (reloadErr) {
         console.warn('[PlayTest] Ricarica finestra esistente fallita, apro nuova finestra:', reloadErr);
         playTestState.isRunning = false;
@@ -13428,7 +13602,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const names = collectCharacterNames();
     names.forEach(name => {
       const charData = (characterFrames && characterFrames.get) ? characterFrames.get(name) : null;
-      const out = { name, directions: {} };
+      if (charData) ensureCharacterIdEqualsName(charData, name);
+      // id === name sempre nel .amnt / JSON progetto
+      const out = { id: name, name: name, directions: {} };
       // Include pivot if it exists
       if (charData && charData.pivotX !== undefined && charData.pivotY !== undefined) {
         out.pivotX = Number(charData.pivotX) || 0;
@@ -13739,6 +13915,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const stableId = getStableProjectId(settings, settings.name);
     if (stableId) settings.id = stableId;
     else if (activeId) settings.id = activeId;
+    // Allinea startX/Y/room al player (spawnSettings.isPlayer) — evita drift con walk_character
+    try {
+      characterFrames.forEach((charData, name) => {
+        if (!charData || !charData.spawnSettings || charData.spawnSettings.isPlayer !== true) return;
+        const sp = charData.spawnSettings;
+        settings.startingPlayer = name;
+        if (sp.roomId) {
+          settings.startRoomId = sp.roomId;
+          settings.startRoom = sp.roomId;
+        }
+        if (typeof sp.x === 'number' && !isNaN(sp.x)) settings.startX = sp.x;
+        if (typeof sp.y === 'number' && !isNaN(sp.y)) settings.startY = sp.y;
+      });
+    } catch (_) {}
     // Normalize start config types
     if (typeof settings.startX !== 'undefined') settings.startX = Number(settings.startX) || 0;
     if (typeof settings.startY !== 'undefined') settings.startY = Number(settings.startY) || 0;
@@ -13773,6 +13963,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function normalizeDialogueForSerialize(raw) {
+    const logic = window.AmiantoDialogueLogic;
+    if (logic && typeof logic.normalizeDialogueDef === 'function') {
+      return logic.normalizeDialogueDef(raw);
+    }
     if (!raw || typeof raw !== 'object') return null;
     const id = String(raw.id || '').trim();
     if (!id) return null;
@@ -13792,6 +13986,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function normalizeDialogueNodeForSerialize(raw, fallbackId) {
+    const logic = window.AmiantoDialogueLogic;
+    if (logic && typeof logic.normalizeNode === 'function') {
+      return logic.normalizeNode(raw, fallbackId);
+    }
     if (!raw || typeof raw !== 'object') return null;
     const id = String(raw.id || fallbackId || '').trim();
     if (!id) return null;
@@ -13813,7 +14011,55 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       })).filter(o => o.id) : [];
       return { id, type: 'choice', options };
     }
+    if (type === 'jump') {
+      return { id, type: 'jump', target: String(raw.target || raw.next || '').trim() };
+    }
+    if (type === 'action') {
+      return { id, type: 'action', next: String(raw.next || '').trim(), actions: Array.isArray(raw.actions) ? raw.actions : [] };
+    }
     return { id, type: 'end' };
+  }
+
+  /** Compact JSON helpers for dialogue condition/actions in the form editor */
+  function dialogueConditionToEditorString(cond) {
+    if (!cond) return '';
+    try { return JSON.stringify(cond); } catch (_) { return ''; }
+  }
+
+  function dialogueActionsToEditorString(actions) {
+    if (!Array.isArray(actions) || !actions.length) return '';
+    try { return JSON.stringify(actions); } catch (_) { return ''; }
+  }
+
+  function parseDialogueConditionFromEditor(str) {
+    const s = String(str || '').trim();
+    if (!s) return undefined;
+    try {
+      const parsed = JSON.parse(s);
+      const logic = window.AmiantoDialogueLogic;
+      if (logic && logic.normalizeCondition) {
+        return logic.normalizeCondition(parsed) || undefined;
+      }
+      return parsed;
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  function parseDialogueActionsFromEditor(str) {
+    const s = String(str || '').trim();
+    if (!s) return undefined;
+    try {
+      const parsed = JSON.parse(s);
+      const logic = window.AmiantoDialogueLogic;
+      if (logic && logic.normalizeActions) {
+        const list = logic.normalizeActions(parsed);
+        return list.length ? list : undefined;
+      }
+      return Array.isArray(parsed) ? parsed : undefined;
+    } catch (_) {
+      return undefined;
+    }
   }
   
   function serializeEventConditions() {
@@ -14482,6 +14728,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   const AMIANTO_PERIODIC_AUTOSAVE_MS = 45000;
   let amiantoPeriodicAutosaveTimer = null;
 
+  function formatSaveStatusTime(when) {
+    if (!when) return '';
+    try {
+      return new Date(when).toLocaleTimeString();
+    } catch (_) {
+      return '';
+    }
+  }
+
   function updateProjectSaveStatusUI(state, detail) {
     const el = document.getElementById('projectSaveStatus');
     if (!el) return;
@@ -14501,24 +14756,59 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       el.style.color = '#ff8844';
       return;
     }
+    if (state === 'disk-failed') {
+      const t = formatSaveStatusTime(window.__amiantoLastCacheSaveAt);
+      el.textContent = 'Disk save failed (cache OK' + (t ? ' ' + t : '') + ')' + (detail ? `: ${detail}` : '');
+      el.style.color = '#ff4444';
+      el.title = 'Browser cache updated, but the linked .amnt file was not written. Unsaved changes remain for disk.';
+      return;
+    }
     if (state === 'error') {
       el.textContent = 'Autosave failed' + (detail ? `: ${detail}` : '');
       el.style.color = '#ff4444';
       return;
     }
-    // saved
+    if (state === 'cache-saved') {
+      const t = formatSaveStatusTime(detail || window.__amiantoLastCacheSaveAt);
+      el.textContent = 'Saved to cache' + (t ? ' ' + t : '');
+      el.style.color = '#9acd32';
+      el.title = 'Project saved to browser cache only (no linked .amnt file, or disk write skipped).';
+      return;
+    }
+    // disk-saved / saved
     const when = detail || window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt;
-    if (when) {
-      try {
-        const d = new Date(when);
-        el.textContent = 'Saved ' + d.toLocaleTimeString();
-      } catch (_) {
-        el.textContent = 'Saved';
-      }
+    const t = formatSaveStatusTime(when);
+    if (window.__amiantoLastDiskSaveAt && (!detail || detail === window.__amiantoLastDiskSaveAt)) {
+      el.textContent = 'Saved to disk' + (t ? ' ' + t : '');
+      el.title = 'Linked .amnt file written successfully.';
     } else {
-      el.textContent = 'Saved';
+      el.textContent = 'Saved to cache' + (t ? ' ' + t : '');
+      el.title = 'Saved to browser cache.';
     }
     el.style.color = '#39ff14';
+  }
+
+  function applyPersistResultToSaveStatus(result) {
+    if (!result) return;
+    if (result.ok === false && result.reason === 'in-progress') return;
+    if (result.ok === false && result.reason === 'disk-failed') {
+      updateProjectSaveStatusUI(
+        'disk-failed',
+        result.error && result.error.message ? result.error.message : ''
+      );
+      return;
+    }
+    if (result.ok && result.diskPath) {
+      updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
+      return;
+    }
+    if (result.ok && result.cacheOnly) {
+      updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+      return;
+    }
+    if (result.ok) {
+      updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+    }
   }
 
   function startAmiantoPeriodicAutosave() {
@@ -14531,15 +14821,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       updateProjectSaveStatusUI('saving');
       persistEditorProject({ silent: true, promptForLocation: false })
         .then((result) => {
-          if (result && result.ok === false && result.reason === 'in-progress') return;
-          window.__amiantoLastCacheSaveAt = new Date().toISOString();
-          updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt);
+          applyPersistResultToSaveStatus(result);
         })
         .catch((err) => {
           console.warn('[AutoSave] Periodic save failed:', err);
           updateProjectSaveStatusUI('error', err && err.message ? err.message : 'error');
         });
     }, AMIANTO_PERIODIC_AUTOSAVE_MS);
+  }
+
+  function markDialoguesDirty() {
+    if (typeof window.markAmiantoProjectDirty === 'function') {
+      window.markAmiantoProjectDirty();
+    }
   }
 
   // Avvia autosave periodico (cache + .amnt se collegato)
@@ -15511,9 +15805,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     amiantoDiskSaveTimer = setTimeout(() => {
       amiantoDiskSaveTimer = null;
       if (amiantoPersistInProgress) return;
-      persistEditorProject({ silent: true, promptForLocation: false }).catch((err) => {
-        console.warn('[AutoSave] Failed to write .amnt:', err);
-      });
+      persistEditorProject({ silent: true, promptForLocation: false })
+        .then((result) => {
+          if (typeof applyPersistResultToSaveStatus === 'function') {
+            applyPersistResultToSaveStatus(result);
+          }
+        })
+        .catch((err) => {
+          console.warn('[AutoSave] Failed to write .amnt:', err);
+          if (typeof updateProjectSaveStatusUI === 'function') {
+            updateProjectSaveStatusUI('disk-failed', err && err.message ? err.message : 'error');
+          }
+        });
     }, AMIANTO_DISK_SAVE_DEBOUNCE_MS);
   }
 
@@ -15781,15 +16084,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const savePayload = prepareProjectPayloadForFirestore(projectObj);
       const jsonString = JSON.stringify(savePayload, null, 2);
       window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
-      window.__amiantoProjectDirty = false;
       window.__amiantoLastCacheSaveAt = new Date().toISOString();
       autosaveToCache(projectName, jsonString);
       localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-      if (!interactive || silent) {
-        updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt);
-      } else {
-        updateProjectSaveStatusUI('saved', window.__amiantoLastCacheSaveAt);
-      }
 
       const linkedFilePath = getProjectFilePath(projectName);
       const userProjects = loadProjectsFromCache(currentUser.username);
@@ -15826,6 +16123,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       let amntLocation = null;
       const hasLinkedPath = hasLinkedAmntFilePath(projectName);
       const hasFileHandle = projectFileHandles.has(projectName);
+      const expectsDiskWrite = hasLinkedPath || hasFileHandle || !!promptForLocation;
       if (!hasLinkedPath && !hasFileHandle && promptForLocation) {
         amntLocation = await pickProjectSaveLocation(projectName);
       }
@@ -15845,6 +16143,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             saveProjectsToCache(currentUser.username, list);
             updateAppState({ projects: list });
           }
+          window.__amiantoProjectDirty = false;
           window.__amiantoLastDiskSaveAt = new Date().toISOString();
           updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
           if (interactive && !silent) {
@@ -15852,11 +16151,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           } else if (!silent) {
             addDebugMessage(`Auto-saved to ${filePath}`, 'success');
           }
-        } else if (interactive && !silent) {
-          showNotification('Project saved to browser cache. Choose a .amnt file location on next save to write a disk file.', 'warning');
+        } else {
+          // Cache-only success: clear dirty only when no linked disk file was expected
+          if (!expectsDiskWrite || (!hasLinkedPath && !hasFileHandle && !amntLocation)) {
+            window.__amiantoProjectDirty = false;
+            updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+          } else {
+            // Expected disk write but got no path (cancelled picker, etc.)
+            window.__amiantoProjectDirty = true;
+            updateProjectSaveStatusUI('dirty');
+          }
+          if (interactive && !silent) {
+            showNotification('Project saved to browser cache. Choose a .amnt file location on next save to write a disk file.', 'warning');
+          }
         }
       } catch (amntErr) {
         console.error('[Save] .amnt write failed:', amntErr);
+        // Keep dirty so beforeunload still warns; cache is OK but disk is not
+        window.__amiantoProjectDirty = true;
+        updateProjectSaveStatusUI(
+          'disk-failed',
+          amntErr && amntErr.message ? amntErr.message : String(amntErr)
+        );
         if (interactive) {
           showNotification('Cache updated but .amnt file write failed: ' + (amntErr.message || amntErr), 'danger');
         }
@@ -16916,7 +17232,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         if (Array.isArray(projectObj.characters)) {
           for (const ch of projectObj.characters) {
-            const characterName = ch.name || ch.id || uid('char');
+            // Canonico: id === name (se entrambi presenti e diversi, vince name)
+            let characterName = String(ch.name || ch.id || '').trim();
+            if (!characterName) characterName = uid('char');
+            if (ch.id && ch.name && String(ch.id) !== String(ch.name)) {
+              console.warn(`[Load] Character id "${ch.id}" ≠ name "${ch.name}" — forzato id=name "${characterName}"`);
+            }
             const directions = await loadCharacterDirectionsFromData(ch.directions, projectId, characterName);
             const animations = {};
             if (ch.animations && typeof ch.animations === 'object') {
@@ -16928,7 +17249,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 }
               }
             }
-            const charData = { directions, animations, currentFrame: 0 };
+            const charData = {
+              id: characterName,
+              name: characterName,
+              directions,
+              animations,
+              currentFrame: 0
+            };
             // Load pivot if it exists
             if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
               charData.pivotX = Number(ch.pivotX) || 0;
@@ -18091,33 +18418,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return { bytes: new Blob([text]).size, filePath };
   }
 
-  async function loadRuntimeSourceForExport() {
+  async function fetchAppTextFile(relPath) {
     if (window.amiantoNativeFs && typeof window.amiantoNativeFs.readAppFile === 'function') {
       try {
-        const text = await window.amiantoNativeFs.readAppFile('JS/runtime.js');
-        if (text && text.length > 100) return text;
+        const text = await window.amiantoNativeFs.readAppFile(relPath);
+        if (text && text.length > 20) return text;
       } catch (err) {
-        console.warn('[ExportGame] readAppFile failed, trying fetch:', err);
+        console.warn('[ExportGame] readAppFile failed for', relPath, err);
       }
     }
-
     try {
-      const res = await fetch('JS/runtime.js', { cache: 'no-store' });
+      const res = await fetch(relPath, { cache: 'no-store' });
       if (res.ok) {
         const text = await res.text();
-        if (text && text.length > 100) return text;
+        if (text && text.length > 20) return text;
       }
     } catch (err) {
-      console.warn('[ExportGame] fetch runtime.js failed:', err);
+      console.warn('[ExportGame] fetch failed for', relPath, err);
     }
-
     return await new Promise((resolve) => {
       try {
         const xhr = new XMLHttpRequest();
-        xhr.open('GET', 'JS/runtime.js', true);
+        xhr.open('GET', relPath, true);
         xhr.onload = () => {
           if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
-            resolve(xhr.responseText && xhr.responseText.length > 100 ? xhr.responseText : null);
+            resolve(xhr.responseText && xhr.responseText.length > 20 ? xhr.responseText : null);
           } else {
             resolve(null);
           }
@@ -18128,6 +18453,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         resolve(null);
       }
     });
+  }
+
+  /**
+   * Standalone export embeds libs + runtime as one script (same order as runtime.html).
+   */
+  async function loadRuntimeSourceForExport() {
+    const parts = [
+      await fetchAppTextFile('JS/lib/game-save-format.js'),
+      await fetchAppTextFile('JS/lib/dialogue-logic.js'),
+      await fetchAppTextFile('JS/runtime.js')
+    ];
+    if (!parts[2] || parts[2].length < 100) return null;
+    // Libs are optional for older installs, but preferred
+    return parts.filter(Boolean).join('\n;\n');
   }
 
   // Debug function to test coordinate conversion

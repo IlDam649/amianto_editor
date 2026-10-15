@@ -60,6 +60,8 @@
     /** Dialoghi ramificati dal progetto: Map<id, dialogueDef> + indice per nome */
     dialogues: new Map(),
     dialogueNameIndex: new Map(),
+    /** Choice once-only consumate in questa partita: Set<"dialogueId::optionId"> */
+    dialogueConsumed: new Set(),
     /** Prefisso storage salvataggi gioco (per progetto) */
     saveGamePrefix: null
   };
@@ -272,6 +274,34 @@
   // Promise in sospeso da API sync-looking (load_room / play_music senza await nello script)
   // Stack per livello di executeScriptHandler: evita deadlock load_room → on_room_change → play_music
   let pendingScriptSideEffects = [];
+
+  // Durante on_before_room_change / on_room_change: show_dialogue/start_dialogue non devono
+  // tenere in sospeso changeRoom/load_room (il balloon resta in coda e aspetta il click).
+  let roomTransitionScriptDepth = 0;
+
+  function beginRoomTransitionScripts() {
+    roomTransitionScriptDepth++;
+  }
+
+  function endRoomTransitionScripts() {
+    roomTransitionScriptDepth = Math.max(0, roomTransitionScriptDepth - 1);
+  }
+
+  function isInsideRoomTransitionScript() {
+    return roomTransitionScriptDepth > 0;
+  }
+
+  /**
+   * Accoda un comando. Fuori dalle room-transition lo script può await-are il completamento;
+   * dentro on_room_change / on_before_room_change restituisce subito così load_room non resta bloccato.
+   */
+  function enqueueScriptCommand(commandFn, delay = 0) {
+    const queued = queueCommand(commandFn, delay);
+    if (isInsideRoomTransitionScript()) {
+      return Promise.resolve();
+    }
+    return queued;
+  }
 
   function trackScriptSideEffect(promise) {
     if (!promise || typeof promise.then !== 'function') return promise;
@@ -554,6 +584,8 @@
   /** Player dedicato per la musica di sottofondo (loop fino a stop_music) */
   let musicAudioEl = null;
   let musicObjectUrl = null;
+  /** WAV silenzioso (1 sample) per unlock autoplay senza gesture (Electron / policy permissiva) */
+  const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
 
   function notifyAudioUnlocked() {
     htmlAudioUnlocked = true;
@@ -561,6 +593,39 @@
     waiters.forEach((fn) => { try { fn(); } catch (_) {} });
     flushDeferredHtmlAudioJobs();
     flushDeferredAudioStarts();
+  }
+
+  /**
+   * Tenta lo sblocco audio all'avvio (senza click).
+   * Funziona in Electron con autoplay-policy=no-user-gesture-required;
+   * in browser restrittivi fallisce in silenzio e resta il fallback al primo gesture.
+   */
+  async function tryAutoUnlockAudioAtBoot() {
+    if (htmlAudioUnlocked) return true;
+    try {
+      const ctx = getSharedAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        try { await ctx.resume(); } catch (_) {}
+      }
+      if (!unlockedMediaEl) {
+        unlockedMediaEl = document.createElement('audio');
+        unlockedMediaEl.setAttribute('playsinline', '');
+        unlockedMediaEl.setAttribute('data-amianto-unlocked', '1');
+        unlockedMediaEl.preload = 'auto';
+        unlockedMediaEl.volume = 0.001;
+        unlockedMediaEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+        if (document.body) document.body.appendChild(unlockedMediaEl);
+      }
+      unlockedMediaEl.src = SILENT_WAV_DATA_URI;
+      await unlockedMediaEl.play();
+      try { unlockedMediaEl.pause(); unlockedMediaEl.currentTime = 0; } catch (_) {}
+      notifyAudioUnlocked();
+      log('[Runtime] Audio sbloccato all\'avvio (nessun click richiesto)', 'info');
+      return true;
+    } catch (err) {
+      log('[Runtime] Auto-unlock audio non disponibile — fallback al primo gesture', 'info');
+      return false;
+    }
   }
 
   function waitForAudioUnlock(timeoutMs) {
@@ -605,7 +670,7 @@
         unlockedMediaEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
         document.body.appendChild(unlockedMediaEl);
       }
-      unlockedMediaEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+      unlockedMediaEl.src = SILENT_WAV_DATA_URI;
       const p = unlockedMediaEl.play();
       if (p && typeof p.then === 'function') {
         p.then(() => {
@@ -892,10 +957,13 @@
     audio.src = musicObjectUrl;
 
     const tryStart = async () => {
+      // Non attendere il click: prova subito (Electron / autoplay policy).
+      // Se il browser blocca, si fa retry dopo tryAutoUnlock o al primo gesture.
       if (!htmlAudioUnlocked) {
-        await waitForAudioUnlock(50);
+        await tryAutoUnlockAudioAtBoot();
       }
       await audio.play();
+      if (!htmlAudioUnlocked) notifyAudioUnlocked();
       return {
         kind: 'element',
         element: audio,
@@ -915,6 +983,20 @@
         log('Could not play music "' + audioRef + '": ' + msg, 'error');
         return null;
       }
+
+      // Secondo tentativo dopo unlock boot (a volte resume AudioContext basta)
+      try {
+        await tryAutoUnlockAudioAtBoot();
+        await audio.play();
+        if (!htmlAudioUnlocked) notifyAudioUnlocked();
+        log('[Runtime] Music via HTMLAudio loop after boot unlock (' + (container || preferredMime) + ')', 'info');
+        return {
+          kind: 'element',
+          element: audio,
+          _isMusic: true,
+          _domCleanup() {}
+        };
+      } catch (_) {}
 
       log('[Runtime] Music blocked by autoplay — will start on next click (loop)', 'warning');
       const pendingRef = audioRef;
@@ -1745,32 +1827,50 @@
 
       // Spawn automatico player all'avvio se configurato
       // IMPORTANTE: Spawna DOPO il cambio room, così il player è nella room corretta
-      // PRIORITÀ 1: spawnSettings.isPlayer (più specifico e moderno)
-      const playerCharacter = (projectData.characters || []).find(char => 
+      // Unifica spawnSettings (Characters) + settings.startX/Y legacy (stesso punto di spawn)
+      const playerCharacter = (projectData.characters || []).find(char =>
         char.spawnSettings && char.spawnSettings.isPlayer === true
       );
-      
+
+      const legacyStartX = Number(settings.startX);
+      const legacyStartY = Number(settings.startY);
+      const hasLegacyStart = Number.isFinite(legacyStartX) && Number.isFinite(legacyStartY);
+
       if (playerCharacter && playerCharacter.spawnSettings) {
         const spawn = playerCharacter.spawnSettings;
-        // Verifica che il character esista nelle definizioni
         const charDef = gameState.characterDefinitions.get(playerCharacter.name);
         if (!charDef) {
           log(`[Runtime] Player "${playerCharacter.name}" not found in character definitions`, 'error');
         } else {
+          let spawnX = Number(spawn.x);
+          let spawnY = Number(spawn.y);
+          if (!Number.isFinite(spawnX)) spawnX = 0;
+          if (!Number.isFinite(spawnY)) spawnY = 0;
+          // Se spawnSettings è ancora (0,0) ma esiste Start Position legacy, usala
+          // (evita personaggio che "parte da un'altra parte" rispetto al marker in editor)
+          let coordSource = 'spawnSettings';
+          if (spawnX === 0 && spawnY === 0 && hasLegacyStart && (legacyStartX !== 0 || legacyStartY !== 0)) {
+            const legacyName = settings.startingPlayer ? String(settings.startingPlayer) : '';
+            if (!legacyName || legacyName === playerCharacter.name) {
+              spawnX = legacyStartX;
+              spawnY = legacyStartY;
+              coordSource = 'settings.startX/Y (fallback)';
+            }
+          }
           const playerId = GameAPI.spawn_character(
             playerCharacter.name,
-            spawn.x || 0,
-            spawn.y || 0,
+            spawnX,
+            spawnY,
             spawn.direction || 'south'
           );
           if (playerId) {
             GameAPI.setVariable('playerId', playerId);
-            log(`[Runtime] Player "${playerCharacter.name}" spawnato automaticamente da spawnSettings a (${spawn.x || 0}, ${spawn.y || 0}) in room ${gameState.currentRoomId}`, 'info');
+            log(`[Runtime] Player "${playerCharacter.name}" spawnato a (${spawnX}, ${spawnY}) via ${coordSource} in room ${gameState.currentRoomId}`, 'info');
           } else {
             log(`[Runtime] Error spawning player "${playerCharacter.name}"`, 'error');
           }
         }
-      } else if (settings.startingPlayer && settings.startX !== undefined && settings.startY !== undefined) {
+      } else if (settings.startingPlayer && hasLegacyStart) {
         // PRIORITÀ 2: settings legacy (per retrocompatibilità)
         const charDef = gameState.characterDefinitions.get(settings.startingPlayer);
         if (!charDef) {
@@ -1778,13 +1878,13 @@
         } else {
           const playerId = GameAPI.spawn_character(
             settings.startingPlayer,
-            Number(settings.startX) || 0,
-            Number(settings.startY) || 0,
-            'south' // direzione di default
+            legacyStartX,
+            legacyStartY,
+            'south'
           );
           if (playerId) {
             GameAPI.setVariable('playerId', playerId);
-            log(`[Runtime] Player "${settings.startingPlayer}" spawnato automaticamente da settings legacy a (${settings.startX}, ${settings.startY}) in room ${gameState.currentRoomId}`, 'info');
+            log(`[Runtime] Player "${settings.startingPlayer}" spawnato da settings legacy a (${legacyStartX}, ${legacyStartY}) in room ${gameState.currentRoomId}`, 'info');
           } else {
             log(`[Runtime] Error spawning player "${settings.startingPlayer}"`, 'error');
           }
@@ -1810,6 +1910,10 @@
       updateLoadingMessage('Running initial scripts...');
       // Canvas visibile durante gli script: play_animation in on_game_start può essere visto
       hideLoadingOverlay();
+
+      // Sblocca audio prima di on_game_start / play_music (niente attesa del primo click in Electron)
+      await tryAutoUnlockAudioAtBoot();
+
       await executeGameStartScripts();
 
       markBootReady();
@@ -2116,6 +2220,8 @@
    */
   async function changeRoom(roomId, options = {}) {
     const skipRoomScripts = options.skipRoomScripts === true;
+    // load_room posiziona il player e poi gira on_room_change: non bloccare il load sugli after-script
+    const skipAfterRoomScripts = options.skipAfterRoomScripts === true;
     if (!gameState.projectData || !gameState.projectData.rooms) {
       log('No project loaded', 'error');
       return;
@@ -2127,7 +2233,10 @@
       return;
     }
 
-    log(`[Runtime] Cambio room: ${roomId}`, 'info');
+    // Canonico: sempre l'id di progetto (gli attachment Room: sono keyed per id)
+    const resolvedRoomId = String(room.id || roomId);
+
+    log(`[Runtime] Cambio room: ${resolvedRoomId}`, 'info');
 
     endAllDialogue();
 
@@ -2135,7 +2244,7 @@
 
     // Prima del caricamento: stanza precedente ancora attiva
     if (!skipRoomScripts) {
-      await executeBeforeRoomChangeScripts(oldRoomId, roomId);
+      await executeBeforeRoomChangeScripts(oldRoomId, resolvedRoomId);
     }
 
     // Recupera immagini dalla AssetRegistry (già caricate)
@@ -2296,7 +2405,7 @@
       }
     }
 
-    gameState.currentRoomId = roomId;
+    gameState.currentRoomId = resolvedRoomId;
     gameState.currentRoom = {
       ...room,
       backgroundImg,
@@ -2331,7 +2440,11 @@
       
       if (isPlayer) {
         // Aggiorna roomId del player
-        character.roomId = roomId;
+        character.roomId = resolvedRoomId;
+        // Interrompi walk in corso (coordinate della stanza precedente non sono valide)
+        character.isMoving = false;
+        character.path = null;
+        character.pathIndex = 0;
       } else {
         // Rimuovi solo se il character è nella room precedente e non è un player
         if (character.roomId === oldRoomId) {
@@ -2352,7 +2465,7 @@
         // Spawna se: autoSpawn è true, non è player, e roomId corrisponde
         return spawn.autoSpawn === true && 
                spawn.isPlayer !== true && 
-               spawn.roomId === roomId;
+               (spawn.roomId === resolvedRoomId || spawn.roomId === roomId);
       });
 
       for (const npcData of roomNPCs) {
@@ -2360,31 +2473,35 @@
         // Verifica che il character non sia già spawnato
         let alreadySpawned = false;
         gameState.characters.forEach((character) => {
-          if (character.name === npcData.name && character.roomId === roomId) {
+          if (character.name === npcData.name && character.roomId === resolvedRoomId) {
             alreadySpawned = true;
           }
         });
 
         if (!alreadySpawned) {
+          const nx = Number(spawn.x);
+          const ny = Number(spawn.y);
+          const spawnX = Number.isFinite(nx) ? nx : 0;
+          const spawnY = Number.isFinite(ny) ? ny : 0;
           const npcId = GameAPI.spawn_character(
             npcData.name,
-            spawn.x || 0,
-            spawn.y || 0,
+            spawnX,
+            spawnY,
             spawn.direction || 'south'
           );
           if (npcId) {
-            log(`[Runtime] NPC "${npcData.name}" spawnato automaticamente in room ${roomId} a (${spawn.x || 0}, ${spawn.y || 0})`, 'info');
+            log(`[Runtime] NPC "${npcData.name}" spawnato automaticamente in room ${resolvedRoomId} a (${spawnX}, ${spawnY})`, 'info');
           }
         }
       }
     }
 
-    // Dopo il caricamento: esegui script on_room_change
-    if (!skipRoomScripts) {
-      await executeRoomChangeScripts(oldRoomId, roomId);
+    // Dopo il caricamento: on_room_change (saltato se load_room lo esegue dopo aver posizionato il player)
+    if (!skipRoomScripts && !skipAfterRoomScripts) {
+      await executeRoomChangeScripts(oldRoomId, resolvedRoomId);
     }
 
-    log(`[Runtime] Room changed: ${roomId} (bg: ${backgroundImg ? 'ok' : 'missing'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length}, anims: ${animationInstances.length})`, 'info');
+    log(`[Runtime] Room changed: ${resolvedRoomId} (bg: ${backgroundImg ? 'ok' : 'missing'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length}, anims: ${animationInstances.length})`, 'info');
   }
 
   /**
@@ -2429,10 +2546,14 @@
     gameState.characterDefinitions.clear();
 
     for (const charData of charactersData) {
-      const characterName = charData.name || charData.id;
+      // id === name sempre (se divergono in progetti legacy, vince name)
+      const characterName = String(charData.name || charData.id || '').trim();
       if (!characterName) {
         log('[Runtime] Character ignorato: nome mancante', 'warning');
         continue;
+      }
+      if (charData.id && charData.name && String(charData.id) !== String(charData.name)) {
+        log(`[Runtime] Character id "${charData.id}" ≠ name "${charData.name}" — uso name come id`, 'warning');
       }
 
       const loadDirectionsMap = (sourceDirections) => {
@@ -2490,6 +2611,8 @@
         if (charData.spawnSettings) {
           charDef.spawnSettings = charData.spawnSettings;
         }
+        charDef.id = characterName;
+        charDef.name = characterName;
         gameState.characterDefinitions.set(characterName, charDef);
         const animCount = Object.keys(animations).length;
         log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} walk dir${animCount ? `, ${animCount} custom anim` : ''})`, 'info');
@@ -3284,9 +3407,20 @@
   }
 
   // ============================================
-  // DIALOGHI RAMIFICATI (grafo line / choice / end)
+  // DIALOGHI RAMIFICATI (grafo line / choice / end / jump / action)
   // ============================================
+  function getDialogueLogic() {
+    return (typeof window !== 'undefined' && window.AmiantoDialogueLogic)
+      ? window.AmiantoDialogueLogic
+      : null;
+  }
+
   function normalizeDialogueDef(raw) {
+    const logic = getDialogueLogic();
+    if (logic && typeof logic.normalizeDialogueDef === 'function') {
+      return logic.normalizeDialogueDef(raw);
+    }
+    // Fallback minimale se il lib non è caricato (export legacy / test)
     if (!raw || typeof raw !== 'object') return null;
     const id = String(raw.id || '').trim();
     if (!id) return null;
@@ -3301,8 +3435,7 @@
       const type = String(src.type || 'end').toLowerCase();
       if (type === 'line') {
         nodes[nodeId] = {
-          id: nodeId,
-          type: 'line',
+          id: nodeId, type: 'line',
           speaker: String(src.speaker || '').trim(),
           text: String(src.text != null ? src.text : ''),
           next: String(src.next || '').trim()
@@ -3314,6 +3447,10 @@
           next: String((opt && opt.next) || '').trim()
         })).filter(o => o.id) : [];
         nodes[nodeId] = { id: nodeId, type: 'choice', options };
+      } else if (type === 'jump') {
+        nodes[nodeId] = { id: nodeId, type: 'jump', target: String(src.target || src.next || '').trim() };
+      } else if (type === 'action') {
+        nodes[nodeId] = { id: nodeId, type: 'action', next: String(src.next || '').trim(), actions: [] };
       } else {
         nodes[nodeId] = { id: nodeId, type: 'end' };
       }
@@ -3326,9 +3463,63 @@
     return { id, name, startNodeId, nodes };
   }
 
+  function getDialogueConditionCtx() {
+    return {
+      hasItem: function(itemId) {
+        try { return !!(GameAPI && typeof GameAPI.has_item === 'function' && GameAPI.has_item(itemId)); }
+        catch (_) { return false; }
+      },
+      getVar: function(key) {
+        try {
+          if (GameAPI && typeof GameAPI.get_var === 'function') return GameAPI.get_var(key);
+          if (gameState.variables && gameState.variables.has(key)) return gameState.variables.get(key);
+        } catch (_) {}
+        return undefined;
+      }
+    };
+  }
+
+  function runDialogueActions(actions) {
+    if (!Array.isArray(actions) || !actions.length) return;
+    actions.forEach(action => {
+      if (!action || !action.type) return;
+      try {
+        if (action.type === 'set_var') {
+          if (typeof GameAPI.set_var === 'function') GameAPI.set_var(action.key, action.value);
+          else if (typeof GameAPI.setVariable === 'function') GameAPI.setVariable(action.key, action.value);
+        } else if (action.type === 'add_item') {
+          if (typeof GameAPI.add_to_inventory === 'function') {
+            GameAPI.add_to_inventory(action.itemId, action.count || 1);
+          }
+        } else if (action.type === 'remove_item') {
+          if (typeof GameAPI.remove_from_inventory === 'function') {
+            GameAPI.remove_from_inventory(action.itemId, action.count || 1);
+          }
+        } else if (action.type === 'set_object_visible') {
+          if (typeof GameAPI.set_object_visible === 'function') {
+            GameAPI.set_object_visible(action.objectId, action.visible !== false);
+          }
+        }
+      } catch (err) {
+        log(`[Runtime] dialogue action "${action.type}" failed: ${err && err.message ? err.message : err}`, 'warning');
+      }
+    });
+  }
+
+  function markDialogueChoiceConsumed(dialogueId, optionId) {
+    if (!gameState.dialogueConsumed) gameState.dialogueConsumed = new Set();
+    const logic = getDialogueLogic();
+    const key = logic && logic.makeConsumedKey
+      ? logic.makeConsumedKey(dialogueId, optionId)
+      : `${dialogueId}::${optionId}`;
+    if (key && key !== '::') gameState.dialogueConsumed.add(key);
+  }
+
   function loadDialogues(dialoguesArray) {
     gameState.dialogues = new Map();
     gameState.dialogueNameIndex = new Map();
+    // New game / project load: once-only choices start fresh (saves restore separately)
+    gameState.dialogueConsumed = new Set();
     if (!Array.isArray(dialoguesArray)) return;
     dialoguesArray.forEach(raw => {
       const def = normalizeDialogueDef(raw);
@@ -3492,20 +3683,23 @@
 
     log(`[Runtime] start_dialogue: "${dialogueDef.name}" (${dialogueDef.id})`, 'info');
 
+    const logic = getDialogueLogic();
+    const condCtx = getDialogueConditionCtx();
     let nodeId = dialogueDef.startNodeId;
-    const visitedGuard = new Set();
+    const visitCounts = new Map();
     let steps = 0;
     const MAX_STEPS = 500;
+    const MAX_VISITS_PER_NODE = 8;
 
     try {
       while (nodeId && activeDialogueSession && !activeDialogueSession.abortRequested && steps < MAX_STEPS) {
         steps += 1;
-        const visitKey = `${nodeId}#${steps}`;
-        if (visitedGuard.has(nodeId) && steps > Object.keys(dialogueDef.nodes).length * 3) {
-          log(`[Runtime] start_dialogue: possible loop at node "${nodeId}", stopping`, 'warning');
+        const visits = (visitCounts.get(nodeId) || 0) + 1;
+        visitCounts.set(nodeId, visits);
+        if (visits > MAX_VISITS_PER_NODE) {
+          log(`[Runtime] start_dialogue: loop detected at node "${nodeId}" (${visits} visits), stopping`, 'warning');
           break;
         }
-        visitedGuard.add(nodeId);
 
         const node = dialogueDef.nodes[nodeId];
         if (!node) {
@@ -3517,7 +3711,28 @@
           break;
         }
 
+        if (node.type === 'jump') {
+          const target = String(node.target || '').trim();
+          if (!target) {
+            log(`[Runtime] start_dialogue: jump node "${node.id}" has no target`, 'warning');
+            break;
+          }
+          if (!dialogueDef.nodes[target]) {
+            log(`[Runtime] start_dialogue: jump target "${target}" missing`, 'warning');
+            break;
+          }
+          nodeId = target;
+          continue;
+        }
+
+        if (node.type === 'action') {
+          runDialogueActions(node.actions || []);
+          nodeId = node.next;
+          continue;
+        }
+
         if (node.type === 'line') {
+          runDialogueActions(node.actions || []);
           if (!node.speaker) {
             GameAPI.error(`start_dialogue: line node "${node.id}" has no speaker`);
             nodeId = node.next;
@@ -3530,15 +3745,37 @@
         }
 
         if (node.type === 'choice') {
-          const selected = await showDialogueChoicesAndWait(node.options || []);
+          const rawOpts = node.options || [];
+          const available = logic && logic.filterChoiceOptions
+            ? logic.filterChoiceOptions(rawOpts, dialogueDef.id, gameState.dialogueConsumed, condCtx)
+            : rawOpts;
+          const selected = await showDialogueChoicesAndWait(available);
           if (!activeDialogueSession || activeDialogueSession.abortRequested) break;
           if (!selected) break;
-          nodeId = selected.next;
+
+          // Re-validate at click time (state may have changed)
+          const stillOk = logic && logic.isOptionSelectable
+            ? logic.isOptionSelectable(selected, dialogueDef.id, gameState.dialogueConsumed, condCtx)
+            : true;
+          if (!stillOk) {
+            log(`[Runtime] start_dialogue: choice "${selected.id}" no longer valid, ignoring`, 'warning');
+            break;
+          }
+
+          const fullOpt = rawOpts.find(o => o && o.id === selected.id) || selected;
+          if (fullOpt.once === true) {
+            markDialogueChoiceConsumed(dialogueDef.id, fullOpt.id);
+          }
+          runDialogueActions(fullOpt.actions || []);
+          nodeId = fullOpt.next || selected.next;
           continue;
         }
 
         log(`[Runtime] start_dialogue: unsupported node type "${node.type}" on "${node.id}"`, 'warning');
         break;
+      }
+      if (steps >= MAX_STEPS) {
+        log(`[Runtime] start_dialogue: hit MAX_STEPS (${MAX_STEPS}), stopping`, 'warning');
       }
     } finally {
       if (activeDialogueSession && activeDialogueSession.dialogueId === dialogueDef.id) {
@@ -3552,15 +3789,22 @@
   // SAVE / LOAD STATO GIOCO (player saves)
   // Separato dal salvataggio progetto editor (.amnt)
   // ============================================
-  const GAME_SAVE_FORMAT = 'amianto-save';
-  const GAME_SAVE_VERSION = 1;
-  const GAME_SAVE_MAX_SLOTS = 10;
-  const GAME_SAVE_KEY_PREFIX = 'amianto-gamesave:v1:';
+  function getGameSaveHelpers() {
+    return (typeof window !== 'undefined' && window.AmiantoGameSave) ? window.AmiantoGameSave : null;
+  }
+
+  const _gs = getGameSaveHelpers();
+  const GAME_SAVE_FORMAT = (_gs && _gs.GAME_SAVE_FORMAT) || 'amianto-save';
+  const GAME_SAVE_VERSION = (_gs && _gs.GAME_SAVE_VERSION) || 1;
+  const GAME_SAVE_MAX_SLOTS = (_gs && _gs.GAME_SAVE_MAX_SLOTS) || 10;
+  const GAME_SAVE_KEY_PREFIX = (_gs && _gs.GAME_SAVE_KEY_PREFIX) || 'amianto-gamesave:v1:';
 
   function getGameSaveProjectId() {
     const settings = (gameState.projectData && gameState.projectData.settings) || {};
     const meta = (gameState.projectData && gameState.projectData._meta) || {};
     const id = settings.id || meta.projectId || settings.name || 'default';
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.sanitizeProjectId) return helpers.sanitizeProjectId(id);
     return String(id).trim().replace(/[^a-zA-Z0-9._-]+/g, '_') || 'default';
   }
 
@@ -3569,7 +3813,14 @@
     return String(settings.name || getGameSaveProjectId());
   }
 
-  function normalizeGameSaveSlot(slot) {
+  function normalizeGameSaveSlot(slot, options) {
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.normalizeGameSaveSlot) {
+      return helpers.normalizeGameSaveSlot(slot, options);
+    }
+    if (options && options.requireExplicit && (slot == null || slot === '')) {
+      throw new Error('save slot is required');
+    }
     if (slot == null || slot === '') return '1';
     if (typeof slot === 'number' && Number.isFinite(slot)) {
       const n = Math.floor(slot);
@@ -3593,6 +3844,20 @@
 
   function gameSaveStorageKey(slot) {
     return GAME_SAVE_KEY_PREFIX + getGameSaveProjectId() + ':' + normalizeGameSaveSlot(slot);
+  }
+
+  function validateAndMigrateGameSave(data) {
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.migrateGameSave) {
+      return helpers.migrateGameSave(data);
+    }
+    if (!data || data.format !== GAME_SAVE_FORMAT) {
+      throw new Error('Unrecognized save format');
+    }
+    if (!data.state || typeof data.state !== 'object') {
+      throw new Error('Invalid save payload');
+    }
+    return data;
   }
 
   function syncLiveRoomEntitiesToProjectData() {
@@ -3698,9 +3963,10 @@
 
     const characters = [];
     gameState.characters.forEach(ch => {
+      const name = ch.name || ch.id;
       characters.push({
-        id: ch.id,
-        name: ch.name,
+        id: name, // id === name sempre
+        name: name,
         x: Number(ch.renderX != null ? ch.renderX : ch.x) || 0,
         y: Number(ch.renderY != null ? ch.renderY : ch.y) || 0,
         direction: ch.direction || 'south',
@@ -3708,6 +3974,9 @@
         roomId: ch.roomId || gameState.currentRoomId
       });
     });
+
+    if (!gameState.dialogueConsumed) gameState.dialogueConsumed = new Set();
+    const dialogueConsumed = Array.from(gameState.dialogueConsumed);
 
     return {
       format: GAME_SAVE_FORMAT,
@@ -3727,20 +3996,36 @@
           visible: !!inv.visible
         },
         characters,
-        rooms: collectRoomEntitySnapshot()
+        rooms: collectRoomEntitySnapshot(),
+        dialogueConsumed
       }
     };
   }
 
   function writeGameSaveToStorage(slot, payload) {
+    // Validate before write so a bad serialize never overwrites a valid save
+    const migrated = validateAndMigrateGameSave(payload);
     const key = gameSaveStorageKey(slot);
-    const json = JSON.stringify(payload);
+    let json;
     try {
+      json = JSON.stringify(migrated);
+    } catch (serErr) {
+      throw new Error('Failed to serialize save: ' + (serErr && serErr.message ? serErr.message : serErr));
+    }
+    if (!json || json.length < 2) {
+      throw new Error('Refusing to write empty save');
+    }
+    // Two-phase write: temp key first, then commit to final key
+    const tmpKey = key + ':tmp';
+    try {
+      localStorage.setItem(tmpKey, json);
       localStorage.setItem(key, json);
+      try { localStorage.removeItem(tmpKey); } catch (_) {}
       return { ok: true, bytes: json.length, key };
     } catch (err) {
+      try { localStorage.removeItem(tmpKey); } catch (_) {}
       const msg = (err && err.name === 'QuotaExceededError')
-        ? 'Storage quota exceeded'
+        ? 'Storage quota exceeded (browser localStorage full). Delete old saves or free space.'
         : (err && err.message ? err.message : String(err));
       throw new Error(msg);
     }
@@ -3752,10 +4037,7 @@
     if (!raw) return null;
     try {
       const data = JSON.parse(raw);
-      if (!data || data.format !== GAME_SAVE_FORMAT) {
-        throw new Error('Unrecognized save format');
-      }
-      return data;
+      return validateAndMigrateGameSave(data);
     } catch (err) {
       throw new Error('Corrupt save data: ' + (err.message || err));
     }
@@ -3798,12 +4080,18 @@
   }
 
   async function restoreGameStateFromSave(data) {
-    if (!data || !data.state) {
-      throw new Error('Invalid save payload');
-    }
-    const st = data.state;
+    const migrated = validateAndMigrateGameSave(data);
+    const st = migrated.state;
     endAllDialogue();
     resetInputLock();
+
+    // Restore once-only dialogue choices before room/scripts side-effects
+    gameState.dialogueConsumed = new Set();
+    if (Array.isArray(st.dialogueConsumed)) {
+      st.dialogueConsumed.forEach(k => {
+        if (k != null && String(k).trim()) gameState.dialogueConsumed.add(String(k).trim());
+      });
+    }
 
     applyRoomEntitySnapshot(st.rooms);
 
@@ -3857,8 +4145,7 @@
         ch.name,
         ch.x || 0,
         ch.y || 0,
-        ch.direction || 'south',
-        ch.id || null
+        ch.direction || 'south'
       );
       if (!id) return;
       const live = gameState.characters.get(id);
@@ -5278,9 +5565,9 @@
         
         // Pattern 4: function handlerName(...) { ... } (dichiarazione funzione)
         // Questo è il pattern più importante per casi come "function on_hotspot_click(...)"
-        // Usa il flag 'gm' per sostituire tutte le occorrenze e multiline
+        // Evita "async async function" se l'handler è già dichiarato async
         processedScriptContent = processedScriptContent.replace(
-          new RegExp(`function\\s+${escapedName}\\s*\\(`, 'gm'),
+          new RegExp(`(?<!async\\s)function\\s+${escapedName}\\s*\\(`, 'gm'),
           'async function ' + handlerName + '('
         );
         
@@ -5669,59 +5956,64 @@
   }
 
   async function executeRoomTransitionScripts(handlerName, registeredHandlersKey, oldRoomId, newRoomId) {
-    const executedScripts = new Set();
+    beginRoomTransitionScripts();
+    try {
+      const executedScripts = new Set();
 
-    const roomSpecificScripts = new Set();
-    const roomScripts = gameState.attachments.roomScripts || {};
-    if (typeof roomScripts === 'object') {
-      for (const [, scriptName] of Object.entries(roomScripts)) {
-        if (scriptName) roomSpecificScripts.add(scriptName);
-      }
-    }
-
-    if (typeof roomScripts === 'object') {
-      for (const [roomId, scriptName] of Object.entries(roomScripts)) {
-        if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
-          executedScripts.add(scriptName);
-          await executeScriptHandler(gameState.scripts[scriptName], handlerName, [oldRoomId, newRoomId], scriptName);
+      const roomSpecificScripts = new Set();
+      const roomScripts = gameState.attachments.roomScripts || {};
+      if (typeof roomScripts === 'object') {
+        for (const [, scriptName] of Object.entries(roomScripts)) {
+          if (scriptName) roomSpecificScripts.add(scriptName);
         }
       }
-    }
 
-    const roomScriptKey = `Room:${newRoomId}`;
-    if (gameState.scripts[roomScriptKey] && !executedScripts.has(roomScriptKey)) {
-      executedScripts.add(roomScriptKey);
-      await executeScriptHandler(gameState.scripts[roomScriptKey], handlerName, [oldRoomId, newRoomId], roomScriptKey);
-    }
-
-    const reservedScript = gameState.scripts[handlerName];
-    if (reservedScript && !executedScripts.has(handlerName) && !roomSpecificScripts.has(handlerName)) {
-      executedScripts.add(handlerName);
-      await executeScriptHandler(reservedScript, handlerName, [oldRoomId, newRoomId], handlerName);
-    }
-
-    const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerName}\\s*\\(`);
-    for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
-      if (executedScripts.has(scriptName)) continue;
-      if (roomSpecificScripts.has(scriptName)) continue;
-      if (scriptContent && typeof scriptContent === 'string' && handlerRegex.test(scriptContent)) {
-        executedScripts.add(scriptName);
-        await executeScriptHandler(scriptContent, handlerName, [oldRoomId, newRoomId], scriptName);
-      }
-    }
-
-    const handlers = eventHandlers[registeredHandlersKey];
-    if (Array.isArray(handlers)) {
-      for (const handler of handlers) {
-        try {
-          const result = handler(oldRoomId, newRoomId);
-          if (result && typeof result.then === 'function') {
-            await result;
+      if (typeof roomScripts === 'object') {
+        for (const [roomId, scriptName] of Object.entries(roomScripts)) {
+          if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
+            executedScripts.add(scriptName);
+            await executeScriptHandler(gameState.scripts[scriptName], handlerName, [oldRoomId, newRoomId], scriptName);
           }
-        } catch (error) {
-          log(`Error in ${handlerName} handler: ${error.message}`, 'error');
         }
       }
+
+      const roomScriptKey = `Room:${newRoomId}`;
+      if (gameState.scripts[roomScriptKey] && !executedScripts.has(roomScriptKey)) {
+        executedScripts.add(roomScriptKey);
+        await executeScriptHandler(gameState.scripts[roomScriptKey], handlerName, [oldRoomId, newRoomId], roomScriptKey);
+      }
+
+      const reservedScript = gameState.scripts[handlerName];
+      if (reservedScript && !executedScripts.has(handlerName) && !roomSpecificScripts.has(handlerName)) {
+        executedScripts.add(handlerName);
+        await executeScriptHandler(reservedScript, handlerName, [oldRoomId, newRoomId], handlerName);
+      }
+
+      const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerName}\\s*\\(`);
+      for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+        if (executedScripts.has(scriptName)) continue;
+        if (roomSpecificScripts.has(scriptName)) continue;
+        if (scriptContent && typeof scriptContent === 'string' && handlerRegex.test(scriptContent)) {
+          executedScripts.add(scriptName);
+          await executeScriptHandler(scriptContent, handlerName, [oldRoomId, newRoomId], scriptName);
+        }
+      }
+
+      const handlers = eventHandlers[registeredHandlersKey];
+      if (Array.isArray(handlers)) {
+        for (const handler of handlers) {
+          try {
+            const result = handler(oldRoomId, newRoomId);
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
+          } catch (error) {
+            log(`Error in ${handlerName} handler: ${error.message}`, 'error');
+          }
+        }
+      }
+    } finally {
+      endRoomTransitionScripts();
     }
   }
 
@@ -6694,48 +6986,66 @@
       }
 
       const targetRoom = String(roomIdOrName);
+      const previousRoomId = gameState.currentRoomId;
 
-      // Importante: attendi changeRoom così on_room_change (es. play_music) gira
-      // nella stessa catena async del click che ha chiamato load_room.
-      const roomPromise = changeRoom(targetRoom).then(() => {
-        if (playerX === undefined || playerY === undefined) return true;
+      // Cambio stanza DEVE completarsi anche se on_room_change fa await (dialoghi, wait, ecc.).
+      // skipRoomScripts: carica solo la stanza; after-scripts partono dopo il posizionamento player.
+      const roomPromise = (async () => {
+        log(`[Runtime] load_room: inizio → "${targetRoom}" (da "${previousRoomId || ''}")`, 'info');
+        await changeRoom(targetRoom, { skipRoomScripts: true });
 
-        let player = null;
-        for (const [, char] of gameState.characters.entries()) {
-          const charDef = gameState.characterDefinitions.get(char.name);
-          const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
-          if (isPlayer) {
-            player = char;
-            break;
+        const arrivedRoomId = gameState.currentRoomId || targetRoom;
+        log(`[Runtime] load_room: stanza attiva "${arrivedRoomId}"`, 'info');
+
+        if (playerX !== undefined && playerY !== undefined) {
+          let player = null;
+          for (const [, char] of gameState.characters.entries()) {
+            const charDef = gameState.characterDefinitions.get(char.name);
+            const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
+            if (isPlayer) {
+              player = char;
+              break;
+            }
           }
-        }
 
-        if (!player) {
-          log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
-          return true;
-        }
-
-        player.x = Number(playerX) || 0;
-        player.y = Number(playerY) || 0;
-        player.renderX = player.x;
-        player.renderY = player.y;
-        player.targetY = player.y;
-        player.velocityY = 0;
-
-        if (playerDirection !== undefined && playerDirection !== null) {
-          const charDef = gameState.characterDefinitions.get(player.name);
-          if (charDef && charDef.directions[playerDirection]) {
-            player.direction = playerDirection;
-            player.currentFrame = 0;
-            player.frameTime = 0;
+          if (!player) {
+            log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
           } else {
-            log(`[Runtime] load_room: Direzione "${playerDirection}" non disponibile per player "${player.name}"`, 'warning');
+            player.x = Number(playerX) || 0;
+            player.y = Number(playerY) || 0;
+            player.renderX = player.x;
+            player.renderY = player.y;
+            player.targetY = player.y;
+            player.velocityY = 0;
+            player.isMoving = false;
+            player.path = null;
+            player.pathIndex = 0;
+            player.roomId = arrivedRoomId;
+            player.visible = true;
+
+            if (playerDirection !== undefined && playerDirection !== null) {
+              const charDef = gameState.characterDefinitions.get(player.name);
+              if (charDef && charDef.directions[playerDirection]) {
+                player.direction = playerDirection;
+                player.currentFrame = 0;
+                player.frameTime = 0;
+              } else {
+                log(`[Runtime] load_room: Direzione "${playerDirection}" non disponibile per player "${player.name}"`, 'warning');
+              }
+            }
+
+            log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${arrivedRoomId}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
           }
         }
 
-        log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${targetRoom}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
+        // After-load in background: non tiene in sospeso load_room / lo script hotspot
+        Promise.resolve()
+          .then(() => executeRoomChangeScripts(previousRoomId, arrivedRoomId))
+          .catch((err) => {
+            log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
+          });
         return true;
-      }).catch((err) => {
+      })().catch((err) => {
         GameAPI.error(`load_room: ${err && err.message ? err.message : err}`);
         return false;
       });
@@ -7020,64 +7330,111 @@
     },
 
     // Character API
+    /**
+     * Spawna un personaggio. L'id runtime è SEMPRE uguale al name (stabile tra sessioni/script).
+     * @param {string} characterName
+     * @param {number} x
+     * @param {number} y
+     * @param {string} [direction='south']
+     * @param {string} [characterId] - ignorato se diverso dal name (mantenuto solo per compatibilità firma)
+     * @returns {string|null} id (= name)
+     */
     spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
       if (!characterName) {
         GameAPI.error('spawn_character: characterName is required');
         return null;
       }
 
-      const charDef = gameState.characterDefinitions.get(characterName);
-      if (!charDef) {
-        GameAPI.error(`spawn_character: character "${characterName}" not found in definitions`);
+      const name = String(characterName).trim();
+      if (!name) {
+        GameAPI.error('spawn_character: characterName is required');
         return null;
       }
 
-      const id = characterId || `char_${characterName}_${Date.now()}`;
-      const dir = direction || 'south';
-      
-      // Verifica che la direzione esista
-      if (!charDef.directions[dir]) {
-        log(`[Runtime] spawn_character: Direzione "${dir}" non disponibile per "${characterName}", uso "south"`, 'warning');
-        direction = 'south';
+      // id === name sempre (il 5° argomento non può creare id diversi)
+      const id = name;
+      if (characterId != null && String(characterId).trim() !== '' && String(characterId) !== id) {
+        log(`[Runtime] spawn_character: characterId "${characterId}" ignorato — id forzato a name "${id}"`, 'warning');
       }
 
-      // Leggi moveSpeed dalle spawnSettings se disponibile, altrimenti usa default
-      let moveSpeed = 100; // pixel per secondo (default)
+      const charDef = gameState.characterDefinitions.get(name);
+      if (!charDef) {
+        GameAPI.error(`spawn_character: character "${name}" not found in definitions`);
+        return null;
+      }
+
+      // Rimuovi istanze legacy con stesso name ma chiave Map diversa (es. char_Name_timestamp)
+      for (const [key, char] of [...gameState.characters.entries()]) {
+        if (char && char.name === name && key !== id) {
+          gameState.characters.delete(key);
+          log(`[Runtime] spawn_character: removed legacy instance key "${key}" for "${name}"`, 'info');
+        }
+      }
+
+      const dir = direction || 'south';
+      let resolvedDirection = dir;
+      if (!charDef.directions[resolvedDirection]) {
+        log(`[Runtime] spawn_character: Direzione "${resolvedDirection}" non disponibile per "${name}", uso "south"`, 'warning');
+        resolvedDirection = 'south';
+      }
+
+      let moveSpeed = 100;
       if (charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
         const speedValue = Number(charDef.spawnSettings.moveSpeed);
         if (!isNaN(speedValue) && speedValue > 0) {
           moveSpeed = speedValue;
-          log(`[Runtime] Character "${characterName}" usa moveSpeed dalle spawnSettings: ${moveSpeed} pixel/sec`, 'info');
-        } else {
-          log(`[Runtime] Character "${characterName}": moveSpeed non valido (${charDef.spawnSettings.moveSpeed}), uso default: 100`, 'warning');
         }
-      } else {
-        log(`[Runtime] Character "${characterName}": moveSpeed not found nelle spawnSettings, uso default: 100`, 'info');
+      }
+
+      const spawnX = Number(x);
+      const spawnY = Number(y);
+      const posX = Number.isFinite(spawnX) ? spawnX : 0;
+      const posY = Number.isFinite(spawnY) ? spawnY : 0;
+
+      // Se esiste già, riusa e aggiorna posizione (niente duplicati)
+      if (gameState.characters.has(id)) {
+        const existing = gameState.characters.get(id);
+        existing.id = id;
+        existing.name = name;
+        existing.x = posX;
+        existing.y = posY;
+        existing.renderX = posX;
+        existing.renderY = posY;
+        existing.targetY = posY;
+        existing.velocityY = 0;
+        existing.direction = resolvedDirection;
+        existing.roomId = gameState.currentRoomId;
+        existing.visible = true;
+        existing.isMoving = false;
+        existing.path = null;
+        existing.pathIndex = 0;
+        existing.moveSpeed = moveSpeed;
+        existing.playingAnimation = null;
+        log(`[Runtime] spawn_character: reused "${name}" (id=name) at (${posX}, ${posY})`, 'info');
+        return id;
       }
 
       const character = {
         id: id,
-        name: characterName,
-        x: Number(x) || 0,
-        y: Number(y) || 0,
-        // Posizioni frazionarie per movimento fluido (sub-pixel rendering)
-        renderX: Number(x) || 0,
-        renderY: Number(y) || 0,
-        direction: direction,
+        name: name,
+        x: posX,
+        y: posY,
+        renderX: posX,
+        renderY: posY,
+        direction: resolvedDirection,
         currentFrame: 0,
         frameTime: 0,
         visible: true,
         roomId: gameState.currentRoomId,
         isMoving: false,
         path: null,
-        moveSpeed: moveSpeed, // pixel per secondo
-        // Smoothing per movimento verticale più fluido
+        moveSpeed: moveSpeed,
         velocityY: 0,
-        targetY: Number(y) || 0
+        targetY: posY
       };
 
       gameState.characters.set(id, character);
-      log(`[Runtime] Character "${characterName}" spawnato a (${x}, ${y}) con direzione "${direction}"`, 'info');
+      log(`[Runtime] Character "${name}" spawnato a (${posX}, ${posY}) id="${id}" (id=name)`, 'info');
       return id;
     },
 
@@ -7121,11 +7478,21 @@
      * @returns {Promise} Promise che si risolve quando il movimento è completato (se waitForCompletion è true)
      */
     walk_character: function(characterIdOrName, x, y, waitForCompletion = true) {
-      // Prova prima a cercare per ID
+      // Risolvi character: id esatto → playerId se nome coincide → primo match nome in room
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
-      
-      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+
+      if (!character) {
+        const playerId = gameState.variables.get('playerId');
+        if (playerId && gameState.characters.has(playerId)) {
+          const playerChar = gameState.characters.get(playerId);
+          if (playerChar && (playerChar.name === characterIdOrName || playerChar.id === characterIdOrName)) {
+            character = playerChar;
+            characterId = playerId;
+          }
+        }
+      }
+
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -7154,6 +7521,14 @@
         return Promise.reject(new Error(`No walkable area defined for this room`));
       }
 
+      // Allinea x/y logiche a renderX/Y (evita pathfinding da posizione "fantasma")
+      if (typeof character.renderX === 'number' && Number.isFinite(character.renderX)) {
+        character.x = character.renderX;
+      }
+      if (typeof character.renderY === 'number' && Number.isFinite(character.renderY)) {
+        character.y = character.renderY;
+      }
+
       // Inizializza proprietà movimento se mancanti
       if (character.isMoving === undefined) character.isMoving = false;
       if (character.path === undefined) character.path = null;
@@ -7176,9 +7551,10 @@
         return Promise.reject(new Error(`Character "${characterIdOrName}" non ha un pivot definito`));
       }
 
-      // Calcola la posizione del pivot del character
+      // Posizione pivot = coordinate logiche (piedi), già allineate a renderX/Y
       const characterPivotX = character.x;
       const characterPivotY = character.y;
+      log(`[Runtime] walk_character: "${character.name}" (${characterId}) from (${Math.round(characterPivotX)}, ${Math.round(characterPivotY)}) to (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)})`, 'info');
 
       // Verifica se il pivot del character è sulla walkable area
       if (!isPointInPolygon(walkableArea, characterPivotX, characterPivotY)) {
@@ -7414,11 +7790,17 @@
      * Mostra un balloon di dialogo sul personaggio indicato (ID o nome nella room corrente).
      * Usa le impostazioni della prima GUI DialogBox del progetto. Il balloon segue il personaggio.
      * Il giocatore chiude il dialogo con un click.
+     * In on_room_change / on_before_room_change non blocca load_room (il balloon resta in coda).
+     * Negli altri script, await show_dialogue(...) aspetta la chiusura come prima.
      * @param {string} characterIdOrName - ID (da spawn_character) o nome del personaggio
      * @param {string} text - Testo parlato
      */
     show_dialogue: function(characterIdOrName, text) {
-      return queueCommand(async () => {
+      if (text === undefined || text === null) {
+        GameAPI.error('show_dialogue: serve show_dialogue(personaggio, testo) — due argomenti');
+        return Promise.resolve();
+      }
+      return enqueueScriptCommand(async () => {
         await showDialogueAndWait(characterIdOrName, text);
       });
     },
@@ -7431,10 +7813,11 @@
     /**
      * Avvia un dialogo ramificato definito nel progetto (tab Scripts → Dialogues).
      * Esegue nodi line/choice/end; Promise risolta a fine dialogo o end_dialogue().
+     * In on_room_change / on_before_room_change non blocca load_room (il grafo resta in coda).
      * @param {string} dialogueIdOrName - id o name del dialogo
      */
     start_dialogue: function(dialogueIdOrName) {
-      return queueCommand(async () => {
+      return enqueueScriptCommand(async () => {
         const def = resolveDialogue(dialogueIdOrName);
         if (!def) {
           GameAPI.error(`start_dialogue: dialogue "${dialogueIdOrName}" not found`);
@@ -7504,11 +7887,15 @@
 
     /**
      * Elimina uno slot di salvataggio.
-     * @param {number|string} slot
+     * @param {number|string} slot — obbligatorio (1–10 o id stringa)
      */
     delete_save: function(slot) {
       try {
-        const slotKey = normalizeGameSaveSlot(slot);
+        if (slot == null || slot === '') {
+          GameAPI.error('delete_save: slot is required');
+          return { ok: false, error: 'slot_required' };
+        }
+        const slotKey = normalizeGameSaveSlot(slot, { requireExplicit: true });
         deleteGameSaveFromStorage(slotKey);
         log(`[Runtime] delete_save: slot "${slotKey}"`, 'info');
         return { ok: true, slot: slotKey };
@@ -9147,6 +9534,7 @@
         endAllDialogue();
         gameState.dialogues = new Map();
         gameState.dialogueNameIndex = new Map();
+        gameState.dialogueConsumed = new Set();
         gameState.currentRoomId = null;
         gameState.currentRoom = null;
         gameState.objectId = null;
