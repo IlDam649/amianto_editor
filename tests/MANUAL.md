@@ -48,10 +48,28 @@ Automated smoke tests cover pure helpers and serialization. The following requir
 | 7 | Accidental jump cycle | Runtime stops (visit/MAX_STEPS warning), UI not frozen |
 | 8 | Old dialogue (line/choice/end only) | Still runs unchanged |
 
+## Visual Dialogue Editor
+
+| # | Steps | Expected |
+|---|--------|----------|
+| 1 | Scripts → Dialogues → open a legacy dialogue → **Visual** | Nodes appear; auto-layout if no `ui`; Form still shows same data |
+| 2 | Switch **Form** ↔ **Visual**, edit text in one mode, switch | Same dialogue object; changes visible in the other mode |
+| 3 | Add Line / Choice / End, connect ports, set start | Graph updates; Validate reports OK or clear warnings |
+| 4 | Choice option: set condition + once in inspector | Badges on node; data matches form JSON fields |
+| 5 | Add Action + Jump, wire them, Save Project, reopen `.amnt` | Positions (`ui`) and graph logic restored |
+| 6 | Duplicate a node | New ids; links on the clone are independent |
+| 7 | Validate with broken `next` | Status shows errors; project still savable |
+| 8 | Playtest `start_dialogue("…")` | Same runtime behaviour as form-built dialogues |
+| 9 | Export standalone HTML → run dialogue | Behaviour unchanged; layout metadata ignored by runtime |
+| 10 | Pan/zoom only (no node edit) | Viewport stored in `dialogue.editor`; heavy dirty spam avoided |
+| 11 | Line: set mood + portrait (Browse) or character portrait map | Playtest balloon shows portrait + mood label |
+| 12 | Choice condition: build nested `and` / `or` / `not` in Visual | Same declarative objects as runtime; choices hide correctly |
+| 13 | Visual → **Preview** | Play Test opens/focuses and runs `start_dialogue` for the active dialogue |
+
 ## How to run automated smoke tests
 
 ```bash
 npm test
 ```
 
-Covers: JS syntax, save validate/migrate, dialogue conditions/once-only/normalize, AMNT roundtrip, standalone HTML generation.
+Covers: JS syntax, save validate/migrate, dialogue conditions/once-only/normalize, `ui`/`editor` roundtrip, dialogue validation, AMNT roundtrip, standalone HTML generation.

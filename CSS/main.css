@@ -727,15 +727,15 @@ header {
   background: #ff6666;
 }
 
-/* Ensure Bootstrap modals appear above the editor header (which uses high z-index) */
+/* Ensure Bootstrap modals appear above header + dialogue graph context menus */
 .modal {
-  z-index: 3000 !important;
+  z-index: 11000 !important;
 }
 .modal-backdrop {
-  z-index: 2990 !important;
+  z-index: 10990 !important;
 }
 .modal-dialog {
-  z-index: 3001;
+  z-index: 11001;
 }
 
 /* Script Log Panel */

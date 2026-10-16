@@ -312,7 +312,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Not yet in runtime (roadmap):** visual dialogue node editor, in-game save menu UI, visual transitions (`fade_in`, …). Dialogue conditions / once-only / jump / action + `save_game`/`load_game` ✅. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), [tests/MANUAL.md](tests/MANUAL.md). Run `npm test` for smoke tests.
+**Not yet in runtime (roadmap):** in-game save menu UI, visual transitions (`fade_in`, …). Dialogue conditions / once-only / jump / action + **visual node editor** + portraits/mood + nested condition builder + Preview via `start_dialogue` + `save_game`/`load_game` ✅. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), [tests/MANUAL.md](tests/MANUAL.md). Run `npm test` for smoke tests.
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -377,7 +377,7 @@ npm run dist       # build Windows installer in dist/
 - ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
-- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (conditions, once-only, jump/action + form editor) — ❌ visual node editor, mood
+- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (conditions, once-only, jump/action + form/visual editor + portraits/mood + nested conditions + Preview) — ❌ localisation / talking-head animation
 - 🟡 **Audio System (partial)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ volume mixer, ambient layers
 - ✅ **Room animations**: Animations tab + room placements; `play_animation()`, `stop_animation()`
 - **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
@@ -427,7 +427,7 @@ window.gameAPI = {
 - [x] **Phase 1**: Core event system (8 handlers), inventory, objects, rooms, variables ✅
 - [x] **Phase 1**: API unification A–D (`getScriptApiBindings`, scope handler) ✅
 - [x] **Phase 2**: Basic dialogue balloons (`show_dialogue`, `end_dialogue`) ✅
-- [x] **Phase 2**: Branching dialogue (`start_dialogue` + conditions/once/jump/action + form editor) ✅ — visual node editor still TODO
+- [x] **Phase 2**: Branching dialogue (`start_dialogue` + conditions/once/jump/action + form + visual node editor) ✅
 - [x] **Phase 2**: Contextual cursors in runtime ✅
 - [ ] **Phase 2**: Audio mixer / ambient; visual transitions (`fade_in`, …)
 - [x] **Phase 3**: Save/load game API (`save_game` / `load_game`) harden ✅ — slot menu UI still TODO
@@ -679,7 +679,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Non ancora nel runtime:** editor nodi visuale, menu UI salvataggi, transizioni visive. Condizioni/once/jump/action + `save_game`/`load_game` ✅. Vedi [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), `npm test`.
+**Non ancora nel runtime:** menu UI salvataggi, transizioni visive, ritratti/mood. Condizioni/once/jump/action + **editor nodi visuale** (Scripts → Dialogues → Visual) + `save_game`/`load_game` ✅. Vedi [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), `npm test`.
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -726,7 +726,7 @@ on_room_change(function(oldRoom, newRoom) {
 - ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
-- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (condizioni, once-only, jump/action) — ❌ editor nodi visuale, mood
+- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (condizioni, once-only, jump/action + editor form/visuale + ritratti/mood + Preview) — ❌ localisation / talking-head
 - 🟡 **Sistema Audio (parziale)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ mixer volumi, ambient
 - ✅ **Animazioni di stanza**: tab Animations + posizionamento in Rooms; `play_animation()`, `stop_animation()`
 - **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
@@ -777,7 +777,7 @@ window.gameAPI = {
 - [x] **Fase 1**: Gestione oggetti e stanze avanzata ✅
 - [x] **Fase 1**: Sistema variabili di gioco ✅
 - [x] **Fase 2**: Dialoghi base (balloon su personaggio) ✅
-- [x] **Fase 2**: Dialoghi ramificati (condizioni/once/jump/action) ✅ — editor nodi ancora TODO
+- [x] **Fase 2**: Dialoghi ramificati (condizioni/once/jump/action + editor form e visuale) ✅
 - [ ] **Fase 2**: Mixer audio, effetti visivi
 - [x] **Fase 3**: Save/load gioco API harden ✅ — menu slot ancora TODO
 - [ ] **Fase 3**: UI avanzata, debug tools e utilità

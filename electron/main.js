@@ -1,20 +1,33 @@
-const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, dialog, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
 
 const isDev = !app.isPackaged;
 
+/** Logo software — stesso ovunque (editor, playtest, taskbar, installer). */
+const APP_ICON_PATH = path.join(__dirname, '..', 'img', 'mnt.png');
+
+function getAppIcon() {
+  try {
+    const img = nativeImage.createFromPath(APP_ICON_PATH);
+    return img && !img.isEmpty() ? img : APP_ICON_PATH;
+  } catch (_) {
+    return APP_ICON_PATH;
+  }
+}
+
 // Consenti audio senza gesture (play_music in on_room_change dopo load_room async)
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 function createWindow() {
+  const appIcon = getAppIcon();
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1024,
     minHeight: 700,
     title: 'Amianto Editor',
-    icon: path.join(__dirname, '..', 'img', 'mnt.png'),
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -31,12 +44,14 @@ function createWindow() {
       shell.openExternal(url);
       return { action: 'deny' };
     }
-    // Finestra Play Test (runtime.html): stessa policy autoplay del main
+    // Finestra Play Test (runtime.html): stesso logo + stessa policy autoplay del main
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
         width: 1200,
         height: 800,
+        title: 'Amianto Play Test',
+        icon: getAppIcon(),
         webPreferences: {
           preload: path.join(__dirname, 'preload.js'),
           contextIsolation: true,
@@ -100,6 +115,7 @@ ipcMain.handle('amianto:open-runtime-window', async (_event, runtimeUrl) => {
   };
 
   if (runtimeWin && !runtimeWin.isDestroyed()) {
+    try { runtimeWin.setIcon(getAppIcon()); } catch (_) {}
     runtimeWin.focus();
     try {
       await loadRuntime(runtimeWin);
@@ -112,8 +128,8 @@ ipcMain.handle('amianto:open-runtime-window', async (_event, runtimeUrl) => {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Amianto Runtime',
-    icon: path.join(__dirname, '..', 'img', 'mnt.png'),
+    title: 'Amianto Play Test',
+    icon: getAppIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -252,6 +268,19 @@ ipcMain.handle('amianto:read-file-chunked-abort', async (_event, id) => {
 });
 
 app.whenReady().then(() => {
+  // Windows: raggruppa taskbar sotto Amianto; macOS: icona dock
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.amianto.editor');
+  }
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      const dockIcon = getAppIcon();
+      if (dockIcon && typeof app.dock.setIcon === 'function') {
+        app.dock.setIcon(dockIcon);
+      }
+    } catch (_) {}
+  }
+
   createWindow();
 
   app.on('activate', () => {

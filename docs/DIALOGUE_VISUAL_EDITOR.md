@@ -1,32 +1,36 @@
-# Proposed architecture — Visual Dialogue Editor
+# Visual Dialogue Editor
 
-**Status:** design only. Do not implement until approved.  
-**Constraint:** the visual editor must **not** create a second dialogue execution engine. Playtest and standalone export continue to use `runDialogueGraph` in `JS/runtime.js`.
+**Status:** implemented (Amianto Editor 1.0.0).  
+**Constraint:** the visual editor does **not** create a second dialogue execution engine. Playtest and standalone export continue to use `runDialogueGraph` in `JS/runtime.js`.
 
 ## Goals
 
 - Edit the same `project.dialogues` graph already used by the form editor and runtime.
 - Preserve stable node and option IDs so once-only keys (`dialogueId::optionId`) remain valid across edits.
-- Keep the form-based editor working until the visual editor reaches feature parity for load/edit/save.
+- Keep the form-based editor working alongside the visual editor (shared in-memory model).
 
-## Non-goals (first visual release)
+## Modes
 
-- Separate runtime / preview sandbox with different APIs.
-- Arbitrary JavaScript in node conditions or actions (continue using the declarative condition/action model).
-- Simultaneous multi-user editing.
+Under **Scripts → Dialogues**:
+
+| Mode | UI |
+|------|-----|
+| **Form** | Classic node list in the Scripts sidebar (unchanged fields). |
+| **Visual** | Node canvas in the main workspace (`#dialogueGraphMainPanel`) + inspector. |
+
+Both modes mutate `window.projectDialogues`. Switching modes re-renders from the same objects (no independent copies).
 
 ## Data model (shared)
-
-Unchanged root shape:
 
 ```text
 project.dialogues[] = {
   id, name, startNodeId,
+  editor?: { panX, panY, zoom },   // editor viewport only
   nodes: { [nodeId]: DialogueNode }
 }
 ```
 
-Node types (already in runtime / form editor):
+Node types (runtime / form / visual):
 
 | Type | Purpose |
 |------|---------|
@@ -36,109 +40,65 @@ Node types (already in runtime / form editor):
 | `action` | declarative `actions[]` + `next` |
 | `end` | terminate session |
 
-Optional future visual-only presentation fields (must be ignored by runtime if unknown):
+There is **no** `start` node type. The entry point is `startNodeId` (badge **START** in the visual editor). Incoming connections to the start node are refused in the canvas.
 
-- `ui: { x, y }` — canvas layout positions
-- `ui: { color, collapsed }` — cosmetic
+### Editor-only metadata
 
-Normalization must continue to live in `JS/lib/dialogue-logic.js` so editor, runtime, and tests share one schema.
+- `node.ui = { x, y }` — canvas layout
+- `dialogue.editor = { panX, panY, zoom }` — viewport
 
-## UI layout
+Normalized by `JS/lib/dialogue-logic.js` and stored in `.amnt`. The runtime **ignores** these fields (never treated as game logic).
 
-```text
-+------------------------------------------------------------------+
-| Toolbar: dialogue select | + Dialogue | Validate | Preview       |
-+------------------+---------------------------+-------------------+
-| Palette          | Graph canvas              | Inspector         |
-| - Line           | (pan / zoom)              | Selected node /   |
-| - Choice         | nodes + bezier edges      | option fields     |
-| - Jump           |                           |                   |
-| - Action         |                           |                   |
-| - End            |                           |                   |
-+------------------+---------------------------+-------------------+
-| Status: validation warnings / start node / unsaved               |
-+------------------------------------------------------------------+
-```
+Pan/zoom updates `dialogue.editor` in memory without marking the project dirty on every mouse move; node moves and property edits call `markAmiantoProjectDirty()`.
 
-### Canvas
+## Files
 
-- CSS transform or lightweight canvas for pan/zoom.
-- Nodes as DOM cards (easier inspector binding) or drawn boxes; prefer DOM for accessibility.
-- Edges from output ports (`next` / option `next` / jump `target`) to target node.
-- Mark `startNodeId` with a distinct badge; allow “Set as start”.
+| Piece | Location |
+|-------|----------|
+| Graph view | `JS/dialogue-graph-editor.js` |
+| Styles | `CSS/dialogue-graph.css` |
+| Normalize (+ `ui` / `editor`) | `JS/lib/dialogue-logic.js` |
+| Validate | `JS/lib/dialogue-validate.js` |
+| Form + mode hooks | `JS/main.js` (Scripts → Dialogues) |
+| Mount | `index.html` (`#dialogueGraphMainPanel`) |
 
-### Node inspector
+## Canvas features
 
-Mirrors form fields:
+- Drag nodes; pan (middle mouse / Space+drag / empty background); wheel zoom; Fit / Center
+- Toolbar + right-click: add Line / Choice / Jump / Action / End
+- Connect output ports → input ports (`next` / option `next` / jump `target`)
+- Select nodes and edges; Delete; Duplicate (new ids); Undo/Redo (Ctrl+Z / Ctrl+Y)
+- Inspector: structured condition/action builders (no `eval`)
+- Action types include `run_script (custom)`: write inline JS in a textarea (stored as `action.code`); runtime calls `on_dialogue_action(dialogueId, nodeId, optionId)` via the shared sandbox
+- Line nodes: optional `mood` + `portrait` (override image); character `portraits` map (mood → image) used as fallback
+- Nested condition builder for `and` / `or` / `not` (depth-limited), same declarative schema as runtime
+- **Preview** button: opens Play Test and runs real `start_dialogue` (handler `on_dialogue_preview`) — no second dialogue engine
+- Validate button (errors vs warnings)
+- Visual hints: START badge, once/cond badges on choices, broken edges, unreachable nodes
 
-- Line: speaker, text, next, actions JSON (or structured rows).
-- Choice: list of options with once, condition builder, actions, next.
-- Jump: target picker (dropdown of node ids).
-- Action: action list builder + next.
-- End: no fields.
+## Validation
 
-### Condition / action builders
+`AmiantoDialogueValidate.validateDialogue(def)` returns `{ ok, errors[], warnings[] }`.
 
-Replace raw JSON for common cases with small forms that emit the same declarative objects:
+Hard errors include missing start, broken links, jump without target, invalid conditions/actions, duplicate option ids.
 
-- Conditions: `has_item`, `var` ops, `and` / `or` / `not`
-- Actions: `set_var`, `add_item`, `remove_item`, `set_object_visible`
+Warnings include unreachable nodes, empty option text, missing exits, intentional cycles.
 
-Advanced users may still edit JSON. No `eval` / `new Function`.
+Incomplete dialogues can still be saved; fix errors before playtest/export if you need a runnable graph.
 
-## Interactions
+## Preview / playtest
 
-- Click select; Shift/Ctrl multi-select; Delete removes nodes and clears dangling refs to deleted ids.
-- Drag from port to node creates/updates `next` or `target`.
-- Double-click node focuses inspector text field.
-- Undo/redo stack scoped to the active dialogue (optional in v1; can ship without).
+Use existing Play Test with `start_dialogue("name_or_id")`. No separate preview runner.
 
-## Validation (editor-time)
+## Limits (current)
 
-Shared helper (extend `dialogue-logic.js` or add `dialogue-validate.js`):
+- Localisation keys not supported
+- Portrait images are drawn beside the balloon (fixed size); no lip-sync / talking heads
+- Nested conditions capped at depth 4 in the visual builder
+- Preview requires a playable project (speaker character visible in current room) via Play Test
+- Undo stack is scoped to the active dialogue session in the visual editor
+- Form mode still uses raw JSON strings for nested conditions/actions (visual mode has builders)
 
-- Missing `startNodeId` or start not in `nodes`
-- Broken `next` / `target` references
-- Choice options without `id` or empty text (warning)
-- Jump cycles / strongly connected components → warning (runtime already has MAX_STEPS / visit caps)
-- Unused nodes → info
+## Manual checks
 
-Show results in the status bar; block Preview only on hard errors (missing start).
-
-## Preview mode
-
-- Button **Preview** opens playtest-like mini runner **or** reuses existing runtime iframe with a temporary script `start_dialogue(id)`.
-- Must call the real `GameAPI.start_dialogue` / `runDialogueGraph`.
-- No duplicate dialogue walker in the editor.
-
-## Serialization
-
-1. Visual layout → mutate in-memory `window.projectDialogues` (same as form editor).
-2. On project save → `serializeDialogues()` → `normalizeDialogueDef` → `.amnt`.
-3. `ui` layout fields: either stripped on export to runtime (keep only in editor cache) **or** stored in project as optional ignored fields. Prefer storing `ui` in project so positions survive reload; runtime normalizer already drops unknown keys only if we explicitly allow `ui` passthrough on serialize for editor roundtrip.
-
-**Recommendation:** keep `node.ui = { x, y }` in `.amnt`; runtime `normalizeNode` ignores `ui`.
-
-## Migration path
-
-1. Ship visual editor behind a toggle (“Form” | “Graph”) reading/writing the same dialogue object.
-2. When opening a dialogue without `ui` positions, auto-layout (layered / simple grid).
-3. Deprecate form editor only after parity checklist passes (conditions, once, jump, action, start node, validation).
-
-## Implementation sketch (future)
-
-| Piece | Suggested location |
-|-------|--------------------|
-| Graph view | `JS/dialogue-graph-editor.js` (new) |
-| Shared normalize/validate | `JS/lib/dialogue-logic.js` (extend) |
-| Mount point | Scripts tab panel beside current form |
-| Dirty flag | existing `markAmiantoProjectDirty()` |
-
-Avoid large edits to `JS/main.js` beyond a thin mount/unmount hook.
-
-## Out of scope until later
-
-- Mood / portraits / voice lines
-- Localisation keys
-- Sub-dialogues as separate assets with cross-file references
-- Collaborative cursors
+See [tests/MANUAL.md](../tests/MANUAL.md) section **Visual Dialogue Editor**.

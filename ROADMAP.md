@@ -13,7 +13,7 @@
 **Documenti correlati:**
 - [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md) — piano tecnico unificazione API editor ↔ runtime
 
-**✅ Nota (ottobre 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi balloon + `start_dialogue` (line/choice/end/jump/action + condizioni + once-only) ✅**, **save/load gioco** hardenato (`validate`/`migrate`, `dialogueConsumed`) ✅, **autosave progetto** con distinzione cache vs disco ✅, **smoke test** (`npm test`) ✅. Prossimi step: editor nodi visuale (vedi `docs/DIALOGUE_VISUAL_EDITOR.md`), mixer audio, transizioni, UI slot save in-game.
+**✅ Nota (ottobre 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi balloon + `start_dialogue` (line/choice/end/jump/action + condizioni + once-only) ✅**, **editor nodi visuale** (Scripts → Dialogues → Visual, stesso `project.dialogues`) ✅, **save/load gioco** hardenato (`validate`/`migrate`, `dialogueConsumed`) ✅, **autosave progetto** con distinzione cache vs disco ✅, **smoke test** (`npm test`) ✅. Prossimi step: mixer audio, transizioni, UI slot save in-game, ritratti dialoghi.
 
 ---
 
@@ -103,8 +103,10 @@
   - ✅ Once-only choices (persistite in `save_game` come `state.dialogueConsumed`)
   - ✅ Actions declarative (`set_var`, `add_item`, `remove_item`, `set_object_visible`)
   - ✅ Editor form-based in Scripts → Dialogues (persistito in `.amnt`); edit marca dirty
+  - ✅ Editor nodi visuale (DOM/SVG) con toggle Form/Visual, inspector, validazione (`docs/DIALOGUE_VISUAL_EDITOR.md`)
   - ✅ Scelte clickable in playtest e export HTML (stesso `runtime.js`)
-  - **Prossimo passo**: editor nodi visuale (proposta in `docs/DIALOGUE_VISUAL_EDITOR.md`); ritratti
+  - ✅ Ritratti / mood su Line + mappa `character.portraits`; builder condizioni annidate; Preview Play Test via `start_dialogue`
+  - **Prossimo passo**: localisation keys; talking-head / lip-sync
 - **Sistema inventario GUI**: Inventory GUI parziale
   - ✅ Rendering pannello, slot, oggetto in mano (carriedItem)
   - ✅ Combinazioni use-with (hotspot, object, character, inventory)
@@ -142,7 +144,7 @@
 - Test manuali checklist Fase E (`await` + inventario nello stesso handler)
 
 #### ❌ **Mancante (backlog)**
-- Dialoghi: editor nodi visuale, mood/relazioni/ritratti
+- Dialoghi: mood/relazioni/ritratti (editor nodi visuale ✅)
 - Audio avanzato: volumi, ambient, fade musica
 - Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 - Save gioco: UI menu slot in-game; IndexedDB; screenshot metadata

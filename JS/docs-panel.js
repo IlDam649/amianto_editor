@@ -159,6 +159,8 @@ if (Game.getVar("door_open")) {
         <tr><td><code>on_gui_click</code></td><td>GUI button clicked</td><td><code>buttonId</code>, <code>x</code>, <code>y</code></td></tr>
         <tr><td><code>on_use_with</code></td><td><strong>Inventory item script</strong> — use on a target</td><td><code>targetType</code>, <code>targetId</code>, <code>x</code>, <code>y</code> — return <code>true</code> if handled</td></tr>
         <tr><td><code>on_inventory_use_with</code></td><td><strong>Global</strong> fallback (any item); also accepted as alias on item scripts</td><td><code>itemId</code>, <code>targetType</code>, <code>targetId</code>, <code>x</code>, <code>y</code></td></tr>
+        <tr><td><code>on_dialogue_action</code></td><td>Inline <code>run_script</code> action in Scripts → Dialogues (Visual inspector)</td><td><code>dialogueId</code>, <code>nodeId</code>, <code>optionId?</code></td></tr>
+        <tr><td><code>on_dialogue_preview</code></td><td>Fired by Visual editor <strong>Preview</strong> button (Play Test)</td><td>none — calls <code>start_dialogue</code></td></tr>
       </tbody>
     </table>
     <p><strong>Scope tips:</strong> <strong>Inventory</strong> item scripts must define <code>on_use_with</code> (not <code>on_inventory_use_with</code>, except as legacy alias). Global scripts use <code>on_inventory_use_with</code> for all items. Always <code>return true</code> on success.</p>
@@ -175,7 +177,7 @@ if (Game.getVar("door_open")) {
       <li><code>show_message(text)</code> — fixed notification overlay (~3s)</li>
       <li><code>show_dialogue(character, text)</code> — speech balloon above a character (two args required). Click to dismiss. In hotspot/object scripts, <code>await show_dialogue(...)</code> waits until closed. In <code>on_room_change</code> / <code>on_before_room_change</code> it does <strong>not</strong> block <code>load_room</code> (balloon still shows after the room is ready).</li>
       <li><code>show_dialogue_text(text, speaker)</code> — same as <code>show_dialogue(speaker, text)</code></li>
-      <li><code>start_dialogue(dialogueIdOrName)</code> — branching graph from <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices may have <code>condition</code>, <code>once</code>, <code>actions</code>. Promise resolves when the dialogue ends.</li>
+      <li><code>start_dialogue(dialogueIdOrName)</code> — branching graph from <strong>Scripts → Dialogues</strong> (Form or Visual node editor; nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices may have <code>condition</code>, <code>once</code>, <code>actions</code>. Promise resolves when the dialogue ends.</li>
       <li><code>end_dialogue()</code> — close the active balloon and abort any running <code>start_dialogue</code> session</li>
       <li><code>save_game(slot?, label?)</code> — save player state (room, variables, inventory, characters, objects/hotspots, dialogue once-only) to <code>localStorage</code> (slots 1–10 or string). Not stored in <code>.amnt</code>. Quota-limited by the browser.</li>
       <li><code>load_game(slot?)</code> — restore a save; does not re-fire <code>on_game_start</code> / <code>on_room_change</code></li>
@@ -368,7 +370,7 @@ function on_character_click(character_id) {
 }</code></pre>
 
     <h3>5a2 — Branching dialogue (<code>start_dialogue</code>)</h3>
-    <p>Create a dialogue under <strong>Scripts → Dialogues</strong> (nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices support <em>Once only</em>, condition JSON (<code>has_item</code>, <code>var</code>, <code>and</code>/<code>or</code>/<code>not</code>), and actions JSON. Speakers must match character names/ids. Then:</p>
+    <p>Create a dialogue under <strong>Scripts → Dialogues</strong> using <strong>Form</strong> or <strong>Visual</strong> mode (same <code>project.dialogues</code> data). Nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>. The Visual editor stores layout in <code>node.ui</code> (ignored by runtime). Choices support <em>Once only</em>, declarative conditions (<code>has_item</code>, <code>var</code>, <code>and</code>/<code>or</code>/<code>not</code>), and actions. Speakers must match character names/ids. Then:</p>
     <pre class="docs-code"><code>function on_character_click(character_id) {
   start_dialogue("New Dialogue"); // name or id from Dialogues list
 }

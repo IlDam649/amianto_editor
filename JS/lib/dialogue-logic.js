@@ -27,7 +27,8 @@
     set_var: true,
     add_item: true,
     remove_item: true,
-    set_object_visible: true
+    set_object_visible: true,
+    run_script: true
   };
 
   function isPlainObject(value) {
@@ -100,9 +101,56 @@
         const objectId = String(a.objectId || a.object || a.id || '').trim();
         if (!objectId) return;
         out.push({ type: 'set_object_visible', objectId: objectId, visible: a.visible !== false });
+        return;
+      }
+      if (type === 'run_script') {
+        // Inline custom script written in the dialogue editor (not a project script picker).
+        const code = String(a.code != null ? a.code : '').trim();
+        if (!code) return;
+        const handler = String(a.handler || a.handlerName || 'on_dialogue_action').trim() || 'on_dialogue_action';
+        const entry = { type: 'run_script', code: code, handler: handler };
+        const sid = String(a.id || '').trim();
+        if (sid) entry.id = sid;
+        out.push(entry);
       }
     });
     return out;
+  }
+
+  /**
+   * Editor-only layout metadata. Runtime ignores these fields.
+   * @returns {{ x: number, y: number }|null}
+   */
+  function normalizeNodeUi(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const src = raw.ui && typeof raw.ui === 'object' ? raw.ui : raw;
+    const x = Number(src.x);
+    const y = Number(src.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: x, y: y };
+  }
+
+  /**
+   * Editor viewport state on the dialogue root. Runtime ignores this.
+   * @returns {{ panX: number, panY: number, zoom: number }|null}
+   */
+  function normalizeEditorViewport(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const panX = Number(raw.panX);
+    const panY = Number(raw.panY);
+    let zoom = Number(raw.zoom);
+    if (!Number.isFinite(panX) || !Number.isFinite(panY)) return null;
+    if (!Number.isFinite(zoom) || zoom <= 0) zoom = 1;
+    if (zoom < 0.2) zoom = 0.2;
+    if (zoom > 3) zoom = 3;
+    return { panX: panX, panY: panY, zoom: zoom };
+  }
+
+  function attachNodeUi(node, src) {
+    if (!node || !src) return node;
+    const ui = normalizeNodeUi(src);
+    if (ui) node.ui = ui;
+    return node;
   }
 
   function normalizeOption(opt, index) {
@@ -136,24 +184,28 @@
         text: String(src.text != null ? src.text : ''),
         next: String(src.next || '').trim()
       };
+      const mood = String(src.mood || '').trim();
+      if (mood) node.mood = mood;
+      const portrait = String(src.portrait || src.portraitImage || '').trim();
+      if (portrait) node.portrait = portrait;
       const actions = normalizeActions(src.actions);
       if (actions.length) node.actions = actions;
-      return node;
+      return attachNodeUi(node, src);
     }
 
     if (type === 'choice') {
       const options = Array.isArray(src.options)
         ? src.options.map(normalizeOption).filter(Boolean)
         : [];
-      return { id: nodeId, type: 'choice', options: options };
+      return attachNodeUi({ id: nodeId, type: 'choice', options: options }, src);
     }
 
     if (type === 'jump') {
-      return {
+      return attachNodeUi({
         id: nodeId,
         type: 'jump',
         target: String(src.target || src.next || '').trim()
-      };
+      }, src);
     }
 
     if (type === 'action') {
@@ -163,10 +215,10 @@
         next: String(src.next || '').trim(),
         actions: normalizeActions(src.actions)
       };
-      return node;
+      return attachNodeUi(node, src);
     }
 
-    return { id: nodeId, type: 'end' };
+    return attachNodeUi({ id: nodeId, type: 'end' }, src);
   }
 
   function normalizeDialogueDef(raw) {
@@ -185,7 +237,10 @@
       const keys = Object.keys(nodes);
       startNodeId = keys.length ? keys[0] : '';
     }
-    return { id: id, name: name, startNodeId: startNodeId, nodes: nodes };
+    const out = { id: id, name: name, startNodeId: startNodeId, nodes: nodes };
+    const editor = normalizeEditorViewport(raw.editor);
+    if (editor) out.editor = editor;
+    return out;
   }
 
   function compareValues(left, op, right) {
@@ -272,11 +327,14 @@
 
   return {
     ACTION_TYPES: ACTION_TYPES,
+    VAR_OPS: VAR_OPS,
     makeConsumedKey: makeConsumedKey,
     normalizeCondition: normalizeCondition,
     normalizeActions: normalizeActions,
     normalizeOption: normalizeOption,
     normalizeNode: normalizeNode,
+    normalizeNodeUi: normalizeNodeUi,
+    normalizeEditorViewport: normalizeEditorViewport,
     normalizeDialogueDef: normalizeDialogueDef,
     evaluateCondition: evaluateCondition,
     filterChoiceOptions: filterChoiceOptions,

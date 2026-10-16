@@ -59,6 +59,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="Amianto Editor">
   <title>${safeTitle}</title>
+  ${opts.faviconDataUrl
+    ? `<link rel="icon" type="image/png" href="${String(opts.faviconDataUrl).replace(/"/g, '')}">`
+    : ''}
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {

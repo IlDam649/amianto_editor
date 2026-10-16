@@ -3904,6 +3904,7 @@ window.selectRoom = function(roomId) {
     }
     return window.amiantoResources.pick(options);
   }
+  window.pickAmiantoResourceImage = pickResourceImage;
 
   async function loadImageFromResourceEntry(resource) {
     if (!resource) return null;
@@ -6364,6 +6365,41 @@ window.selectRoom = function(roomId) {
         speedInput.value = 100; // valore di default
       }
     }
+
+    refreshCharacterPortraitsUI(characterName);
+  }
+
+  function refreshCharacterPortraitsUI(characterName) {
+    const list = document.getElementById('character-portraits-list');
+    if (!list) return;
+    const charData = characterName ? characterFrames.get(characterName) : null;
+    const portraits = (charData && charData.portraits && typeof charData.portraits === 'object')
+      ? charData.portraits
+      : {};
+    const keys = Object.keys(portraits);
+    if (!keys.length) {
+      list.innerHTML = '<div class="text-muted small">No portraits yet.</div>';
+      return;
+    }
+    list.innerHTML = keys.map(mood => {
+      const hasImg = !!(portraits[mood]);
+      return `<div class="d-flex justify-content-between align-items-center mb-1" data-portrait-mood="${escapeHtmlAttr(mood)}">
+        <span class="text-light small"><code style="color:#39ff14">${escapeHtmlAttr(mood)}</code> ${hasImg ? '✓' : ''}</span>
+        <button type="button" class="btn btn-outline-danger btn-sm py-0" data-del-portrait="${escapeHtmlAttr(mood)}">×</button>
+      </div>`;
+    }).join('');
+    list.querySelectorAll('[data-del-portrait]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mood = btn.getAttribute('data-del-portrait');
+        const cd = characterFrames.get(characterName);
+        if (!cd || !cd.portraits) return;
+        delete cd.portraits[mood];
+        if (!Object.keys(cd.portraits).length) delete cd.portraits;
+        characterFrames.set(characterName, cd);
+        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+        refreshCharacterPortraitsUI(characterName);
+      });
+    });
   }
 
   // Salva le impostazioni di spawn per il character corrente
@@ -6459,40 +6495,39 @@ window.selectRoom = function(roomId) {
     if (speedContainer) speedContainer.style.display = 'block';
   }
 
-  // Add event listener for character selection change
-  document.addEventListener('DOMContentLoaded', function() {
+  // Character spawn / portrait UI (already inside outer DOMContentLoaded — do not nest another)
+  {
     const characterSelector = document.getElementById('character-selector');
     if (characterSelector) {
       characterSelector.addEventListener('change', function() {
         loadCharacterDirections();
       });
     }
-    
-    // Setup spawn settings event listeners
+
     const isPlayerCheck = document.getElementById('character-spawn-is-player');
     const autoSpawnCheck = document.getElementById('character-spawn-auto');
     const roomSelect = document.getElementById('character-spawn-room');
     const positionInput = document.getElementById('character-spawn-position');
     const directionSelect = document.getElementById('character-spawn-direction');
-    
+
     if (isPlayerCheck) {
       isPlayerCheck.addEventListener('change', function() {
         saveCharacterSpawnSettings();
         updateSpawnSettingsVisibility();
       });
     }
-    
+
     if (autoSpawnCheck) {
       autoSpawnCheck.addEventListener('change', function() {
         saveCharacterSpawnSettings();
         updateSpawnSettingsVisibility();
       });
     }
-    
+
     if (roomSelect) {
       roomSelect.addEventListener('change', saveCharacterSpawnSettings);
     }
-    
+
     if (positionInput) {
       positionInput.addEventListener('input', function() {
         const parsed = parsePositionString(positionInput.value);
@@ -6501,49 +6536,76 @@ window.selectRoom = function(roomId) {
         }
       });
     }
-    
+
     if (directionSelect) {
       directionSelect.addEventListener('change', saveCharacterSpawnSettings);
     }
-    
+
     const speedInput = document.getElementById('character-spawn-speed');
     if (speedInput) {
       speedInput.addEventListener('change', saveCharacterSpawnSettings);
       speedInput.addEventListener('input', function() {
-        // Salva anche durante la digitazione per feedback immediato
         const value = Number(speedInput.value);
         if (!isNaN(value) && value > 0 && value <= 1000) {
           saveCharacterSpawnSettings();
         }
       });
     }
-    
-    // Gestione right-click per aggiornare posizione character spawn
+
+    const portraitAddBtn = document.getElementById('character-portrait-add-btn');
+    if (portraitAddBtn && !portraitAddBtn._amiantoBound) {
+      portraitAddBtn._amiantoBound = true;
+      portraitAddBtn.addEventListener('click', async function() {
+        const sel = document.getElementById('character-selector');
+        const characterName = sel ? sel.value : '';
+        if (!characterName) {
+          showNotification('Select a character first', 'warning');
+          return;
+        }
+        const moodInput = document.getElementById('character-portrait-mood');
+        const mood = String(moodInput && moodInput.value ? moodInput.value : '').trim() || 'default';
+        const resource = await pickResourceImage({ title: 'Portrait for mood: ' + mood });
+        if (!resource) return;
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) {
+          showNotification('Could not load portrait image', 'warning');
+          return;
+        }
+        let charData = characterFrames.get(characterName);
+        if (!charData) {
+          charData = createEmptyCharacterData(characterName);
+        }
+        if (!charData.portraits) charData.portraits = {};
+        const serialized = typeof serializeImage === 'function' ? serializeImage(img) : (img.src || '');
+        charData.portraits[mood] = serialized || img.src || resource.publicUrl || '';
+        characterFrames.set(characterName, charData);
+        if (moodInput) moodInput.value = '';
+        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+        refreshCharacterPortraitsUI(characterName);
+        showNotification(`Portrait "${mood}" set for ${characterName}`, 'success');
+      });
+    }
+
     if (canvas) {
       canvas.addEventListener('contextmenu', function(e) {
         e.preventDefault();
-        
-        // Calcola sempre le coordinate (indipendentemente dalla tab)
+
         const worldPos = screenToWorld(e.clientX, e.clientY);
         const roundedX = Math.round(worldPos.x);
         const roundedY = Math.round(worldPos.y);
-        
-        // Nota: la copia delle coordinate negli appunti in modalitÃ  rooms Ã¨ gestita
-        // dal gestore contextmenu principale (riga 1773)
-        
+
         const sel = document.getElementById('character-selector');
         if (sel && sel.value) {
-          // Se siamo nella tab characters e c'Ã¨ un character selezionato
           const currentTab = document.querySelector('.nav-link.active');
           if (currentTab && currentTab.getAttribute('data-tab') === 'characters') {
-            const positionInput = document.getElementById('character-spawn-position');
-            if (positionInput) {
-              positionInput.value = formatPositionString(roundedX, roundedY);
-              const parsed = parsePositionString(positionInput.value);
+            const posInput = document.getElementById('character-spawn-position');
+            if (posInput) {
+              posInput.value = formatPositionString(roundedX, roundedY);
+              const parsed = parsePositionString(posInput.value);
               if (parsed.valid) {
-                positionInput.style.backgroundColor = '#2d5016';
+                posInput.style.backgroundColor = '#2d5016';
                 setTimeout(() => {
-                  positionInput.style.backgroundColor = '';
+                  posInput.style.backgroundColor = '';
                 }, 500);
                 saveCharacterSpawnSettings();
               }
@@ -6552,7 +6614,7 @@ window.selectRoom = function(roomId) {
         }
       });
     }
-  });
+  }
 
   window.uploadCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
@@ -8336,7 +8398,7 @@ window.selectRoom = function(roomId) {
     'Game.getVar', 'Game.setVar', 'Game.hasVar', 'Game.toggleVar',
     'GameAPI.print', 'GameAPI.error', 'GameAPI.getVariable', 'GameAPI.setVariable',
     'on_game_start', 'on_before_room_change', 'on_room_change', 'on_object_click', 'on_character_click',
-    'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with',
+    'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with', 'on_dialogue_action',
     'print', 'log', 'wait', 'show_message', 'showText',
     'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'start_dialogue',
     'save_game', 'load_game', 'delete_save', 'get_save_info',
@@ -8594,7 +8656,8 @@ window.selectRoom = function(roomId) {
       'on_hotspot_click',
       'on_gui_click',
       'on_use_with',
-      'on_inventory_use_with'
+      'on_inventory_use_with',
+      'on_dialogue_action'
     ].forEach(h => {
       const re = new RegExp(`(?:async\\s+)?function\\s+${h}\\s*\\(`);
       if (re.test(content)) handlers.add(h);
@@ -10075,9 +10138,10 @@ window.selectRoom = function(roomId) {
   };
 
   // ============================================
-  // DIALOGUES EDITOR (form-based graph)
+  // DIALOGUES EDITOR (form + visual graph)
   // ============================================
   let selectedDialogueId = null;
+  let dialogueSearchQuery = '';
 
   function getSelectedDialogue() {
     const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
@@ -10096,6 +10160,133 @@ window.selectRoom = function(roomId) {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
   }
+
+  function syncDialogueGraphEditor() {
+    const GE = window.AmiantoDialogueGraphEditor;
+    if (!GE) return;
+    if (typeof GE.setDialogue === 'function') {
+      GE.setDialogue(selectedDialogueId);
+    }
+    if (typeof GE.getMode === 'function' && GE.getMode() === 'visual' && typeof GE.refresh === 'function') {
+      GE.refresh();
+    }
+  }
+
+  function renderDialogueSidebarList() {
+    const box = document.getElementById('dialogue-sidebar-list');
+    if (!box) return;
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    const q = String(dialogueSearchQuery || '').trim().toLowerCase();
+    const filtered = !q
+      ? list
+      : list.filter(d => {
+          const name = String(d.name || '').toLowerCase();
+          const id = String(d.id || '').toLowerCase();
+          return name.indexOf(q) >= 0 || id.indexOf(q) >= 0;
+        });
+    if (!filtered.length) {
+      box.innerHTML = '<div class="text-muted small px-1">No matches</div>';
+      return;
+    }
+    box.innerHTML = filtered.map(d => {
+      const active = d.id === selectedDialogueId ? ' is-active' : '';
+      return `<div class="dlg-sidebar-item${active}" data-dlg-id="${escapeHtmlAttr(d.id)}" title="${escapeHtmlAttr(d.id)}">
+        <span>${escapeHtmlAttr(d.name || d.id)}</span>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('[data-dlg-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        selectedDialogueId = el.getAttribute('data-dlg-id');
+        const select = document.getElementById('dialogue-select');
+        if (select) select.value = selectedDialogueId;
+        renderDialoguesEditor();
+      });
+    });
+  }
+
+  window.onDialogueSearchInput = function() {
+    const input = document.getElementById('dialogue-search');
+    dialogueSearchQuery = input ? input.value : '';
+    renderDialogueSidebarList();
+  };
+
+  window.setDialogueEditorMode = function(mode) {
+    const GE = window.AmiantoDialogueGraphEditor;
+    const m = mode === 'visual' ? 'visual' : 'form';
+    if (GE && typeof GE.setMode === 'function') {
+      GE.setMode(m);
+    }
+    // Keep sidebar list in sync; form body visibility handled by graph editor + below
+    const formMode = document.getElementById('dialogue-form-mode');
+    if (m === 'form' && formMode) formMode.style.display = '';
+    renderDialoguesEditor();
+  };
+
+  window.validateActiveDialogue = function() {
+    const dlg = getSelectedDialogue();
+    const V = window.AmiantoDialogueValidate;
+    if (!dlg) {
+      showNotification('No dialogue selected', 'warning');
+      return;
+    }
+    if (!V || typeof V.validateDialogue !== 'function') {
+      showNotification('Validator not loaded', 'warning');
+      return;
+    }
+    const res = V.validateDialogue(dlg, window.AmiantoDialogueLogic);
+    const ec = (res.errors || []).length;
+    const wc = (res.warnings || []).length;
+    if (window.AmiantoDialogueGraphEditor && window.AmiantoDialogueGraphEditor.getMode() === 'visual') {
+      window.AmiantoDialogueGraphEditor.validate();
+    }
+    showNotification(
+      ec ? `Dialogue: ${ec} error(s), ${wc} warning(s)` : `Dialogue OK (${wc} warning(s))`,
+      ec ? 'warning' : 'success'
+    );
+  };
+
+  window.duplicateProjectDialogue = function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    const copy = JSON.parse(JSON.stringify(dlg));
+    copy.id = uidDialogue('dlg');
+    copy.name = (dlg.name || dlg.id) + ' (copy)';
+    // Remap node ids to keep once-only keys distinct for the new dialogue asset
+    const idMap = {};
+    const nodes = copy.nodes || {};
+    Object.keys(nodes).forEach(oldId => {
+      const n = nodes[oldId];
+      const prefix = n.type === 'line' ? 'ln' : n.type === 'choice' ? 'ch' : n.type === 'jump' ? 'jmp' : n.type === 'action' ? 'act' : 'end';
+      idMap[oldId] = uidDialogue(prefix);
+    });
+    const newNodes = {};
+    Object.keys(nodes).forEach(oldId => {
+      const n = nodes[oldId];
+      const nid = idMap[oldId];
+      n.id = nid;
+      if (n.next && idMap[n.next]) n.next = idMap[n.next];
+      if (n.target && idMap[n.target]) n.target = idMap[n.target];
+      if (Array.isArray(n.options)) {
+        n.options.forEach(opt => {
+          if (opt) {
+            opt.id = uidDialogue('opt');
+            if (opt.next && idMap[opt.next]) opt.next = idMap[opt.next];
+          }
+        });
+      }
+      newNodes[nid] = n;
+    });
+    copy.nodes = newNodes;
+    if (copy.startNodeId && idMap[copy.startNodeId]) {
+      copy.startNodeId = idMap[copy.startNodeId];
+    }
+    if (!Array.isArray(window.projectDialogues)) window.projectDialogues = [];
+    window.projectDialogues.push(copy);
+    selectedDialogueId = copy.id;
+    markDialoguesDirty();
+    renderDialoguesEditor();
+    showNotification(`Dialogue duplicated as "${copy.name}"`, 'success');
+  };
 
   window.renderDialoguesEditor = function renderDialoguesEditor() {
     const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
@@ -10116,6 +10307,8 @@ window.selectRoom = function(roomId) {
       select.appendChild(opt);
       if (body) body.style.display = 'none';
       if (empty) empty.style.display = 'block';
+      renderDialogueSidebarList();
+      syncDialogueGraphEditor();
       return;
     }
 
@@ -10133,7 +10326,17 @@ window.selectRoom = function(roomId) {
     const dlg = getSelectedDialogue();
     const startInput = document.getElementById('dialogue-start-node');
     if (startInput) startInput.value = dlg ? (dlg.startNodeId || '') : '';
-    renderDialogueNodesList();
+
+    const GE = window.AmiantoDialogueGraphEditor;
+    const visual = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
+    const formMode = document.getElementById('dialogue-form-mode');
+    if (formMode) formMode.style.display = visual ? 'none' : '';
+
+    if (!visual) {
+      renderDialogueNodesList();
+    }
+    renderDialogueSidebarList();
+    syncDialogueGraphEditor();
   };
 
   function renderDialogueNodesList() {
@@ -10172,6 +10375,14 @@ window.selectRoom = function(roomId) {
           <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="speaker" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.speaker || '')}" />
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Text</label>
           <textarea class="form-control form-control-sm mb-1" rows="2" data-dlg-field="text" data-node="${escapeHtmlAttr(node.id)}">${escapeHtmlAttr(node.text || '')}</textarea>
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Mood (optional)</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="mood" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.mood || '')}" placeholder="happy / default / …" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Portrait (optional override)</label>
+          <div class="d-flex gap-1 mb-1 align-items-start">
+            <input type="text" class="form-control form-control-sm" data-dlg-field="portrait" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.portrait || '')}" placeholder="Browse… or paste URL" />
+            <button type="button" class="btn btn-outline-info btn-sm text-nowrap" data-dlg-portrait-pick="${escapeHtmlAttr(node.id)}">Browse…</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-dlg-portrait-clear="${escapeHtmlAttr(node.id)}" title="Clear">×</button>
+          </div>
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
           <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON (optional)</label>
@@ -10205,7 +10416,7 @@ window.selectRoom = function(roomId) {
       } else if (node.type === 'action') {
         fields += `
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON</label>
-          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"set_var","key":"flag","value":1}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"run_script","code":"function on_dialogue_action(d,n,o){print(d);}"}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />
           <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
           <input type="text" class="form-control form-control-sm" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />`;
       } else {
@@ -10222,8 +10433,44 @@ window.selectRoom = function(roomId) {
         const field = el.getAttribute('data-dlg-field');
         const n = dlg.nodes[nodeId];
         if (!n) return;
-        n[field] = el.value;
+        const val = el.value;
+        if ((field === 'mood' || field === 'portrait') && !String(val || '').trim()) {
+          delete n[field];
+        } else {
+          n[field] = val;
+        }
         markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-portrait-pick]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const nodeId = btn.getAttribute('data-dlg-portrait-pick');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        const resource = await pickResourceImage({ title: 'Dialogue portrait' });
+        if (!resource) return;
+        let src = resource.publicUrl || '';
+        try {
+          const img = await loadImageFromResourceEntry(resource);
+          if (img && img.src) src = img.src;
+        } catch (_) { /* keep publicUrl */ }
+        if (!src) {
+          showNotification('Could not load portrait image', 'warning');
+          return;
+        }
+        n.portrait = src;
+        markDialoguesDirty();
+        renderDialogueNodesList();
+      });
+    });
+    container.querySelectorAll('[data-dlg-portrait-clear]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-dlg-portrait-clear');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        delete n.portrait;
+        markDialoguesDirty();
+        renderDialogueNodesList();
       });
     });
     container.querySelectorAll('[data-dlg-field-json]').forEach(el => {
@@ -10735,11 +10982,13 @@ window.selectRoom = function(roomId) {
     const codeEditorContainer = document.getElementById('codeEditorContainer');
     const resourcesMainPanel = document.getElementById('resourcesMainPanel');
     const docsMainPanel = document.getElementById('docsMainPanel');
+    const dialogueGraphMainPanel = document.getElementById('dialogueGraphMainPanel');
 
     const showCanvas = mode === 'canvas';
     const showScripts = mode === 'scripts';
     const showResources = mode === 'resources';
     const showDocs = mode === 'docs';
+    const showDialogues = mode === 'dialogues';
 
     if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
     if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
@@ -10747,12 +10996,19 @@ window.selectRoom = function(roomId) {
     if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
     if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'grid' : 'none';
     if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
+    if (dialogueGraphMainPanel) {
+      dialogueGraphMainPanel.style.display = showDialogues ? 'flex' : 'none';
+      dialogueGraphMainPanel.classList.toggle('is-visible', showDialogues);
+    }
   }
+  window.setMainWorkspaceMode = setMainWorkspaceMode;
 
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
-      setMainWorkspaceMode('scripts');
-      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
+      const GE = window.AmiantoDialogueGraphEditor;
+      const visualDialogues = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
+      setMainWorkspaceMode(visualDialogues ? 'dialogues' : 'scripts');
+      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
@@ -10769,6 +11025,9 @@ window.selectRoom = function(roomId) {
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
+      if (typeof window.renderDialoguesEditor === 'function') {
+        window.renderDialoguesEditor();
+      }
       // Aggiorna le dimensioni di CodeMirror dopo che il container Ã¨ visibile
       setTimeout(() => {
         if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
@@ -11119,6 +11378,11 @@ window.selectRoom = function(roomId) {
 
       case 'PLAYTEST_RUNTIME_READY':
         pushPlaytestContextToRuntimeWindow();
+        if (playTestState.pendingDialoguePreview) {
+          const previewId = playTestState.pendingDialoguePreview;
+          playTestState.pendingDialoguePreview = null;
+          setTimeout(() => runDialoguePreviewInPlaytestWindow(previewId), 400);
+        }
         break;
 
       case 'ROOM_CHANGE_REQUEST':
@@ -11695,7 +11959,64 @@ window.selectRoom = function(roomId) {
     isRunning: false,
     isPaused: false,
     startTime: null,
-    runtimeWindow: null
+    runtimeWindow: null,
+    pendingDialoguePreview: null
+  };
+
+  function runDialoguePreviewInPlaytestWindow(dialogueIdOrName) {
+    if (!playTestState.isRunning || !playTestState.runtimeWindow || playTestState.runtimeWindow.closed) {
+      return false;
+    }
+    const id = String(dialogueIdOrName || '').trim();
+    if (!id) return false;
+    const code = [
+      'async function on_dialogue_preview() {',
+      '  await start_dialogue(' + JSON.stringify(id) + ');',
+      '}'
+    ].join('\n');
+    try {
+      playTestState.runtimeWindow.postMessage({
+        type: 'RUN_SCRIPT',
+        scriptName: 'dialogue_preview_' + Date.now().toString(36),
+        code: code,
+        handlerName: 'on_dialogue_preview',
+        handlerArgs: [],
+        context: (typeof buildSandboxContext === 'function') ? buildSandboxContext() : {}
+      }, '*');
+      showNotification('Dialogue preview started in Play Test', 'success');
+      return true;
+    } catch (e) {
+      showNotification('Preview failed: ' + (e && e.message ? e.message : e), 'warning');
+      return false;
+    }
+  }
+
+  window.previewProjectDialogue = async function(dialogueIdOrName) {
+    const id = String(dialogueIdOrName || '').trim();
+    if (!id) {
+      showNotification('No dialogue selected to preview', 'warning');
+      return;
+    }
+    const runtimeOpen = playTestState.isRunning
+      && playTestState.runtimeWindow
+      && !playTestState.runtimeWindow.closed;
+    if (runtimeOpen) {
+      runDialoguePreviewInPlaytestWindow(id);
+      try { playTestState.runtimeWindow.focus(); } catch (_) {}
+      return;
+    }
+    playTestState.pendingDialoguePreview = id;
+    if (typeof window.startPlayTest === 'function') {
+      await window.startPlayTest();
+      setTimeout(() => {
+        if (playTestState.pendingDialoguePreview === id) {
+          playTestState.pendingDialoguePreview = null;
+          runDialoguePreviewInPlaytestWindow(id);
+        }
+      }, 2500);
+    } else {
+      showNotification('Play Test unavailable', 'warning');
+    }
   };
 
   function createElectronRuntimeWindowProxy() {
@@ -13632,6 +13953,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
         });
       }
+      if (charData && charData.portraits && typeof charData.portraits === 'object') {
+        const portraits = {};
+        Object.keys(charData.portraits).forEach(moodKey => {
+          const ref = charData.portraits[moodKey];
+          if (typeof ref === 'string' && ref.trim()) {
+            portraits[String(moodKey).trim()] = ref.trim();
+          } else if (ref && ref.src) {
+            portraits[String(moodKey).trim()] = serializeImage(ref) || '';
+          }
+        });
+        Object.keys(portraits).forEach(k => { if (!portraits[k]) delete portraits[k]; });
+        if (Object.keys(portraits).length) out.portraits = portraits;
+      }
       result.push(out);
     });
     return result;
@@ -14835,6 +15169,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       window.markAmiantoProjectDirty();
     }
   }
+  window.markDialoguesDirty = markDialoguesDirty;
 
   // Avvia autosave periodico (cache + .amnt se collegato)
   if (typeof document !== 'undefined') {
@@ -17262,6 +17597,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               charData.pivotY = Number(ch.pivotY) || 0;
             }
             charData.spawnSettings = normalizeCharacterSpawnSettings(ch.spawnSettings);
+            if (ch.portraits && typeof ch.portraits === 'object') {
+              const portraits = {};
+              Object.keys(ch.portraits).forEach(moodKey => {
+                const ref = ch.portraits[moodKey];
+                if (typeof ref === 'string' && ref.trim()) {
+                  portraits[String(moodKey).trim()] = ref.trim();
+                }
+              });
+              if (Object.keys(portraits).length) charData.portraits = portraits;
+            }
             characterFrames.set(characterName, charData);
           }
         }
@@ -18359,8 +18704,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return;
       }
 
+      let faviconDataUrl = null;
+      try {
+        const favRes = await fetch('img/mnt.png', { cache: 'no-store' });
+        if (favRes.ok) {
+          const blob = await favRes.blob();
+          faviconDataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        }
+      } catch (_) {}
+
       const html = window.AmiantoStandaloneExport.buildStandaloneHtml(pkg, runtimeSource, {
-        title: activeProjectName
+        title: activeProjectName,
+        faviconDataUrl: faviconDataUrl || undefined
       });
 
       if (typeof targetPath === 'string' && window.amiantoNativeFs) {

@@ -4,12 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Amianto Editor</title>
+  <link rel="icon" type="image/png" href="img/mnt.png">
+  <link rel="apple-touch-icon" href="img/mnt.png">
   <!-- Vendor CSS: local first, CDN mirror (covers itch.io when node_modules is omitted) -->
   <link rel="stylesheet" href="node_modules/normalize.css/normalize.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/normalize.css@8.0.1/normalize.css">
   <link href="node_modules/bootstrap/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="CSS/main.css" rel="stylesheet">
+  <link href="CSS/dialogue-graph.css" rel="stylesheet">
   <!-- CodeMirror (editor) -->
   <link rel="stylesheet" href="node_modules/codemirror/lib/codemirror.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css">
@@ -136,6 +139,49 @@
             <h4 class="docs-main-title">Amianto Editor — Documentation</h4>
           </div>
           <div id="docs-main-content" class="docs-main-content" tabindex="0"></div>
+        </div>
+
+        <!-- Visual Dialogue Graph Editor (Scripts → Dialogues, Visual mode) -->
+        <div id="dialogueGraphMainPanel" class="dlg-graph-main" style="display: none;" aria-label="Visual dialogue editor">
+          <div class="dlg-graph-toolbar">
+            <span class="dlg-title" id="dlg-graph-title">(no dialogue)</span>
+            <span class="dlg-dirty" id="dlg-graph-dirty" style="display:none;">Unsaved</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Add nodes">
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-line" title="Add Line node">+ Line</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-choice" title="Add Choice node">+ Choice</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-jump" title="Add Jump node">+ Jump</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-action" title="Add Action node">+ Action</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-end" title="Add End node">+ End</button>
+            </div>
+            <div class="btn-group btn-group-sm ms-1" role="group">
+              <button type="button" class="btn btn-outline-light" id="dlg-btn-fit" title="Fit graph to view">Fit</button>
+              <button type="button" class="btn btn-outline-light" id="dlg-btn-center" title="Center graph">Center</button>
+              <button type="button" class="btn btn-outline-warning" id="dlg-btn-validate" title="Validate dialogue graph">Validate</button>
+              <button type="button" class="btn btn-outline-success" id="dlg-btn-preview" title="Preview in Play Test via start_dialogue">Preview</button>
+            </div>
+            <small class="text-muted ms-auto">Wheel zoom · Middle/Space drag pan · Right-click add · Del delete · Ctrl+Z undo</small>
+          </div>
+          <div class="dlg-graph-body">
+            <div class="dlg-graph-canvas-wrap" id="dlg-graph-canvas-wrap">
+              <div class="dlg-empty-hint" id="dlg-graph-empty">No nodes yet. Use the toolbar or right-click to add Line, Choice, Jump, Action, or End.</div>
+              <div class="dlg-graph-world" id="dlg-graph-world">
+                <svg class="dlg-graph-edges" id="dlg-graph-edges" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div class="dlg-graph-nodes" id="dlg-graph-nodes"></div>
+              </div>
+            </div>
+            <aside class="dlg-graph-inspector" id="dlg-graph-inspector">
+              <h6>Inspector</h6>
+              <p class="text-muted">Select a node.</p>
+            </aside>
+          </div>
+          <div class="dlg-graph-status" id="dlg-graph-status"></div>
+        </div>
+        <div id="dlg-graph-ctx" class="dlg-ctx-menu" role="menu">
+          <button type="button" data-add-type="line">Add Line</button>
+          <button type="button" data-add-type="choice">Add Choice</button>
+          <button type="button" data-add-type="jump">Add Jump</button>
+          <button type="button" data-add-type="action">Add Action</button>
+          <button type="button" data-add-type="end">Add End</button>
         </div>
 
         <!-- Resources panel (Resources tab — occupa lo spazio del canvas) -->
@@ -779,6 +825,16 @@
                 <input type="number" class="form-control form-control-sm" id="character-spawn-speed" value="100" min="1" max="1000" step="1">
                 <small class="text-muted">Character movement speed in pixels per second</small>
               </div>
+
+              <div class="mt-3 pt-2" style="border-top:1px solid #333;" id="character-portraits-panel">
+                <label class="form-label text-light mb-1">Dialogue portraits (mood → image)</label>
+                <div id="character-portraits-list" class="mb-2"></div>
+                <div class="d-flex gap-1 mb-1">
+                  <input type="text" class="form-control form-control-sm" id="character-portrait-mood" placeholder="mood (e.g. happy, default)" />
+                  <button type="button" class="btn btn-outline-success btn-sm" id="character-portrait-add-btn" title="Pick image for mood">+ Image</button>
+                </div>
+                <small class="text-muted">Used by dialogue Line nodes when mood matches (or <code>default</code>). Line can also override with its own portrait.</small>
+              </div>
             </div>
             
             <div id="characters-list" class="list-group">
@@ -1054,42 +1110,59 @@
               </small>
             </div>
 
-            <!-- Branching Dialogues (form-based graph editor) -->
+            <!-- Branching Dialogues (form + visual graph editor) -->
             <div class="mt-3 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <h6 class="m-0" style="color:#eee">Dialogues</h6>
                 <button type="button" class="btn btn-outline-success btn-sm" onclick="addProjectDialogue()">+ Add Dialogue</button>
               </div>
+              <div class="mb-2">
+                <input type="search" id="dialogue-search" class="form-control form-control-sm" placeholder="Search dialogues…" oninput="onDialogueSearchInput()" />
+              </div>
+              <div id="dialogue-sidebar-list" class="dlg-sidebar-list"></div>
               <div class="row g-2 mb-2">
                 <div class="col-8">
                   <label class="form-label text-light mb-1">Active dialogue</label>
                   <select id="dialogue-select" class="form-select form-select-sm" onchange="onDialogueSelectChange()"></select>
                 </div>
-                <div class="col-4 d-flex align-items-end gap-1">
+                <div class="col-4 d-flex align-items-end gap-1 flex-wrap">
                   <button type="button" class="btn btn-outline-light btn-sm" onclick="renameProjectDialogue()" title="Rename">Rename</button>
+                  <button type="button" class="btn btn-outline-light btn-sm" onclick="duplicateProjectDialogue()" title="Duplicate dialogue">Dup</button>
                   <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteProjectDialogue()" title="Delete">Del</button>
                 </div>
               </div>
+              <div class="d-flex justify-content-between align-items-center mb-2 dlg-mode-toggle">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Dialogue editor mode">
+                  <button type="button" class="btn btn-outline-light active" data-dlg-mode="form" onclick="setDialogueEditorMode('form')">Form</button>
+                  <button type="button" class="btn btn-outline-light" data-dlg-mode="visual" onclick="setDialogueEditorMode('visual')">Visual</button>
+                </div>
+                <button type="button" class="btn btn-outline-warning btn-sm" onclick="validateActiveDialogue()" title="Validate dialogue">Validate</button>
+              </div>
+              <div id="dialogue-visual-hint" class="text-muted mb-2" style="display:none;">
+                <small>Visual mode opens the node canvas in the main panel. Same data as Form — no separate copy.</small>
+              </div>
               <div id="dialogue-editor-body" class="text-light" style="display:none;">
-                <div class="mb-2">
-                  <label class="form-label text-light mb-1">Start node ID</label>
-                  <input type="text" id="dialogue-start-node" class="form-control form-control-sm" onchange="onDialogueStartNodeChange()" />
-                </div>
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <strong style="color:#ccc;font-size:0.9em;">Nodes</strong>
-                  <div class="btn-group btn-group-sm flex-wrap">
-                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('line')">+ Line</button>
-                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('choice')">+ Choice</button>
-                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('jump')">+ Jump</button>
-                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('action')">+ Action</button>
-                    <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('end')">+ End</button>
+                <div id="dialogue-form-mode">
+                  <div class="mb-2">
+                    <label class="form-label text-light mb-1">Start node ID</label>
+                    <input type="text" id="dialogue-start-node" class="form-control form-control-sm" onchange="onDialogueStartNodeChange()" />
                   </div>
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <strong style="color:#ccc;font-size:0.9em;">Nodes</strong>
+                    <div class="btn-group btn-group-sm flex-wrap">
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('line')">+ Line</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('choice')">+ Choice</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('jump')">+ Jump</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('action')">+ Action</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('end')">+ End</button>
+                    </div>
+                  </div>
+                  <div id="dialogue-nodes-list" style="max-height:40vh;overflow:auto;"></div>
+                  <small class="text-muted d-block mt-2">
+                    Call with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>.
+                    Choices support <em>Once only</em>, condition JSON (<code>has_item</code> / <code>var</code> / <code>and</code> / <code>or</code> / <code>not</code>), and actions JSON.
+                  </small>
                 </div>
-                <div id="dialogue-nodes-list" style="max-height:40vh;overflow:auto;"></div>
-                <small class="text-muted d-block mt-2">
-                  Call with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>.
-                  Choices support <em>Once only</em>, condition JSON (<code>has_item</code> / <code>var</code> / <code>and</code> / <code>or</code> / <code>not</code>), and actions JSON.
-                </small>
               </div>
               <div id="dialogue-editor-empty" class="text-muted text-center py-2">
                 <small>No dialogues yet. Click "+ Add Dialogue" to create a branching conversation.</small>
@@ -1129,20 +1202,7 @@
   </div>
   </div> <!-- Close mainDashboard -->
 
-  <script src="node_modules/sortablejs/Sortable.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js'"></script>
-  <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js'"></script>
-  <script src="JS/app-mode.js"></script>
-  <script src="JS/amnt-format.js"></script>
-  <script src="JS/export-standalone.js"></script>
-  <script src="JS/local-storage.js"></script>
-  <script src="JS/lib/game-save-format.js"></script>
-  <script src="JS/lib/dialogue-logic.js"></script>
-  <script src="JS/device-detector.js"></script>
-  <script src="JS/resources.js"></script>
-  <script src="JS/docs-panel.js"></script>
-  <script src="JS/main.js"></script>
-
-  <!-- Resource picker modal (usato da tutti i Browse) -->
+  <!-- Resource picker modal (usato da tutti i Browse) — prima degli script -->
   <div class="modal fade" id="resourcePickerModal" tabindex="-1" aria-labelledby="resourcePickerModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content bg-dark text-light border-secondary">
@@ -1172,6 +1232,21 @@
       </div>
     </div>
   </div>
+
+  <script src="node_modules/sortablejs/Sortable.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js'"></script>
+  <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js'"></script>
+  <script src="JS/app-mode.js"></script>
+  <script src="JS/amnt-format.js"></script>
+  <script src="JS/export-standalone.js"></script>
+  <script src="JS/local-storage.js"></script>
+  <script src="JS/lib/game-save-format.js"></script>
+  <script src="JS/lib/dialogue-logic.js"></script>
+  <script src="JS/lib/dialogue-validate.js"></script>
+  <script src="JS/device-detector.js"></script>
+  <script src="JS/resources.js"></script>
+  <script src="JS/docs-panel.js"></script>
+  <script src="JS/dialogue-graph-editor.js"></script>
+  <script src="JS/main.js"></script>
 </body>
 </html>
 

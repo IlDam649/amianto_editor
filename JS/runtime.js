@@ -2613,6 +2613,17 @@
         }
         charDef.id = characterName;
         charDef.name = characterName;
+        // Optional dialogue portraits: { default: url, happy: url, ... }
+        if (charData.portraits && typeof charData.portraits === 'object') {
+          const portraits = {};
+          Object.keys(charData.portraits).forEach(moodKey => {
+            const ref = charData.portraits[moodKey];
+            if (typeof ref === 'string' && ref.trim()) {
+              portraits[String(moodKey).trim()] = ref.trim();
+            }
+          });
+          if (Object.keys(portraits).length) charDef.portraits = portraits;
+        }
         gameState.characterDefinitions.set(characterName, charDef);
         const animCount = Object.keys(animations).length;
         log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} walk dir${animCount ? `, ${animCount} custom anim` : ''})`, 'info');
@@ -3086,6 +3097,8 @@
   const DIALOGUE_FADE_MS = 250;
   const DIALOGUE_FONT_SIZE_MIN = 8;
   const DIALOGUE_FONT_SIZE_MAX = 96;
+  const DIALOGUE_PORTRAIT_SIZE = 96;
+  const DIALOGUE_PORTRAIT_GAP = 10;
 
   let activeDialogue = null;
   /**
@@ -3281,7 +3294,51 @@
     }
   }
 
-  function showDialogueAndWait(characterIdOrName, text) {
+  /**
+   * Resolve portrait image for a dialogue line.
+   * Priority: explicit portrait ref → character.portraits[mood] → character.portraits.default
+   */
+  async function resolveDialoguePortrait(characterName, mood, portraitRef) {
+    const refs = [];
+    if (portraitRef && String(portraitRef).trim()) refs.push(String(portraitRef).trim());
+    const charDef = gameState.characterDefinitions.get(characterName)
+      || (characterName ? gameState.characterDefinitions.get(String(characterName)) : null);
+    // Also try by matching character instance name
+    let portraits = charDef && charDef.portraits ? charDef.portraits : null;
+    if (!portraits) {
+      for (const def of gameState.characterDefinitions.values()) {
+        if (def && def.name === characterName && def.portraits) {
+          portraits = def.portraits;
+          break;
+        }
+      }
+    }
+    if (portraits) {
+      const moodKey = String(mood || '').trim();
+      if (moodKey && portraits[moodKey]) refs.push(String(portraits[moodKey]).trim());
+      if (portraits.default) refs.push(String(portraits.default).trim());
+      if (portraits.neutral) refs.push(String(portraits.neutral).trim());
+    }
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i];
+      if (!ref) continue;
+      try {
+        let img = AssetRegistry.images.get(ref);
+        if (!img || !img.complete) {
+          img = await loadImage(ref, 'gui');
+        }
+        if (img && img.complete && img.naturalWidth > 0) return img;
+      } catch (_) { /* try next */ }
+    }
+    return null;
+  }
+
+  /**
+   * @param {string} characterIdOrName
+   * @param {string} text
+   * @param {{ mood?: string, portrait?: string }} [opts]
+   */
+  function showDialogueAndWait(characterIdOrName, text, opts) {
     const character = resolveCharacter(characterIdOrName);
     if (!character) {
       GameAPI.error(`show_dialogue: character "${characterIdOrName}" not found (by ID or name in current room)`);
@@ -3298,17 +3355,23 @@
     const settings = normalizeDialogBoxSettings(dialogGui ? dialogGui.settings : {});
     const balloonImage = dialogGui && dialogGui.balloonImage ? dialogGui.balloonImage : null;
     const messageText = String(text);
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const mood = String(options.mood || '').trim();
+    const portraitRef = String(options.portrait || '').trim();
 
     return (async () => {
       if (settings.customFont && settings.fontFamily) {
         await ensureDialogueFontLoaded(settings.customFont, settings.fontFamily);
       }
+      const portraitImage = await resolveDialoguePortrait(character.name, mood, portraitRef);
       return new Promise(resolve => {
         activeDialogue = {
           characterId: character.id,
           text: messageText,
           settings,
           balloonImage,
+          portraitImage,
+          mood,
           dismissResolver: resolve,
           appear: settings.appear,
           opacity: settings.appear === 'fade' ? 0 : 1,
@@ -3316,7 +3379,7 @@
           appearStart: performance.now()
         };
         activeDialogue.timeoutId = setTimeout(() => dismissActiveDialogue(), 120000);
-        log(`[Runtime] show_dialogue: "${character.name}" — ${messageText.substring(0, 60)}${messageText.length > 60 ? '…' : ''}`, 'info');
+        log(`[Runtime] show_dialogue: "${character.name}"${mood ? ' [' + mood + ']' : ''} — ${messageText.substring(0, 60)}${messageText.length > 60 ? '…' : ''}`, 'info');
       });
     })();
   }
@@ -3371,11 +3434,40 @@
     const boxWidth = textWidth + DIALOGUE_PADDING * 2;
     const boxHeight = textHeight + DIALOGUE_PADDING * 2;
 
-    let boxX = bounds.x + bounds.width / 2 - boxWidth / 2;
-    let boxY = bounds.y - boxHeight - DIALOGUE_GAP_ABOVE_CHARACTER - slideOffset;
+    const portraitImg = activeDialogue.portraitImage;
+    const hasPortrait = !!(portraitImg && portraitImg.complete && portraitImg.naturalWidth > 0);
+    const portraitSize = hasPortrait ? DIALOGUE_PORTRAIT_SIZE : 0;
+    const portraitGap = hasPortrait ? DIALOGUE_PORTRAIT_GAP : 0;
+    const moodLabel = String(activeDialogue.mood || '').trim();
+    const moodExtraH = moodLabel && hasPortrait ? 16 : 0;
+    const totalWidth = portraitSize + portraitGap + boxWidth;
+    const totalHeight = Math.max(boxHeight, portraitSize + moodExtraH);
 
-    boxX = Math.max(4, Math.min(boxX, canvas.width - boxWidth - 4));
-    boxY = Math.max(4, Math.min(boxY, canvas.height - boxHeight - 4));
+    let groupX = bounds.x + bounds.width / 2 - totalWidth / 2;
+    let groupY = bounds.y - totalHeight - DIALOGUE_GAP_ABOVE_CHARACTER - slideOffset;
+
+    groupX = Math.max(4, Math.min(groupX, canvas.width - totalWidth - 4));
+    groupY = Math.max(4, Math.min(groupY, canvas.height - totalHeight - 4));
+
+    if (hasPortrait) {
+      try {
+        ctx.drawImage(portraitImg, groupX, groupY, portraitSize, portraitSize);
+        ctx.strokeStyle = settings.boxBorderColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(groupX, groupY, portraitSize, portraitSize);
+        if (moodLabel) {
+          const moodFontSize = Math.max(10, Math.round(clampDialogueFontSize(settings.fontSize) * 0.7));
+          ctx.font = `${moodFontSize}px Arial, sans-serif`;
+          ctx.fillStyle = settings.textColor;
+          ctx.fillText(moodLabel, groupX + 2, groupY + portraitSize + 2);
+        }
+      } catch (error) {
+        log(`[Runtime] Error rendering dialogue portrait: ${error.message}`, 'warning');
+      }
+    }
+
+    const boxX = groupX + portraitSize + portraitGap;
+    const boxY = groupY;
 
     const balloonImg = activeDialogue.balloonImage;
     if (balloonImg && balloonImg.complete && balloonImg.naturalWidth > 0) {
@@ -3392,6 +3484,7 @@
       ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
     }
 
+    ctx.font = buildDialogueFontCss(settings);
     ctx.fillStyle = settings.textColor;
     const textX = boxX + DIALOGUE_PADDING;
     let textY = boxY + DIALOGUE_PADDING;
@@ -3434,12 +3527,15 @@
       if (!nodeId) return;
       const type = String(src.type || 'end').toLowerCase();
       if (type === 'line') {
-        nodes[nodeId] = {
+        const lineNode = {
           id: nodeId, type: 'line',
           speaker: String(src.speaker || '').trim(),
           text: String(src.text != null ? src.text : ''),
           next: String(src.next || '').trim()
         };
+        if (src.mood) lineNode.mood = String(src.mood).trim();
+        if (src.portrait) lineNode.portrait = String(src.portrait).trim();
+        nodes[nodeId] = lineNode;
       } else if (type === 'choice') {
         const options = Array.isArray(src.options) ? src.options.map((opt, i) => ({
           id: String((opt && opt.id) || `opt_${i}`).trim(),
@@ -3479,10 +3575,17 @@
     };
   }
 
-  function runDialogueActions(actions) {
+  /**
+   * Esegue azioni dichiarative di dialogo.
+   * @param {object[]} actions
+   * @param {{ dialogueId?: string, nodeId?: string, optionId?: string }} [ctx]
+   */
+  async function runDialogueActions(actions, ctx) {
     if (!Array.isArray(actions) || !actions.length) return;
-    actions.forEach(action => {
-      if (!action || !action.type) return;
+    const context = ctx || {};
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+      if (!action || !action.type) continue;
       try {
         if (action.type === 'set_var') {
           if (typeof GameAPI.set_var === 'function') GameAPI.set_var(action.key, action.value);
@@ -3499,11 +3602,27 @@
           if (typeof GameAPI.set_object_visible === 'function') {
             GameAPI.set_object_visible(action.objectId, action.visible !== false);
           }
+        } else if (action.type === 'run_script') {
+          const code = String(action.code || '').trim();
+          const handlerName = String(action.handler || 'on_dialogue_action').trim() || 'on_dialogue_action';
+          if (!code) {
+            log('[Runtime] dialogue action run_script: empty code', 'warning');
+          } else {
+            const cacheName = 'dlg_run_script:' + String(
+              action.id || context.nodeId || context.dialogueId || 'anon'
+            ) + ':' + String(i);
+            await executeScriptHandler(
+              code,
+              handlerName,
+              [context.dialogueId || null, context.nodeId || null, context.optionId || null],
+              cacheName
+            );
+          }
         }
       } catch (err) {
         log(`[Runtime] dialogue action "${action.type}" failed: ${err && err.message ? err.message : err}`, 'warning');
       }
-    });
+    }
   }
 
   function markDialogueChoiceConsumed(dialogueId, optionId) {
@@ -3726,19 +3845,22 @@
         }
 
         if (node.type === 'action') {
-          runDialogueActions(node.actions || []);
+          await runDialogueActions(node.actions || [], { dialogueId: dialogueDef.id, nodeId: node.id });
           nodeId = node.next;
           continue;
         }
 
         if (node.type === 'line') {
-          runDialogueActions(node.actions || []);
+          await runDialogueActions(node.actions || [], { dialogueId: dialogueDef.id, nodeId: node.id });
           if (!node.speaker) {
             GameAPI.error(`start_dialogue: line node "${node.id}" has no speaker`);
             nodeId = node.next;
             continue;
           }
-          await showDialogueAndWait(node.speaker, node.text);
+          await showDialogueAndWait(node.speaker, node.text, {
+            mood: node.mood || '',
+            portrait: node.portrait || ''
+          });
           if (!activeDialogueSession || activeDialogueSession.abortRequested) break;
           nodeId = node.next;
           continue;
@@ -3766,7 +3888,11 @@
           if (fullOpt.once === true) {
             markDialogueChoiceConsumed(dialogueDef.id, fullOpt.id);
           }
-          runDialogueActions(fullOpt.actions || []);
+          await runDialogueActions(fullOpt.actions || [], {
+            dialogueId: dialogueDef.id,
+            nodeId: node.id,
+            optionId: fullOpt.id || null
+          });
           nodeId = fullOpt.next || selected.next;
           continue;
         }
@@ -5393,7 +5519,9 @@
     'on_hotspot_click',
     'on_gui_click',
     'on_use_with',
-    'on_inventory_use_with'
+    'on_inventory_use_with',
+    'on_dialogue_action',
+    'on_dialogue_preview'
   ];
 
   /**
