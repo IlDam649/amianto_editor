@@ -33,6 +33,28 @@
     return out;
   }
 
+  /** Warn on draft/incomplete conditions kept for the Visual editor. */
+  function warnIncompleteCondition(cond, warnings, nodeId, optionId) {
+    if (!cond || typeof cond !== 'object') return;
+    const type = String(cond.type || '').toLowerCase();
+    if (type === 'has_item' && !String(cond.itemId || '').trim()) {
+      warnings.push(issue('warning', 'incomplete_condition', 'Option "' + optionId + '" has_item condition has empty itemId', {
+        nodeId: nodeId, optionId: optionId
+      }));
+    } else if (type === 'var' && !String(cond.key || '').trim()) {
+      warnings.push(issue('warning', 'incomplete_condition', 'Option "' + optionId + '" var condition has empty key', {
+        nodeId: nodeId, optionId: optionId
+      }));
+    } else if (type === 'and' || type === 'or') {
+      const list = Array.isArray(cond.of) ? cond.of : [];
+      list.forEach(function (child) {
+        warnIncompleteCondition(child, warnings, nodeId, optionId);
+      });
+    } else if (type === 'not') {
+      warnIncompleteCondition(cond.of, warnings, nodeId, optionId);
+    }
+  }
+
   function getOutgoingTargets(node) {
     const targets = [];
     if (!node || typeof node !== 'object') return targets;
@@ -228,6 +250,8 @@
                 errors.push(issue('error', 'invalid_condition', 'Option "' + opt.id + '" has invalid condition', {
                   nodeId: nid, optionId: opt.id
                 }));
+              } else {
+                warnIncompleteCondition(nc, warnings, nid, opt.id);
               }
             }
           }

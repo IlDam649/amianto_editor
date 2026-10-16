@@ -3680,9 +3680,21 @@
     abortDialogueSession();
   }
 
+  /** Stile testo scelte = stesso DialogBox dei balloon (fontSize / fontFamily). */
+  function getDialogueChoiceTextStyle() {
+    const dialogGui = getDialogBoxGui();
+    const settings = normalizeDialogBoxSettings(dialogGui ? dialogGui.settings : {});
+    return {
+      settings,
+      fontCss: buildDialogueFontCss(settings),
+      lineHeight: getDialogueLineHeight(settings.fontSize)
+    };
+  }
+
   function layoutDialogueChoices(ctx, options) {
+    const style = getDialogueChoiceTextStyle();
     const prevFont = ctx.font;
-    ctx.font = '16px sans-serif';
+    ctx.font = style.fontCss;
     const maxTextW = Math.min(canvas.width - 80, 480);
     const items = [];
     let totalH = 0;
@@ -3690,7 +3702,7 @@
       const lines = wrapDialogueText(ctx, opt.text || `Choice ${index + 1}`, maxTextW);
       const textW = Math.min(maxTextW, Math.max(...lines.map(l => ctx.measureText(l).width), 40));
       const boxW = textW + DIALOGUE_CHOICE_PAD_X * 2;
-      const boxH = lines.length * 20 + DIALOGUE_CHOICE_PAD_Y * 2;
+      const boxH = lines.length * style.lineHeight + DIALOGUE_CHOICE_PAD_Y * 2;
       items.push({ opt, lines, boxW, boxH, index });
       totalH += boxH + (index > 0 ? DIALOGUE_CHOICE_GAP : 0);
     });
@@ -3707,7 +3719,8 @@
         text: item.opt.text,
         next: item.opt.next,
         lines: item.lines,
-        bounds
+        bounds,
+        lineHeight: style.lineHeight
       };
     });
   }
@@ -3717,10 +3730,12 @@
     const choiceState = activeDialogueSession.choiceState;
     if (!Array.isArray(choiceState.rendered) || !choiceState.rendered.length) return;
 
+    const style = getDialogueChoiceTextStyle();
+    const settings = style.settings;
     const prevFont = ctx.font;
     const prevAlign = ctx.textAlign;
     const prevBaseline = ctx.textBaseline;
-    ctx.font = '16px sans-serif';
+    ctx.font = style.fontCss;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
 
@@ -3732,18 +3747,19 @@
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(0, panelY, canvas.width, panelH);
 
-    choiceState.rendered.forEach((item, i) => {
+    choiceState.rendered.forEach((item) => {
       const b = item.bounds;
-      ctx.fillStyle = '#1a1a2e';
+      const lineHeight = item.lineHeight || style.lineHeight;
+      ctx.fillStyle = settings.backgroundColor || '#1a1a2e';
       ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.strokeStyle = '#39ff14';
+      ctx.strokeStyle = settings.boxBorderColor || '#39ff14';
       ctx.lineWidth = 2;
       ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = settings.textColor || '#ffffff';
       let ty = b.y + DIALOGUE_CHOICE_PAD_Y;
       item.lines.forEach(line => {
         ctx.fillText(line, b.x + DIALOGUE_CHOICE_PAD_X, ty);
-        ty += 20;
+        ty += lineHeight;
       });
     });
 
@@ -6863,6 +6879,154 @@
   }
 
   // ============================================
+  // FULLSCREEN IMAGE OVERLAY (show_image / hide_image)
+  // ============================================
+  let fullscreenImageState = null; // { el, resolve, waitClick }
+
+  function getFullscreenImageHost() {
+    return document.getElementById('game-canvas-container') || document.getElementById('game-container') || document.body;
+  }
+
+  function dismissFullscreenImage(reason) {
+    if (!fullscreenImageState) return;
+    const state = fullscreenImageState;
+    fullscreenImageState = null;
+    if (state.el && state.el.parentNode) {
+      try { state.el.parentNode.removeChild(state.el); } catch (_) {}
+    }
+    if (typeof state.resolve === 'function') {
+      try { state.resolve({ ok: true, reason: reason || 'dismissed' }); } catch (_) {}
+    }
+    if (state.locked) releaseInputLock('show_image');
+    log(`[Runtime] hide_image (${reason || 'dismissed'})`, 'info');
+  }
+
+  /**
+   * Mostra un'immagine a tutto schermo (sopra il canvas).
+   * @param {string} imageName - Nome file Resources (es. "cutscene.png"), asset:…, URL o data:
+   * @param {{ waitClick?: boolean, fit?: 'contain'|'cover' }} [options]
+   *   waitClick default true → Promise risolta al click (o hide_image)
+   * @returns {Promise}
+   */
+  async function showFullscreenImage(imageName, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const waitClick = opts.waitClick !== false;
+    const fit = opts.fit === 'cover' ? 'cover' : 'contain';
+    const name = String(imageName == null ? '' : imageName).trim();
+    if (!name) {
+      GameAPI.error('show_image: image name is required (Resources file name, e.g. "photo.png")');
+      return { ok: false, error: 'missing_name' };
+    }
+
+    if (fullscreenImageState) {
+      dismissFullscreenImage('replaced');
+    }
+
+    let src = '';
+    try {
+      src = await resolveSpawnObjectImageRef(name);
+    } catch (err) {
+      GameAPI.error('show_image: resolve failed — ' + (err && err.message ? err.message : err));
+      return { ok: false, error: 'resolve_failed' };
+    }
+    if (!src) {
+      GameAPI.error(`show_image: image "${name}" not found in Resources`);
+      return { ok: false, error: 'not_found' };
+    }
+
+    let img = null;
+    try {
+      const categoryHint = String(src).startsWith('asset:') ? 'resource' : null;
+      img = await loadImage(src, categoryHint);
+    } catch (err) {
+      GameAPI.error('show_image: load failed — ' + (err && err.message ? err.message : err));
+      return { ok: false, error: 'load_failed' };
+    }
+    if (!img || !img.src) {
+      GameAPI.error(`show_image: could not load "${name}"`);
+      return { ok: false, error: 'load_failed' };
+    }
+
+    const host = getFullscreenImageHost();
+    const el = document.createElement('div');
+    el.id = 'amianto-fullscreen-image';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Fullscreen image');
+    el.style.cssText = [
+      'position:absolute',
+      'inset:0',
+      'z-index:5000',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'background:#000',
+      'cursor:pointer',
+      'user-select:none'
+    ].join(';');
+
+    const imgEl = document.createElement('img');
+    imgEl.src = img.src;
+    imgEl.alt = name;
+    imgEl.draggable = false;
+    imgEl.style.cssText = [
+      'max-width:100%',
+      'max-height:100%',
+      'width:100%',
+      'height:100%',
+      'object-fit:' + fit,
+      'pointer-events:none',
+      'image-rendering:auto'
+    ].join(';');
+    el.appendChild(imgEl);
+
+    if (waitClick) {
+      const hint = document.createElement('div');
+      hint.textContent = 'Click to continue';
+      hint.style.cssText = [
+        'position:absolute',
+        'bottom:12px',
+        'left:50%',
+        'transform:translateX(-50%)',
+        'color:#39ff14',
+        'font:12px/1.2 monospace',
+        'opacity:0.85',
+        'pointer-events:none',
+        'text-shadow:0 0 4px #000'
+      ].join(';');
+      el.appendChild(hint);
+    }
+
+    host.appendChild(el);
+
+    return new Promise((resolve) => {
+      fullscreenImageState = {
+        el,
+        resolve: waitClick ? resolve : null,
+        waitClick,
+        imageName: name,
+        locked: false
+      };
+      if (waitClick) {
+        acquireInputLock('show_image');
+        fullscreenImageState.locked = true;
+        const onClick = (e) => {
+          if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          el.removeEventListener('click', onClick);
+          dismissFullscreenImage('click');
+        };
+        el.addEventListener('click', onClick);
+      } else {
+        // Overlay resta fino a hide_image(); Promise risolta subito
+        resolve({ ok: true, reason: 'shown' });
+      }
+      log(`[Runtime] show_image: "${name}" (waitClick=${waitClick}, fit=${fit})`, 'info');
+    });
+  }
+
+  // ============================================
   // GAME API - API ESPOSTA AGLI SCRIPT
   // ============================================
   // Sistema di eventi registrati
@@ -7961,6 +8125,24 @@
     },
 
     /**
+     * Mostra un'immagine a tutto schermo (Resources: nome file, es. "cutscene.png").
+     * Di default aspetta un click del giocatore (Promise). Usa hide_image() per chiudere da script.
+     * @param {string} imageName - Nome in Resources / asset:… / URL
+     * @param {{ waitClick?: boolean, fit?: 'contain'|'cover' }} [options]
+     * @returns {Promise}
+     */
+    show_image: function(imageName, options) {
+      return enqueueScriptCommand(async () => {
+        await showFullscreenImage(imageName, options);
+      });
+    },
+
+    /** Nasconde l'overlay di show_image se presente. */
+    hide_image: function() {
+      dismissFullscreenImage('api');
+    },
+
+    /**
      * Salva lo stato di gioco del player (non il progetto editor).
      * Storage: localStorage keyed by project id + slot (1–10 or custom string).
      * @param {number|string} [slot=1]
@@ -8399,6 +8581,8 @@
       { name: 'stop_animation', value: bindGameApiMethod(api, 'stop_animation') },
       { name: 'show_animation', value: bindGameApiMethod(api, 'show_animation') },
       { name: 'hide_animation', value: bindGameApiMethod(api, 'hide_animation') },
+      { name: 'show_image', value: bindGameApiMethod(api, 'show_image') },
+      { name: 'hide_image', value: bindGameApiMethod(api, 'hide_image') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },

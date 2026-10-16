@@ -801,11 +801,11 @@
         '<label>Handler</label><input class="form-control form-control-sm" data-act="handler" data-i="' + i + '" value="' +
         esc(a.handler || 'on_dialogue_action') +
         '" placeholder="on_dialogue_action" />' +
-        '<label>Script</label><textarea class="form-control form-control-sm font-monospace" data-act="code" data-i="' + i +
+        '<label>Script</label><textarea class="form-control form-control-sm font-monospace dlg-run-script-ta" data-act="code" data-i="' + i +
         '" rows="8" spellcheck="false" style="font-size:11px;line-height:1.35;">' +
         esc(a.code || defaultRunScriptCode()) +
         '</textarea>' +
-        '<small class="text-muted d-block mt-1">Write the function in the box. Runs in the game sandbox when this action fires.</small>';
+        '<small class="text-muted d-block mt-1">Write the function in the box (API hints while typing). Runs in the game sandbox when this action fires.</small>';
     }
     const typeLabels = {
       set_var: 'set_var',
@@ -838,13 +838,37 @@
     try { return JSON.parse(s); } catch (_) { return s; }
   }
 
+  function readRunScriptCode(row) {
+    const ta = row.querySelector('[data-act="code"]');
+    if (!ta) return '';
+    if (ta._amiantoCm && typeof ta._amiantoCm.getValue === 'function') {
+      return ta._amiantoCm.getValue();
+    }
+    return ta.value || '';
+  }
+
+  function mountRunScriptEditors(panel, syncQuietFn) {
+    if (typeof root.amiantoMountScriptCodeMirror !== 'function') return;
+    panel.querySelectorAll('textarea[data-act="code"]').forEach(function (ta) {
+      const cm = root.amiantoMountScriptCodeMirror(ta, { height: 180 });
+      if (!cm || cm._amiantoDlgBound) return;
+      cm._amiantoDlgBound = true;
+      let debounce = null;
+      cm.on('change', function () {
+        try { cm.save(); } catch (_) {}
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(function () {
+          if (typeof syncQuietFn === 'function') syncQuietFn();
+        }, 350);
+      });
+    });
+  }
+
   function bindActionsBuilder(panel, owner, field) {
-    const sync = function () {
-      pushUndo();
+    const collectActions = function () {
       const rows = panel.querySelectorAll('.dlg-insp-action');
       const out = [];
       rows.forEach(function (row) {
-        const i = row.getAttribute('data-action-index');
         const typeEl = row.querySelector('[data-act="type"]');
         const type = typeEl ? typeEl.value : 'set_var';
         const a = { type: type };
@@ -861,14 +885,25 @@
         } else if (type === 'run_script') {
           a.id = (row.querySelector('[data-act="id"]') || {}).value || uid('rs');
           a.handler = (row.querySelector('[data-act="handler"]') || {}).value || 'on_dialogue_action';
-          a.code = (row.querySelector('[data-act="code"]') || {}).value || '';
+          a.code = readRunScriptCode(row);
         }
         out.push(a);
       });
       const DL = logic();
       owner[field] = DL && DL.normalizeActions ? DL.normalizeActions(out) : out;
+    };
+
+    const sync = function () {
+      pushUndo();
+      collectActions();
       markDirty();
       renderNodes();
+    };
+
+    // CodeMirror: no undo snapshot per keystroke
+    const syncQuiet = function () {
+      collectActions();
+      markDirty();
     };
 
     panel.querySelector('#dlg-add-action')?.addEventListener('click', function () {
@@ -891,8 +926,7 @@
     });
 
     panel.querySelectorAll('[data-act]').forEach(function (el) {
-      const evt = el.tagName === 'TEXTAREA' ? 'change' : 'change';
-      el.addEventListener(evt, function () {
+      el.addEventListener('change', function () {
         if (el.getAttribute('data-act') === 'type') {
           const i = Number(el.getAttribute('data-i'));
           pushUndo();
@@ -912,9 +946,12 @@
           renderInspector();
           return;
         }
+        if (el.getAttribute('data-act') === 'code') return; // CodeMirror gestisce via change
         sync();
       });
     });
+
+    mountRunScriptEditors(panel, syncQuiet);
   }
 
   const COND_MAX_DEPTH = 4;
@@ -1023,8 +1060,10 @@
           if (!Array.isArray(cur.of)) cur.of = [];
           cur = cur.of;
         } else {
-          if (cur.of == null || typeof cur.of !== 'object') cur.of = defaultLeafCondition();
-          cur = cur;
+          if (cur.of == null || typeof cur.of !== 'object' || Array.isArray(cur.of)) {
+            cur.of = defaultLeafCondition();
+          }
+          cur = cur.of;
         }
       } else if (/^\d+$/.test(part)) {
         const idx = Number(part);

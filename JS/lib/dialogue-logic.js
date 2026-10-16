@@ -44,14 +44,14 @@
     const type = String(raw.type || '').toLowerCase();
 
     if (type === 'has_item') {
+      // Keep incomplete drafts (empty itemId) so the Visual inspector dropdown
+      // does not snap back to (none) right after selecting has_item.
       const itemId = String(raw.itemId || raw.item || '').trim();
-      if (!itemId) return null;
       return { type: 'has_item', itemId: itemId };
     }
 
     if (type === 'var') {
       const key = String(raw.key || raw.name || '').trim();
-      if (!key) return null;
       let op = String(raw.op || 'eq').toLowerCase();
       if (!VAR_OPS[op]) op = 'eq';
       const out = { type: 'var', key: key, op: op };
@@ -64,14 +64,14 @@
     if (type === 'and' || type === 'or') {
       const list = Array.isArray(raw.of) ? raw.of : (Array.isArray(raw.conditions) ? raw.conditions : []);
       const of = list.map(normalizeCondition).filter(Boolean);
-      if (!of.length) return null;
+      // Keep empty group as draft with one leaf so editor can keep editing
+      if (!of.length) return { type: type, of: [{ type: 'has_item', itemId: '' }] };
       return { type: type, of: of };
     }
 
     if (type === 'not') {
       const inner = normalizeCondition(raw.of || raw.condition || raw.not);
-      if (!inner) return null;
-      return { type: 'not', of: inner };
+      return { type: 'not', of: inner || { type: 'has_item', itemId: '' } };
     }
 
     return null;

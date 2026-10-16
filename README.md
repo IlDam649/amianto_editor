@@ -151,6 +151,8 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`show_dialogue_text(text, speaker)`** - Roadmap alias (text first, then character name/id)
 - **`start_dialogue(dialogueIdOrName)`** - Runs a branching dialogue graph from **Scripts → Dialogues** (`line` / `choice` / `jump` / `action` / `end`); optional choice conditions, once-only, declarative actions; Promise resolves when finished
 - **`end_dialogue()`** - Closes the active balloon and aborts any `start_dialogue` session
+- **`show_image(imageName, options?)`** - Fullscreen image overlay (`imageName` = Resources file name, e.g. `"photo.png"`). Default: wait for click. Options: `{ waitClick: false, fit: 'cover'|'contain' }`. Use **`hide_image()`** to dismiss from script.
+- **`hide_image()`** - Closes the fullscreen image overlay if open
 - **`save_game(slot?, label?)`** - Save player state (room, vars, inventory, characters, objects/hotspots, dialogue once-only) to `localStorage` (slots 1–10 or string id). Not stored in `.amnt`.
 - **`load_game(slot?)`** - Restore a save slot (does not re-run `on_game_start` / `on_room_change`)
 - **`delete_save(slot)`** / **`get_save_info(slot?)`** - Delete slot (**slot required**) or read metadata (omit slot on `get_save_info` to list all)
@@ -560,6 +562,8 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`show_dialogue_text(text, speaker)`** - Alias roadmap (prima il testo, poi nome/id personaggio)
 - **`start_dialogue(dialogueIdOrName)`** - Dialogo ramificato (`line` / `choice` / `jump` / `action` / `end`); condizioni, once-only, actions
 - **`end_dialogue()`** - Chiude il balloon e interrompe eventuali sessioni `start_dialogue`
+- **`show_image(imageName, options?)`** - Immagine a tutto schermo (nome file in Resources, es. `"foto.png"`). Di default aspetta il click. Opzioni: `{ waitClick: false, fit: 'cover'|'contain' }`. **`hide_image()`** chiude da script.
+- **`hide_image()`** - Chiude l’overlay di `show_image` se aperto
 - **`save_game(slot?, label?)`** - Salva stato partita (inclusi once-only dialoghi) in `localStorage` (non nel `.amnt`)
 - **`load_game(slot?)`** - Carica uno slot (non riesegue `on_game_start` / `on_room_change`)
 - **`delete_save(slot)`** / **`get_save_info(slot?)`** - Elimina (slot obbligatorio) o legge metadata (senza slot su `get_save_info` = lista)

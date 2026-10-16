@@ -65,6 +65,8 @@ Automated smoke tests cover pure helpers and serialization. The following requir
 | 11 | Line: set mood + portrait (Browse) or character portrait map | Playtest balloon shows portrait + mood label |
 | 12 | Choice condition: build nested `and` / `or` / `not` in Visual | Same declarative objects as runtime; choices hide correctly |
 | 13 | Visual → **Preview** | Play Test opens/focuses and runs `start_dialogue` for the active dialogue |
+| 14 | Action `run_script`: type API names in the script box | Same autocomplete hints as Scripts tab (CodeMirror) |
+| 15 | Playtest `await show_image("file.png")` (image in Resources) | Fullscreen image; click dismisses; `hide_image()` closes early |
 
 ## How to run automated smoke tests
 

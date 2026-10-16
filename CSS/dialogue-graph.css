@@ -432,6 +432,19 @@
   justify-content: center;
 }
 
+/* CodeMirror dentro inspector run_script */
+.dlg-insp-action .CodeMirror {
+  border: 1px solid #444;
+  border-radius: 4px;
+  font-size: 11px;
+  height: 180px;
+  margin-bottom: 4px;
+}
+
+.dlg-insp-action .CodeMirror-scroll {
+  min-height: 160px;
+}
+
 /* Hint / help text — stesso verde acido della sidebar editor */
 .dlg-graph-main .text-muted,
 .dlg-graph-toolbar .text-muted,

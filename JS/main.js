@@ -8404,6 +8404,7 @@ window.selectRoom = function(roomId) {
     'save_game', 'load_game', 'delete_save', 'get_save_info',
     'play_music', 'play_sound', 'stop_music', 'stop_sound',
     'play_animation', 'stop_animation', 'show_animation', 'hide_animation',
+    'show_image', 'hide_image',
     'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
     'load_room', 'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
     'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
@@ -8453,15 +8454,19 @@ window.selectRoom = function(roomId) {
     };
   }
 
-  // Attach auto-hint on typing for CodeMirror editors
+  // Attach auto-hint on typing for CodeMirror editors (WeakSet → più istanze, es. dialoghi Visual)
+  const autoHintAttachedEditors = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
   let autoHintAttachedToSmall = false;
   let autoHintAttachedToLarge = false;
   function attachAutoHint(cm, which = 'small') {
     if (!cm || typeof cm.on !== 'function') return;
-    if (which === 'large') {
+    if (autoHintAttachedEditors) {
+      if (autoHintAttachedEditors.has(cm)) return;
+      autoHintAttachedEditors.add(cm);
+    } else if (which === 'large') {
       if (autoHintAttachedToLarge) return;
       autoHintAttachedToLarge = true;
-    } else {
+    } else if (which === 'small') {
       if (autoHintAttachedToSmall) return;
       autoHintAttachedToSmall = true;
     }
@@ -8480,6 +8485,29 @@ window.selectRoom = function(roomId) {
       }
     });
   }
+
+  /**
+   * Monta CodeMirror + hint API su un <textarea> (usato dall'editor dialoghi Visual per run_script).
+   * @returns {object|null} istanza CodeMirror
+   */
+  window.amiantoMountScriptCodeMirror = function(textarea, options = {}) {
+    if (!textarea || typeof CodeMirror === 'undefined') return null;
+    if (textarea._amiantoCm) return textarea._amiantoCm;
+    const height = options.height != null ? options.height : 180;
+    const cm = CodeMirror.fromTextArea(textarea, {
+      mode: 'javascript',
+      theme: 'dracula',
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 2,
+      tabSize: 2,
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
+    });
+    cm.setSize('100%', height);
+    attachAutoHint(cm, 'dialogue');
+    textarea._amiantoCm = cm;
+    return cm;
+  };
 
   // Events per scope: id = handler name in runtime, label = human-readable
   const SCRIPT_EVENTS = {
@@ -9108,9 +9136,16 @@ window.selectRoom = function(roomId) {
     tree.appendChild(container);
   }
 
+  // Flag persist condivisi (dichiarati qui perché usati da script flush + autosave)
+  let amiantoDiskSaveTimer = null;
+  let amiantoPersistInProgress = false;
+  const AMIANTO_DISK_SAVE_DEBOUNCE_MS = 2500;
+
   // Helper function per salvare il contenuto dello script corrente
-  function saveCurrentScriptIfNeeded() {
+  // options.markDirty: se false non marca il progetto (es. flush durante persist)
+  function saveCurrentScriptIfNeeded(options = {}) {
     if (!currentScriptName) return;
+    const allowMarkDirty = options.markDirty !== false && !amiantoPersistInProgress;
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
@@ -9129,13 +9164,19 @@ window.selectRoom = function(roomId) {
     const currentKey = migrateLegacyScriptKey(String(currentScriptName));
     if (currentKey !== currentScriptName) currentScriptName = currentKey;
     if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
+      const prevContent = jsScripts.has(currentKey) ? String(jsScripts.get(currentKey)) : '';
+      const contentChanged = prevContent !== String(currentContent);
       jsScripts.set(currentKey, currentContent);
       try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
       
       if (currentKey.startsWith('Hotspot:')) {
         const hotspotId = currentKey.slice('Hotspot:'.length);
         syncHotspotScriptToAllRooms(hotspotId, currentContent, currentKey);
-        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+        // Solo se il testo è davvero cambiato — altrimenti crea un loop
+        // dirty → autosave → flush script → dirty → …
+        if (allowMarkDirty && contentChanged && typeof window.markAmiantoProjectDirty === 'function') {
+          window.markAmiantoProjectDirty();
+        }
       }
       
       // Se Ã¨ uno script oggetto, mantieni l'attachment in objectScripts
@@ -15051,13 +15092,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.assertNoEmbeddedDataUrls = assertNoEmbeddedDataUrls;
   window.debugProjectPayloadSize = debugProjectPayloadSize;
   window.markAmiantoProjectDirty = function() {
+    const wasDirty = !!window.__amiantoProjectDirty;
     window.__amiantoProjectDirty = true;
-    updateProjectSaveStatusUI('dirty');
+    // Evita flash UI se siamo già dirty (o in mezzo a un save)
+    if (!wasDirty && !amiantoPersistInProgress) {
+      updateProjectSaveStatusUI('dirty');
+    }
     scheduleProjectSizeIndicatorRefresh(350);
     if (typeof scheduleAmiantoDiskPersist === 'function') {
       scheduleAmiantoDiskPersist();
     }
   };
+
+  function clearAmiantoProjectDirty() {
+    window.__amiantoProjectDirty = false;
+    if (amiantoDiskSaveTimer) {
+      clearTimeout(amiantoDiskSaveTimer);
+      amiantoDiskSaveTimer = null;
+    }
+  }
 
   const AMIANTO_PERIODIC_AUTOSAVE_MS = 45000;
   let amiantoPeriodicAutosaveTimer = null;
@@ -16122,9 +16175,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // ================================
 
   const projectFileHandles = new Map();
-  let amiantoDiskSaveTimer = null;
-  let amiantoPersistInProgress = false;
-  const AMIANTO_DISK_SAVE_DEBOUNCE_MS = 2500;
 
   function hasLinkedAmntFilePath(projectName) {
     if (!projectName) return false;
@@ -16136,10 +16186,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   function scheduleAmiantoDiskPersist() {
     const projectName = localStorage.getItem('amiantoActiveProjectName');
     if (!projectName || !hasLinkedAmntFilePath(projectName)) return;
+    if (amiantoPersistInProgress) return; // verrà ripianificato a fine save se ancora dirty
     if (amiantoDiskSaveTimer) clearTimeout(amiantoDiskSaveTimer);
     amiantoDiskSaveTimer = setTimeout(() => {
       amiantoDiskSaveTimer = null;
       if (amiantoPersistInProgress) return;
+      if (!window.__amiantoProjectDirty) return;
+      updateProjectSaveStatusUI('saving');
       persistEditorProject({ silent: true, promptForLocation: false })
         .then((result) => {
           if (typeof applyPersistResultToSaveStatus === 'function') {
@@ -16387,7 +16440,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return { ok: false, reason: 'no-project' };
       }
 
-      saveCurrentScriptIfNeeded();
+      saveCurrentScriptIfNeeded({ markDirty: false });
       syncEditorScriptsToRoomsBeforeSerialize();
       syncInventoryScriptAttachments();
 
@@ -16478,7 +16531,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             saveProjectsToCache(currentUser.username, list);
             updateAppState({ projects: list });
           }
-          window.__amiantoProjectDirty = false;
+          clearAmiantoProjectDirty();
           window.__amiantoLastDiskSaveAt = new Date().toISOString();
           updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
           if (interactive && !silent) {
@@ -16489,7 +16542,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         } else {
           // Cache-only success: clear dirty only when no linked disk file was expected
           if (!expectsDiskWrite || (!hasLinkedPath && !hasFileHandle && !amntLocation)) {
-            window.__amiantoProjectDirty = false;
+            clearAmiantoProjectDirty();
             updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
           } else {
             // Expected disk write but got no path (cancelled picker, etc.)
@@ -16518,6 +16571,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return { ok: true, diskPath: filePath, cacheOnly: !filePath };
     } finally {
       amiantoPersistInProgress = false;
+      // Se l'utente ha modificato qualcosa durante il save, riprogramma l'autosave
+      if (window.__amiantoProjectDirty && typeof scheduleAmiantoDiskPersist === 'function') {
+        scheduleAmiantoDiskPersist();
+      }
     }
   }
 
@@ -18175,7 +18232,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     try {
       window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(window.serializeProject());
-      window.__amiantoProjectDirty = false;
+      clearAmiantoProjectDirty();
       window.__amiantoLastCacheSaveAt = new Date().toISOString();
     } catch (_) {}
 

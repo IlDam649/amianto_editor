@@ -69,7 +69,7 @@ Pan/zoom updates `dialogue.editor` in memory without marking the project dirty o
 - Connect output ports → input ports (`next` / option `next` / jump `target`)
 - Select nodes and edges; Delete; Duplicate (new ids); Undo/Redo (Ctrl+Z / Ctrl+Y)
 - Inspector: structured condition/action builders (no `eval`)
-- Action types include `run_script (custom)`: write inline JS in a textarea (stored as `action.code`); runtime calls `on_dialogue_action(dialogueId, nodeId, optionId)` via the shared sandbox
+- Action types include `run_script (custom)`: inline JS in a **CodeMirror** editor with the same Game API hints as Scripts; stored as `action.code`; runtime calls `on_dialogue_action(dialogueId, nodeId, optionId)` via the shared sandbox
 - Line nodes: optional `mood` + `portrait` (override image); character `portraits` map (mood → image) used as fallback
 - Nested condition builder for `and` / `or` / `not` (depth-limited), same declarative schema as runtime
 - **Preview** button: opens Play Test and runs real `start_dialogue` (handler `on_dialogue_preview`) — no second dialogue engine
