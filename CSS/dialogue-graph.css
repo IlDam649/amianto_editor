@@ -1,5 +1,24 @@
 /* Visual Dialogue Editor — Amianto */
 
+.dlg-form-main {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 180px);
+  background: #141414;
+  border-radius: 8px;
+  border: 1px solid #333;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+}
+
+.dlg-form-main-inner {
+  max-width: 420px;
+  padding: 2rem 1.5rem;
+}
+
 .dlg-graph-main {
   display: none;
   flex-direction: column;
@@ -450,6 +469,7 @@
 .dlg-graph-toolbar .text-muted,
 .dlg-graph-inspector .text-muted,
 .dlg-graph-inspector label,
+.dlg-form-main .text-muted,
 #dialogue-visual-hint,
 #dialogue-visual-hint.text-muted,
 #dialogue-editor-empty,

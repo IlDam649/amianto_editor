@@ -1671,7 +1671,7 @@
       if (formBody) formBody.style.display = '';
       if (visualHint) visualHint.style.display = 'none';
       if (typeof root.setMainWorkspaceMode === 'function') {
-        root.setMainWorkspaceMode('scripts');
+        root.setMainWorkspaceMode('dialogues-form');
       }
       if (typeof root.renderDialoguesEditor === 'function') {
         root.renderDialoguesEditor();

@@ -90,7 +90,7 @@
   <div id="mainDashboard">
     <!-- Menu inline -->
     <nav class="navbar navbar-expand-lg navbar-custom">
-      <div class="container-fluid d-flex justify-content-center">
+      <div class="container-fluid d-flex justify-content-center flex-wrap">
 
         <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
         <button class="section-btn" data-section="resources" aria-label="Game resources library" title="Local image library (Ctrl+1)" disabled>Resources</button>
@@ -101,6 +101,7 @@
         <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+6)">GUI</button>
         <button class="section-btn" data-section="cursors" aria-label="Manage game cursors" title="Manage cursor categories and click points (Ctrl+7)" disabled>Cursors</button>
         <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts">Scripts</button>
+        <button class="section-btn" data-section="dialogues" aria-label="Manage branching dialogues" title="Branching dialogues (form and visual editor)" disabled>Dialogues</button>
         <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+8)">Docs</button>
         <button type="button" class="section-btn playtest-btn" id="nav-playtest-btn" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+9)">PLAY</button>
       </div>
@@ -141,7 +142,16 @@
           <div id="docs-main-content" class="docs-main-content" tabindex="0"></div>
         </div>
 
-        <!-- Visual Dialogue Graph Editor (Scripts → Dialogues, Visual mode) -->
+        <!-- Form-mode placeholder (Dialogues tab) -->
+        <div id="dialogueFormMainPanel" class="dlg-form-main" style="display: none;" aria-label="Dialogue form editor">
+          <div class="dlg-form-main-inner text-muted text-center">
+            <h4 class="text-light mb-2">Dialogue form editor</h4>
+            <p class="mb-1">Edit nodes in the sidebar, or switch to <strong class="text-light">Visual</strong> for the node graph.</p>
+            <small>Same <code>project.dialogues</code> data — Form and Visual stay in sync.</small>
+          </div>
+        </div>
+
+        <!-- Visual Dialogue Graph Editor (Dialogues tab, Visual mode) -->
         <div id="dialogueGraphMainPanel" class="dlg-graph-main" style="display: none;" aria-label="Visual dialogue editor">
           <div class="dlg-graph-toolbar">
             <span class="dlg-title" id="dlg-graph-title">(no dialogue)</span>
@@ -1110,10 +1120,22 @@
               </small>
             </div>
 
+            <div class="alert alert-info mt-3" role="alert">
+              <small>
+                <strong>Tip:</strong> Single editor with Ctrl+S to save. Autocomplete: Ctrl+Space (game API).
+                Branching conversations live in the <strong>Dialogues</strong> tab (<code>start_dialogue</code>).
+              </small>
+            </div>
+          </div>
+        </div>
+
+        <div id="dialogues" class="section">
+          <h3>Dialogues</h3>
+          <div class="section-content">
             <!-- Branching Dialogues (form + visual graph editor) -->
-            <div class="mt-3 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+            <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
               <div class="d-flex justify-content-between align-items-center mb-2">
-                <h6 class="m-0" style="color:#eee">Dialogues</h6>
+                <h6 class="m-0" style="color:#eee">Project dialogues</h6>
                 <button type="button" class="btn btn-outline-success btn-sm" onclick="addProjectDialogue()">+ Add Dialogue</button>
               </div>
               <div class="mb-2">
@@ -1157,7 +1179,7 @@
                       <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('end')">+ End</button>
                     </div>
                   </div>
-                  <div id="dialogue-nodes-list" style="max-height:40vh;overflow:auto;"></div>
+                  <div id="dialogue-nodes-list" style="max-height:50vh;overflow:auto;"></div>
                   <small class="text-muted d-block mt-2">
                     Call with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>.
                     Choices support <em>Once only</em>, condition JSON (<code>has_item</code> / <code>var</code> / <code>and</code> / <code>or</code> / <code>not</code>), and actions JSON.
@@ -1171,7 +1193,7 @@
 
             <div class="alert alert-info mt-3" role="alert">
               <small>
-                <strong>Tip:</strong> Single editor with Ctrl+S to save. Autocomplete: Ctrl+Space (game API).
+                <strong>Tip:</strong> Form and Visual edit the same dialogue. Preview runs Play Test via <code>start_dialogue</code>.
               </small>
             </div>
           </div>

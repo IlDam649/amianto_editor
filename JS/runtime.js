@@ -8103,7 +8103,7 @@
     },
 
     /**
-     * Avvia un dialogo ramificato definito nel progetto (tab Scripts → Dialogues).
+     * Avvia un dialogo ramificato definito nel progetto (tab Dialogues).
      * Esegue nodi line/choice/end; Promise risolta a fine dialogo o end_dialogue().
      * In on_room_change / on_before_room_change non blocca load_room (il grafo resta in coda).
      * @param {string} dialogueIdOrName - id o name del dialogo

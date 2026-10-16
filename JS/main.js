@@ -10711,13 +10711,10 @@ window.selectRoom = function(roomId) {
     renderDialoguesEditor();
   };
   
-  // Refresh variables/dialogues list quando si carica la sezione Scripts
+  // Refresh variables list quando si carica la sezione Scripts
   document.addEventListener('tabChanged', function(e) {
     if (e.detail.currentTab === 'scripts') {
       refreshVariablesList();
-      if (typeof window.renderDialoguesEditor === 'function') {
-        window.renderDialoguesEditor();
-      }
     }
   });
 
@@ -11015,7 +11012,7 @@ window.selectRoom = function(roomId) {
     redraw();
   };
 
-  // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
+  // On tab change, switch main workspace (canvas / scripts / dialogues / resources / docs)
   function setMainWorkspaceMode(mode) {
     const canvasInfo = document.querySelector('.canvas-info');
     const canvasControls = document.querySelector('.canvas-controls');
@@ -11024,12 +11021,14 @@ window.selectRoom = function(roomId) {
     const resourcesMainPanel = document.getElementById('resourcesMainPanel');
     const docsMainPanel = document.getElementById('docsMainPanel');
     const dialogueGraphMainPanel = document.getElementById('dialogueGraphMainPanel');
+    const dialogueFormMainPanel = document.getElementById('dialogueFormMainPanel');
 
     const showCanvas = mode === 'canvas';
     const showScripts = mode === 'scripts';
     const showResources = mode === 'resources';
     const showDocs = mode === 'docs';
-    const showDialogues = mode === 'dialogues';
+    const showDialoguesVisual = mode === 'dialogues';
+    const showDialoguesForm = mode === 'dialogues-form';
 
     if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
     if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
@@ -11037,18 +11036,32 @@ window.selectRoom = function(roomId) {
     if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
     if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'grid' : 'none';
     if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
+    if (dialogueFormMainPanel) {
+      dialogueFormMainPanel.style.display = showDialoguesForm ? 'flex' : 'none';
+    }
     if (dialogueGraphMainPanel) {
-      dialogueGraphMainPanel.style.display = showDialogues ? 'flex' : 'none';
-      dialogueGraphMainPanel.classList.toggle('is-visible', showDialogues);
+      dialogueGraphMainPanel.style.display = showDialoguesVisual ? 'flex' : 'none';
+      dialogueGraphMainPanel.classList.toggle('is-visible', showDialoguesVisual);
     }
   }
   window.setMainWorkspaceMode = setMainWorkspaceMode;
 
+  function applyDialoguesWorkspaceMode() {
+    const GE = window.AmiantoDialogueGraphEditor;
+    const visual = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
+    setMainWorkspaceMode(visual ? 'dialogues' : 'dialogues-form');
+    if (visual && GE && typeof GE.refresh === 'function') {
+      GE.refresh();
+    }
+    if (typeof window.renderDialoguesEditor === 'function') {
+      window.renderDialoguesEditor();
+    }
+  }
+  window.applyDialoguesWorkspaceMode = applyDialoguesWorkspaceMode;
+
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
-      const GE = window.AmiantoDialogueGraphEditor;
-      const visualDialogues = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
-      setMainWorkspaceMode(visualDialogues ? 'dialogues' : 'scripts');
+      setMainWorkspaceMode('scripts');
       // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
@@ -11066,15 +11079,17 @@ window.selectRoom = function(roomId) {
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
-      if (typeof window.renderDialoguesEditor === 'function') {
-        window.renderDialoguesEditor();
-      }
       // Aggiorna le dimensioni di CodeMirror dopo che il container Ã¨ visibile
       setTimeout(() => {
         if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
           largeCodeMirrorEditor.refresh();
         }
       }, 100);
+    } else if (e.detail.currentTab === 'dialogues') {
+      applyDialoguesWorkspaceMode();
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     } else if (e.detail.currentTab === 'resources') {
       setMainWorkspaceMode('resources');
       if (window.applyConsoleLogVisibilityState) {
@@ -15384,7 +15399,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   function enableOtherTabs(enabled) {
-    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'cursors', 'scripts'].forEach(tabId => {
+    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'cursors', 'scripts', 'dialogues'].forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
         button.disabled = !enabled;
