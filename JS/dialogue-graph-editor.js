@@ -59,6 +59,62 @@
     }
   }
 
+  /** True while typing in the inspector / its CodeMirror — avoid remounting that steals focus. */
+  function isInspectorEditing() {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const panel = Editor.els.inspector;
+    if (panel && panel.contains(ae)) return true;
+    // CodeMirror may move focus to a wrapper still inside the inspector
+    if (ae.closest && panel && ae.closest('.CodeMirror') && panel.contains(ae.closest('.CodeMirror'))) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Dispose CodeMirror instances before wiping inspector HTML (prevents orphan key handlers). */
+  function disposeInspectorEditors(panel) {
+    if (!panel) return;
+    panel.querySelectorAll('textarea').forEach(function (ta) {
+      const cm = ta._amiantoCm;
+      if (!cm) return;
+      try {
+        if (typeof cm.save === 'function') cm.save();
+        if (typeof cm.toTextArea === 'function') cm.toTextArea();
+      } catch (_) {
+        try {
+          const wrap = cm.getWrapperElement && cm.getWrapperElement();
+          if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        } catch (__) {}
+      }
+      ta._amiantoCm = null;
+    });
+    panel.querySelectorAll('.CodeMirror').forEach(function (el) {
+      try {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      } catch (_) {}
+    });
+  }
+
+  function setInspectorHtml(html) {
+    const panel = Editor.els.inspector;
+    if (!panel) return;
+    disposeInspectorEditors(panel);
+    panel.innerHTML = html;
+  }
+
+  /** Update node card preview without rebuilding the whole canvas (keeps inspector focus). */
+  function updateNodePreview(nid) {
+    const dlg = findDialogue(Editor.dialogueId);
+    const node = dlg && dlg.nodes[nid];
+    const rootEl = Editor.els.nodes;
+    if (!node || !rootEl) return;
+    const el = rootEl.querySelector('.dlg-node[data-id="' + cssEsc(nid) + '"]');
+    if (!el) return;
+    const prev = el.querySelector('.dlg-node-preview');
+    if (prev) prev.textContent = previewText(node);
+  }
+
   function ensureUi(node, index) {
     if (!node.ui || !Number.isFinite(Number(node.ui.x)) || !Number.isFinite(Number(node.ui.y))) {
       const col = index % 4;
@@ -428,11 +484,14 @@
     const header = el.querySelector('.dlg-node-header');
     header.addEventListener('mousedown', function (e) {
       if (e.button !== 0) return;
+      // Don't steal focus / remount inspector while editing text fields
+      if (isInspectorEditing()) return;
       e.stopPropagation();
       e.preventDefault();
       const dlg = findDialogue(Editor.dialogueId);
       const node = dlg && dlg.nodes[nid];
       if (!node) return;
+      const already = Editor.selectedNodeId === nid && !Editor.selectedEdge;
       Editor.selectedNodeId = nid;
       Editor.selectedEdge = null;
       pushUndo();
@@ -442,14 +501,22 @@
         ox: start.x - (node.ui.x || 0),
         oy: start.y - (node.ui.y || 0)
       };
-      renderNodes();
-      renderInspector();
+      if (!already) {
+        renderNodes();
+        renderInspector();
+      } else {
+        // Selection unchanged — only refresh selected chrome on canvas
+        renderNodes();
+      }
     });
 
     el.addEventListener('click', function (e) {
       if (e.target.classList.contains('dlg-port')) return;
+      if (isInspectorEditing() && Editor.selectedNodeId === nid) return;
+      const already = Editor.selectedNodeId === nid && !Editor.selectedEdge;
       Editor.selectedNodeId = nid;
       Editor.selectedEdge = null;
+      if (already) return;
       renderNodes();
       renderInspector();
     });
@@ -558,7 +625,7 @@
     if (!panel) return;
     const dlg = findDialogue(Editor.dialogueId);
     if (!dlg) {
-      panel.innerHTML = '<p class="text-muted">No dialogue selected.</p>';
+      setInspectorHtml('<p class="text-muted">No dialogue selected.</p>');
       return;
     }
 
@@ -574,13 +641,14 @@
           target = (from.options && from.options[oi] && from.options[oi].next) || '';
         }
       }
-      panel.innerHTML =
+      setInspectorHtml(
         '<h6>Connection</h6>' +
         '<p><code>' + esc(edge.fromId) + '</code> → <code>' + esc(target || '(broken)') + '</code></p>' +
         '<button type="button" class="btn btn-outline-danger btn-sm mb-2" id="dlg-insp-del-edge">Delete link</button>' +
         (target && dlg.nodes[target]
           ? '<button type="button" class="btn btn-outline-info btn-sm" id="dlg-insp-goto">Go to target</button>'
-          : '');
+          : '')
+      );
       const del = panel.querySelector('#dlg-insp-del-edge');
       if (del) {
         del.addEventListener('click', function () {
@@ -609,10 +677,11 @@
 
     const nid = Editor.selectedNodeId;
     if (!nid || !dlg.nodes[nid]) {
-      panel.innerHTML =
+      setInspectorHtml(
         '<h6>Inspector</h6>' +
         '<p class="text-muted">Select a node or create one from the toolbar / right-click.</p>' +
-        '<p class="text-muted small">Start is marked via <code>startNodeId</code> (badge START).</p>';
+        '<p class="text-muted small">Start is marked via <code>startNodeId</code> (badge START).</p>'
+      );
       return;
     }
 
@@ -663,7 +732,7 @@
       }).join('') +
       '</datalist>';
 
-    panel.innerHTML = html;
+    setInspectorHtml(html);
 
     panel.querySelector('#dlg-insp-set-start')?.addEventListener('click', function () {
       pushUndo();
@@ -678,15 +747,38 @@
       deleteSelectedNode();
     });
 
-    const bindField = function (id, apply) {
+    // Live-edit fields: update model on input without remounting inspector (focus-safe).
+    const bindField = function (id, apply, opts) {
       const el = panel.querySelector(id);
       if (!el) return;
-      el.addEventListener('change', function () {
-        pushUndo();
+      const options = opts || {};
+      let undoPushed = false;
+      const commit = function (fromChange) {
         apply(el);
         markDirty();
-        renderNodes();
-        renderToolbar();
+        updateNodePreview(nid);
+        if (fromChange || options.refreshGraphOnChange) {
+          renderToolbar();
+          if (options.refreshGraphOnChange) {
+            renderNodes();
+            scheduleEdges();
+          }
+        }
+      };
+      el.addEventListener('focus', function () {
+        undoPushed = false;
+      });
+      el.addEventListener('input', function () {
+        if (!undoPushed) {
+          pushUndo();
+          undoPushed = true;
+        }
+        commit(false);
+      });
+      el.addEventListener('change', function () {
+        if (!undoPushed) pushUndo();
+        undoPushed = false;
+        commit(true);
       });
     };
 
@@ -697,8 +789,8 @@
       if (v) node.mood = v;
       else delete node.mood;
     });
-    bindField('#dlg-f-next', function (el) { node.next = el.value.trim(); });
-    bindField('#dlg-f-target', function (el) { node.target = el.value.trim(); });
+    bindField('#dlg-f-next', function (el) { node.next = el.value.trim(); }, { refreshGraphOnChange: true });
+    bindField('#dlg-f-target', function (el) { node.target = el.value.trim(); }, { refreshGraphOnChange: true });
 
     panel.querySelector('#dlg-f-portrait-pick')?.addEventListener('click', async function (e) {
       e.preventDefault();
@@ -1131,13 +1223,27 @@
     });
 
     container.querySelectorAll('[data-opt-field]').forEach(function (el) {
-      el.addEventListener('change', function () {
+      let undoPushed = false;
+      const apply = function (refreshGraph) {
         const oi = Number(el.getAttribute('data-oi'));
         const field = el.getAttribute('data-opt-field');
-        pushUndo();
         if (node.options[oi]) node.options[oi][field] = field === 'next' ? el.value.trim() : el.value;
         markDirty();
-        renderNodes();
+        updateNodePreview(node.id || Editor.selectedNodeId);
+        if (refreshGraph && field === 'next') {
+          renderNodes();
+          scheduleEdges();
+        }
+      };
+      el.addEventListener('focus', function () { undoPushed = false; });
+      el.addEventListener('input', function () {
+        if (!undoPushed) { pushUndo(); undoPushed = true; }
+        apply(false);
+      });
+      el.addEventListener('change', function () {
+        if (!undoPushed) pushUndo();
+        undoPushed = false;
+        apply(true);
       });
     });
 
@@ -1348,11 +1454,18 @@
     hideCtx();
   }
 
-  function deleteSelectedNode() {
+  async function deleteSelectedNode() {
     const dlg = findDialogue(Editor.dialogueId);
     const nid = Editor.selectedNodeId;
     if (!dlg || !nid || !dlg.nodes[nid]) return;
-    if (!confirm('Delete node "' + nid + '"?')) return;
+    const ok = typeof root.showConfirmDialog === 'function'
+      ? await root.showConfirmDialog({
+          title: 'Delete Node',
+          message: 'Delete node "' + nid + '"?',
+          danger: true
+        })
+      : confirm('Delete node "' + nid + '"?');
+    if (!ok) return;
     pushUndo();
     delete dlg.nodes[nid];
     // clear dangling refs
@@ -1509,6 +1622,8 @@
       if (e.button === 1 || (e.button === 0 && (Editor.spaceDown || e.target === wrap || e.target === Editor.els.world || e.target === Editor.els.svg))) {
         if (e.target.classList && e.target.classList.contains('dlg-node')) return;
         if (e.target.closest && e.target.closest('.dlg-node')) return;
+        // Keep inspector focus when clicking empty canvas while typing
+        if (isInspectorEditing()) return;
         e.preventDefault();
         Editor.panning = {
           x: e.clientX,
@@ -1549,11 +1664,18 @@
 
   function onKeyDown(e) {
     if (Editor.mode !== 'visual') return;
+    const tag = (e.target && e.target.tagName) || '';
+    const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      !!(e.target && e.target.isContentEditable) ||
+      !!(e.target && e.target.closest && (
+        e.target.closest('.CodeMirror') ||
+        e.target.closest('.dlg-graph-inspector')
+      ));
+    if (inField) return;
+
     if (e.code === 'Space') {
       Editor.spaceDown = true;
     }
-    const tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
@@ -1680,17 +1802,28 @@
   }
 
   function setDialogue(id) {
-    if (Editor.dialogueId && Editor.dialogueId !== id) {
+    const nextId = id || null;
+    const changed = Editor.dialogueId !== nextId;
+    if (changed && Editor.dialogueId) {
       persistViewport(false);
     }
-    Editor.dialogueId = id || null;
-    Editor.selectedNodeId = null;
-    Editor.selectedEdge = null;
-    Editor.undoStack = [];
-    Editor.redoStack = [];
-    const dlg = findDialogue(Editor.dialogueId);
-    loadViewport(dlg);
-    if (Editor.mode === 'visual') refresh();
+    Editor.dialogueId = nextId;
+    if (changed) {
+      Editor.selectedNodeId = null;
+      Editor.selectedEdge = null;
+      Editor.undoStack = [];
+      Editor.redoStack = [];
+      const dlg = findDialogue(Editor.dialogueId);
+      loadViewport(dlg);
+      if (Editor.mode === 'visual') refresh();
+    } else if (Editor.mode === 'visual') {
+      // Same dialogue: soft refresh (keep selection + undo). Skip if user is typing.
+      if (!isInspectorEditing()) {
+        renderToolbar();
+        renderNodes();
+        scheduleEdges();
+      }
+    }
   }
 
   function refresh() {
@@ -1698,6 +1831,13 @@
     const dlg = findDialogue(Editor.dialogueId);
     if (Editor.els.empty) {
       Editor.els.empty.style.display = dlg && Object.keys(dlg.nodes || {}).length ? 'none' : 'flex';
+    }
+    // Don't wipe inspector mid-edit (e.g. sidebar sync / autosave hooks)
+    if (isInspectorEditing()) {
+      renderToolbar();
+      updateNodePreview(Editor.selectedNodeId);
+      scheduleEdges();
+      return;
     }
     renderAll();
   }

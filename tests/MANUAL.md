@@ -52,7 +52,7 @@ Automated smoke tests cover pure helpers and serialization. The following requir
 
 | # | Steps | Expected |
 |---|--------|----------|
-| 1 | Scripts → Dialogues → open a legacy dialogue → **Visual** | Nodes appear; auto-layout if no `ui`; Form still shows same data |
+| 1 | Dialogues tab → open a legacy dialogue → **Visual** | Nodes appear; auto-layout if no `ui`; Form still shows same data |
 | 2 | Switch **Form** ↔ **Visual**, edit text in one mode, switch | Same dialogue object; changes visible in the other mode |
 | 3 | Add Line / Choice / End, connect ports, set start | Graph updates; Validate reports OK or clear warnings |
 | 4 | Choice option: set condition + once in inspector | Badges on node; data matches form JSON fields |
@@ -67,6 +67,27 @@ Automated smoke tests cover pure helpers and serialization. The following requir
 | 13 | Visual → **Preview** | Play Test opens/focuses and runs `start_dialogue` for the active dialogue |
 | 14 | Action `run_script`: type API names in the script box | Same autocomplete hints as Scripts tab (CodeMirror) |
 | 15 | Playtest `await show_image("file.png")` (image in Resources) | Fullscreen image; click dismisses; `hide_image()` closes early |
+
+## SaveLoad GUI
+
+| # | Steps | Expected |
+|---|--------|----------|
+| 1 | GUI → New GUI → Type **SaveLoad** → Draw Save Slot ×2 | Slots purple dashed; list shows slot keys |
+| 2 | Mode **both**, start visible off; optional Close button with `hide_gui` | Settings persist in `.amnt` |
+| 3 | Script: `show_gui("…")` → PLAY → click empty slot | Saves; label/time shown in slot |
+| 4 | Click filled slot | Loads that save |
+| 5 | Mode **load**, click empty | Message “Empty save slot.” |
+| 6 | Click outside slots (close outside on) | Menu hides |
+
+## Character visibility & room load
+
+| # | Steps | Expected |
+|---|--------|----------|
+| 1 | `on_game_start`: `set_character_visibility(player, false)` then PLAY | Player not visible when canvas reveals (no flash) |
+| 2 | `on_before_room_change` / After script: hide then show player around `load_room` | Before runs on old room; After on new room; visibility respected (no forced `visible=true`) |
+| 3 | `set_character_opacity(player, 0.3)` → save → load | Opacity restored |
+| 4 | Script: `show_message("A"); print("B")` without `await` | `B` prints only after message closes (auto-await) |
+| 5 | Hotspot: `await walk_character(...); load_room(...)` | Walk finishes before room change; After scripts run |
 
 ## How to run automated smoke tests
 

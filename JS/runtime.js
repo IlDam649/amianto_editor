@@ -26,7 +26,7 @@
     variableDefinitions: new Map(), // name -> { type, initialValue, ... } da projectData.variables
     objects: new Map(), // oggetti caricati con immagini
     guis: new Map(), // GUI caricate
-    characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, roomId}>
+    characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, opacity, roomId}>
     characterDefinitions: new Map(), // Definizioni dei character dal progetto: Map<characterName, {directions: {...}}>
     roomAnimationDefinitions: new Map(), // Definizioni animazioni stanza: Map<animId, {fps, loop, frames}>
     scripts: {}, // script del progetto
@@ -225,36 +225,57 @@
     document.head.appendChild(style);
   }
 
+  /**
+   * Mostra un messaggio overlay. Promise risolta a chiusura (click × o timeout).
+   * @param {string} text
+   * @param {number} [duration=3000]
+   * @returns {Promise<void>}
+   */
   function showGameMessage(text, duration = 3000) {
-    if (!text) return;
+    if (!text) return Promise.resolve();
     ensureGameNotificationStyles();
-    
+
     // Rimuovi notifiche precedenti se ce ne sono troppe
     const existingNotifications = document.querySelectorAll('.game-notification');
     if (existingNotifications.length > 5) {
       existingNotifications[0].remove();
     }
-    
-    const notification = document.createElement('div');
-    notification.className = 'game-notification';
-    notification.innerHTML = `
-      <button class="close-btn" onclick="this.parentElement.remove()" title="Close">×</button>
-      <div style="padding-right: 24px;">${escapeHtml(text)}</div>
-    `;
-    
-    document.body.appendChild(notification);
-    
-    // Rimuovi automaticamente dopo la durata specificata
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.classList.add('fade-out');
-        setTimeout(() => {
-          if (notification.parentNode) {
-            notification.remove();
-          }
-        }, 300);
+
+    return new Promise(resolve => {
+      let settled = false;
+      const notification = document.createElement('div');
+      notification.className = 'game-notification';
+      notification.innerHTML = `
+        <button type="button" class="close-btn" title="Close">×</button>
+        <div style="padding-right: 24px;">${escapeHtml(text)}</div>
+      `;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (notification.parentNode) {
+          notification.classList.add('fade-out');
+          setTimeout(() => {
+            if (notification.parentNode) notification.remove();
+          }, 300);
+        }
+        resolve();
+      };
+
+      const closeBtn = notification.querySelector('.close-btn');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          finish();
+        });
       }
-    }, duration);
+
+      document.body.appendChild(notification);
+      const ms = Math.max(0, Number(duration) || 0);
+      if (ms > 0) setTimeout(finish, ms);
+      else finish();
+    });
   }
 
   function escapeHtml(text) {
@@ -298,9 +319,40 @@
   function enqueueScriptCommand(commandFn, delay = 0) {
     const queued = queueCommand(commandFn, delay);
     if (isInsideRoomTransitionScript()) {
+      // Non blocca load_room / room scripts; il comando resta in coda
       return Promise.resolve();
     }
-    return queued;
+    return trackScriptSideEffect(queued);
+  }
+
+  /** API che devono sospendere lo script finché non completano (auto-await in compile). */
+  const AUTO_AWAIT_BLOCKING_APIS = [
+    'show_message',
+    'showText',
+    'show_dialogue',
+    'show_dialogue_text',
+    'start_dialogue',
+    'show_image',
+    'wait'
+  ];
+
+  /**
+   * Inserisce `await` davanti alle API bloccanti se assente
+   * (così show_message(...); comandoSuccessivo aspetta la chiusura del messaggio).
+   */
+  function injectAutoAwaitBlockingApis(code) {
+    let out = String(code || '');
+    AUTO_AWAIT_BLOCKING_APIS.forEach(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Match show_message( / Game.show_message( / GameAPI.show_message(
+      // Evita doppio await e property su altri oggetti (foo.show_message)
+      const re = new RegExp(
+        `(?<!\\bawait\\s)(?<![\\w.$])((?:Game(?:API)?\\.)?${escaped}\\s*\\()`,
+        'g'
+      );
+      out = out.replace(re, 'await $1');
+    });
+    return out;
   }
 
   function trackScriptSideEffect(promise) {
@@ -1617,18 +1669,32 @@
   // ============================================
   // INIZIALIZZAZIONE RUNTIME
   // ============================================
+  function normalizeProjectDataForRuntime(projectData) {
+    if (!projectData || typeof projectData !== 'object') {
+      throw new Error('Invalid project data');
+    }
+    // Standalone HTML / .amnt mistake: unwrap package wrapper
+    if (projectData.format === 'amianto-amnt' && projectData.project && typeof projectData.project === 'object') {
+      projectData = projectData.project;
+    }
+    if (projectData.format !== 'amianto-game') {
+      // Legacy / partial exports: accept game-shaped objects missing format
+      const looksLikeGame = !!(projectData.settings || projectData.rooms || projectData.scripts);
+      if (!looksLikeGame) {
+        throw new Error('Unsupported project format. Expected: amianto-game');
+      }
+      projectData = Object.assign({}, projectData, { format: 'amianto-game' });
+      if (projectData.version == null) projectData.version = 1;
+      log('[Runtime] Project format missing — coerced to amianto-game', 'warning');
+    }
+    return projectData;
+  }
+
   window.initRuntime = async function(projectData) {
     try {
       log('[Runtime] initRuntime chiamato', 'info');
-      
-      // Validazione progetto
-      if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Invalid project data');
-      }
 
-      if (projectData.format !== 'amianto-game') {
-        throw new Error('Unsupported project format. Expected: amianto-game');
-      }
+      projectData = normalizeProjectDataForRuntime(projectData);
 
       mergeLegacyHotspotScriptsIntoRooms(projectData);
 
@@ -1658,15 +1724,6 @@
       log('[Runtime] Standalone mode - full initialization', 'info');
       showLoadingOverlay();
       updateLoadingMessage('Initializing runtime...');
-
-      // Validazione progetto
-      if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Invalid project data');
-      }
-
-      if (projectData.format !== 'amianto-game') {
-        throw new Error('Unsupported project format. Expected: amianto-game');
-      }
 
       // Ferma loop/interazione precedenti (reload playtest)
       stopGameLoop();
@@ -1899,7 +1956,9 @@
 
       gameState.initialized = true;
 
-      // Game loop attivo durante boot: play_animation / await in on_game_start possono avanzare i frame
+      // Game loop sotto l'overlay: gli script possono await / avanzare animazioni
+      // PRIMA che il giocatore veda il canvas (così set_character_visibility in on_game_start
+      // non lascia un frame col player ancora visibile).
       setupInteraction();
       startGameLoop();
 
@@ -1908,20 +1967,20 @@
 
       gameState.bootPhase = 'scripts';
       updateLoadingMessage('Running initial scripts...');
-      // Canvas visibile durante gli script: play_animation in on_game_start può essere visto
-      hideLoadingOverlay();
 
       // Sblocca audio prima di on_game_start / play_music (niente attesa del primo click in Electron)
       await tryAutoUnlockAudioAtBoot();
 
       await executeGameStartScripts();
 
-      markBootReady();
-
       if (startRoomId) {
         await executeBeforeRoomChangeScripts(null, startRoomId);
         await executeRoomChangeScripts(null, startRoomId);
       }
+
+      // Rivela il gioco solo dopo gli script iniziali (visibilità/opacity già applicate)
+      hideLoadingOverlay();
+      markBootReady();
 
       refreshResourceFileIndex().catch(err => {
         log(`[Runtime] Resource index preload: ${err.message}`, 'warning');
@@ -1951,7 +2010,10 @@
     } catch (error) {
       log(`Runtime initialization error: ${error.message}`, 'error');
       console.error(error);
+      gameState.bootPhase = 'error';
       hideLoadingOverlay();
+      // Re-throw so standalone HTML boot can show #boot-error (playtest callers should .catch)
+      throw error;
     }
   };
 
@@ -2084,18 +2146,23 @@
     }
 
     // Inventory (background, toggle icon, item images)
+    // After prepareProjectPayloadForRepos / .amnt save, fields are often *Ref (imageRef, backgroundRef).
     const invData = projectData.inventory;
     if (invData && typeof invData === 'object' && !Array.isArray(invData)) {
-      if (invData.background && typeof invData.background === 'string') {
-        assetsWithCategory.set(invData.background, { category: 'gui', roomName: null, characterName: null });
+      const invBg = invData.backgroundRef || invData.background;
+      if (invBg && typeof invBg === 'string') {
+        assetsWithCategory.set(invBg, { category: 'gui', roomName: null, characterName: null });
       }
-      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
-        assetsWithCategory.set(invData.toggleIcon, { category: 'gui', roomName: null, characterName: null });
+      const invToggle = invData.toggleIconRef || invData.toggleIcon;
+      if (invToggle && typeof invToggle === 'string') {
+        assetsWithCategory.set(invToggle, { category: 'gui', roomName: null, characterName: null });
       }
       if (Array.isArray(invData.items)) {
         invData.items.forEach(item => {
-          if (item && item.image && typeof item.image === 'string') {
-            assetsWithCategory.set(item.image, { category: 'gui', roomName: null, characterName: null });
+          if (!item) return;
+          const itemImg = item.imageRef || item.image;
+          if (itemImg && typeof itemImg === 'string') {
+            assetsWithCategory.set(itemImg, { category: 'gui', roomName: null, characterName: null });
           }
         });
       }
@@ -2142,6 +2209,13 @@
           if (char.animations) {
             Object.values(char.animations).forEach(anim => collectCharacterFrameAssets(anim.directions));
           }
+          if (char.portraits && typeof char.portraits === 'object') {
+            Object.values(char.portraits).forEach(ref => {
+              if (ref && typeof ref === 'string') {
+                assetsWithCategory.set(ref, { category: 'character', roomName: null, characterName });
+              }
+            });
+          }
         });
       }
 
@@ -2151,6 +2225,18 @@
           if (c && c.category && c.cursorImage && typeof c.cursorImage === 'string') {
             assetsWithCategory.set(c.cursorImage, { category: 'cursor', roomName: null, characterName: null });
           }
+        });
+      }
+
+      // Dialogue line portraits (optional overrides on nodes)
+      if (Array.isArray(projectData.dialogues)) {
+        projectData.dialogues.forEach(dlg => {
+          if (!dlg || !dlg.nodes || typeof dlg.nodes !== 'object') return;
+          Object.values(dlg.nodes).forEach(node => {
+            if (node && node.portrait && typeof node.portrait === 'string') {
+              assetsWithCategory.set(node.portrait, { category: 'gui', roomName: null, characterName: null });
+            }
+          });
         });
       }
 
@@ -3048,7 +3134,8 @@
             }
           }
           
-          buttons.push({
+          const role = btnData.role === 'saveSlot' ? 'saveSlot' : (btnData.role || 'button');
+          const btnOut = {
             id: btnData.id,
             name: btnData.name || btnData.id,
             x: Number(btnData.x) || 0,
@@ -3057,8 +3144,17 @@
             h: Number(btnData.h) || 0,
             text: btnData.text || '',
             backgroundImage: btnImg,
-            enabled: true
-          });
+            enabled: true,
+            role
+          };
+          if (role === 'saveSlot') {
+            btnOut.slotKey = String(
+              btnData.slotKey != null && btnData.slotKey !== ''
+                ? btnData.slotKey
+                : (buttons.filter(b => b.role === 'saveSlot').length + 1)
+            );
+          }
+          buttons.push(btnOut);
         }
       }
 
@@ -3072,20 +3168,191 @@
         }
       }
 
+      const settings = guiData.settings || {};
+      let visible = true;
+      if (guiType === 'SaveLoad') {
+        visible = settings.startVisible === true;
+      } else if (typeof settings.startVisible === 'boolean') {
+        visible = settings.startVisible;
+      }
+
       gameState.guis.set(guiData.id, {
         id: guiData.id,
         name: guiData.name || guiData.id,
         type: guiType,
-        settings: guiData.settings || {},
+        settings,
         background: backgroundImg,
         balloonImage,
-        buttons
+        buttons,
+        visible
       });
 
-      log(`[Runtime] GUI caricata: ${guiData.id} (bg: ${backgroundImg ? 'ok' : 'mancante'}, buttons: ${buttons.length})`, 'info');
+      log(`[Runtime] GUI caricata: ${guiData.id} (type: ${guiType}, visible: ${visible}, bg: ${backgroundImg ? 'ok' : 'mancante'}, buttons: ${buttons.length})`, 'info');
     }
 
     log(`[Runtime] GUI loading complete: ${guisData.length} GUI(s) loaded`, 'success');
+  }
+
+  function resolveGuiByIdOrName(idOrName) {
+    if (idOrName == null || idOrName === '') return null;
+    const key = String(idOrName);
+    if (gameState.guis.has(key)) return gameState.guis.get(key);
+    for (const gui of gameState.guis.values()) {
+      if (gui && gui.name === key) return gui;
+    }
+    return null;
+  }
+
+  function setGuiVisible(idOrName, visible) {
+    const gui = resolveGuiByIdOrName(idOrName);
+    if (!gui) {
+      log(`[Runtime] setGuiVisible: GUI "${idOrName}" not found`, 'warning');
+      return false;
+    }
+    gui.visible = !!visible;
+    return true;
+  }
+
+  function formatSaveSlotLabel(info, emptyLabel, slotKey) {
+    if (!info) return emptyLabel || 'Empty';
+    const label = (info.label && String(info.label).trim()) ? String(info.label).trim() : '';
+    const when = info.savedAt ? String(info.savedAt).replace('T', ' ').slice(0, 16) : '';
+    if (label && when) return `${label}\n${when}`;
+    if (label) return label;
+    if (when) return when;
+    return `Slot ${slotKey}`;
+  }
+
+  function getSaveLoadMode(gui) {
+    const mode = gui && gui.settings && gui.settings.mode;
+    if (mode === 'save' || mode === 'load' || mode === 'both') return mode;
+    return 'both';
+  }
+
+  async function handleSaveLoadSlotClick(gui, btn) {
+    const slotKey = String(btn.slotKey != null ? btn.slotKey : '1');
+    const mode = getSaveLoadMode(gui);
+    const info = (typeof GameAPI.get_save_info === 'function') ? GameAPI.get_save_info(slotKey) : null;
+    const filled = !!(info && (info.savedAt || info.label || info.roomId));
+
+    if (mode === 'load') {
+      if (!filled) {
+        if (typeof GameAPI.show_message === 'function') {
+          await GameAPI.show_message('Empty save slot.');
+        }
+        return true;
+      }
+      const result = await GameAPI.load_game(slotKey);
+      if (result && result.ok) gui.visible = false;
+      return true;
+    }
+
+    if (mode === 'save') {
+      const roomId = gameState.currentRoomId || '';
+      const label = roomId ? `Room ${roomId}` : `Slot ${slotKey}`;
+      GameAPI.save_game(slotKey, label);
+      if (typeof GameAPI.show_message === 'function') {
+        await GameAPI.show_message(`Saved to slot ${slotKey}.`);
+      }
+      return true;
+    }
+
+    // both: empty → save, filled → load
+    if (filled) {
+      const result = await GameAPI.load_game(slotKey);
+      if (result && result.ok) gui.visible = false;
+    } else {
+      const roomId = gameState.currentRoomId || '';
+      const label = roomId ? `Room ${roomId}` : `Slot ${slotKey}`;
+      GameAPI.save_game(slotKey, label);
+      if (typeof GameAPI.show_message === 'function') {
+        await GameAPI.show_message(`Saved to slot ${slotKey}.`);
+      }
+    }
+    return true;
+  }
+
+  async function handleVisibleSaveLoadGuiClick(x, y) {
+    for (const gui of gameState.guis.values()) {
+      if (gui.type !== 'SaveLoad' || gui.visible === false) continue;
+
+      if (gui.buttons && Array.isArray(gui.buttons)) {
+        for (const btn of gui.buttons) {
+          if (!btn.enabled) continue;
+          if (x < btn.x || x > btn.x + btn.w || y < btn.y || y > btn.y + btn.h) continue;
+
+          if (btn.role === 'saveSlot') {
+            log(`Click save slot GUI: ${btn.name} (key ${btn.slotKey})`, 'info');
+            await handleSaveLoadSlotClick(gui, btn);
+            return true;
+          }
+
+          log(`Click su pulsante GUI: ${btn.name}`, 'info');
+          const guiScripts = gameState.attachments.guiScripts || {};
+          if (typeof guiScripts === 'object' && guiScripts[btn.id]) {
+            const scriptName = guiScripts[btn.id];
+            if (gameState.scripts[scriptName]) {
+              await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y], scriptName);
+            }
+          }
+          for (const handler of eventHandlers.gui_click) {
+            try {
+              handler(btn.id, x, y);
+            } catch (error) {
+              log(`Errore handler on_gui_click: ${error.message}`, 'error');
+            }
+          }
+          return true;
+        }
+      }
+
+      if (gui.settings && gui.settings.closeOnClickOutside !== false) {
+        log(`[Runtime] SaveLoad GUI "${gui.name}": click outside → hide`, 'info');
+        gui.visible = false;
+      }
+      return true; // modal: swallow click even if close disabled
+    }
+    return false;
+  }
+
+  function renderSaveLoadSlot(ctx, gui, btn) {
+    const emptyLabel = (gui.settings && gui.settings.emptyLabel) || 'Empty';
+    const slotKey = String(btn.slotKey != null ? btn.slotKey : '1');
+    let info = null;
+    try {
+      info = GameAPI.get_save_info(slotKey);
+    } catch (_) {
+      info = null;
+    }
+    const filled = !!(info && (info.savedAt || info.label || info.roomId));
+
+    if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
+      try {
+        ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
+      } catch (_) { /* ignore */ }
+    } else {
+      ctx.fillStyle = filled ? 'rgba(180, 100, 255, 0.28)' : 'rgba(180, 100, 255, 0.12)';
+      ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+      ctx.strokeStyle = '#b464ff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+      ctx.setLineDash([]);
+    }
+
+    const lines = formatSaveSlotLabel(info, emptyLabel, slotKey).split('\n');
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const midY = btn.y + btn.h / 2;
+    if (lines.length === 1) {
+      ctx.fillText(lines[0], btn.x + btn.w / 2, midY);
+    } else {
+      ctx.fillText(lines[0], btn.x + btn.w / 2, midY - 8);
+      ctx.font = '11px Arial';
+      ctx.fillText(lines[1], btn.x + btn.w / 2, midY + 10);
+    }
   }
 
   // ============================================
@@ -4113,6 +4380,7 @@
         y: Number(ch.renderY != null ? ch.renderY : ch.y) || 0,
         direction: ch.direction || 'south',
         visible: ch.visible !== false,
+        opacity: getCharacterDrawOpacity(ch),
         roomId: ch.roomId || gameState.currentRoomId
       });
     });
@@ -4293,6 +4561,8 @@
       const live = gameState.characters.get(id);
       if (live) {
         live.visible = ch.visible !== false;
+        const op = clampCharacterOpacity(ch.opacity);
+        live.opacity = op == null ? 1 : op;
         live.roomId = gameState.currentRoomId;
       }
       const charDef = gameState.characterDefinitions.get(ch.name);
@@ -4948,6 +5218,7 @@
       const playerId = gameState.variables.get('playerId');
       for (const character of gameState.characters.values()) {
         if (!character.visible || character.roomId !== gameState.currentRoomId) continue;
+        if (getCharacterDrawOpacity(character) <= 0) continue;
         if (playerId && character.id === playerId) continue;
         const bounds = getCharacterSpriteBounds(character);
         if (x >= bounds.x && x <= bounds.x + bounds.width &&
@@ -5618,9 +5889,11 @@
       }
     }
 
+    // Auto-await solo nel body dell'handler (non a top-level compile)
+    const bodyWithAwait = injectAutoAwaitBlockingApis(fnBody);
     const factory = new Function(
       ...paramNames,
-      `return ${isAsync ? 'async ' : ''}function(${fnParams}) { ${fnBody} };`
+      `return ${isAsync ? 'async ' : ''}function(${fnParams}) { ${bodyWithAwait} };`
     );
     return factory(...paramValues);
   }
@@ -6099,32 +6372,62 @@
     }
   }
 
+  function collectAttachedRoomScriptNames(roomScriptsAtt, roomId, handlerName) {
+    const names = [];
+    const push = (n) => {
+      if (n && typeof n === 'string' && names.indexOf(n) < 0) names.push(n);
+    };
+    if (!roomScriptsAtt || typeof roomScriptsAtt !== 'object') {
+      push(`Room:${roomId}:${handlerName}`);
+      push(`Room:${roomId}`);
+      return names;
+    }
+    const entry = roomScriptsAtt[roomId];
+    if (typeof entry === 'string') {
+      push(entry);
+    } else if (entry && typeof entry === 'object') {
+      if (entry[handlerName]) push(entry[handlerName]);
+      if (entry.legacy) push(entry.legacy);
+    }
+    push(`Room:${roomId}:${handlerName}`);
+    push(`Room:${roomId}`);
+    return names;
+  }
+
+  function collectAllRoomAttachmentScriptNames(roomScriptsAtt) {
+    const set = new Set();
+    if (!roomScriptsAtt || typeof roomScriptsAtt !== 'object') return set;
+    Object.values(roomScriptsAtt).forEach(entry => {
+      if (typeof entry === 'string' && entry) set.add(entry);
+      else if (entry && typeof entry === 'object') {
+        Object.values(entry).forEach(v => {
+          if (typeof v === 'string' && v) set.add(v);
+        });
+      }
+    });
+    return set;
+  }
+
   async function executeRoomTransitionScripts(handlerName, registeredHandlersKey, oldRoomId, newRoomId) {
     beginRoomTransitionScripts();
     try {
       const executedScripts = new Set();
-
-      const roomSpecificScripts = new Set();
       const roomScripts = gameState.attachments.roomScripts || {};
-      if (typeof roomScripts === 'object') {
-        for (const [, scriptName] of Object.entries(roomScripts)) {
-          if (scriptName) roomSpecificScripts.add(scriptName);
-        }
+      const roomSpecificScripts = collectAllRoomAttachmentScriptNames(roomScripts);
+
+      const attachedForRoom = collectAttachedRoomScriptNames(roomScripts, newRoomId, handlerName);
+      for (const scriptName of attachedForRoom) {
+        if (!scriptName || executedScripts.has(scriptName)) continue;
+        if (!gameState.scripts[scriptName]) continue;
+        executedScripts.add(scriptName);
+        await executeScriptHandler(gameState.scripts[scriptName], handlerName, [oldRoomId, newRoomId], scriptName);
       }
 
-      if (typeof roomScripts === 'object') {
-        for (const [roomId, scriptName] of Object.entries(roomScripts)) {
-          if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
-            executedScripts.add(scriptName);
-            await executeScriptHandler(gameState.scripts[scriptName], handlerName, [oldRoomId, newRoomId], scriptName);
-          }
-        }
-      }
-
-      const roomScriptKey = `Room:${newRoomId}`;
-      if (gameState.scripts[roomScriptKey] && !executedScripts.has(roomScriptKey)) {
-        executedScripts.add(roomScriptKey);
-        await executeScriptHandler(gameState.scripts[roomScriptKey], handlerName, [oldRoomId, newRoomId], roomScriptKey);
+      // Global event-specific scripts (Global:on_before_room_change / Global:on_room_change)
+      const globalEventKey = `Global:${handlerName}`;
+      if (gameState.scripts[globalEventKey] && !executedScripts.has(globalEventKey)) {
+        executedScripts.add(globalEventKey);
+        await executeScriptHandler(gameState.scripts[globalEventKey], handlerName, [oldRoomId, newRoomId], globalEventKey);
       }
 
       const reservedScript = gameState.scripts[handlerName];
@@ -6137,6 +6440,15 @@
       for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
         if (executedScripts.has(scriptName)) continue;
         if (roomSpecificScripts.has(scriptName)) continue;
+        // Evita di eseguire script Room: di altre stanze via scan generico
+        if (String(scriptName).startsWith('Room:')) {
+          const prefix = `Room:${newRoomId}`;
+          const isThisRoom =
+            scriptName === prefix ||
+            scriptName === `${prefix}:${handlerName}` ||
+            scriptName.startsWith(`${prefix}:`);
+          if (!isThisRoom) continue;
+        }
         if (scriptContent && typeof scriptContent === 'string' && handlerRegex.test(scriptContent)) {
           executedScripts.add(scriptName);
           await executeScriptHandler(scriptContent, handlerName, [oldRoomId, newRoomId], scriptName);
@@ -6315,6 +6627,47 @@
   }
 
   /**
+   * Fattore di velocità in base alla profondità (scaling Y della room).
+   * Alla linea di foreground (max scale) = 1; verso background rallenta proporzionalmente.
+   * Se lo scaling non è configurato, restituisce 1.
+   */
+  function getDepthMoveSpeedFactor(characterY, room) {
+    if (!room) return 1;
+    const backgroundY = room.scalingBackgroundY;
+    const foregroundY = room.scalingForegroundY;
+    if (typeof backgroundY !== 'number' || typeof foregroundY !== 'number' ||
+        isNaN(backgroundY) || isNaN(foregroundY) || backgroundY >= foregroundY) {
+      return 1;
+    }
+    const maxScale = (typeof room.scalingMaxScale === 'number' && !isNaN(room.scalingMaxScale) && room.scalingMaxScale > 0)
+      ? room.scalingMaxScale
+      : 1.5;
+    const scale = calculateCharacterScale(characterY, room);
+    // Evita velocità troppo basse che bloccano il pathfinding
+    return Math.max(0.15, scale / maxScale);
+  }
+
+  /**
+   * Velocità effettiva in px/s: moveSpeed base × fattore profondità (se abilitato).
+   * moveSpeed resta la velocità alla linea di foreground.
+   */
+  function getEffectiveMoveSpeed(character, room) {
+    const base = (character && character.moveSpeed > 0) ? character.moveSpeed : 100;
+    if (!character || character.scaleMoveSpeedWithDepth === false) {
+      return base;
+    }
+    return base * getDepthMoveSpeedFactor(character.y, room);
+  }
+
+  function resolveScaleMoveSpeedWithDepth(charDef, existingValue) {
+    if (existingValue === true || existingValue === false) return existingValue;
+    if (charDef && charDef.spawnSettings && charDef.spawnSettings.scaleMoveSpeedWithDepth === false) {
+      return false;
+    }
+    return true; // default: attiva
+  }
+
+  /**
    * Attende il completamento del movimento di un character
    * @param {string} characterId - ID del character
    * @returns {Promise} Promise che si risolve quando il movimento è completato
@@ -6347,20 +6700,99 @@
     });
   }
 
-  function findCharacterInCurrentRoom(characterIdOrName) {
-    let character = gameState.characters.get(characterIdOrName);
-    let characterId = characterIdOrName;
-    if (!character) {
-      for (const [id, char] of gameState.characters.entries()) {
-        if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
-          character = char;
-          characterId = id;
-          break;
-        }
+  /** Pending visibility/opacity set before the character instance exists (e.g. on_game_start). */
+  const pendingCharacterVisualState = new Map(); // name/id -> { visible?, opacity? }
+
+  function getPendingCharacterKey(characterIdOrName) {
+    return String(characterIdOrName == null ? '' : characterIdOrName).trim();
+  }
+
+  function rememberPendingCharacterVisual(characterIdOrName, patch) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return;
+    const prev = pendingCharacterVisualState.get(key) || {};
+    pendingCharacterVisualState.set(key, Object.assign({}, prev, patch || {}));
+  }
+
+  function applyPendingCharacterVisualState(character) {
+    if (!character) return;
+    const keys = [character.id, character.name].filter(Boolean).map(k => String(k));
+    let patch = null;
+    for (const key of keys) {
+      if (pendingCharacterVisualState.has(key)) {
+        patch = Object.assign({}, patch || {}, pendingCharacterVisualState.get(key));
+        pendingCharacterVisualState.delete(key);
       }
     }
-    if (!character) return null;
-    return { character, characterId };
+    if (!patch) return;
+    if (typeof patch.visible === 'boolean') character.visible = patch.visible;
+    if (patch.opacity != null && Number.isFinite(Number(patch.opacity))) {
+      const clamped = clampCharacterOpacity(patch.opacity);
+      if (clamped != null) character.opacity = clamped;
+    }
+    log(
+      `[Runtime] Applied pending visual state on "${character.name}": visible=${character.visible}, opacity=${character.opacity}`,
+      'info'
+    );
+  }
+
+  /**
+   * Find a live character by id or name.
+   * Prefers current room, then any room (id===name instances may live across rooms).
+   */
+  function findCharacterInCurrentRoom(characterIdOrName) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return null;
+
+    // Direct Map lookup (id === name)
+    let character = gameState.characters.get(key);
+    if (character) {
+      return { character, characterId: key };
+    }
+
+    // Prefer same room by name
+    const currentRoomId = gameState.currentRoomId;
+    for (const [id, char] of gameState.characters.entries()) {
+      if (char && char.name === key && char.roomId === currentRoomId) {
+        return { character: char, characterId: id };
+      }
+    }
+
+    // Fallback: any room (useful in on_game_start / room transitions)
+    for (const [id, char] of gameState.characters.entries()) {
+      if (char && (char.name === key || id === key)) {
+        return { character: char, characterId: id };
+      }
+    }
+
+    return null;
+  }
+
+  function characterDefinitionExists(characterIdOrName) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return false;
+    if (gameState.characterDefinitions.has(key)) return true;
+    for (const [name] of gameState.characterDefinitions.entries()) {
+      if (name === key) return true;
+    }
+    if (gameState.projectData && Array.isArray(gameState.projectData.characters)) {
+      return gameState.projectData.characters.some(
+        c => c && (c.name === key || c.id === key)
+      );
+    }
+    return false;
+  }
+
+  function clampCharacterOpacity(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function getCharacterDrawOpacity(character) {
+    if (!character) return 1;
+    const clamped = clampCharacterOpacity(character.opacity);
+    return clamped == null ? 1 : clamped;
   }
 
   function waitForCharacterAnimation(characterId) {
@@ -7280,13 +7712,28 @@
       const targetRoom = String(roomIdOrName);
       const previousRoomId = gameState.currentRoomId;
 
-      // Cambio stanza DEVE completarsi anche se on_room_change fa await (dialoghi, wait, ecc.).
-      // skipRoomScripts: carica solo la stanza; after-scripts partono dopo il posizionamento player.
+      // Ordine: before (vecchia stanza attiva) → cambio stanza → posiziona player → after.
+      // Dialoghi in before/after non bloccano (enqueueScriptCommand in room-transition).
       const roomPromise = (async () => {
         log(`[Runtime] load_room: inizio → "${targetRoom}" (da "${previousRoomId || ''}")`, 'info');
-        await changeRoom(targetRoom, { skipRoomScripts: true });
 
-        const arrivedRoomId = gameState.currentRoomId || targetRoom;
+        // Risolvi id canonico per gli script Before della stanza di destinazione
+        let resolvedTargetId = targetRoom;
+        if (gameState.projectData && Array.isArray(gameState.projectData.rooms)) {
+          const roomDef = gameState.projectData.rooms.find(r => r.id === targetRoom || r.name === targetRoom);
+          if (roomDef) resolvedTargetId = String(roomDef.id || targetRoom);
+        }
+
+        // Before room load: stanza precedente ancora attiva (anche via load_room)
+        try {
+          await executeBeforeRoomChangeScripts(previousRoomId, resolvedTargetId);
+        } catch (err) {
+          log(`[Runtime] on_before_room_change before load_room: ${err && err.message ? err.message : err}`, 'error');
+        }
+
+        await changeRoom(targetRoom, { skipRoomScripts: true, skipAfterRoomScripts: true });
+
+        const arrivedRoomId = gameState.currentRoomId || resolvedTargetId;
         log(`[Runtime] load_room: stanza attiva "${arrivedRoomId}"`, 'info');
 
         if (playerX !== undefined && playerY !== undefined) {
@@ -7313,7 +7760,7 @@
             player.path = null;
             player.pathIndex = 0;
             player.roomId = arrivedRoomId;
-            player.visible = true;
+            // Non forzare visible=true: rispetta set_character_visibility / opacity da script
 
             if (playerDirection !== undefined && playerDirection !== null) {
               const charDef = gameState.characterDefinitions.get(player.name);
@@ -7330,12 +7777,12 @@
           }
         }
 
-        // After-load in background: non tiene in sospeso load_room / lo script hotspot
-        Promise.resolve()
-          .then(() => executeRoomChangeScripts(previousRoomId, arrivedRoomId))
-          .catch((err) => {
-            log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
-          });
+        // After room load: dopo posizionamento, e awaited così set_character_visibility ecc. sono applicati
+        try {
+          await executeRoomChangeScripts(previousRoomId, arrivedRoomId);
+        } catch (err) {
+          log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
+        }
         return true;
       })().catch((err) => {
         GameAPI.error(`load_room: ${err && err.message ? err.message : err}`);
@@ -7677,6 +8124,7 @@
           moveSpeed = speedValue;
         }
       }
+      const scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(charDef);
 
       const spawnX = Number(x);
       const spawnY = Number(y);
@@ -7696,12 +8144,18 @@
         existing.velocityY = 0;
         existing.direction = resolvedDirection;
         existing.roomId = gameState.currentRoomId;
-        existing.visible = true;
+        // Nuovo spawn: visibile; riuso: conserva visibility/opacity (es. nascosto in on_game_start)
+        if (existing.visible === undefined) existing.visible = true;
+        if (existing.opacity === undefined || !Number.isFinite(Number(existing.opacity))) {
+          existing.opacity = 1;
+        }
         existing.isMoving = false;
         existing.path = null;
         existing.pathIndex = 0;
         existing.moveSpeed = moveSpeed;
+        existing.scaleMoveSpeedWithDepth = scaleMoveSpeedWithDepth;
         existing.playingAnimation = null;
+        applyPendingCharacterVisualState(existing);
         log(`[Runtime] spawn_character: reused "${name}" (id=name) at (${posX}, ${posY})`, 'info');
         return id;
       }
@@ -7717,14 +8171,17 @@
         currentFrame: 0,
         frameTime: 0,
         visible: true,
+        opacity: 1,
         roomId: gameState.currentRoomId,
         isMoving: false,
         path: null,
         moveSpeed: moveSpeed,
+        scaleMoveSpeedWithDepth: scaleMoveSpeedWithDepth,
         velocityY: 0,
         targetY: posY
       };
 
+      applyPendingCharacterVisualState(character);
       gameState.characters.set(id, character);
       log(`[Runtime] Character "${name}" spawnato a (${posX}, ${posY}) id="${id}" (id=name)`, 'info');
       return id;
@@ -7827,13 +8284,18 @@
       if (character.pathIndex === undefined) character.pathIndex = 0;
       if (character.moveSpeed === undefined) {
         // Prova a leggere dalle spawnSettings del character definition
-        const charDef = gameState.characterDefinitions.get(character.name);
-        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
-          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+        const charDefForSpeed = gameState.characterDefinitions.get(character.name);
+        if (charDefForSpeed && charDefForSpeed.spawnSettings && charDefForSpeed.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDefForSpeed.spawnSettings.moveSpeed);
           character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
         } else {
           character.moveSpeed = 100; // pixel per secondo (default)
         }
+      }
+      if (character.scaleMoveSpeedWithDepth === undefined) {
+        character.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+          gameState.characterDefinitions.get(character.name)
+        );
       }
 
       // Verifica che il character abbia un pivot (necessario per il pathfinding)
@@ -7988,6 +8450,63 @@
       log(`[Runtime] Character ${characterId} direzione cambiata a "${direction}"`, 'info');
     },
 
+    /**
+     * Mostra/nasconde un personaggio (non cliccabile se nascosto).
+     * @param {string} characterIdOrName
+     * @param {boolean} visible
+     * @returns {boolean}
+     */
+    set_character_visibility: function(characterIdOrName, visible) {
+      const v = !!visible;
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (found) {
+        found.character.visible = v;
+        log(`[Runtime] set_character_visibility: "${found.characterId}" → ${v}`, 'info');
+        return true;
+      }
+      // Not spawned yet (common in on_game_start before NPC auto-spawn) — remember and apply on spawn
+      if (characterDefinitionExists(characterIdOrName)) {
+        rememberPendingCharacterVisual(characterIdOrName, { visible: v });
+        log(
+          `[Runtime] set_character_visibility: "${characterIdOrName}" not spawned yet — queued (visible=${v})`,
+          'info'
+        );
+        return true;
+      }
+      GameAPI.error(`set_character_visibility: character "${characterIdOrName}" not found`);
+      return false;
+    },
+
+    /**
+     * Imposta l'opacità di disegno di un personaggio (0–1). A 0 non è cliccabile.
+     * @param {string} characterIdOrName
+     * @param {number} opacity
+     * @returns {boolean}
+     */
+    set_character_opacity: function(characterIdOrName, opacity) {
+      const clamped = clampCharacterOpacity(opacity);
+      if (clamped == null) {
+        GameAPI.error('set_character_opacity: opacity must be a number (0–1)');
+        return false;
+      }
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (found) {
+        found.character.opacity = clamped;
+        log(`[Runtime] set_character_opacity: "${found.characterId}" → ${clamped}`, 'info');
+        return true;
+      }
+      if (characterDefinitionExists(characterIdOrName)) {
+        rememberPendingCharacterVisual(characterIdOrName, { opacity: clamped });
+        log(
+          `[Runtime] set_character_opacity: "${characterIdOrName}" not spawned yet — queued (opacity=${clamped})`,
+          'info'
+        );
+        return true;
+      }
+      GameAPI.error(`set_character_opacity: character "${characterIdOrName}" not found`);
+      return false;
+    },
+
     animate_character: function(characterIdOrName, enabled = true) {
       const found = findCharacterInCurrentRoom(characterIdOrName);
       if (!found) {
@@ -8064,18 +8583,15 @@
 
     // UI
     showText: function(text) {
-      // Mostra testo come messaggio visibile (con coda sequenziale)
+      // Messaggio overlay: blocca i comandi in coda finché non viene chiuso (× o ~3s)
       const messageText = String(text);
-      queueCommand(async () => {
-        showGameMessage(messageText);
-        // Attendi che il messaggio sia mostrato (durata default 3000ms)
-        await new Promise(resolve => setTimeout(resolve, 3000));
+      return enqueueScriptCommand(async () => {
+        await showGameMessage(messageText, 3000);
       });
     },
 
     show_message: function(text) {
-      // Alias di showText per compatibilità con l'editor (con coda sequenziale)
-      GameAPI.showText(text);
+      return GameAPI.showText(text);
     },
 
     /**
@@ -8083,7 +8599,7 @@
      * Usa le impostazioni della prima GUI DialogBox del progetto. Il balloon segue il personaggio.
      * Il giocatore chiude il dialogo con un click.
      * In on_room_change / on_before_room_change non blocca load_room (il balloon resta in coda).
-     * Negli altri script, await show_dialogue(...) aspetta la chiusura come prima.
+     * Negli altri script aspetta la chiusura prima dei comandi successivi (anche senza await esplicito).
      * @param {string} characterIdOrName - ID (da spawn_character) o nome del personaggio
      * @param {string} text - Testo parlato
      */
@@ -8106,6 +8622,7 @@
      * Avvia un dialogo ramificato definito nel progetto (tab Dialogues).
      * Esegue nodi line/choice/end; Promise risolta a fine dialogo o end_dialogue().
      * In on_room_change / on_before_room_change non blocca load_room (il grafo resta in coda).
+     * Negli altri script aspetta la fine del dialogo prima dei comandi successivi.
      * @param {string} dialogueIdOrName - id o name del dialogo
      */
     start_dialogue: function(dialogueIdOrName) {
@@ -8240,6 +8757,28 @@
         GameAPI.error('get_save_info: ' + (err && err.message ? err.message : err));
         return null;
       }
+    },
+
+    /**
+     * Mostra una GUI per id o nome (es. SaveLoad menu).
+     * @param {string} idOrName
+     * @returns {boolean}
+     */
+    show_gui: function(idOrName) {
+      const ok = setGuiVisible(idOrName, true);
+      if (!ok) GameAPI.error(`show_gui: GUI "${idOrName}" not found`);
+      return ok;
+    },
+
+    /**
+     * Nasconde una GUI per id o nome.
+     * @param {string} idOrName
+     * @returns {boolean}
+     */
+    hide_gui: function(idOrName) {
+      const ok = setGuiVisible(idOrName, false);
+      if (!ok) GameAPI.error(`hide_gui: GUI "${idOrName}" not found`);
+      return ok;
     },
 
     /**
@@ -8573,6 +9112,8 @@
       { name: 'load_game', value: bindGameApiMethod(api, 'load_game') },
       { name: 'delete_save', value: bindGameApiMethod(api, 'delete_save') },
       { name: 'get_save_info', value: bindGameApiMethod(api, 'get_save_info') },
+      { name: 'show_gui', value: bindGameApiMethod(api, 'show_gui') },
+      { name: 'hide_gui', value: bindGameApiMethod(api, 'hide_gui') },
       { name: 'play_music', value: bindGameApiMethod(api, 'play_music') },
       { name: 'play_sound', value: bindGameApiMethod(api, 'play_sound') },
       { name: 'stop_music', value: bindGameApiMethod(api, 'stop_music') },
@@ -8587,6 +9128,8 @@
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
       { name: 'set_character_direction', value: bindGameApiMethod(api, 'set_character_direction') },
+      { name: 'set_character_visibility', value: bindGameApiMethod(api, 'set_character_visibility') },
+      { name: 'set_character_opacity', value: bindGameApiMethod(api, 'set_character_opacity') },
       { name: 'animate_character', value: bindGameApiMethod(api, 'animate_character') },
       { name: 'play_character_animation', value: bindGameApiMethod(api, 'play_character_animation') }
     ];
@@ -8760,6 +9303,11 @@
           return;
         }
 
+        const drawOpacity = getCharacterDrawOpacity(character);
+        if (drawOpacity <= 0) {
+          return;
+        }
+
         // Get character definition to check for pivot
         const charDef = gameState.characterDefinitions.get(character.name);
         
@@ -8769,6 +9317,9 @@
         
         const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
         const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
+
+        ctx.save();
+        ctx.globalAlpha = drawOpacity;
         
         if (frame) {
           try {
@@ -8816,6 +9367,8 @@
           // Nessun frame disponibile, renderizza un placeholder per non far scomparire il character
           renderCharacterPlaceholder(ctx, character, charDef, scale);
         }
+
+        ctx.restore();
       });
     }
 
@@ -8827,6 +9380,9 @@
       if (gui.type === 'DialogBox') {
         return;
       }
+      if (gui.visible === false) {
+        return;
+      }
       // Background GUI
       if (gui.background && gui.background.complete && gui.background.naturalWidth > 0) {
         try {
@@ -8836,33 +9392,34 @@
         }
       }
 
-      // Pulsanti GUI
+      // Pulsanti / save slots
       if (gui.buttons && Array.isArray(gui.buttons)) {
         gui.buttons.forEach(btn => {
-          if (btn.enabled) {
-            if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
-              try {
-                ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
-              } catch (error) {
-                log(`[Runtime] Error rendering pulsante ${btn.id}: ${error.message}`, 'warning');
-              }
-            } else {
-              // Fallback: disegna rettangolo se l'immagine non è disponibile
-              ctx.fillStyle = 'rgba(57, 255, 20, 0.3)';
-              ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
-              ctx.strokeStyle = '#39ff14';
-              ctx.lineWidth = 2;
-              ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+          if (!btn.enabled) return;
+          if (gui.type === 'SaveLoad' && btn.role === 'saveSlot') {
+            renderSaveLoadSlot(ctx, gui, btn);
+            return;
+          }
+          if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
+            try {
+              ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
+            } catch (error) {
+              log(`[Runtime] Error rendering pulsante ${btn.id}: ${error.message}`, 'warning');
             }
+          } else {
+            ctx.fillStyle = 'rgba(57, 255, 20, 0.3)';
+            ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+            ctx.strokeStyle = '#39ff14';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+          }
 
-            // Testo pulsante
-            if (btn.text) {
-              ctx.fillStyle = '#fff';
-              ctx.font = '14px Arial';
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2);
-            }
+          if (btn.text) {
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2);
           }
         });
       }
@@ -8941,13 +9498,18 @@
       }
       if (character.moveSpeed === undefined) {
         // Prova a leggere dalle spawnSettings del character definition
-        const charDef = gameState.characterDefinitions.get(character.name);
-        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
-          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+        const charDefForSpeed = gameState.characterDefinitions.get(character.name);
+        if (charDefForSpeed && charDefForSpeed.spawnSettings && charDefForSpeed.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDefForSpeed.spawnSettings.moveSpeed);
           character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
         } else {
           character.moveSpeed = 100; // pixel per secondo (default)
         }
+      }
+      if (character.scaleMoveSpeedWithDepth === undefined) {
+        character.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+          gameState.characterDefinitions.get(character.name)
+        );
       }
 
       // ============================================
@@ -9009,8 +9571,10 @@
           character.direction = getDirectionFromVector(nextDx, nextDy);
         } else {
           // Muovi verso il target
-          // Calcola velocità in pixel per frame (moveSpeed è in pixel per secondo)
-          const speedPerFrame = (character.moveSpeed * deltaTime) / 1000;
+          // Velocità effettiva: base (px/s) × fattore profondità (rallenta verso background)
+          const roomForSpeed = gameState.currentRoom;
+          const effectiveSpeed = getEffectiveMoveSpeed(character, roomForSpeed);
+          const speedPerFrame = (effectiveSpeed * deltaTime) / 1000;
           
           // Limita la velocità per non superare il target
           const moveDistance = Math.min(speedPerFrame, distance);
@@ -9067,7 +9631,7 @@
         character.currentFrame = 1;
       }
 
-      // Aggiorna frame time
+      // Aggiorna frame time (FPS costanti: solo la velocità di spostamento scala con la profondità)
       character.frameTime += deltaTime;
       const frameDuration = 1000 / animationDirData.fps; // Durata di ogni frame in ms
 
@@ -9426,6 +9990,11 @@
       return;
     }
 
+    // SaveLoad menu is modal while visible: handle before room interactions
+    if (await handleVisibleSaveLoadGuiClick(x, y)) {
+      return;
+    }
+
     const carriedItemKey = gameState.inventory && gameState.inventory.carriedItem
       ? gameState.inventory.carriedItem.key
       : null;
@@ -9506,6 +10075,9 @@
       if (!character.visible || character.roomId !== gameState.currentRoomId) {
         continue;
       }
+      if (getCharacterDrawOpacity(character) <= 0) {
+        continue;
+      }
 
       const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
       const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
@@ -9547,6 +10119,8 @@
     // Controlla click su pulsanti GUI (disabilitato mentre un oggetto è in mano)
     if (!carriedItemKey) {
     for (const gui of gameState.guis.values()) {
+      if (gui.visible === false) continue;
+      if (gui.type === 'SaveLoad') continue; // gestito da handleVisibleSaveLoadGuiClick
       if (gui.buttons && Array.isArray(gui.buttons)) {
         for (const btn of gui.buttons) {
           if (!btn.enabled) continue;
@@ -9554,17 +10128,14 @@
           if (x >= btn.x && x <= btn.x + btn.w &&
               y >= btn.y && y <= btn.y + btn.h) {
             log(`Click su pulsante GUI: ${btn.name}`, 'info');
-            // Esegui script del pulsante se presente
             const guiScripts = gameState.attachments.guiScripts || {};
             if (typeof guiScripts === 'object' && guiScripts[btn.id]) {
               const scriptName = guiScripts[btn.id];
               if (gameState.scripts[scriptName]) {
-                // ⚠️ Passa scriptName per garantire cache corretta
                 await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y], scriptName);
               }
             }
 
-            // Esegui handler registrati tramite on_gui_click(function() {...})
             for (const handler of eventHandlers.gui_click) {
               try {
                 handler(btn.id, x, y);
@@ -9605,6 +10176,11 @@
           } else {
             player.moveSpeed = 100; // pixel per secondo (default)
           }
+        }
+        if (player.scaleMoveSpeedWithDepth === undefined) {
+          player.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+            gameState.characterDefinitions.get(player.name)
+          );
         }
         
         // Verifica che il player abbia un pivot (necessario per il pathfinding)

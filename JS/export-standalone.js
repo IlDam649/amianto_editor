@@ -36,18 +36,55 @@
     return map;
   }
 
+  /**
+   * Unwrap .amnt packages and always produce a runtime-ready amianto-game project.
+   * Prevents "Unsupported project format. Expected: amianto-game" in standalone HTML.
+   */
+  function resolveProjectAndAssets(pkg) {
+    if (!pkg || typeof pkg !== 'object') {
+      throw new Error('Export package missing or invalid');
+    }
+    let project = pkg;
+    let assets = [];
+    if (pkg.format === 'amianto-amnt' || (pkg.project && typeof pkg.project === 'object' && Array.isArray(pkg.assets))) {
+      if (!pkg.project || typeof pkg.project !== 'object') {
+        throw new Error('Export package missing project data');
+      }
+      project = pkg.project;
+      assets = Array.isArray(pkg.assets) ? pkg.assets : [];
+    } else if (Array.isArray(pkg.assets)) {
+      assets = pkg.assets;
+    }
+    if (!project.settings || typeof project.settings !== 'object') {
+      project = Object.assign({}, project, { settings: project.settings || {} });
+    } else {
+      project = Object.assign({}, project);
+    }
+    project.format = 'amianto-game';
+    if (project.version == null) project.version = 1;
+    if (!Array.isArray(project.rooms)) project.rooms = [];
+    return { project: project, assets: assets };
+  }
+
   function buildStandaloneHtml(pkg, runtimeSource, options) {
     const opts = options || {};
-    const project = pkg && pkg.project ? pkg.project : pkg;
-    const assets = (pkg && Array.isArray(pkg.assets)) ? pkg.assets : [];
+    const resolved = resolveProjectAndAssets(pkg);
+    const project = resolved.project;
+    const assets = resolved.assets;
     const title = (project && project.settings && project.settings.name)
       ? String(project.settings.name)
       : (opts.title || 'Amianto Game');
     const canvasW = (project && project.settings && project.settings.canvasWidth) || 800;
     const canvasH = (project && project.settings && project.settings.canvasHeight) || 600;
     const assetMap = buildEmbeddedAssetMap(assets);
-    const projectJson = escapeForScriptJson(project);
-    const assetsJson = escapeForScriptJson(assetMap);
+    let projectJson;
+    let assetsJson;
+    try {
+      projectJson = escapeForScriptJson(project);
+      assetsJson = escapeForScriptJson(assetMap);
+    } catch (err) {
+      throw new Error('Failed to serialize project for HTML export: ' + (err && err.message ? err.message : err));
+    }
     // Runtime as JSON string — avoids HTML parser breaking on </script> inside runtime.js
     const runtimeJson = escapeForScriptJson(String(runtimeSource || ''));
     const safeTitle = title.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -85,7 +122,7 @@
       background: #000;
     }
     #loading-overlay {
-      position: fixed; inset: 0; background: #0a0a0a;
+      position: fixed; inset: 0; background: #000;
       display: flex; align-items: center; justify-content: center;
       z-index: 2000; flex-direction: column; gap: 16px;
     }
@@ -182,12 +219,28 @@
   var urlCache = Object.create(null);
 
   function dataUrlFor(assetId) {
-    if (urlCache[assetId]) return urlCache[assetId];
-    var entry = assetMap[assetId];
+    if (!assetId && assetId !== 0) return null;
+    var key = String(assetId);
+    if (key.indexOf('asset:') === 0) key = key.slice(6);
+    if (urlCache[key]) return urlCache[key];
+    var entry = assetMap[key];
+    if (!entry || !entry.data) {
+      // Fallback: match by fileName / name (Resources picker often uses display names)
+      var keys = Object.keys(assetMap);
+      for (var i = 0; i < keys.length; i++) {
+        var e = assetMap[keys[i]];
+        if (!e) continue;
+        if (e.fileName === key || e.name === key || e.fileName === assetId || e.name === assetId) {
+          entry = e;
+          key = keys[i];
+          break;
+        }
+      }
+    }
     if (!entry || !entry.data) return null;
     var mime = entry.mimeType || 'application/octet-stream';
     var url = 'data:' + mime + ';base64,' + entry.data;
-    urlCache[assetId] = url;
+    urlCache[key] = url;
     return url;
   }
 
@@ -230,6 +283,10 @@
       return Promise.resolve(listByCategory('audio'));
     }
   };
+  window.getAmiantoAssetStorage = function () { return window.assetStorage; };
+  window.getAmiantoLocalUser = function () {
+    return { username: 'Local', email: '', uid: 'local' };
+  };
 
   var logEl = document.getElementById('runtime-log-content');
   var logPanel = document.getElementById('runtime-log');
@@ -269,6 +326,12 @@
       throw new Error('Embedded project missing or invalid');
     }
 
+    var assetCount = Object.keys(assetMap).length;
+    addRuntimeLog('Embedded assets: ' + assetCount, assetCount ? 'info' : 'warning');
+    if (!assetCount) {
+      addRuntimeLog('Warning: no assets embedded — rooms/characters may be blank. Re-export after Save Project.', 'warning');
+    }
+
     var s = document.createElement('script');
     s.type = 'text/javascript';
     s.textContent = runtimeSource;
@@ -281,13 +344,18 @@
     addRuntimeLog('Starting standalone game…', 'info');
     return Promise.resolve(window.initRuntime(projectData)).then(function () {
       addRuntimeLog('Game started', 'info');
+      addRuntimeLog('Tip: press L to toggle the runtime log', 'info');
     });
   }
 
   try {
-    Promise.resolve(injectRuntimeAndBoot()).catch(showBootError);
+    Promise.resolve(injectRuntimeAndBoot()).catch(function (err) {
+      showBootError(err);
+      setLogVisible(true);
+    });
   } catch (err) {
     showBootError(err);
+    setLogVisible(true);
   }
 })();
   </script>
@@ -298,6 +366,7 @@
   window.AmiantoStandaloneExport = {
     buildStandaloneHtml,
     safeFileBase,
-    buildEmbeddedAssetMap
+    buildEmbeddedAssetMap,
+    resolveProjectAndAssets
   };
 })();

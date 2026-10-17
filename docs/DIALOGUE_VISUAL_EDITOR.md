@@ -11,11 +11,11 @@
 
 ## Modes
 
-Under **Scripts → Dialogues**:
+Under the dedicated **Dialogues** tab (sidebar + main workspace):
 
 | Mode | UI |
 |------|-----|
-| **Form** | Classic node list in the Scripts sidebar (unchanged fields). |
+| **Form** | Classic node list in the Dialogues sidebar (unchanged fields). |
 | **Visual** | Node canvas in the main workspace (`#dialogueGraphMainPanel`) + inspector. |
 
 Both modes mutate `window.projectDialogues`. Switching modes re-renders from the same objects (no independent copies).
@@ -59,7 +59,7 @@ Pan/zoom updates `dialogue.editor` in memory without marking the project dirty o
 | Styles | `CSS/dialogue-graph.css` |
 | Normalize (+ `ui` / `editor`) | `JS/lib/dialogue-logic.js` |
 | Validate | `JS/lib/dialogue-validate.js` |
-| Form + mode hooks | `JS/main.js` (Scripts → Dialogues) |
+| Form + mode hooks | `JS/main.js` (Dialogues tab) |
 | Mount | `index.html` (`#dialogueGraphMainPanel`) |
 
 ## Canvas features

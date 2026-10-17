@@ -15,9 +15,9 @@
 - [`docs/DIALOGUE_VISUAL_EDITOR.md`](docs/DIALOGUE_VISUAL_EDITOR.md) — editor dialoghi Form/Visual
 - [`tests/MANUAL.md`](tests/MANUAL.md) — checklist verifica manuale (save, dialoghi, autosave, export)
 
-**✅ Nota (ottobre 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi** (balloon + `start_dialogue` line/choice/end/jump/action + condizioni + once-only + `run_script` inline) ✅ · **editor nodi visuale** Form/Visual (stesso `project.dialogues`; Preview Play Test) ✅ · **ritratti/mood** (Line + `character.portraits`) ✅ · **condizioni annidate** and/or/not ✅ · **save/load gioco** hardenato (`validate`/`migrate`, `dialogueConsumed`) ✅ · **autosave progetto** cache vs disco (debounce 2.5s + periodico 45s; fix loop dirty↔saved) ✅ · **smoke test** (`npm test`) + `tests/MANUAL.md` ✅ · export HTML standalone ✅.
+**✅ Nota (ottobre 2026):** Editor **offline** senza Firebase/Supabase. Formato progetto **`.amnt`**. Unificazione API **Fasi A–D** completata. **Dialoghi** (balloon + `start_dialogue` line/choice/end/jump/action + condizioni + once-only + `run_script` inline) ✅ · **tab Dialogues dedicata** + editor nodi Form/Visual (stesso `project.dialogues`; Preview Play Test) ✅ · **ritratti/mood** (Line + `character.portraits`) ✅ · **condizioni annidate** and/or/not ✅ · **save/load gioco** hardenato (`validate`/`migrate`, `dialogueConsumed`) ✅ · **GUI SaveLoad** (slot disegnabili + `show_gui`/`hide_gui`) ✅ · **inventario GUI** testato ✅ · **autosave progetto** cache vs disco ✅ · **smoke test** (`npm test`) + `tests/MANUAL.md` ✅ · export HTML standalone ✅ · **`set_character_visibility` / `set_character_opacity`** ✅ · messaggi/dialoghi **bloccanti** ✅ · `load_room` Before → load → After ✅ · script Before/After room load distinti ✅.
 
-**Prossimi step prioritari:** test manuali Fase E · UI slot save in-game · inventario GUI (drag&drop/tooltip) · mixer audio / fade · transizioni stanza.
+**Prossimi step prioritari:** test manuali Fase E · tooltip inventario (opz.) · mixer audio / fade · transizioni stanza.
 
 ---
 
@@ -108,17 +108,21 @@
   - ✅ Condizioni declarative su choice (`has_item`, `var`, `and`/`or`/`not`) — no eval
   - ✅ Once-only choices (persistite in `save_game` come `state.dialogueConsumed`)
   - ✅ Actions declarative (`set_var`, `add_item`, `remove_item`, `set_object_visible`)
-  - ✅ Editor form-based in Scripts → Dialogues (persistito in `.amnt`); edit marca dirty
-  - ✅ Editor nodi visuale (DOM/SVG) con toggle Form/Visual, inspector, validazione (`docs/DIALOGUE_VISUAL_EDITOR.md`)
+  - ✅ Tab **Dialogues** dedicata (sidebar Form + canvas Visual; non più sotto Scripts)
+  - ✅ Editor form-based + nodi visuale (DOM/SVG), toggle Form/Visual, inspector, validazione (`docs/DIALOGUE_VISUAL_EDITOR.md`); persistito in `.amnt`
   - ✅ Action `run_script` con codice inline (`on_dialogue_action`); Preview → Play Test → `start_dialogue`
   - ✅ Scelte clickable in playtest e export HTML (stesso `runtime.js`)
   - ✅ Ritratti / mood su Line + mappa `character.portraits` (Browse Resources Characters + Dialogues)
   - ✅ Builder condizioni annidate (`and` / `or` / `not`) nell’inspector Visual
+  - ✅ `show_message` / `show_dialogue` / `start_dialogue` / `show_image` bloccano i comandi successivi (auto-`await` in compile; eccezione room-transition vs `load_room`)
   - **Prossimo passo**: localisation keys; talking-head / lip-sync
-- **Sistema inventario GUI**: Inventory GUI parziale
+- **Sistema inventario GUI**: ✅ Testato e funzionante
   - ✅ Rendering pannello, slot, oggetto in mano (carriedItem)
   - ✅ Combinazioni use-with (hotspot, object, character, inventory)
-  - **Prossimo passo**: drag&drop slot, tooltip
+  - **Residuo opzionale**: drag&drop riordino slot, tooltip
+- **GUI SaveLoad**: ✅ Tipo `SaveLoad` nel dropdown GUI
+  - ✅ Slot disegnabili (come inventario) con `slotKey` 1–10
+  - ✅ Mode save / load / both; `show_gui` / `hide_gui`; click fuori chiude (opz.)
 - **Animazioni GUI**: Nessun sistema di animazioni per elementi GUI
   - **Prossimo passo**: Fade in/out, slide, scale per elementi GUI
 - **Animazioni stanza (ambiente)**: ✅ Tab Animations + posizionamento in Rooms; runtime con layer background/foreground; `play_animation` / `stop_animation`
@@ -132,17 +136,19 @@
 #### ✅ **Runtime (`JS/runtime.js`) — Play Test e standalone**
 - Editor CodeMirror + attach script a rooms, objects, characters, hotspots, GUI, cursors
 - **Infrastruttura API unificata (Fase A ✅):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, `SUPPORTED_SCRIPT_HANDLERS`
-- **Eventi (8):** `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with` (click con `usedItemId` opzionale dove applicabile)
-- **Base:** `print`, `show_message` / `showText`, `move_object`, `enableObject`, `disableObject`
-- **Dialoghi:** `show_dialogue`, `show_dialogue_text`, `end_dialogue`, `start_dialogue` (grafo)
+- **Eventi:** `on_game_start`, `on_before_room_change`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`, `on_use_with`, `on_inventory_use_with`, `on_dialogue_action` / preview (click con `usedItemId` opzionale dove applicabile)
+- **Script Before/After room load:** file distinti (`Room:id:on_before_room_change` / `Room:id:on_room_change`, analoghi Global); legacy `Room:id` ancora supportato
+- **Base:** `print`, `show_message` / `showText` (bloccanti fino a chiusura), `move_object`, `enableObject`, `disableObject`
+- **Dialoghi:** `show_dialogue`, `show_dialogue_text`, `end_dialogue`, `start_dialogue` (grafo; bloccanti fuori room-transition)
 - **Hotspot:** `enableHotspot`, `disableHotspot` (campo `visible`; checkbox **Is active?** in editor)
-- **Stanze:** `load_room`, `getCurrentRoom` (alias snake_case `get_current_room` — Fase B)
+- **Stanze:** `load_room` (Before → load → place player → After awaited), `getCurrentRoom` / `get_current_room`, `get_room_objects`, `set_room_background`
 - **Variabili:** `getVariable`, `setVariable` su `gameState.variables` (alias `Game.getVar` — Fase B)
-- **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (animazioni custom da editor)
+- **Personaggi:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `set_character_visibility`, `set_character_opacity`, `animate_character`, `play_character_animation`
 - **Animazioni stanza:** `play_animation`, `stop_animation` (istanze posizionate in editor)
 - **Audio:** `play_music`, `play_sound`, `stop_music`, `stop_sound`
-- **Save gioco:** `save_game`, `load_game`, `delete_save` (slot obbligatorio), `get_save_info` (localStorage; slot 1–10 o stringa)
-- Compilazione script con cache handler (`compileScript` / `executeScriptHandler`)
+- **Save gioco:** `save_game`, `load_game`, `delete_save` (slot obbligatorio), `get_save_info` (localStorage; slot 1–10 o stringa); GUI `SaveLoad` + `show_gui` / `hide_gui`
+- **Boot:** overlay loading opaco; `on_game_start` (+ room scripts iniziali) prima del reveal canvas
+- Compilazione script con cache handler (`compileScript` / `executeScriptHandler`) + auto-`await` API bloccanti
 
 #### ✅ **API runtime (Fase B completata)**
 - Inventario, oggetti dinamici, stanze, alias variabili — tutti in `GameAPI` + `getScriptApiBindings()`
@@ -155,7 +161,7 @@
 - Dialoghi: localisation keys; talking-head / lip-sync (editor visuale + ritratti/mood ✅)
 - Audio avanzato: volumi, ambient, fade musica
 - Effetti: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
-- Save gioco: UI menu slot in-game; IndexedDB; screenshot metadata
+- Save gioco: IndexedDB; screenshot metadata (UI slot ✅ via GUI SaveLoad)
 - Utility: `distance()`, `angle_between()`, `lerp()`, `shuffle_array()`
 - AI personaggi: patrol, follow (oltre a `walk_character` già presente)
 
@@ -189,9 +195,10 @@
 #### ✅ **Completato**
 - **Cambio stanza**: ✅ Sistema completo `changeRoom()` e `load_room()` implementato
   - ✅ Cambio stanza con cleanup risorse
-  - ✅ Esecuzione script `on_room_change` automatica
+  - ✅ `load_room`: esegue `on_before_room_change` (destinazione) → carica stanza → posiziona player → `on_room_change` (awaited)
+  - ✅ Script Before/After come asset distinti in editor; non forzare `visible=true` sul player al load (rispetta `set_character_visibility`)
   - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot)
-  - ✅ Gestione transizione tra stanze
+  - ✅ Gestione transizione tra stanze (senza effetti fade — backlog Fase 3.2)
 - **Interazioni click**: ✅ Sistema completo di hit detection e dispatch eventi
   - ✅ Hit detection per hotspot (polygon), oggetti (bounding box), character (bounding box), GUI buttons
   - ✅ Sistema di click centralizzato con protezioni anti-doppio click (debounce, frame guard)
@@ -211,6 +218,7 @@
   - ✅ Sub-pixel rendering per movimento fluido
   - ✅ Gestione frame animazione (idle frame 0, movimento frame 1+)
   - ✅ Z-ordering automatico (personaggi renderizzati dopo oggetti di scena)
+  - ✅ `set_character_visibility` / `set_character_opacity` (0–1; persistiti in `save_game`)
 - **Rendering GUI**: ✅ Sistema completo implementato
   - ✅ Rendering overlay GUI con background immagini
   - ✅ Rendering pulsanti GUI con immagini e testo
@@ -220,18 +228,19 @@
 #### 🟡 **Parzialmente Implementato**
 - **Sistema inventario runtime**
   - ✅ API inventario in `runtime.js` (`add_to_inventory`, use-with, `get_carried_item`, …)
-  - ✅ Rendering GUI inventario parziale (pannello, slot, oggetto in mano, combinazioni)
-  - **Prossimo passo**: drag&drop slot, tooltip, sync `UPDATE_CONTEXT` editor↔runtime
+  - ✅ Rendering GUI inventario (pannello, slot, oggetto in mano, combinazioni) — testato OK
+  - **Residuo opzionale**: drag&drop riordino, tooltip
 - **Sistema cursori contestuali**
   - ✅ Definizione in editor + hover canvas editor
   - ✅ Cambio cursore dinamico in playtest/runtime (categorie + action text)
+- **UI slot save in-game**: ✅ GUI type `SaveLoad` + `show_gui` / `hide_gui`
 
 #### ❌ **Mancante**
 - **Sistema audio runtime avanzato**: 🟡 `play_music` / `play_sound` / stop base ✅
   - **Prossimo passo**: Mixer volumi, ambient layers, fade
 - **Sistema transizioni**: Nessun sistema di transizioni tra stanze
   - **Prossimo passo**: Fade in/out, slide, dissolve tra stanze (`fade_in`, `transition_to_room`, …)
-- **Sistema pause/menu**: Nessun sistema di pausa o menu principale di gioco
+- **Sistema pause/menu**: Menu pausa generico (SaveLoad GUI copre save/load)
   - **Prossimo passo**: Menu GUI con opzioni, pausa, quit (+ slot save in-game)
 
 ---
@@ -279,7 +288,7 @@
 
 #### ❌ **Mancante**
 - **Auto-save gameplay**: Nessun autosave periodico durante la partita
-- **Load game menu**: Nessuna GUI slot predefinita (usare script / GUI custom)
+- **Load game menu**: ✅ Tipo GUI `SaveLoad` (slot disegnabili); residuo: thumbnail/screenshot
 - **Screenshot metadata** su slot
 
 ---
@@ -395,12 +404,11 @@
   - `exposeScriptGlobals()` — esposizione globale coerente
   - API personaggio incluse nei parametri di compilazione (prima solo su `window`)
 
-#### 1.6 Sistema Inventario Runtime — API ✅ / GUI 🟡
+#### 1.6 Sistema Inventario Runtime — API ✅ / GUI ✅
 - **Stato API**: ✅ 8 API inventario in `GameAPI` + use-with (`on_use_with`, `on_inventory_use_with`)
-- **Stato GUI**: 🟡 rendering parziale; combinazioni ✅; mancano drag&drop, tooltip
-- **Tempo stimato GUI**: 3-4 giorni
+- **Stato GUI**: ✅ pannello/slot/carried/use-with testati; residuo opz. drag&drop/tooltip
 
-**Totale Fase 1**: runtime scripting unificato; prossimo focus GUI inventario + Fase E test
+**Totale Fase 1**: runtime scripting unificato; focus su Fase E test + polish
 
 ---
 
@@ -420,6 +428,7 @@
   - ✅ Gestione dead ends e posizioni sicure (`findSafePositionNearTarget`)
   - ✅ Verifica spazio movimento (`hasMovementSpace`) per evitare incastri
   - ✅ Gestione velocità movimento configurabile (moveSpeed in pixel/secondo)
+  - ✅ Velocità scalata con profondità (rallenta verso background line; opzione per character)
   - ✅ Animazioni: idle (frame 0) quando fermo, movimento (frame 1+) quando cammina
 - **Tempo impiegato**: Completato
 
@@ -452,13 +461,13 @@
   - Grafo in `project.dialogues`: `line` / `choice` / `jump` / `action` / `end`
   - Condizioni declarative (`has_item`, `var`, `and`/`or`/`not`), once-only (+ `dialogueConsumed` in save), actions + `run_script` inline
   - Helpers: `JS/lib/dialogue-logic.js`, validazione `JS/lib/dialogue-validate.js`
-  - Editor **Form** + **Visual** (Scripts → Dialogues): canvas DOM/SVG, inspector, undo/redo, Validate, Preview Play Test
+  - Tab **Dialogues** + editor **Form** / **Visual**: canvas DOM/SVG, inspector, undo/redo, Validate, Preview Play Test
   - Stesso modello in memoria → playtest + export HTML (`runtime.js` unico; no secondo engine)
   - Docs: `docs/DIALOGUE_VISUAL_EDITOR.md`; smoke: `npm test`; checklist: `tests/MANUAL.md`
 - **Residuo (non bloccante)**: localisation keys; talking-head / lip-sync
-- **Tempo impiegato**: Completato (MVP visuale + ritratti)
+- **Tempo impiegato**: Completato (MVP visuale + ritratti + tab dedicata)
 
-**Totale Fase 2**: core gameplay ✅ (inventario GUI drag&drop ancora 🟡 in 1.6)
+**Totale Fase 2**: core gameplay ✅ (inventario GUI ✅; SaveLoad GUI ✅)
 
 ---
 
@@ -482,20 +491,21 @@
 
 #### 3.3 Sistema Personaggi Avanzato
 - **Stato**: 🟡 Parzialmente implementato
-- **✅ Già in runtime:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `animate_character`, `play_character_animation` (+ pathfinding player; animazioni custom nominate in editor)
+- **✅ Già in runtime:** `spawn_character`, `move_character`, `walk_character`, `set_character_direction`, `set_character_visibility`, `set_character_opacity`, `animate_character`, `play_character_animation` (+ pathfinding player; animazioni custom nominate in editor)
 - **✅ Editor:** animazioni custom con nome (`animations.wave`, ecc.) e 8 direzioni
 - **❌ Mancante:** AI (patrol, follow), loop/repeat animazione da script, NPC scheduling
 - **Tempo stimato**: 5-7 giorni (solo parti AI/stato)
 
 #### 3.4 Sistema Salvataggi Gioco
-- **Stato**: 🟡 API v1 hardenata (ottobre 2026) — UI menu / autosave partita ancora da fare
+- **Stato**: 🟡 API + UI SaveLoad ✅ — autosave partita / IndexedDB / screenshot ancora da fare
 - **Completato**:
-  - API: `save_game`, `load_game`, `delete_save` (slot required), `get_save_info`
+  - API: `save_game`, `load_game`, `delete_save` (slot required), `get_save_info`, `show_gui`, `hide_gui`
+  - GUI type `SaveLoad`: slot disegnabili, mode save/load/both
   - Slot 1–10 (o id stringa); formato versionato `amianto-save` + validate/migrate
   - Stato: room, vars, inventory, characters, oggetti/hotspot, dialogueConsumed
 - **Mancante**:
-  - Menu GUI slot, autosave periodico in partita, screenshot, IndexedDB
-- **Tempo stimato residuo**: 3–5 giorni
+  - Autosave periodico in partita, screenshot thumbnail, IndexedDB
+- **Tempo stimato residuo**: 2–4 giorni
 
 **Totale Fase 3**: ~24-32 giorni lavorativi
 
@@ -618,18 +628,19 @@
 ## 📈 PRIORITÀ SVILUPPO RACCOMANDATE
 
 ### ✅ **Completato — Runtime, dialoghi, save, export**
-- ✅ Rendering, click, stanze, pathfinding, personaggi (8 dir.), GUI overlay, cursori contestuali
+- ✅ Rendering, click, stanze, pathfinding, personaggi (8 dir. + visibility/opacity), GUI overlay, cursori contestuali
 - ✅ MessageQueue / sandbox iframe / `compileScript` + unificazione API Fasi A–D
-- ✅ Dialoghi ramificati + editor Form/Visual + ritratti/mood + Preview
+- ✅ Dialoghi ramificati + tab Dialogues + editor Form/Visual + ritratti/mood + Preview
+- ✅ Messaggi/dialoghi bloccanti; `load_room` Before/After; script room-change distinti
 - ✅ Save/load gioco API v1 + autosave progetto (cache vs disk)
 - ✅ Export Game (HTML) + smoke test (`npm test`) + `tests/MANUAL.md`
 
 ### **Immediato — Qualità**
 1. ⏳ Test manuali Fase E (`API_UNIFICATION_CHECKLIST.md`) + checklist `tests/MANUAL.md`
-2. Inventario GUI: drag&drop, tooltip, sync contesto se necessario
+2. ✅ Inventario GUI testato; ✅ GUI SaveLoad (slot + `show_gui`/`hide_gui`)
 
 ### **Breve termine — Ship gameplay**
-3. UI slot save in-game (menu GUI + script `save_game` / `load_game`)
+3. ~~UI slot save in-game~~ ✅ (tipo GUI `SaveLoad`)
 4. Audio avanzato: volumi + fade (Fase 3.1)
 5. Transizioni stanza: `fade_in` / `fade_out` / `transition_to_room` (Fase 3.2)
 
@@ -650,7 +661,7 @@
 **Amianto Editor** dovrebbe permettere di:
 1. ✅ Creare stanze, oggetti, personaggi, GUI, libreria Resources
 2. ✅ Scrivere script JavaScript nel Play Test con API unificate (inventario, oggetti, stanze, variabili, dialoghi visuali)
-3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, dialoghi ✅; inventario GUI parziale; save API ✅ ma UI slot ❌; audio base ✅; transizioni ❌)
+3. 🟡 Gameplay punta-e-clicca completo (cammina, clic, use-with, dialoghi ✅; show/hide personaggio ✅; inventario GUI ✅; SaveLoad GUI ✅; audio base ✅; transizioni ❌)
 4. 🟡 Distribuzione: editor desktop `.exe` + `.amnt` ✅; export *gioco* HTML standalone ✅ (PWA / wrapper gioco desktop ❌)
 
 **La roadmap qui sopra porta al completamento di tutti questi obiettivi.**
@@ -659,5 +670,5 @@
 
 *Roadmap aggiornata: Ottobre 2026*
 *Versione progetto: 1.0.0 (offline / Electron)*
-*Ultimo aggiornamento: visual dialogue editor + ritratti/mood + condizioni annidate + Preview; fix autosave dirty loop; Browse Resources Characters/Dialogues; priorità ripuntate su Fase E / save UI / audio / transizioni*
+*Ultimo aggiornamento: inventario GUI ✅ testato; tipo GUI SaveLoad (slot disegnabili + show_gui/hide_gui); priorità su Fase E / audio / transizioni*
 

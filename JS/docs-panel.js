@@ -47,7 +47,7 @@ function on_game_start() {
         <tr><td><strong>Inventory</strong></td><td>Inventory items and slot grid for the player UI.</td></tr>
         <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
         <tr><td><strong>Animations</strong></td><td>Room/environment animations: frame sequences, FPS, layer (background/foreground), loop default, canvas preview.</td></tr>
-        <tr><td><strong>GUI</strong></td><td>Overlay screens (inventory bar, menus), <strong>DialogBox</strong> (speech balloon style), buttons with optional scripts.</td></tr>
+        <tr><td><strong>GUI</strong></td><td>Overlay screens (menus), <strong>DialogBox</strong> (speech balloons), <strong>SaveLoad</strong> (drawable save slots), buttons with optional scripts. Inventory layout is in the Inventory tab.</td></tr>
         <tr><td><strong>GUI</strong></td><td>Buttons, overlays, dialogue balloon settings.</td></tr>
         <tr><td><strong>Cursors</strong></td><td>One cursor image per interaction category; click-point pivot on the canvas.</td></tr>
         <tr><td><strong>Scripts</strong></td><td>CodeMirror editor, script tree, game variables, Run/Stop sandbox.</td></tr>
@@ -135,8 +135,8 @@ if (Game.getVar("door_open")) {
       <li><code>print(...)</code> — script log (Play Test / runtime console)</li>
       <li><code>GameAPI.error(...)</code> — error level log</li>
       <li><code>wait(ms)</code> — pause for a fixed time in milliseconds; use with <code>await</code> in <code>async</code> handlers (e.g. <code>await wait(1500)</code>)</li>
-      <li><code>show_message(text)</code> — on-screen notification overlay</li>
-      <li><code>show_dialogue(character, text)</code> — speech balloon on character (click to close)</li>
+      <li><code>show_message(text)</code> — on-screen notification; blocks following commands until closed (× or ~3s)</li>
+      <li><code>show_dialogue(character, text)</code> — speech balloon; blocks until click to close</li>
       <li><code>start_dialogue(idOrName)</code> — branching dialogue from the Dialogues tab</li>
       <li><strong>Test Game Start</strong> (PLAY tab) — runs <code>on_game_start</code> without full runtime UI</li>
     </ul>
@@ -153,8 +153,8 @@ if (Game.getVar("door_open")) {
       <thead><tr><th>Event</th><th>When it runs</th><th>Handler arguments</th></tr></thead>
       <tbody>
         <tr><td><code>on_game_start</code></td><td>Game / play test starts</td><td>none</td></tr>
-        <tr><td><code>on_before_room_change</code></td><td>Before a room change finishes loading (previous room still active)</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
-        <tr><td><code>on_room_change</code></td><td>After the new room is loaded and the player is placed. Does not block arriving from the previous room (<code>load_room</code> completes first).</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
+        <tr><td><code>on_before_room_change</code></td><td>Before the new room loads (previous room still active). Also runs when entering via <code>load_room</code>.</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
+        <tr><td><code>on_room_change</code></td><td>After the new room is loaded and the player is placed (including via <code>load_room</code>). Prefer this to show/hide the player on arrival.</td><td><code>oldRoomId</code>, <code>newRoomId</code></td></tr>
         <tr><td><code>on_object_click</code></td><td>Scene object clicked</td><td><code>objectId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_character_click</code></td><td>Character clicked</td><td><code>characterId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
         <tr><td><code>on_hotspot_click</code></td><td>Hotspot clicked</td><td><code>hotspotId</code>, <code>x</code>, <code>y</code>, <code>usedItemId?</code></td></tr>
@@ -176,15 +176,17 @@ if (Game.getVar("door_open")) {
     <ul>
       <li><code>print(...)</code> — log to script console</li>
       <li><code>GameAPI.print(...)</code> / <code>GameAPI.error(...)</code></li>
-      <li><code>show_message(text)</code> — fixed notification overlay (~3s)</li>
-      <li><code>show_dialogue(character, text)</code> — speech balloon above a character (two args required). Click to dismiss. In hotspot/object scripts, <code>await show_dialogue(...)</code> waits until closed. In <code>on_room_change</code> / <code>on_before_room_change</code> it does <strong>not</strong> block <code>load_room</code> (balloon still shows after the room is ready).</li>
+      <li><code>show_message(text)</code> — fixed notification overlay; blocks subsequent script commands until dismissed (×) or ~3s. Auto-<code>await</code> injected at compile time.</li>
+      <li><code>show_dialogue(character, text)</code> — speech balloon above a character (two args required). Click to dismiss; blocks subsequent commands until closed. In <code>on_room_change</code> / <code>on_before_room_change</code> it does <strong>not</strong> block <code>load_room</code> (balloon still shows after the room is ready).</li>
       <li><code>show_dialogue_text(text, speaker)</code> — same as <code>show_dialogue(speaker, text)</code></li>
-      <li><code>start_dialogue(dialogueIdOrName)</code> — branching graph from the <strong>Dialogues</strong> tab (Form or Visual node editor; nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Choices may have <code>condition</code>, <code>once</code>, <code>actions</code>. Promise resolves when the dialogue ends.</li>
+      <li><code>start_dialogue(dialogueIdOrName)</code> — branching graph from the <strong>Dialogues</strong> tab (Form or Visual; nodes: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>). Blocks subsequent script commands until the dialogue ends. In room-change scripts does not block <code>load_room</code>.</li>
       <li><code>end_dialogue()</code> — close the active balloon and abort any running <code>start_dialogue</code> session</li>
       <li><code>save_game(slot?, label?)</code> — save player state (room, variables, inventory, characters, objects/hotspots, dialogue once-only) to <code>localStorage</code> (slots 1–10 or string). Not stored in <code>.amnt</code>. Quota-limited by the browser.</li>
       <li><code>load_game(slot?)</code> — restore a save; does not re-fire <code>on_game_start</code> / <code>on_room_change</code></li>
       <li><code>delete_save(slot)</code> — delete a slot (<strong>slot required</strong>). <code>get_save_info(slot?)</code> — inspect one slot or list all for this project</li>
+      <li><code>show_gui(idOrName)</code> / <code>hide_gui(idOrName)</code> — show/hide a GUI overlay (use with type <strong>SaveLoad</strong> menus)</li>
     </ul>
+    <p><strong>SaveLoad GUI:</strong> in the GUI tab set type <strong>SaveLoad</strong>, draw save slots (like inventory slots), set mode (save / load / both). Hidden at start by default — open with <code>show_gui("My Save Menu")</code>. Empty slot + mode both/save → saves; filled + both/load → loads. Optional Close button with <code>hide_gui</code> in <code>on_gui_click</code>.</p>
 
     <h3>Inventory</h3>
     <ul>
@@ -220,7 +222,7 @@ if (Game.getVar("door_open")) {
 
     <h3>Rooms</h3>
     <ul>
-      <li><code>load_room(roomIdOrName, playerX?, playerY?, playerDirection?)</code></li>
+      <li><code>load_room(roomIdOrName, playerX?, playerY?, playerDirection?)</code> — runs destination <strong>Before</strong> scripts, then loads the room, places the player, then runs <strong>After</strong> scripts</li>
       <li><code>get_current_room()</code></li>
       <li><code>get_room_objects()</code> → array of plain objects</li>
       <li><code>set_room_background(imageUrlOrDataUrl)</code> — empty string clears</li>
@@ -233,6 +235,8 @@ if (Game.getVar("door_open")) {
       <li><code>spawn_character(name, x, y, direction?)</code> — spawns a character; <strong>runtime id is always equal to name</strong> (use the name in scripts / <code>Game.getVar("playerId")</code>)</li>
       <li><code>walk_character(idOrName, x, y, wait?)</code> — pathfinding on walkable area; <code>wait</code> default true → Promise; stops custom animation if playing. Pass the character <strong>name</strong> (same as id).</li>
       <li><code>set_character_direction(idOrName, direction)</code> — facing: <code>north</code>, <code>northeast</code>, <code>east</code>, <code>southeast</code>, <code>south</code>, <code>southwest</code>, <code>west</code>, <code>northwest</code></li>
+      <li><code>set_character_visibility(idOrName, visible)</code> — show/hide character (<code>true</code>/<code>false</code>); hidden characters are not clickable. Safe in <code>on_game_start</code> (loading overlay stays until scripts finish).</li>
+      <li><code>set_character_opacity(idOrName, opacity)</code> — draw opacity <code>0</code>–<code>1</code> (e.g. <code>0.5</code>); at <code>0</code> not clickable</li>
       <li><code>play_character_animation(idOrName, animationName, direction, wait?)</code> — plays one full cycle of a <strong>custom</strong> animation defined in the editor (<strong>Characters</strong> → Animation → <strong>+</strong>). Uses <code>characterDefinitions.animations[animationName]</code>. Stops movement; when finished returns to walking idle. <code>wait</code> default true → blocks input until done (like <code>walk_character</code>).</li>
       <li><code>animate_character(idOrName, enabled?)</code> — reserved hook</li>
     </ul>
@@ -534,8 +538,8 @@ function on_use_with(targetType, targetId) {
       <li>Object/hotspot IDs in scripts must match the editor IDs (check lists in Rooms tab).</li>
       <li>Room IDs/names: <code>load_room</code> accepts either — prefer the same string you use in the Rooms manager.</li>
       <li><code>play_character_animation</code> only works for animations you added with <strong>+</strong> in Characters (not the built-in walking cycle).</li>
-      <li>Branching dialogues: <code>start_dialogue</code> with conditions, once-only, jump/action. Visual node editor still on the roadmap (<code>docs/DIALOGUE_VISUAL_EDITOR.md</code>).</li>
-      <li>Game saves: <code>save_game</code> / <code>load_game</code> API ready; build a GUI menu yourself for slots. Fade transitions still on the roadmap.</li>
+      <li>Branching dialogues: use the <strong>Dialogues</strong> tab (Form or Visual). <code>start_dialogue</code> supports conditions, once-only, jump/action, portraits/mood. See <code>docs/DIALOGUE_VISUAL_EDITOR.md</code>.</li>
+      <li>Game saves: use GUI type <strong>SaveLoad</strong> (drawable slots) + <code>show_gui</code> / <code>hide_gui</code>, or call <code>save_game</code> / <code>load_game</code> from scripts. Fade transitions still on the roadmap.</li>
       <li>Editor header autosave: Saved to disk / Saved to cache / Unsaved / Autosaving… / Disk save failed (cache OK).</li>
     </ul>
   </section>

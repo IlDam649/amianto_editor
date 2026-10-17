@@ -92,15 +92,17 @@ Amianto Editor runs **fully offline**:
   - Runtime/playtest: hover switches category cursors (`use`/`talk`/`grab`/`exit`/`walk`/`wait`/…) with optional action text; inventory “item in hand” hides the system cursor
 - Scripting (JavaScript, Sandboxed Runtime)
   - Built‑in editor (CodeMirror) with syntax highlighting
-  - **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()`
-  - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili — vedi [Current API Status](#current-api-status)
+  - **Event System**: `on_game_start()`, `on_before_room_change()`, `on_room_change()`, click handlers, `on_gui_click()`, use-with
+  - **Runtime API (Play Test / standalone)**: inventario, oggetti dinamici, stanze, variabili, visibility personaggi — vedi [Current API Status](#current-api-status)
   - **API unification (Fasi A–D ✅)**: `getScriptApiBindings()` + `buildScriptExecutor()` + scope handler in `runtime.js`; stesse API in iframe e `runtime.html`
   - **Runtime Sandboxed**: Script execution in isolated iframe (`runtime-sandbox.html` + `JS/runtime.js`)
   - **GameAPI / `Game`**: API esposte agli script (`print`, `load_room`, `add_to_inventory`, `spawn_object`, `Game.getVar()`, …)
   - **Robust Messaging**: MessageQueue system with buffer, retry mechanism (3 attempts), and console fallback
   - **Script Logging**: Integrated ScriptLogService with timestamped logs and log levels (info, warning, error)
-  - Attach scripts to rooms, characters, scene objects, inventory, GUI buttons, hotspots and cursors
+  - Attach scripts to rooms (Before/After room load as distinct files), characters, scene objects, inventory, GUI buttons, hotspots and cursors
   - Save/Load scripts, Run/Stop sandbox
+- **Dialogues** tab
+  - Branching graphs (`line` / `choice` / `jump` / `action` / `end`) with Form + Visual node editor; portraits/mood; Preview → Play Test
 - Play Test Panel
   - Start/Pause/Stop test session; debug console; quick test actions
 - Projects & Resources
@@ -130,10 +132,10 @@ The runtime system provides a complete game execution environment:
 - **✅ Complete Rendering**: Rooms (background, **room animations**, foregrounds, objects), characters with 8-direction animations and scaling, GUI overlays with buttons
 - **✅ Click Interactions**: Full hit detection system for hotspots (polygon), objects (bounding box), characters, and GUI buttons with script execution
 - **✅ Pathfinding & Movement**: Click-to-move player with intelligent pathfinding on walkable areas, smooth character movement with direction-based animations
-- **✅ Room Management**: Complete room switching system (`load_room()`) with asset loading, cleanup, and script execution
-- **✅ Character System**: Character rendering with pivot support, dynamic scaling, walking + custom named animations (`play_character_animation`)
+- **✅ Room Management**: `load_room()` runs Before → load → place player → After; asset loading and cleanup
+- **✅ Character System**: Pivot, dynamic scaling, walking + custom animations; `set_character_visibility` / `set_character_opacity`
 - **✅ GUI System**: GUI rendering with background images and clickable buttons, script execution on button clicks
-- **✅ Dialogue balloons**: `show_dialogue(character, text)` — balloon follows speaking character (DialogBox GUI settings)
+- **✅ Dialogues**: balloons (`show_dialogue`) + branching graphs (`start_dialogue`); blocking until dismissed (room-transition exception)
 
 ## Current API Status
 
@@ -146,21 +148,23 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 ### Basic APIs
 - **`print(...)`** / **`GameAPI.print(...)`** - Outputs messages to the script console (with serialization)
 - **`GameAPI.error(...)`** - Outputs error messages to the script console
-- **`show_message(text)`** - Shows notification messages to the user
-- **`show_dialogue(characterIdOrName, text)`** - Speech balloon on a character (uses first **DialogBox** GUI in project); click to dismiss; sequential command queue. In `on_room_change` / `on_before_room_change` it does not block `load_room` (still shows after the room is ready).
+- **`show_message(text)`** - Shows notification messages to the user (blocks until dismissed; auto-awaited in scripts)
+- **`show_dialogue(characterIdOrName, text)`** - Speech balloon on a character (uses first **DialogBox** GUI in project); click to dismiss; sequential command queue. Blocks following commands; in `on_room_change` / `on_before_room_change` it does not block `load_room` (still shows after the room is ready).
 - **`show_dialogue_text(text, speaker)`** - Roadmap alias (text first, then character name/id)
-- **`start_dialogue(dialogueIdOrName)`** - Runs a branching dialogue graph from **Scripts → Dialogues** (`line` / `choice` / `jump` / `action` / `end`); optional choice conditions, once-only, declarative actions; Promise resolves when finished
+- **`start_dialogue(dialogueIdOrName)`** - Runs a branching dialogue graph from the **Dialogues** tab (`line` / `choice` / `jump` / `action` / `end`); optional choice conditions, once-only, declarative actions; Promise resolves when finished (blocks following commands until closed; room-transition exception vs `load_room`)
 - **`end_dialogue()`** - Closes the active balloon and aborts any `start_dialogue` session
 - **`show_image(imageName, options?)`** - Fullscreen image overlay (`imageName` = Resources file name, e.g. `"photo.png"`). Default: wait for click. Options: `{ waitClick: false, fit: 'cover'|'contain' }`. Use **`hide_image()`** to dismiss from script.
 - **`hide_image()`** - Closes the fullscreen image overlay if open
 - **`save_game(slot?, label?)`** - Save player state (room, vars, inventory, characters, objects/hotspots, dialogue once-only) to `localStorage` (slots 1–10 or string id). Not stored in `.amnt`.
 - **`load_game(slot?)`** - Restore a save slot (does not re-run `on_game_start` / `on_room_change`)
 - **`delete_save(slot)`** / **`get_save_info(slot?)`** - Delete slot (**slot required**) or read metadata (omit slot on `get_save_info` to list all)
+- **`show_gui(idOrName)`** / **`hide_gui(idOrName)`** - Show/hide a GUI overlay (e.g. **SaveLoad** menu)
 - **`move_object(id, x, y)`** - Moves scene objects by ID to new coordinates
 
 ### Event System APIs
-- **`on_game_start(handler)`** - Registers a function to call when the game starts
-- **`on_room_change(handler)`** - Registers a function to call when changing rooms (receives oldRoomId, newRoomId)
+- **`on_game_start(handler)`** - Registers a function to call when the game starts (runs under opaque loading overlay before canvas reveal)
+- **`on_before_room_change(handler)`** - Before the new room loads (previous room still active); also runs for the destination when using `load_room`
+- **`on_room_change(handler)`** - After the new room is loaded and the player is placed (including via `load_room`); receives oldRoomId, newRoomId
 - **`on_object_click(handler)`** - Registers a function to call when clicking scene objects (receives objectId, x, y, usedItemId?)
 - **`on_character_click(handler)`** - Registers a function to call when clicking characters (receives characterId, x, y, usedItemId?)
 - **`on_hotspot_click(handler)`** - Registers a function to call when clicking hotspots (receives hotspotId, x, y, usedItemId?)
@@ -185,7 +189,7 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`set_object_visible(objectId, visible)`** - Shows or hides an object
 
 ### Room System APIs
-- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Loads a room by ID or name; optional player placement
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Loads a room by ID or name; optional player placement. Order: destination **Before** scripts → load room → place player → **After** scripts (awaited)
 - **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - Returns the current room ID
 - **`get_room_objects()`** - Returns plain objects `{ id, name, x, y, rotation, scaleX, scaleY, visible, enabled }` for the current room
 - **`set_room_background(imageUrlOrDataUrl)`** - Sets or clears background (`""` / null clears); supports URLs and `asset:...` keys already in `AssetRegistry`
@@ -202,6 +206,8 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`move_character(idOrName, x, y)`** - Instant move
 - **`walk_character(idOrName, x, y, wait?)`** - Pathfinding move on walkable area (returns Promise if `wait` is true; default). Stops any custom animation in progress.
 - **`set_character_direction(idOrName, direction)`** - Sets 8-direction facing (walking sprites)
+- **`set_character_visibility(idOrName, visible)`** - Show/hide character (`visible=false` skips render; preserved across `load_room` and in `save_game`)
+- **`set_character_opacity(idOrName, opacity)`** - Opacity 0–1 (clamped); works with visibility
 - **`animate_character(idOrName, enabled?)`** - Animation control hook (reserved for future use)
 - **`play_character_animation(idOrName, animationName, direction, wait?)`** - Plays one full cycle of a **custom** animation defined in the editor (Characters tab → **+** → name, e.g. `wave`). Uses `characterDefinitions.animations[animationName].directions[direction]`. Stops movement; on completion returns to walking idle (frame 0). Directions: `north`, `northeast`, `east`, `southeast`, `south`, `southwest`, `west`, `northwest`. With `await` (default) blocks input until the cycle ends (same pattern as `walk_character`).
 
@@ -314,7 +320,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Not yet in runtime (roadmap):** in-game save menu UI, visual transitions (`fade_in`, …). Dialogue conditions / once-only / jump / action + **visual node editor** + portraits/mood + nested condition builder + Preview via `start_dialogue` + `save_game`/`load_game` ✅. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), [tests/MANUAL.md](tests/MANUAL.md). Run `npm test` for smoke tests.
+**Not yet in runtime (roadmap):** visual transitions (`fade_in`, …). **Already in runtime:** Dialogues tab (Form/Visual), portraits/mood, conditions/once/jump/action, nested conditions, Preview, blocking messages/dialogues, `set_character_visibility`/`opacity`, `load_room` Before→After, `save_game`/`load_game`, GUI type **SaveLoad** + `show_gui`/`hide_gui`, inventory GUI. Audio: `play_music` / `play_sound` ✅ (no volume mixer yet). See [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), [tests/MANUAL.md](tests/MANUAL.md). Run `npm test` for smoke tests.
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -332,8 +338,8 @@ npm run dist       # build Windows installer in dist/
 2. Rooms → create a room, add background, objects, walkable area; place room animations.
 3. Animations → create ambient/prop animations (optional).
 4. Characters → upload walking frames; set game start room/position.
-4. Scripts → write JavaScript; use **PLAY** to test.
-5. **Save Project** (header) writes your `.amnt` file.
+5. Scripts → write JavaScript; **Dialogues** → Form/Visual for branching conversations; use **PLAY** to test.
+6. **Save Project** (header) writes your `.amnt` file.
 
 ### Browser only
 
@@ -342,7 +348,7 @@ npm run dist       # build Windows installer in dist/
 
 ## Keyboard & Tips
 
-- Tabs: **Ctrl+0** Projects, **Ctrl+1** Resources, **Ctrl+2** Rooms, **Ctrl+3** Inventory, **Ctrl+4** Characters, **Ctrl+5** Animations, **Ctrl+6** GUI, **Ctrl+7** Scripts, **Ctrl+8** Docs, **Ctrl+9** PLAY (requires open project except Docs)
+- Tabs: **Ctrl+0** Projects, **Ctrl+1** Resources, **Ctrl+2** Rooms, **Ctrl+3** Inventory, **Ctrl+4** Characters, **Ctrl+5** Animations, **Ctrl+6** GUI, **Ctrl+7** Cursors, **Ctrl+8** Docs, **Ctrl+9** PLAY (requires open project except Docs). **Scripts** and **Dialogues** have no Ctrl shortcut (click the nav buttons).
 - Scripts: **Ctrl+S** saves the current script; **Ctrl+Space** API autocomplete
 - Zoom editor (Rooms/Characters/Animations): mouse wheel (bounded zoom)
 
@@ -371,22 +377,22 @@ npm run dist       # build Windows installer in dist/
 ### 🚀 JavaScript API Roadmap
 
 #### **Phase 1 - Core Systems (High Priority)**
-- ✅ **Event System**: `on_game_start()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()` **(runtime)**
+- ✅ **Event System**: `on_game_start()`, `on_before_room_change()`, `on_room_change()`, `on_object_click()`, `on_character_click()`, `on_hotspot_click()`, `on_gui_click()` **(runtime)**
 - ✅ **Inventory System** (runtime B.1): `add_to_inventory()`, `remove_from_inventory()`, `has_item()`, `get_item_count()`, `clear_inventory()`
 - ✅ **Object System** (runtime B.2): `spawn_object()`, `despawn_object()`, `rotate_object()`, `scale_object()`, `set_object_visible()`
-- ✅ **Room System** (runtime B.3): `load_room()`, `get_current_room()`, `get_room_objects()`, `set_room_background()`
+- ✅ **Room System** (runtime B.3): `load_room()` (Before → load → After), `get_current_room()`, `get_room_objects()`, `set_room_background()`
 - ✅ **Variables** (runtime B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, `GameAPI.getVariable`, …
 - ✅ **API infrastructure** (Fase A): `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`
 
 #### **Phase 2 - Advanced Interactions (Medium Priority)**
-- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (conditions, once-only, jump/action + form/visual editor + portraits/mood + nested conditions + Preview) — ❌ localisation / talking-head animation
+- 🟡 **Dialogue System (partial)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (conditions, once-only, jump/action + **Dialogues** tab Form/Visual + portraits/mood + nested conditions + Preview; blocking auto-await) — ❌ localisation / talking-head animation
 - 🟡 **Audio System (partial)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ volume mixer, ambient layers
 - ✅ **Room animations**: Animations tab + room placements; `play_animation()`, `stop_animation()`
-- **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
+- **Character System (extended)**: `set_character_ai()`, patrol/follow — core APIs ✅: `spawn_character`, `move_character`, `walk_character`, `set_character_visibility`, `set_character_opacity`, `play_character_animation`
 - **Visual System**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Phase 3 - Advanced Features (Low Priority)**
-- **Game System**: ✅ `save_game()`, `load_game()`, `delete_save(slot)`, `get_save_info()` (validated `amianto-save` v1) — ❌ in-game slot menu UI, `add_score()`
+- **Game System**: ✅ `save_game()`, `load_game()`, `delete_save(slot)`, `get_save_info()` (validated `amianto-save` v1) + GUI type **SaveLoad** + `show_gui`/`hide_gui` — ❌ `add_score()`
 - **UI System**: `show_tooltip()`, `show_notification()`, `open_menu()`, `show_modal()`
 - **Debug System**: `log_info()`, `log_warning()`, `log_error()`, `show_debug_info()`
 - **Utility System**: `distance()`, `angle_between()`, `format_string()`, `shuffle_array()`
@@ -506,14 +512,16 @@ Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure br
   - Upload immagine cursore, testo azione opzionale; lista cursori attivi
 - Scripting (JavaScript, Runtime Sandboxed)
   - Editor JavaScript integrato (CodeMirror)
-  - **Sistema Eventi**: 8 handler (`on_game_start`, `on_room_change`, click con `usedItemId?`, `on_gui_click`, `on_use_with`, …)
+  - **Sistema Eventi**: `on_game_start`, `on_before_room_change`, `on_room_change`, click con `usedItemId?`, `on_gui_click`, `on_use_with`, …
   - **API Utilità**: `print(...)`, `show_message(text)`, `move_object(id, x, y)`
   - **Runtime Sandboxed**: Esecuzione script in iframe isolato (`runtime-sandbox.html`)
   - **GameAPI**: API completa esposta agli script utente (`GameAPI.print()`, `GameAPI.getVariable()`, `GameAPI.setVariable()`, `load_room()`, etc.)
   - **Messaggistica Robusta**: Sistema MessageQueue con buffer, retry (3 tentativi) e fallback a console
   - **Script Logging**: ScriptLogService integrato con log timestamped e livelli (info, warning, error)
-  - Collega script a stanze, personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
+  - Collega script a stanze (Before/After room load come file distinti), personaggi, oggetti di scena, inventario, GUI, hotspot e cursori
   - Salva/Carica script, Esegui/Stop sandbox
+- Tab **Dialogues**
+  - Grafi ramificati (`line` / `choice` / `jump` / `action` / `end`) con editor Form + Visual; ritratti/mood; Preview → Play Test
 - Play Test
   - Avvio/Pausa/Stop; console di debug; azioni test rapide
 - Progetti & Risorse
@@ -546,7 +554,8 @@ Il sistema runtime fornisce un ambiente completo di esecuzione giochi:
 - **✅ Gestione Stanze**: Sistema completo di cambio stanza (`load_room()`) con caricamento asset, cleanup ed esecuzione script
 - **✅ Sistema Personaggi**: Rendering personaggi con supporto pivot, scaling dinamico basato su posizione Y, movimento fluido sub-pixel
 - **✅ Sistema GUI**: Rendering GUI con immagini di sfondo e pulsanti cliccabili, esecuzione script su click pulsanti
-- **✅ Dialoghi**: `show_dialogue(personaggio, testo)` — balloon che segue il personaggio (impostazioni GUI DialogBox)
+- **✅ Dialoghi**: balloon (`show_dialogue`) + grafi ramificati (`start_dialogue`); bloccanti fino a chiusura (eccezione room-transition)
+- **✅ Personaggi**: visibility/opacity da script; `load_room` rispetta lo stato nascosto
 
 ## Stato Corrente delle API
 
@@ -557,21 +566,23 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 ### API Base
 - **`print(...)`** / **`GameAPI.print(...)`** - Invia messaggi alla script console (con serializzazione valori)
 - **`GameAPI.error(...)`** - Invia messaggi di errore alla script console
-- **`show_message(text)`** - Mostra notifiche all'utente
-- **`show_dialogue(characterIdOrName, text)`** - Balloon di dialogo sul personaggio (prima GUI **DialogBox** del progetto); click per chiudere; coda comandi sequenziale. In `on_room_change` / `on_before_room_change` non blocca `load_room` (il balloon compare a stanza già pronta).
+- **`show_message(text)`** - Mostra notifiche all'utente (bloccante fino a chiusura; auto-await negli script)
+- **`show_dialogue(characterIdOrName, text)`** - Balloon di dialogo sul personaggio (prima GUI **DialogBox** del progetto); click per chiudere; coda comandi sequenziale. Blocca i comandi successivi; in `on_room_change` / `on_before_room_change` non blocca `load_room` (il balloon compare a stanza già pronta).
 - **`show_dialogue_text(text, speaker)`** - Alias roadmap (prima il testo, poi nome/id personaggio)
-- **`start_dialogue(dialogueIdOrName)`** - Dialogo ramificato (`line` / `choice` / `jump` / `action` / `end`); condizioni, once-only, actions
+- **`start_dialogue(dialogueIdOrName)`** - Dialogo ramificato dalla tab **Dialogues** (`line` / `choice` / `jump` / `action` / `end`); condizioni, once-only, actions; bloccante fuori room-transition
 - **`end_dialogue()`** - Chiude il balloon e interrompe eventuali sessioni `start_dialogue`
 - **`show_image(imageName, options?)`** - Immagine a tutto schermo (nome file in Resources, es. `"foto.png"`). Di default aspetta il click. Opzioni: `{ waitClick: false, fit: 'cover'|'contain' }`. **`hide_image()`** chiude da script.
 - **`hide_image()`** - Chiude l’overlay di `show_image` se aperto
 - **`save_game(slot?, label?)`** - Salva stato partita (inclusi once-only dialoghi) in `localStorage` (non nel `.amnt`)
 - **`load_game(slot?)`** - Carica uno slot (non riesegue `on_game_start` / `on_room_change`)
 - **`delete_save(slot)`** / **`get_save_info(slot?)`** - Elimina (slot obbligatorio) o legge metadata (senza slot su `get_save_info` = lista)
+- **`show_gui(idOrName)`** / **`hide_gui(idOrName)`** - Mostra/nasconde una GUI (es. menu **SaveLoad**)
 - **`move_object(id, x, y)`** - Sposta oggetti di scena tramite ID verso nuove coordinate
 
 ### API Sistema Eventi
-- **`on_game_start(handler)`** - Registra una funzione da chiamare all'avvio del gioco
-- **`on_room_change(handler)`** - Registra una funzione da chiamare al cambio stanza (riceve oldRoomId, newRoomId)
+- **`on_game_start(handler)`** - All'avvio del gioco (sotto overlay loading opaco prima del reveal canvas)
+- **`on_before_room_change(handler)`** - Prima del load della nuova stanza (stanza precedente ancora attiva); anche via `load_room` sulla destinazione
+- **`on_room_change(handler)`** - Dopo load stanza e posizionamento player (anche via `load_room`); riceve oldRoomId, newRoomId
 - **`on_object_click(handler)`** - Click oggetti (objectId, x, y, usedItemId?)
 - **`on_character_click(handler)`** - Click personaggi (characterId, x, y, usedItemId?)
 - **`on_hotspot_click(handler)`** - Click hotspot (hotspotId, x, y, usedItemId?)
@@ -601,7 +612,7 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - Stato iniziale: checkbox **Is active?** nel tab Rooms (salvato come `visible` nel JSON progetto).
 
 ### API Sistema Stanze
-- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Carica stanza; posizionamento opzionale del player
+- **`load_room(roomIdOrName, playerX?, playerY?, playerDirection?)`** - Carica stanza; posizionamento opzionale del player. Ordine: script **Before** destinazione → load → place player → script **After** (awaited)
 - **`get_current_room()`** / **`GameAPI.getCurrentRoom()`** - ID stanza corrente
 - **`get_room_objects()`** - Oggetti stanza corrente come dati plain (`id`, `name`, `x`, `y`, `rotation`, …)
 - **`set_room_background(imageUrlOrDataUrl)`** - Imposta o rimuove lo sfondo (URL o `asset:...`)
@@ -618,6 +629,8 @@ Le API sotto sono disponibili nel **runtime** (`JS/runtime.js`) durante **Play T
 - **`move_character(idOrName, x, y)`** — Spostamento istantaneo
 - **`walk_character(idOrName, x, y, wait?)`** — Movimento con pathfinding sulla walkable area (Promise se `wait` è true). Interrompe un’animazione custom in corso.
 - **`set_character_direction(idOrName, direction)`** — Imposta la direzione (8 direzioni, sprite walking)
+- **`set_character_visibility(idOrName, visible)`** — Mostra/nasconde il personaggio (persistito su `load_room` e in `save_game`)
+- **`set_character_opacity(idOrName, opacity)`** — Opacità 0–1 (clamp); combina con visibility
 - **`animate_character(idOrName, enabled?)`** — Hook controllo animazione (uso futuro)
 - **`play_character_animation(idOrName, animationName, direction, wait?)`** — Riproduce un ciclo completo di un’animazione **custom** definita nell’editor (tab Characters → **+** → nome, es. `wave`). Usa `characterDefinitions.animations[nome].directions[direzione]`. Ferma il movimento; al termine torna alla posa idle del walking. Con `await` (default) blocca l’input fino alla fine (come `walk_character`).
 
@@ -683,7 +696,7 @@ on_room_change(function(oldRoom, newRoom) {
 });
 ```
 
-**Non ancora nel runtime:** menu UI salvataggi, transizioni visive, ritratti/mood. Condizioni/once/jump/action + **editor nodi visuale** (Scripts → Dialogues → Visual) + `save_game`/`load_game` ✅. Vedi [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), `npm test`.
+**Non ancora nel runtime:** transizioni visive. **Già nel runtime:** ritratti/mood, tab **Dialogues**, `set_character_visibility`/`opacity`, messaggi bloccanti, `load_room` Before→After, `save_game`/`load_game`, GUI **SaveLoad** + `show_gui`/`hide_gui`, inventario GUI. Vedi [ROADMAP.md](ROADMAP.md), [docs/DIALOGUE_VISUAL_EDITOR.md](docs/DIALOGUE_VISUAL_EDITOR.md), `npm test`.
 
 > 📖 **Per il piano completo di sviluppo e lo stato dettagliato di tutte le implementazioni, consulta la [ROADMAP.md](ROADMAP.md)**
 
@@ -697,11 +710,11 @@ on_room_change(function(oldRoom, newRoom) {
 2. Rooms → stanza, background, oggetti, walkable, hotspot; posiziona animazioni di stanza
 3. Animations → animazioni ambiente (opzionale)
 4. Characters → frame walking, posizione iniziale
-4. Scripts → JavaScript + PLAY per testare
+5. Scripts → JavaScript; **Dialogues** → Form/Visual per conversazioni ramificate; PLAY per testare
 
 ## Note & Consigli
 
-- Tab: **Ctrl+0** Projects … **Ctrl+8** Docs, **Ctrl+9** PLAY (serve progetto aperto, tranne Docs)
+- Tab: **Ctrl+0** Projects … **Ctrl+7** Cursors, **Ctrl+8** Docs, **Ctrl+9** PLAY (serve progetto aperto, tranne Docs). **Scripts** e **Dialogues** senza shortcut Ctrl (click in nav).
 - Scripts: **Ctrl+S** salva lo script; **Ctrl+Space** autocomplete API
 - Zoom editor (Rooms/Characters/Animations): rotella mouse
 
@@ -722,22 +735,22 @@ on_room_change(function(oldRoom, newRoom) {
 ### 🚀 Roadmap JavaScript API
 
 #### **Fase 1 - Sistema Base (Priorità Alta)**
-- ✅ **Sistema Eventi** (runtime): `on_game_start`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
+- ✅ **Sistema Eventi** (runtime): `on_game_start`, `on_before_room_change`, `on_room_change`, `on_object_click`, `on_character_click`, `on_hotspot_click`, `on_gui_click`
 - ✅ **Inventario** (B.1): `add_to_inventory`, `remove_from_inventory`, `has_item`, `get_item_count`, `clear_inventory`
 - ✅ **Oggetti** (B.2): `spawn_object`, `despawn_object`, `rotate_object`, `scale_object`, `set_object_visible`
-- ✅ **Stanze** (B.3): `load_room`, `get_current_room`, `get_room_objects`, `set_room_background`
+- ✅ **Stanze** (B.3): `load_room` (Before → load → After), `get_current_room`, `get_room_objects`, `set_room_background`
 - ✅ **Variabili** (B.3): `get_var`, `set_var`, `has_var`, `toggle_var`, `Game.getVar`, …
 - ✅ **Infrastruttura API** (Fase A): `getScriptApiBindings`, `buildScriptExecutor`, `exposeScriptGlobals`
 
 #### **Fase 2 - Interazioni Avanzate (Priorità Media)**
-- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (condizioni, once-only, jump/action + editor form/visuale + ritratti/mood + Preview) — ❌ localisation / talking-head
+- 🟡 **Sistema Dialoghi (parziale)**: ✅ `show_dialogue()`, `show_dialogue_text()`, `end_dialogue()`, `start_dialogue()` (condizioni, once-only, jump/action + tab **Dialogues** Form/Visual + ritratti/mood + Preview; auto-await bloccante) — ❌ localisation / talking-head
 - 🟡 **Sistema Audio (parziale)**: ✅ `play_music()`, `play_sound()`, `stop_music()`, `stop_sound()` — ❌ mixer volumi, ambient
 - ✅ **Animazioni di stanza**: tab Animations + posizionamento in Rooms; `play_animation()`, `stop_animation()`
-- **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `play_character_animation`
+- **Sistema Personaggi (esteso)**: `set_character_ai()`, patrol/follow — API base ✅: `spawn_character`, `move_character`, `walk_character`, `set_character_visibility`, `set_character_opacity`, `play_character_animation`
 - **Sistema Visivo**: `fade_in()`, `fade_out()`, `transition_to_room()`, `show_cutscene()`
 
 #### **Fase 3 - Funzionalità Avanzate (Priorità Bassa)**
-- **Sistema Gioco**: ✅ `save_game()`, `load_game()`, `delete_save()`, `get_save_info()` — ❌ menu slot in-game, `add_score()`
+- **Sistema Gioco**: ✅ `save_game()`, `load_game()`, `delete_save()`, `get_save_info()` + GUI **SaveLoad** + `show_gui`/`hide_gui` — ❌ `add_score()`
 - **Sistema UI**: `show_tooltip()`, `show_notification()`, `open_menu()`, `show_modal()`
 - **Sistema Debug**: `log_info()`, `log_warning()`, `log_error()`, `show_debug_info()`
 - **Sistema Utilità**: `distance()`, `angle_between()`, `format_string()`, `shuffle_array()`

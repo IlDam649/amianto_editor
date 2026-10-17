@@ -459,6 +459,32 @@ const html = Standalone.buildStandaloneHtml(
 assert(typeof html === 'string' && html.indexOf('amianto-embedded-runtime') >= 0, 'standalone HTML embeds runtime');
 assert(html.indexOf('initRuntime') >= 0, 'standalone HTML contains runtime source');
 
+// Package unwrap + format coercion (regression: exported HTML must boot as amianto-game)
+assert(typeof Standalone.resolveProjectAndAssets === 'function', 'resolveProjectAndAssets exists');
+const wrapped = Standalone.resolveProjectAndAssets({
+  format: 'amianto-amnt',
+  project: { settings: { name: 'W' }, rooms: [] },
+  assets: []
+});
+assert(wrapped.project.format === 'amianto-game', 'amnt package unwrap sets amianto-game');
+const bare = Standalone.resolveProjectAndAssets({ settings: { name: 'B' }, rooms: [] });
+assert(bare.project.format === 'amianto-game', 'bare project gets amianto-game format');
+const htmlFromAmnt = Standalone.buildStandaloneHtml(
+  {
+    format: 'amianto-amnt',
+    project: { settings: { name: 'AmntGame', canvasWidth: 100, canvasHeight: 100 }, rooms: [] },
+    assets: []
+  },
+  'function initRuntime(){} // stub runtime long enough xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  {}
+);
+const projMarker = 'id="amianto-embedded-project">';
+const p0 = htmlFromAmnt.indexOf(projMarker) + projMarker.length;
+const p1 = htmlFromAmnt.indexOf('</script>', p0);
+const embeddedProj = JSON.parse(htmlFromAmnt.slice(p0, p1));
+assert(embeddedProj.format === 'amianto-game', 'HTML from .amnt package embeds format amianto-game');
+assert(embeddedProj.settings && embeddedProj.settings.name === 'AmntGame', 'HTML embeds unwrapped project settings');
+
 // --- Summary ---
 console.log('\n----------------------------------------');
 console.log('Passed: ' + passed + '  Failed: ' + failed);

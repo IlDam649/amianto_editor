@@ -649,7 +649,14 @@
       return;
     }
 
-    if (!confirm(`Delete ${state.selectedIds.size} image(s) from Resources?`)) return;
+    const okImages = typeof window.showConfirmDialog === 'function'
+      ? await window.showConfirmDialog({
+          title: 'Delete Resources',
+          message: `Delete ${state.selectedIds.size} image(s) from Resources?`,
+          danger: true
+        })
+      : confirm(`Delete ${state.selectedIds.size} image(s) from Resources?`);
+    if (!okImages) return;
 
     let deleted = 0;
     for (const assetId of state.selectedIds) {
@@ -739,7 +746,14 @@
       return;
     }
 
-    if (!confirm(`Delete ${soundState.selectedIds.size} audio file(s)?`)) return;
+    const okSounds = typeof window.showConfirmDialog === 'function'
+      ? await window.showConfirmDialog({
+          title: 'Delete Audio',
+          message: `Delete ${soundState.selectedIds.size} audio file(s)?`,
+          danger: true
+        })
+      : confirm(`Delete ${soundState.selectedIds.size} audio file(s)?`);
+    if (!okSounds) return;
 
     let deleted = 0;
     for (const assetId of soundState.selectedIds) {

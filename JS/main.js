@@ -169,6 +169,12 @@ async function bootstrapApp() {
 
 document.addEventListener("DOMContentLoaded", () => {
 
+  // Dialoghi Electron-safe (JS/editor-dialogs.js) — disponibili subito per tutti i pulsanti
+  const showInputPrompt = (opts) => window.showInputPrompt(opts);
+  const showConfirmDialog = (opts) => window.showConfirmDialog(opts);
+  const showChoicePrompt = (opts) => window.showChoicePrompt(opts);
+  const showVariableFormDialog = (opts) => window.showVariableFormDialog(opts);
+
   /* ============================
      PART 1 - Sistema Tabs Avanzato
      ============================ */
@@ -497,6 +503,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let selectedGuiButtonId = null;
   let isDrawingGuiButton = false;
   let guiDrawStart = null;
+  /** @type {'button'|'saveSlot'} */
+  let guiDrawMode = 'button';
   let isDraggingGuiButton = false;
   let draggedGuiButton = null;
   let guiButtonDragOffset = { x: 0, y: 0 };
@@ -1516,26 +1524,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      const previewSlots = inventoryDefinition.slots.filter(s => s && s.id !== '__drawing__');
-      inventoryItems.forEach((item, index) => {
-        const slot = previewSlots[index];
-        const img = item && item.image;
-        if (!slot || !img) return;
-        const imgW = img.naturalWidth || img.width || 0;
-        const imgH = img.naturalHeight || img.height || 0;
-        if (imgW <= 0 || imgH <= 0) return;
-        const maxW = Math.max(1, slot.w);
-        const maxH = Math.max(1, slot.h);
-        const scale = Math.min(maxW / imgW, maxH / imgH);
-        const drawW = imgW * scale;
-        const drawH = imgH * scale;
-        const drawX = slot.x + (maxW - drawW) / 2;
-        const drawY = slot.y + (maxH - drawH) / 2;
-        try {
-          ctx.drawImage(img, drawX, drawY, drawW, drawH);
-        } catch (_) {}
-      });
-
       ctx.strokeStyle = '#39ff14';
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
@@ -1685,24 +1673,30 @@ document.addEventListener("DOMContentLoaded", () => {
           
           ctx.drawImage(btn.backgroundImage, drawX, drawY, drawW, drawH);
         } else {
-          // Default button appearance
-          ctx.strokeStyle = 'rgba(0, 200, 255, 0.9)';
-          ctx.fillStyle = 'rgba(0, 200, 255, 0.12)';
+          // Default button appearance (save slots: inventory-like purple)
+          const isSlot = btn.role === 'saveSlot';
+          ctx.strokeStyle = isSlot ? 'rgba(180, 100, 255, 0.95)' : 'rgba(0, 200, 255, 0.9)';
+          ctx.fillStyle = isSlot ? 'rgba(180, 100, 255, 0.18)' : 'rgba(0, 200, 255, 0.12)';
           ctx.lineWidth = 2;
+          ctx.setLineDash(isSlot ? [5, 4] : []);
           ctx.beginPath();
           ctx.rect(btn.x, btn.y, btn.w, btn.h);
           ctx.fill();
           ctx.stroke();
+          ctx.setLineDash([]);
         }
         
         // Draw button text if available
-        if (btn.text && btn.text.trim() !== '') {
+        const labelText = (btn.text && btn.text.trim() !== '')
+          ? btn.text
+          : (btn.role === 'saveSlot' ? (btn.name || `Slot ${btn.slotKey || ''}`) : '');
+        if (labelText) {
           ctx.save();
           ctx.fillStyle = '#ffffff';
           ctx.font = 'bold 14px Arial';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(btn.text, btn.x + btn.w/2, btn.y + btn.h/2);
+          ctx.fillText(labelText, btn.x + btn.w/2, btn.y + btn.h/2);
           ctx.restore();
         }
         
@@ -2497,18 +2491,50 @@ document.addEventListener("DOMContentLoaded", () => {
         const y0 = Math.min(guiDrawStart.y, worldPos.y);
         const w = Math.abs(worldPos.x - guiDrawStart.x);
         const h = Math.abs(worldPos.y - guiDrawStart.y);
-        // finalize button
-        let btn = guiButtons.pop();
-        const name = `Button ${guiButtons.length + 1}`;
-        btn = { id: uid('gui'), name, x: Math.round(x0), y: Math.round(y0), w: Math.round(w), h: Math.round(h), backgroundImage: null, text: '' };
+        guiButtons.pop();
+        const asSaveSlot = guiDrawMode === 'saveSlot';
+        let btn;
+        if (asSaveSlot) {
+          const slotKey = nextSaveSlotKey(guiButtons);
+          btn = {
+            id: uid('gui'),
+            name: `Slot ${slotKey}`,
+            x: Math.round(x0),
+            y: Math.round(y0),
+            w: Math.round(w),
+            h: Math.round(h),
+            backgroundImage: null,
+            text: '',
+            role: 'saveSlot',
+            slotKey
+          };
+        } else {
+          btn = {
+            id: uid('gui'),
+            name: `Button ${guiButtons.length + 1}`,
+            x: Math.round(x0),
+            y: Math.round(y0),
+            w: Math.round(w),
+            h: Math.round(h),
+            backgroundImage: null,
+            text: '',
+            role: 'button'
+          };
+        }
         guiButtons.push(btn);
         selectedGuiButtonId = btn.id;
         isDrawingGuiButton = false;
         guiDrawStart = null;
+        guiDrawMode = 'button';
         refreshGuiButtonsList();
         if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
         saveCurrentGUI();
-        showNotification(`GUI button created (${btn.w}Ã—${btn.h})`, 'success');
+        showNotification(
+          asSaveSlot
+            ? `Save slot ${btn.slotKey} created (${btn.w}×${btn.h})`
+            : `GUI button created (${btn.w}×${btn.h})`,
+          'success'
+        );
         redraw();
       }
     });
@@ -3007,16 +3033,21 @@ document.addEventListener("DOMContentLoaded", () => {
       btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
       btnEdit.textContent = 'Rename';
       btnEdit.disabled = !isSelected;
-      btnEdit.addEventListener('click', () => {
+      btnEdit.addEventListener('click', async () => {
         if (!isSelected) {
           showNotification('Select the hotspot before editing it', 'warning');
           return;
         }
-        const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
+        const newName = await showInputPrompt({
+          title: 'Rename Hotspot',
+          message: 'Hotspot name:',
+          defaultValue: hs.name || 'Hotspot'
+        });
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
           const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
           refreshHotspotsListUI();
+          if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
         }
       });
 
@@ -3043,12 +3074,12 @@ document.addEventListener("DOMContentLoaded", () => {
       btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
       btnDelete.textContent = 'Delete';
       btnDelete.disabled = !isSelected;
-      btnDelete.addEventListener('click', () => {
+      btnDelete.addEventListener('click', async () => {
         if (!isSelected) {
           showNotification('Select the hotspot before editing it', 'warning');
           return;
         }
-        if (!confirm('Delete this hotspot?')) return;
+        if (!(await showConfirmDialog({ title: 'Delete Hotspot', message: 'Delete this hotspot?', danger: true }))) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
         if (activeHotspotId === hs.id) activeHotspotId = hotspots[0] ? hotspots[0].id : null;
@@ -3090,11 +3121,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.addHotspot = function() {
-    const name = prompt('Hotspot name:', `Hotspot ${hotspots.length + 1}`);
+  window.addHotspot = async function() {
+    const defaultName = `Hotspot ${hotspots.length + 1}`;
+    const name = await showInputPrompt({
+      title: 'New Hotspot',
+      message: 'Hotspot name:',
+      defaultValue: defaultName
+    });
+    if (name === null) return; // Cancel
     const hs = {
       id: uid('hotspot'),
-      name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
+      name: name && name.trim() !== '' ? name.trim() : defaultName,
       points: [],
       visible: true,
       scripts: {
@@ -3109,6 +3146,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
     refreshHotspotsListUI();
     if (typeof refreshHotspotScriptTargets === 'function') refreshHotspotScriptTargets();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     redraw();
   };
 
@@ -3635,7 +3673,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.copyRoomId = function() {
+  window.copyRoomId = async function() {
     const roomIdInput = document.getElementById('room-id-display');
     if (!roomIdInput || !roomIdInput.value) {
       showNotification('No room selected', 'warning');
@@ -3656,8 +3694,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  window.createRoom = function() {
-    const name = prompt('Room name:', `Room ${rooms.size + 1}`);
+  window.createRoom = async function() {
+    const name = await showInputPrompt({ title: 'New Room', message: 'Room name:', defaultValue: `Room ${rooms.size + 1}` });
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
@@ -3673,17 +3711,19 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(rid);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(rid, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+      }
     }
     notifyEditorProjectChanged();
   };
 
-  window.renameRoom = function() {
+  window.renameRoom = async function() {
     const r = rooms.get(currentRoomId); if (!r) return;
-    const name = prompt('New room name:', r.name || 'Room');
+    const name = await showInputPrompt({ title: 'Rename Room', message: 'New room name:', defaultValue: r.name || 'Room' });
     if (!name) return;
     r.name = name;
     refreshRoomsSelector();
@@ -3692,7 +3732,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.deleteRoom = async function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
-    if (!confirm('Delete current room?')) return;
+    if (!(await showConfirmDialog({ title: 'Delete Room', message: 'Delete current room?', danger: true }))) return;
     
     const prevRoomId = currentRoomId;
     const roomToDelete = rooms.get(currentRoomId);
@@ -3742,10 +3782,12 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(first);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(first, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+      }
     }
     notifyEditorProjectChanged();
   };
@@ -3753,9 +3795,9 @@ document.addEventListener("DOMContentLoaded", () => {
 window.selectRoom = function(roomId) {
     if (!rooms.has(roomId)) return;
     const prevRoomId = currentRoomId;
-    const roomScript = roomScripts.get(roomId);
-    if (prevRoomId !== roomId && roomScript) {
-      const content = jsScripts.get(roomScript);
+    const beforeScript = getRoomScriptAttachmentForEvent(roomId, 'on_before_room_change');
+    if (prevRoomId !== roomId && beforeScript) {
+      const content = jsScripts.get(beforeScript) || getScriptContent(beforeScript);
       executeScriptHandler(content, 'on_before_room_change', [prevRoomId, roomId]);
     }
     currentRoomId = roomId;
@@ -3777,8 +3819,9 @@ window.selectRoom = function(roomId) {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
+    const afterScript = getRoomScriptAttachmentForEvent(roomId, 'on_room_change');
+    if (afterScript) {
+      const content = jsScripts.get(afterScript) || getScriptContent(afterScript);
       executeScriptHandler(content, 'on_room_change', [prevRoomId, roomId]);
     }
   };
@@ -4094,14 +4137,43 @@ window.selectRoom = function(roomId) {
   // Bind GUI buttons
   const btnAddGuiBg = document.getElementById('btn-add-gui-bg');
   const btnNewGuiButton = document.getElementById('btn-new-gui-button');
+  const btnNewGuiSaveSlot = document.getElementById('btn-new-gui-save-slot');
   const btnDeleteGuiButton = document.getElementById('btn-delete-gui-button');
   const guiTypeSelect = document.getElementById('gui-type-select');
   const guiSettingsContainer = document.getElementById('gui-settings-container');
+
+  function isSaveLoadGuiType(type) {
+    return type === 'SaveLoad';
+  }
+
+  function normalizeSaveLoadSettings(settings) {
+    const s = settings || {};
+    const mode = (s.mode === 'save' || s.mode === 'load' || s.mode === 'both') ? s.mode : 'both';
+    return {
+      mode,
+      startVisible: s.startVisible === true,
+      emptyLabel: (typeof s.emptyLabel === 'string' && s.emptyLabel.trim()) ? s.emptyLabel.trim() : 'Empty',
+      closeOnClickOutside: s.closeOnClickOutside !== false
+    };
+  }
+
+  function nextSaveSlotKey(buttons) {
+    const used = new Set(
+      (buttons || [])
+        .filter(b => b && b.id !== '__drawing__' && b.role === 'saveSlot')
+        .map(b => String(b.slotKey || ''))
+    );
+    for (let i = 1; i <= 10; i++) {
+      if (!used.has(String(i))) return String(i);
+    }
+    return String(used.size + 1);
+  }
 
   function cancelGuiButtonDrawing() {
     if (!isDrawingGuiButton) return;
     isDrawingGuiButton = false;
     guiDrawStart = null;
+    guiDrawMode = 'button';
     if (guiButtons.length && guiButtons[guiButtons.length - 1].id === '__drawing__') {
       guiButtons.pop();
     }
@@ -4109,9 +4181,24 @@ window.selectRoom = function(roomId) {
 
   function updateGuiToolbarForType(guiType) {
     const isDialogBox = guiType === 'DialogBox';
+    const isSaveLoad = isSaveLoadGuiType(guiType);
     [btnAddGuiBg, btnNewGuiButton, btnDeleteGuiButton].forEach((btn) => {
       if (btn) btn.disabled = isDialogBox;
     });
+    if (btnNewGuiSaveSlot) {
+      btnNewGuiSaveSlot.style.display = isSaveLoad ? '' : 'none';
+      btnNewGuiSaveSlot.disabled = isDialogBox || !isSaveLoad;
+    }
+    const hint = document.getElementById('gui-draw-hint');
+    if (hint) {
+      hint.textContent = isSaveLoad
+        ? 'SaveLoad: draw save slots (like inventory slots) and optional Close buttons. Use show_gui / hide_gui in scripts. Click a slot in playtest to save or load.'
+        : 'Draw buttons as rectangles on the canvas (GUI overlay). Click to select, drag to move. Use Delete Selected to remove.';
+    }
+    const heading = document.getElementById('gui-buttons-list-heading');
+    if (heading) {
+      heading.textContent = isSaveLoad ? 'Buttons & save slots' : 'Buttons list';
+    }
     if (isDialogBox) cancelGuiButtonDrawing();
   }
 
@@ -4149,12 +4236,21 @@ window.selectRoom = function(roomId) {
   if (btnNewGuiButton) {
     btnNewGuiButton.addEventListener('click', () => {
       if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
-      // start drawing mode
+      guiDrawMode = 'button';
       isDrawingGuiButton = true;
       guiDrawStart = null;
-      // add a temporary placeholder for live preview
-      guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
+      guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0, role: 'button' });
       showNotification('Click and drag on canvas to draw a GUI button', 'info');
+    });
+  }
+  if (btnNewGuiSaveSlot) {
+    btnNewGuiSaveSlot.addEventListener('click', () => {
+      if (!guiTypeSelect || guiTypeSelect.value !== 'SaveLoad') return;
+      guiDrawMode = 'saveSlot';
+      isDrawingGuiButton = true;
+      guiDrawStart = null;
+      guiButtons.push({ id: '__drawing__', name: 'Drawing slot...', x: 0, y: 0, w: 0, h: 0, role: 'saveSlot' });
+      showNotification('Click and drag on canvas to draw a save slot', 'info');
     });
   }
   if (guiTypeSelect) {
@@ -4587,6 +4683,34 @@ window.selectRoom = function(roomId) {
         frag.appendChild(makeTextarea('Note/JSON custom (opzionale)', 'gui-set-custom', settings.custom || ''));
         break;
       }
+      case 'SaveLoad': {
+        const sl = normalizeSaveLoadSettings(settings);
+        frag.appendChild(makeSelect('Mode', 'gui-set-saveload-mode', [
+          { value: 'both', label: 'Save & Load (empty→save, filled→load)' },
+          { value: 'save', label: 'Save only' },
+          { value: 'load', label: 'Load only' }
+        ], sl.mode));
+        frag.appendChild(makeInput('Empty slot label', 'gui-set-saveload-empty', 'text', sl.emptyLabel));
+        const visWrap = document.createElement('div');
+        visWrap.className = 'form-check mb-2';
+        visWrap.innerHTML = `
+          <input class="form-check-input" type="checkbox" id="gui-set-saveload-start-visible" ${sl.startVisible ? 'checked' : ''}>
+          <label class="form-check-label text-light" for="gui-set-saveload-start-visible">Visible at game start</label>
+        `;
+        frag.appendChild(visWrap);
+        const closeWrap = document.createElement('div');
+        closeWrap.className = 'form-check mb-2';
+        closeWrap.innerHTML = `
+          <input class="form-check-input" type="checkbox" id="gui-set-saveload-close-outside" ${sl.closeOnClickOutside ? 'checked' : ''}>
+          <label class="form-check-label text-light" for="gui-set-saveload-close-outside">Click outside slots/buttons closes menu</label>
+        `;
+        frag.appendChild(closeWrap);
+        const hint = document.createElement('p');
+        hint.className = 'text-muted small mb-0';
+        hint.textContent = 'Draw Save Slot for each slot (keys 1–10). Optional Draw Button for Close (script: hide_gui). Open with show_gui("GUI name").';
+        frag.appendChild(hint);
+        break;
+      }
       case 'MainInterface':
       default: {
         // MainInterface: nessun campo obbligatorio
@@ -4649,6 +4773,16 @@ window.selectRoom = function(roomId) {
       }
       case 'OverlayCustom':
         return { custom: get('gui-set-custom') || '' };
+      case 'SaveLoad': {
+        const startVisEl = document.getElementById('gui-set-saveload-start-visible');
+        const closeEl = document.getElementById('gui-set-saveload-close-outside');
+        return normalizeSaveLoadSettings({
+          mode: get('gui-set-saveload-mode') || 'both',
+          emptyLabel: get('gui-set-saveload-empty') || 'Empty',
+          startVisible: !!(startVisEl && startVisEl.checked),
+          closeOnClickOutside: !!(closeEl && closeEl.checked)
+        });
+      }
       case 'MainInterface':
       default:
         return { desc: get('gui-set-desc') || '' };
@@ -4672,28 +4806,61 @@ window.selectRoom = function(roomId) {
     const list = document.getElementById('gui-buttons-list');
     if (!list) return;
     list.innerHTML = '';
+    const currentType = (guiTypeSelect && guiTypeSelect.value) || 'MainInterface';
     guiButtons.forEach(btn => {
+      if (!btn || btn.id === '__drawing__') return;
+      const isSlot = btn.role === 'saveSlot';
       const item = document.createElement('div');
       item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
       item.dataset.guiId = btn.id;
+      const meta = isSlot
+        ? `Slot key ${btn.slotKey || '?'} — ${btn.x}, ${btn.y} — ${btn.w}×${btn.h}`
+        : `${btn.x}, ${btn.y} — ${btn.w}×${btn.h}`;
       item.innerHTML = `
         <div>
-          <strong>${btn.name}</strong>
-          <br><small>${btn.x}, ${btn.y} â€” ${btn.w}Ã—${btn.h}</small>
+          <strong>${btn.name || (isSlot ? 'Save slot' : 'Button')}</strong>
+          ${isSlot ? '<span class="badge bg-info ms-1">save slot</span>' : ''}
+          <br><small>${meta}</small>
         </div>
         <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Rename">Rename</button>
-          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">Image</button>
-          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">Text</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete">Delete</button>
+          <button class="btn btn-sm btn-outline-light me-1" title="Rename" data-act="rename">Rename</button>
+          ${isSlot || currentType === 'SaveLoad' ? '<button class="btn btn-sm btn-outline-success me-1" title="Slot key" data-act="slotkey">Key</button>' : ''}
+          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image" data-act="image">Image</button>
+          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text" data-act="text">Text</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete" data-act="delete">Delete</button>
         </div>
       `;
-      const [btnEdit, btnImage, btnText, btnDel] = item.querySelectorAll('button');
-      btnEdit.addEventListener('click', () => {
-        const newName = prompt('GUI button name:', btn.name);
-        if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
-      });
-      btnImage.addEventListener('click', async () => {
+      const btnEdit = item.querySelector('[data-act="rename"]');
+      const btnSlotKey = item.querySelector('[data-act="slotkey"]');
+      const btnImage = item.querySelector('[data-act="image"]');
+      const btnText = item.querySelector('[data-act="text"]');
+      const btnDel = item.querySelector('[data-act="delete"]');
+      if (btnEdit) {
+        btnEdit.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const newName = await showInputPrompt({ title: 'Rename Button', message: 'GUI button name:', defaultValue: btn.name });
+          if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
+        });
+      }
+      if (btnSlotKey) {
+        btnSlotKey.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const cur = btn.slotKey != null ? String(btn.slotKey) : '1';
+          const next = await showInputPrompt({ title: 'Save Slot Key', message: 'Save slot key (1-10 or custom id):', defaultValue: cur });
+          if (next == null || !String(next).trim()) return;
+          btn.role = 'saveSlot';
+          btn.slotKey = String(next).trim();
+          if (!btn.name || /^Slot\s+\d+$/i.test(btn.name) || /^Button\s+\d+$/i.test(btn.name)) {
+            btn.name = `Slot ${btn.slotKey}`;
+          }
+          saveCurrentGUI();
+          refreshGuiButtonsList();
+          redraw();
+        });
+      }
+      if (btnImage) {
+        btnImage.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
           if (!currentUser) {
             showNotification('Open a project to select images', 'warning');
             return;
@@ -4717,24 +4884,31 @@ window.selectRoom = function(roomId) {
             console.error('[Asset] Errore immagine pulsante GUI:', error);
             showNotification(`Error: ${error.message}`, 'error');
           }
-      });
-      btnText.addEventListener('click', () => {
-        const newText = prompt('Button text:', btn.text || '');
-        if (newText !== null) { 
-          btn.text = newText; 
+        });
+      }
+      if (btnText) {
+        btnText.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const newText = await showInputPrompt({ title: 'Button Text', message: 'Button text:', defaultValue: btn.text || '' });
+          if (newText !== null) {
+            btn.text = newText;
+            saveCurrentGUI();
+            showNotification(`Text set for ${btn.name}`, 'success');
+            redraw();
+          }
+        });
+      }
+      if (btnDel) {
+        btnDel.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          guiButtons = guiButtons.filter(b => b.id !== btn.id);
+          if (selectedGuiButtonId === btn.id) selectedGuiButtonId = null;
+          refreshGuiButtonsList();
+          if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
           saveCurrentGUI();
-          showNotification(`Text set for ${btn.name}`, 'success'); 
-          redraw(); 
-        }
-      });
-      btnDel.addEventListener('click', () => {
-        guiButtons = guiButtons.filter(b => b.id !== btn.id);
-        if (selectedGuiButtonId === btn.id) selectedGuiButtonId = null;
-        refreshGuiButtonsList();
-        if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
-        saveCurrentGUI();
-        redraw();
-      });
+          redraw();
+        });
+      }
       item.addEventListener('click', () => { selectedGuiButtonId = btn.id; refreshGuiButtonsList(); redraw(); });
       list.appendChild(item);
     });
@@ -4957,7 +5131,7 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.filterInventoryObjects = function(searchTerm) {
+  window.filterInventoryObjects = async function(searchTerm) {
     const objects = document.querySelectorAll('#inventory-list .list-group-item');
     const q = (searchTerm || '').toLowerCase();
     objects.forEach(obj => {
@@ -4965,16 +5139,16 @@ window.selectRoom = function(roomId) {
     });
   };
 
-  window.removeInventoryObject = function(button) {
+  window.removeInventoryObject = async function(button) {
     const row = button.closest('.list-group-item');
     const id = row && row.dataset.itemId;
     if (id) removeInventoryItemById(id);
   };
 
-  function removeInventoryItemById(itemId) {
+  async function removeInventoryItemById(itemId) {
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
-    if (!confirm('Delete this inventory item?')) return;
+    if (!(await showConfirmDialog({ title: 'Delete Inventory Item', message: 'Delete this inventory item?', danger: true }))) return;
     inventoryScripts.delete(item.name);
     inventoryItems = inventoryItems.filter(i => i.id !== itemId);
     if (selectedInventoryItemId === itemId) clearInventoryItemForm();
@@ -5449,7 +5623,7 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.filterSceneObjects = function(searchTerm) {
+  window.filterSceneObjects = async function(searchTerm) {
     const objects = document.querySelectorAll('#scene-objects-list .list-group-item');
     objects.forEach(obj => {
       const text = obj.textContent.toLowerCase();
@@ -5459,7 +5633,7 @@ window.selectRoom = function(roomId) {
   };
 
   window.removeSceneObject = async function(button) {
-    if (confirm('Are you sure you want to delete this scene object?')) {
+    if (await showConfirmDialog({ title: 'Delete Scene Object', message: 'Are you sure you want to delete this scene object?', danger: true })) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
       if (objectId !== selectedSceneObjectId) {
@@ -5497,34 +5671,26 @@ window.selectRoom = function(roomId) {
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent;
     
-    // Semplice menu di scelta: rinomina o cambia immagine
-    const action = window.prompt(
-      `Edit scene object "${currentName}"\n` +
-      `Type:\n` +
-      `- "name" to rename\n` +
-      `- "image" to replace the image`,
-      'name'
-    );
-
+    const action = await showChoicePrompt({
+      title: 'Edit Scene Object',
+      message: `Edit "${currentName}" — choose action:`,
+      options: [
+        { value: 'name', label: 'Rename' },
+        { value: 'image', label: 'Replace image' },
+        { value: 'position', label: 'Edit position' }
+      ],
+      defaultValue: 'name'
+    });
     if (!action) return;
 
-    const normalized = String(action).toLowerCase().trim();
-
-    if (normalized === 'name') {
-      const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
+    if (action === 'name') {
+      const newName = await showInputPrompt({ title: 'Rename Scene Object', message: 'Name:', defaultValue: currentName });
       if (newName && newName.trim() !== '') {
         sceneObject.name = newName.trim();
         nameElement.textContent = newName.trim();
-        
-        // Update position info in UI
-        const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-        if (positionInfo) {
-          positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
-        }
-        
         showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
       }
-    } else if (normalized === 'image') {
+    } else if (action === 'image') {
       if (!currentUser?.uid) {
         showNotification('Open a project first', 'warning');
         return;
@@ -5540,25 +5706,22 @@ window.selectRoom = function(roomId) {
       } catch (err) {
         showNotification('Error: ' + err.message, 'error');
       }
-    }
-    
-    // Ask for position change
-    const newX = prompt(`Edit X position (current: ${Math.round(sceneObject.x)}):`, Math.round(sceneObject.x));
-    if (newX && !isNaN(newX)) {
-      sceneObject.x = parseInt(newX);
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+    } else if (action === 'position') {
+      const newX = await showInputPrompt({
+        title: 'Position X',
+        message: 'X:',
+        defaultValue: String(Math.round(sceneObject.x))
+      });
+      if (newX != null && newX !== '' && !isNaN(Number(newX))) {
+        sceneObject.x = parseInt(newX, 10);
       }
-      redraw();
-    }
-    
-    const newY = prompt(`Edit Y position (current: ${Math.round(sceneObject.y)}):`, Math.round(sceneObject.y));
-    if (newY && !isNaN(newY)) {
-      sceneObject.y = parseInt(newY);
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+      const newY = await showInputPrompt({
+        title: 'Position Y',
+        message: 'Y:',
+        defaultValue: String(Math.round(sceneObject.y))
+      });
+      if (newY != null && newY !== '' && !isNaN(Number(newY))) {
+        sceneObject.y = parseInt(newY, 10);
       }
       redraw();
     }
@@ -5679,7 +5842,8 @@ window.selectRoom = function(roomId) {
       x: 0,
       y: 0,
       direction: 'south',
-      moveSpeed: 100
+      moveSpeed: 100,
+      scaleMoveSpeedWithDepth: true
     };
   }
 
@@ -5693,7 +5857,8 @@ window.selectRoom = function(roomId) {
       x: typeof spawn.x === 'number' && !isNaN(spawn.x) ? spawn.x : defaults.x,
       y: typeof spawn.y === 'number' && !isNaN(spawn.y) ? spawn.y : defaults.y,
       direction: spawn.direction || defaults.direction,
-      moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : defaults.moveSpeed
+      moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : defaults.moveSpeed,
+      scaleMoveSpeedWithDepth: spawn.scaleMoveSpeedWithDepth !== false
     };
   }
 
@@ -5722,8 +5887,9 @@ window.selectRoom = function(roomId) {
     charData.spawnSettings = normalizeCharacterSpawnSettings(charData.spawnSettings);
   }
 
-  window.addCharacter = function() {
-    const name = (prompt('Character name:') || '').trim();
+  window.addCharacter = async function() {
+    const nameRaw = await showInputPrompt({ title: 'New Character', message: 'Character name:', defaultValue: '' });
+    const name = (nameRaw || '').trim();
     if (!name) return;
     if (characterFrames.has(name)) {
       showNotification('Character name already in use', 'warning');
@@ -5736,7 +5902,7 @@ window.selectRoom = function(roomId) {
   };
 
   window.removeCharacter = async function(button) {
-    if (confirm('Are you sure you want to delete this character?')) {
+    if (await showConfirmDialog({ title: 'Delete Character', message: 'Are you sure you want to delete this character?', danger: true })) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
       
@@ -5819,12 +5985,12 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.editCharacter = function(button) {
+  window.editCharacter = async function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent.trim();
     
-    const newName = prompt('Edit character name:', currentName);
+    const newName = await showInputPrompt({ title: 'Rename Character', message: 'Character name:', defaultValue: currentName });
     if (newName && newName.trim() !== '') {
       const oldName = currentName;
       const trimmedNewName = newName.trim();
@@ -5873,13 +6039,13 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.editCharacterDialogs = function(button) {
+  window.editCharacterDialogs = async function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
     const characterName = nameElement.textContent;
     
     // Simple dialog editor - in a real app this would open a more complex dialog
-    const dialogText = prompt(`Edit dialogs for "${characterName}":`, 'Hello! How can I help you?');
+    const dialogText = await showInputPrompt({ title: 'Character Dialog', message: `Edit dialogs for "${characterName}":`, defaultValue: 'Hello! How can I help you?' });
     if (dialogText && dialogText.trim() !== '') {
       showNotification(`Dialog updated for "${characterName}"`, 'success');
       console.log(`Dialog for ${characterName}: ${dialogText}`);
@@ -5975,7 +6141,7 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  window.onCharacterAnimationChange = function() {
+  window.onCharacterAnimationChange = async function() {
     stopCharacterPreview();
     resetDirectionSelectorLabels();
     updateCharacterAnimationUILabel();
@@ -6021,7 +6187,7 @@ window.selectRoom = function(roomId) {
     notifyEditorProjectChanged();
   };
 
-  window.removeCharacterAnimation = function() {
+  window.removeCharacterAnimation = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
@@ -6033,7 +6199,7 @@ window.selectRoom = function(roomId) {
       showNotification('Cannot remove the standard walking animation', 'warning');
       return;
     }
-    if (!confirm(`Remove animation "${animKey}" and all its frames?`)) return;
+    if (!(await showConfirmDialog({ title: 'Remove Animation', message: `Remove animation "${animKey}" and all its frames?`, danger: true }))) return;
     const charData = characterFrames.get(who);
     if (charData && charData.animations) {
       delete charData.animations[animKey];
@@ -6366,6 +6532,11 @@ window.selectRoom = function(roomId) {
       }
     }
 
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      scaleSpeedCheck.checked = spawnData.scaleMoveSpeedWithDepth !== false;
+    }
+
     refreshCharacterPortraitsUI(characterName);
   }
 
@@ -6454,6 +6625,13 @@ window.selectRoom = function(roomId) {
       } else {
         charData.spawnSettings.moveSpeed = 100; // valore di default se non valido
       }
+    }
+
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      charData.spawnSettings.scaleMoveSpeedWithDepth = scaleSpeedCheck.checked !== false;
+    } else if (charData.spawnSettings.scaleMoveSpeedWithDepth === undefined) {
+      charData.spawnSettings.scaleMoveSpeedWithDepth = true;
     }
 
     // Se è il player, sincronizza anche Start Position legacy (settings.startX/Y)
@@ -6550,6 +6728,11 @@ window.selectRoom = function(roomId) {
           saveCharacterSpawnSettings();
         }
       });
+    }
+
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      scaleSpeedCheck.addEventListener('change', saveCharacterSpawnSettings);
     }
 
     const portraitAddBtn = document.getElementById('character-portrait-add-btn');
@@ -6868,7 +7051,7 @@ window.selectRoom = function(roomId) {
     showNotification(`Preview started: ${who} [${animLabel}] (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
   };
 
-  window.stopCharacterPreview = function() {
+  window.stopCharacterPreview = async function() {
     if (characterPreviewTimer) {
       clearInterval(characterPreviewTimer);
       characterPreviewTimer = null;
@@ -6882,7 +7065,7 @@ window.selectRoom = function(roomId) {
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
-    if (confirm(`Clear all frames for animation "${animLabel}"?`)) {
+    if (await showConfirmDialog({ title: 'Clear Frames', message: `Clear all frames for animation "${animLabel}"?`, danger: true })) {
       // Ferma la preview se Ã¨ attiva
       stopCharacterPreview();
 
@@ -6926,90 +7109,6 @@ window.selectRoom = function(roomId) {
     if (typeof window.markAmiantoProjectDirty === 'function') {
       window.markAmiantoProjectDirty();
     }
-  }
-
-  /**
-   * Prompt testuale compatibile con Electron (window.prompt non è supportato nel renderer).
-   * @returns {Promise<string|null>}
-   */
-  function showInputPrompt({ title = 'Input', message = '', defaultValue = '', okLabel = 'OK' } = {}) {
-    if (!window.AMIANTO_IS_ELECTRON && typeof window.prompt === 'function') {
-      const result = window.prompt(message || title, defaultValue);
-      return Promise.resolve(result === null ? null : result);
-    }
-
-    return new Promise((resolve) => {
-      const modalId = `amianto-input-prompt-${Date.now()}`;
-      const inputId = `${modalId}-field`;
-      const modal = document.createElement('div');
-      modal.className = 'modal fade';
-      modal.id = modalId;
-      modal.setAttribute('tabindex', '-1');
-      modal.innerHTML = `
-        <div class="modal-dialog modal-dialog-centered">
-          <div class="modal-content bg-dark text-light border-secondary">
-            <div class="modal-header border-secondary">
-              <h5 class="modal-title">${title}</h5>
-              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-              ${message ? `<label class="form-label text-light" for="${inputId}">${message}</label>` : ''}
-              <input type="text" class="form-control bg-secondary text-light border-secondary" id="${inputId}" value="">
-            </div>
-            <div class="modal-footer border-secondary">
-              <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-              <button type="button" class="btn btn-success btn-sm" id="${modalId}-ok">${okLabel}</button>
-            </div>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(modal);
-
-      const input = modal.querySelector(`#${inputId}`);
-      const okBtn = modal.querySelector(`#${modalId}-ok`);
-      if (input) input.value = defaultValue;
-
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-          const inst = bootstrap.Modal.getInstance(modal);
-          if (inst) inst.hide();
-        } else {
-          modal.remove();
-        }
-      };
-
-      modal.addEventListener('hidden.bs.modal', () => {
-        if (!settled) finish(null);
-        modal.remove();
-      });
-
-      okBtn.addEventListener('click', () => finish(input ? input.value : ''));
-      if (input) {
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            finish(input.value);
-          }
-        });
-      }
-
-      if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-        const bsModal = new bootstrap.Modal(modal);
-        bsModal.show();
-        setTimeout(() => {
-          if (input) {
-            input.focus();
-            input.select();
-          }
-        }, 150);
-      } else {
-        finish(window.prompt(message || title, defaultValue));
-      }
-    });
   }
 
   function createEmptyRoomAnimationData(name) {
@@ -7300,10 +7399,10 @@ window.selectRoom = function(roomId) {
     notifyEditorProjectChanged();
   };
 
-  window.removeRoomAnimation = function(animId) {
+  window.removeRoomAnimation = async function(animId) {
     const anim = getRoomAnimationDef(animId);
     if (!anim) return;
-    if (!confirm(`Delete animation "${anim.name}"? Room placements using it will also be removed.`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete Animation', message: `Delete animation "${anim.name}"? Room placements using it will also be removed.`, danger: true }))) return;
     stopRoomAnimationPreview();
     roomAnimationsCatalog.delete(animId);
     rooms.forEach((room) => {
@@ -7421,7 +7520,7 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.startRoomAnimationPreview = function() {
+  window.startRoomAnimationPreview = async function() {
     const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
     if (!anim || !anim.frames || !anim.frames.length) {
       showNotification('No frames loaded for this animation', 'warning');
@@ -7439,7 +7538,7 @@ window.selectRoom = function(roomId) {
     showNotification(`Preview started: ${anim.name} (${anim.frames.length} frames @ ${fps} FPS)`, 'info');
   };
 
-  window.stopRoomAnimationPreview = function() {
+  window.stopRoomAnimationPreview = async function() {
     if (roomAnimationPreviewTimer) {
       clearInterval(roomAnimationPreviewTimer);
       roomAnimationPreviewTimer = null;
@@ -7447,10 +7546,10 @@ window.selectRoom = function(roomId) {
     }
   };
 
-  window.clearRoomAnimationFrames = function() {
+  window.clearRoomAnimationFrames = async function() {
     const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
     if (!anim) { showNotification('Select an animation first', 'warning'); return; }
-    if (!confirm(`Clear all frames for "${anim.name}"?`)) return;
+    if (!(await showConfirmDialog({ title: 'Clear Frames', message: `Clear all frames for "${anim.name}"?`, danger: true }))) return;
     stopRoomAnimationPreview();
     anim.frames = [];
     roomAnimationPreviewIndex = 0;
@@ -7532,7 +7631,7 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.addRoomAnimationInstance = function() {
+  window.addRoomAnimationInstance = async function() {
     const picker = document.getElementById('room-animation-picker');
     const animationId = picker ? picker.value : '';
     if (!animationId) {
@@ -7566,8 +7665,8 @@ window.selectRoom = function(roomId) {
     notifyEditorProjectChanged();
   };
 
-  window.removeRoomAnimationInstance = function(instanceId) {
-    if (!confirm('Delete this animation placement from the room?')) return;
+  window.removeRoomAnimationInstance = async function(instanceId) {
+    if (!(await showConfirmDialog({ title: 'Delete Placement', message: 'Delete this animation placement from the room?', danger: true }))) return;
     animationInstances = animationInstances.filter(inst => inst.id !== instanceId);
     const r = rooms.get(currentRoomId);
     if (r) r.animationInstances = animationInstances;
@@ -8024,7 +8123,7 @@ window.selectRoom = function(roomId) {
     const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
     if (!charData || !activeDirections || !activeDirections[currentDirection]) return;
 
-    if (confirm(`Delete frame ${frameIndex + 1}?`)) {
+    if (await showConfirmDialog({ title: 'Delete Frame', message: `Delete frame ${frameIndex + 1}?`, danger: true })) {
       const frameToDelete = activeDirections[currentDirection].frames[frameIndex];
       
       // Se Ã¨ un frame specchiato, non eliminare asset (non ne ha uno)
@@ -8114,27 +8213,131 @@ window.selectRoom = function(roomId) {
   let currentScriptName = 'Global:main';
   const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
-  const roomScripts = new Map(); // roomId -> scriptName
+  const roomScripts = new Map(); // roomId -> string (legacy) | { on_before_room_change?, on_room_change?, legacy? }
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
 
-  /** Chiave canonica script da scope + target (dropdown / albero). */
-  function normalizeScriptKey(scope, target) {
+  const ROOM_TRANSITION_EVENTS = {
+    on_before_room_change: true,
+    on_room_change: true
+  };
+
+  function isRoomTransitionEvent(eventId) {
+    return !!ROOM_TRANSITION_EVENTS[String(eventId || '')];
+  }
+
+  function roomTransitionEventLabel(eventId) {
+    if (eventId === 'on_before_room_change') return 'Before room load';
+    if (eventId === 'on_room_change') return 'After room load';
+    return eventId || '';
+  }
+
+  /** Parse Room:roomId[:event] keys. */
+  function parseRoomScriptKeyParts(scriptKey) {
+    const key = String(scriptKey || '');
+    if (!key.startsWith('Room:')) return null;
+    const rest = key.slice('Room:'.length);
+    if (rest.endsWith(':on_before_room_change')) {
+      return {
+        roomId: rest.slice(0, -':on_before_room_change'.length),
+        eventId: 'on_before_room_change'
+      };
+    }
+    if (rest.endsWith(':on_room_change')) {
+      return {
+        roomId: rest.slice(0, -':on_room_change'.length),
+        eventId: 'on_room_change'
+      };
+    }
+    return { roomId: rest, eventId: null };
+  }
+
+  function attachRoomScript(roomId, scriptKey, eventId) {
+    const id = String(roomId || '');
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!id || !key) return;
+    let entry = roomScripts.get(id);
+    if (typeof entry === 'string') {
+      entry = { legacy: entry };
+    } else if (!entry || typeof entry !== 'object') {
+      entry = {};
+    } else {
+      entry = { ...entry };
+    }
+    if (isRoomTransitionEvent(eventId)) {
+      entry[eventId] = key;
+    } else {
+      entry.legacy = key;
+    }
+    roomScripts.set(id, entry);
+  }
+
+  function getRoomScriptAttachmentForEvent(roomId, eventId) {
+    const entry = roomScripts.get(String(roomId || ''));
+    if (!entry) return null;
+    if (typeof entry === 'string') return entry;
+    if (isRoomTransitionEvent(eventId) && entry[eventId]) return entry[eventId];
+    return entry.legacy || null;
+  }
+
+  function listRoomScriptAttachmentKeys(roomId) {
+    const entry = roomScripts.get(String(roomId || ''));
+    if (!entry) return [];
+    if (typeof entry === 'string') return entry ? [entry] : [];
+    return Object.values(entry).filter(v => typeof v === 'string' && v);
+  }
+
+  function detachRoomScriptKey(scriptName) {
+    const name = String(scriptName || '');
+    for (const [roomId, attached] of [...roomScripts.entries()]) {
+      if (attached === name) {
+        roomScripts.delete(roomId);
+        continue;
+      }
+      if (attached && typeof attached === 'object') {
+        let changed = false;
+        const next = { ...attached };
+        Object.keys(next).forEach(k => {
+          if (next[k] === name) {
+            delete next[k];
+            changed = true;
+          }
+        });
+        if (changed) {
+          if (Object.keys(next).length === 0) roomScripts.delete(roomId);
+          else roomScripts.set(roomId, next);
+        }
+      }
+    }
+  }
+
+  /** Chiave canonica script da scope + target (+ event per before/after room load). */
+  function normalizeScriptKey(scope, target, eventId) {
     const s = String(scope || '');
     let t = String(target == null ? '' : target).trim();
-    if (s === 'Global') return 'Global:main';
+    if (s === 'Global') {
+      if (isRoomTransitionEvent(eventId)) return `Global:${eventId}`;
+      return 'Global:main';
+    }
     if (s === 'Hotspot') {
       if (t.startsWith('hotspot:')) t = t.slice('hotspot:'.length);
       return `Hotspot:${t}`;
+    }
+    if (s === 'Room') {
+      if (isRoomTransitionEvent(eventId)) return `Room:${t}:${eventId}`;
+      return `Room:${t}`;
     }
     return `${s}:${t}`;
   }
 
   /** Risolve la chiave effettiva (attachment custom o chiave standard). */
-  function resolveScriptKey(scope, target) {
-    const defaultKey = normalizeScriptKey(scope, target);
-    if (scope === 'Room' && roomScripts.has(target)) return roomScripts.get(target);
+  function resolveScriptKey(scope, target, eventId) {
+    const defaultKey = normalizeScriptKey(scope, target, eventId);
+    if (scope === 'Room') {
+      const attached = getRoomScriptAttachmentForEvent(target, eventId);
+      if (attached) return attached;
+    }
     if (scope === 'Object' && objectScripts.has(target)) return objectScripts.get(target);
     if (scope === 'Character' && characterScripts.has(target)) return characterScripts.get(target);
     if (scope === 'Inventory') {
@@ -8173,9 +8376,9 @@ window.selectRoom = function(roomId) {
     return jsScripts.get(key) || (() => { try { return localStorage.getItem(`script-${key}`); } catch (_) { return ''; } })() || '';
   }
 
-  /** Chiave canonica 1:1 per la tab Scripts (Scope:target). */
-  function getEditorScriptKey(scope, target) {
-    return migrateLegacyScriptKey(normalizeScriptKey(scope, target));
+  /** Chiave canonica 1:1 per la tab Scripts (Scope:target[:event]). */
+  function getEditorScriptKey(scope, target, eventId) {
+    return migrateLegacyScriptKey(normalizeScriptKey(scope, target, eventId));
   }
 
   /** Nome script da mostrare in liste UI (sempre visibile, mai "(no script)"). */
@@ -8207,13 +8410,38 @@ window.selectRoom = function(roomId) {
 
   function parseScriptKeyScopeTarget(scriptName) {
     const key = migrateLegacyScriptKey(String(scriptName || ''));
+    const roomParts = parseRoomScriptKeyParts(key);
+    if (roomParts) {
+      return { scope: 'Room', target: roomParts.roomId, eventId: roomParts.eventId || undefined };
+    }
+    if (key.startsWith('Global:')) {
+      const rest = key.slice('Global:'.length);
+      if (isRoomTransitionEvent(rest)) {
+        return { scope: 'Global', target: 'main', eventId: rest };
+      }
+      return { scope: 'Global', target: rest === 'main' ? 'main' : rest };
+    }
     const sep = key.indexOf(':');
     if (sep <= 0) return null;
     return { scope: key.slice(0, sep), target: key.slice(sep + 1) };
   }
 
-  function clearEditorScriptAttachment(scope, target) {
+  function clearEditorScriptAttachment(scope, target, eventId) {
     if (scope === 'Room') {
+      if (isRoomTransitionEvent(eventId)) {
+        const entry = roomScripts.get(target);
+        if (typeof entry === 'string') {
+          roomScripts.delete(target);
+          return;
+        }
+        if (entry && typeof entry === 'object') {
+          const next = { ...entry };
+          delete next[eventId];
+          if (Object.keys(next).length === 0) roomScripts.delete(target);
+          else roomScripts.set(target, next);
+        }
+        return;
+      }
       roomScripts.delete(target);
       return;
     }
@@ -8243,18 +8471,21 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  function syncEditorScriptAttachment(scope, target, canonicalKey) {
+  function syncEditorScriptAttachment(scope, target, canonicalKey, eventId) {
     const key = migrateLegacyScriptKey(String(canonicalKey || ''));
     if (!key) return;
-    if (scope === 'Room') roomScripts.set(target, key);
+    if (scope === 'Room') attachRoomScript(target, key, eventId);
     else if (scope === 'Object') objectScripts.set(target, key);
     else if (scope === 'Character') characterScripts.set(target, key);
     else if (scope === 'Inventory') attachInventoryItemScript(target, key);
     else if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
   }
 
-  function hasEditorScriptLink(scope, target) {
-    if (scope === 'Room') return roomScripts.has(target);
+  function hasEditorScriptLink(scope, target, eventId) {
+    if (scope === 'Room') {
+      if (isRoomTransitionEvent(eventId)) return !!getRoomScriptAttachmentForEvent(target, eventId);
+      return roomScripts.has(target) || listRoomScriptAttachmentKeys(target).length > 0;
+    }
     if (scope === 'Object') return objectScripts.has(target);
     if (scope === 'Character') return characterScripts.has(target);
     if (scope === 'Inventory') return inventoryScripts.has(target);
@@ -8288,19 +8519,21 @@ window.selectRoom = function(roomId) {
     return false;
   }
 
-  function loadEditorScriptContent(scope, target) {
-    const canonicalKey = getEditorScriptKey(scope, target);
+  function loadEditorScriptContent(scope, target, eventId) {
+    const canonicalKey = getEditorScriptKey(scope, target, eventId);
     let content = getScriptContent(canonicalKey);
 
     if (!String(content || '').trim()) {
-      const legacyKey = migrateLegacyScriptKey(resolveScriptKey(scope, target));
+      const legacyKey = migrateLegacyScriptKey(resolveScriptKey(scope, target, eventId));
       if (legacyKey && legacyKey !== canonicalKey) {
         const legacyContent = getScriptContent(legacyKey);
-        if (String(legacyContent || '').trim()) {
+        // Non migrare un file legacy combinato dentro una chiave event-specific:
+        // before/after devono restare script distinti.
+        if (String(legacyContent || '').trim() && !isRoomTransitionEvent(eventId)) {
           content = legacyContent;
           jsScripts.set(canonicalKey, content);
           try { localStorage.setItem(`script-${canonicalKey}`, content); } catch (_) {}
-          syncEditorScriptAttachment(scope, target, canonicalKey);
+          syncEditorScriptAttachment(scope, target, canonicalKey, eventId);
         }
       }
     }
@@ -8332,13 +8565,13 @@ window.selectRoom = function(roomId) {
     return { key: canonicalKey, content: String(content || '') };
   }
 
-  function shouldShowEditorScript(scope, target, content, seenKeys) {
-    const key = getEditorScriptKey(scope, target);
+  function shouldShowEditorScript(scope, target, content, seenKeys, eventId) {
+    const key = getEditorScriptKey(scope, target, eventId);
     if (seenKeys.has(key)) return false;
     const hasContent = String(content || '').trim().length > 0;
     if (!hasContent) {
-      if (hasEditorScriptLink(scope, target)) {
-        clearEditorScriptAttachment(scope, target);
+      if (hasEditorScriptLink(scope, target, eventId)) {
+        clearEditorScriptAttachment(scope, target, eventId);
       }
       return false;
     }
@@ -8401,7 +8634,7 @@ window.selectRoom = function(roomId) {
     'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with', 'on_dialogue_action',
     'print', 'log', 'wait', 'show_message', 'showText',
     'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'start_dialogue',
-    'save_game', 'load_game', 'delete_save', 'get_save_info',
+    'save_game', 'load_game', 'delete_save', 'get_save_info', 'show_gui', 'hide_gui',
     'play_music', 'play_sound', 'stop_music', 'stop_sound',
     'play_animation', 'stop_animation', 'show_animation', 'hide_animation',
     'show_image', 'hide_image',
@@ -8412,6 +8645,7 @@ window.selectRoom = function(roomId) {
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
     'get_carried_item', 'set_carried_item', 'clear_carried_item',
     'spawn_character', 'move_character', 'walk_character', 'set_character_direction',
+    'set_character_visibility', 'set_character_opacity',
     'animate_character', 'play_character_animation'
   ];
 
@@ -8860,14 +9094,32 @@ window.selectRoom = function(roomId) {
       }
     };
 
-    // Global (single)
-    const globalKey = getEditorScriptKey('Global', 'main');
-    const { content: globalContent } = loadEditorScriptContent('Global', 'main');
-    const globalHandlers = extractHandlersFromScript(globalContent);
-    const globalHandlerNames = Array.from(globalHandlers).sort();
+    // Global scripts (main + before/after room load distinti)
+    const globalEntries = [];
+    const globalMainKey = getEditorScriptKey('Global', 'main');
+    const { content: globalMainContent } = loadEditorScriptContent('Global', 'main');
+    if (String(globalMainContent || '').trim() && !seenScriptKeys.has(globalMainKey)) {
+      globalEntries.push({
+        key: globalMainKey,
+        label: 'Global',
+        eventId: null,
+        content: globalMainContent
+      });
+    }
+    ['on_before_room_change', 'on_room_change'].forEach(eventId => {
+      const key = getEditorScriptKey('Global', 'main', eventId);
+      const content = getScriptContent(key);
+      if (String(content || '').trim() && !seenScriptKeys.has(key)) {
+        globalEntries.push({
+          key,
+          label: `Global — ${roomTransitionEventLabel(eventId)}`,
+          eventId,
+          content
+        });
+      }
+    });
 
-    if (globalContent.trim().length > 0 && !seenScriptKeys.has(globalKey)) {
-      seenScriptKeys.add(globalKey);
+    if (globalEntries.length > 0) {
       const globalGroup = document.createElement('div');
       globalGroup.className = 'mb-3';
       const h = document.createElement('div');
@@ -8877,20 +9129,24 @@ window.selectRoom = function(roomId) {
       h.style.fontSize = '14px';
       h.style.marginBottom = '8px';
       globalGroup.appendChild(h);
-      
+
       const ul = document.createElement('ul');
       ul.style.paddingLeft = '16px';
       ul.style.listStyleType = 'none';
-      
-      const scriptItem = createScriptItem({
-        label: 'Global',
-        handlers: globalHandlerNames,
-        hasContent: globalContent.trim().length > 0
-      }, (handlerId) => {
-        openScriptFromTree('Global', 'main', handlerId || null);
+
+      globalEntries.forEach(entry => {
+        seenScriptKeys.add(entry.key);
+        const handlers = Array.from(extractHandlersFromScript(entry.content)).sort();
+        const scriptItem = createScriptItem({
+          label: entry.label,
+          handlers,
+          hasContent: true
+        }, (handlerId) => {
+          openScriptFromTree('Global', 'main', handlerId || entry.eventId || null, entry.eventId || null);
+        });
+        ul.appendChild(scriptItem);
       });
-      ul.appendChild(scriptItem);
-      
+
       globalGroup.appendChild(ul);
       container.appendChild(globalGroup);
     }
@@ -8900,20 +9156,29 @@ window.selectRoom = function(roomId) {
     rooms.forEach((room, roomId) => {
       const scriptsInRoom = [];
       
-      // Script della stanza
-      const { content: roomContent } = loadEditorScriptContent('Room', roomId);
-      if (shouldShowEditorScript('Room', roomId, roomContent, seenScriptKeys)) {
-        const handlers = extractHandlersFromScript(roomContent);
+      // Script della stanza — before/after sono file distinti
+      const roomScriptDefs = [
+        { eventId: 'on_before_room_change', labelSuffix: 'Before room load' },
+        { eventId: 'on_room_change', labelSuffix: 'After room load' },
+        { eventId: null, labelSuffix: null }
+      ];
+      roomScriptDefs.forEach(def => {
+        const key = getEditorScriptKey('Room', roomId, def.eventId);
+        const content = getScriptContent(key);
+        if (!shouldShowEditorScript('Room', roomId, content, seenScriptKeys, def.eventId)) return;
+        const handlers = extractHandlersFromScript(content);
         const handlerNames = Array.from(handlers).sort();
+        const base = `Room: ${room.name || roomId}`;
         scriptsInRoom.push({
           type: 'room',
           scope: 'Room',
           target: roomId,
-          label: `Room: ${room.name || roomId}`,
+          eventId: def.eventId,
+          label: def.labelSuffix ? `${base} — ${def.labelSuffix}` : base,
           handlers: handlerNames,
-          hasContent: roomContent.trim().length > 0
+          hasContent: content.trim().length > 0
         });
-      }
+      });
       
       // Oggetti nella stanza con script
       if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
@@ -8995,7 +9260,12 @@ window.selectRoom = function(roomId) {
           };
         } else {
           onClickHandler = (handlerId) => {
-            openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+            openScriptFromTree(
+              scriptInfo.scope,
+              scriptInfo.target,
+              handlerId || scriptInfo.eventId || null,
+              scriptInfo.eventId || null
+            );
           };
         }
         
@@ -9201,7 +9471,8 @@ window.selectRoom = function(roomId) {
         attachInventoryItemScript(itemName, currentKey);
       }
       if (currentKey.startsWith('Room:')) {
-        roomScripts.set(currentKey.slice('Room:'.length), currentKey);
+        const parts = parseRoomScriptKeyParts(currentKey);
+        if (parts && parts.roomId) attachRoomScript(parts.roomId, currentKey, parts.eventId);
       }
       if (currentKey.startsWith('Character:')) {
         characterScripts.set(currentKey.slice('Character:'.length), currentKey);
@@ -9213,13 +9484,14 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  function openScriptFromTree(scope, target, handlerId) {
+  function openScriptFromTree(scope, target, handlerId, eventId) {
     // Salva il contenuto dello script corrente prima di aprire un nuovo script
     saveCurrentScriptIfNeeded();
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
-    const { key: scriptKeyToUse, content: loadedContent } = loadEditorScriptContent(scope, target);
+    const resolvedEvent = eventId || (isRoomTransitionEvent(handlerId) ? handlerId : null);
+    const { key: scriptKeyToUse, content: loadedContent } = loadEditorScriptContent(scope, target, resolvedEvent);
     let content = loadedContent;
     // Permetti di aprire script vuoti (potrebbero essere appena creati)
     // Se lo script non esiste affatto, crealo vuoto
@@ -9277,10 +9549,17 @@ window.selectRoom = function(roomId) {
     // Reflect dropdowns and optionally lock
     const scopeSel = document.getElementById('script-scope');
     const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
     if (scopeSel && targetSel) {
       scopeSel.value = scope;
       populateTargetsForScope(scope);
+      populateEventsForScope(scope);
       if (targetSel.querySelector(`option[value="${target}"]`)) targetSel.value = target;
+      if (eventSel && resolvedEvent && eventSel.querySelector(`option[value="${resolvedEvent}"]`)) {
+        eventSel.value = resolvedEvent;
+      } else if (eventSel && handlerId && eventSel.querySelector(`option[value="${handlerId}"]`)) {
+        eventSel.value = handlerId;
+      }
       const lock = document.getElementById('lock-script-scope');
       if (lock && lock.checked) {
         targetSel.disabled = (scope !== 'Global');
@@ -9301,7 +9580,7 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  window.createScriptFromDropdown = function() {
+  window.createScriptFromDropdown = async function() {
     ensureLargeScriptEditor();
     const scopeSel = document.getElementById('script-scope');
     const targetSel = document.getElementById('script-target');
@@ -9313,24 +9592,37 @@ window.selectRoom = function(roomId) {
     if (!target) { showNotification('Select a valid target', 'warning'); return; }
     const handlerId = eventSel.value || 'on_game_start';
     const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
+    const eventScoped = isRoomTransitionEvent(handlerId);
 
-    const { key, content: loadedContent } = loadEditorScriptContent(scope, target);
-    let content = loadedContent;
+    // Before/After room load → script file distinti (non nello stesso Global:main / Room:id)
+    const key = getEditorScriptKey(scope, target, eventScoped ? handlerId : null);
+    let content = getScriptContent(key);
 
     // One script per scope + target + event
     const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerId}\\s*\\(`);
     if (handlerRegex.test(content)) {
       showNotification('Script already exists', 'warning');
+      openScriptFromTree(scope, target, handlerId, eventScoped ? handlerId : null);
       return;
     }
+    // Se l'handler esiste ancora nel file legacy combinato, avvisa
+    if (eventScoped) {
+      const legacyKey = scope === 'Room' ? `Room:${target}` : 'Global:main';
+      if (legacyKey !== key && handlerRegex.test(getScriptContent(legacyKey))) {
+        showNotification('Handler already exists in the combined room script — open that script to edit it', 'warning');
+        openScriptFromTree(scope, target, handlerId, null);
+        return;
+      }
+    }
 
-    // Ensure header
+    // Ensure header (nuovo file per before/after)
     if (!content) {
       const header = [
         `// Scope: ${scope}`,
         `// Target: ${target}`,
+        eventScoped ? `// Event: ${eventDef.label}` : null,
         ''
-      ].join('\n');
+      ].filter(line => line !== null).join('\n');
       content = header;
     }
 
@@ -9376,7 +9668,7 @@ window.selectRoom = function(roomId) {
     currentScriptName = key;
 
     if (scope === 'Room') {
-      roomScripts.set(target, key);
+      attachRoomScript(target, key, eventScoped ? handlerId : null);
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
     } else if (scope === 'Character') {
@@ -9415,13 +9707,17 @@ window.selectRoom = function(roomId) {
     // Riabilita sempre i dropdown dopo la creazione per permettere la creazione di altri script
     // Il lock viene applicato solo quando si apre uno script esistente dall'albero
     scopeSel.disabled = false;
+    populateEventsForScope(scope);
+    if (eventSel.querySelector(`option[value="${handlerId}"]`)) {
+      eventSel.value = handlerId;
+    }
     if (scope === 'Global') {
       targetSel.disabled = true;
     } else {
       targetSel.disabled = false;
     }
     
-    showNotification(`Script created: ${scope} â†’ ${target} (${eventDef.label})`, 'success');
+    showNotification(`Script created: ${key} (${eventDef.label})`, 'success');
   }
 
   // ============================================
@@ -9624,23 +9920,23 @@ window.selectRoom = function(roomId) {
   }
 
   // Specific event trigger functions
-  window.triggerGameStart = function() {
+  window.triggerGameStart = async function() {
     triggerGameEvent('game_start');
   };
 
-  window.triggerRoomChange = function(oldRoomId, newRoomId) {
+  window.triggerRoomChange = async function(oldRoomId, newRoomId) {
     triggerGameEvent('room_change', oldRoomId, newRoomId);
   };
 
-  window.triggerObjectClick = function(objectId, x, y) {
+  window.triggerObjectClick = async function(objectId, x, y) {
     triggerGameEvent('object_click', objectId, x, y);
   };
 
-  window.triggerCharacterClick = function(characterId) {
+  window.triggerCharacterClick = async function(characterId) {
     triggerGameEvent('character_click', characterId);
   };
 
-  window.triggerHotspotClick = function(hotspotId) {
+  window.triggerHotspotClick = async function(hotspotId) {
     triggerGameEvent('hotspot_click', hotspotId);
   };
 
@@ -9660,8 +9956,8 @@ window.selectRoom = function(roomId) {
     addDebugMessage(`[Script] Handler "${handlerName}" - scripts run in the standalone runtime`, 'info');
   }
 
-  window.newScript = function() {
-    if (confirm('Do you want to create a new script? The current content will be lost.')) {
+  window.newScript = async function() {
+    if (await showConfirmDialog({ title: 'Create Script', message: 'Do you want to create a new script? The current content will be lost.' })) {
       ensureLargeScriptEditor();
       ensureScriptEditor();
       const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
@@ -9735,7 +10031,8 @@ window.selectRoom = function(roomId) {
       attachInventoryItemScript(itemName, key);
     }
     if (key.startsWith('Room:')) {
-      roomScripts.set(key.slice('Room:'.length), key);
+      const parts = parseRoomScriptKeyParts(key);
+      if (parts && parts.roomId) attachRoomScript(parts.roomId, key, parts.eventId);
     }
     if (key.startsWith('Character:')) {
       characterScripts.set(key.slice('Character:'.length), key);
@@ -9785,7 +10082,7 @@ window.selectRoom = function(roomId) {
     scheduleProjectSizeIndicatorRefresh(250);
   };
 
-  window.runScript = function() {
+  window.runScript = async function() {
     ensureLargeScriptEditor();
     ensureScriptEditor();
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
@@ -9816,7 +10113,7 @@ window.selectRoom = function(roomId) {
     showNotification('Runtime opened in a new window. The script will run automatically.', 'info');
   };
 
-  window.deleteScript = function() {
+  window.deleteScript = async function() {
     let scriptName = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!scriptName) {
       const selector = document.getElementById('script-selector');
@@ -9829,7 +10126,7 @@ window.selectRoom = function(roomId) {
     }
     
     // Chiedi conferma
-    if (!confirm(`Delete script "${scriptName}"?\n\nThis action cannot be undone.`)) {
+    if (!(await showConfirmDialog({ title: 'Delete Script', message: `Delete script "${scriptName}"?\n\nThis action cannot be undone.`, danger: true }))) {
       return;
     }
     
@@ -9885,12 +10182,8 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Room scripts
-    for (const [roomId, attachedScript] of roomScripts.entries()) {
-      if (attachedScript === scriptName) {
-        roomScripts.delete(roomId);
-      }
-    }
+    // Room scripts (string legacy o mappa per-evento)
+    detachRoomScriptKey(scriptName);
     
     // Character scripts
     for (const [charName, attachedScript] of characterScripts.entries()) {
@@ -10083,98 +10376,78 @@ window.selectRoom = function(roomId) {
     });
   }
   
-  window.addGameVariable = function() {
-    const name = prompt('Variable name:');
-    if (!name || !name.trim()) return;
-    
-    const trimmedName = name.trim();
+  window.addGameVariable = async function() {
+    const data = await showVariableFormDialog({
+      title: 'Add Variable',
+      name: '',
+      type: 'boolean',
+      initialValue: false
+    });
+    if (!data || !data.name) return;
+
+    const trimmedName = data.name.trim();
     if (gameVariableDefinitions.find(v => v.name === trimmedName)) {
       showNotification(`Variable "${trimmedName}" already exists`, 'warning');
       return;
     }
-    
-    const type = prompt('Variable type (boolean/number/string):', 'boolean');
-    if (!['boolean', 'number', 'string'].includes(type)) {
-      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
-      return;
-    }
-    
-    let initialValue;
-    if (type === 'boolean') {
-      initialValue = false;
-    } else if (type === 'number') {
-      const num = prompt('Initial value (number):', '0');
-      initialValue = Number(num) || 0;
-    } else {
-      initialValue = prompt('Initial value (string):', '');
-    }
-    
+
     gameVariableDefinitions.push({
       name: trimmedName,
-      type: type,
-      initialValue: initialValue
+      type: data.type,
+      initialValue: data.initialValue
     });
-    
-    // Inizializza la variabile nello stato se non esiste
+
     if (!Game.hasVar(trimmedName)) {
-      Game.setVar(trimmedName, initialValue);
+      Game.setVar(trimmedName, data.initialValue);
     }
-    
+
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${trimmedName}" added`, 'success');
   };
-  
-  window.editGameVariable = function(index) {
+
+  window.editGameVariable = async function(index) {
     if (index < 0 || index >= gameVariableDefinitions.length) return;
-    
+
     const varDef = gameVariableDefinitions[index];
-    const newName = prompt('Variable name:', varDef.name);
-    if (!newName || !newName.trim()) return;
-    
-    const trimmedName = newName.trim();
+    const data = await showVariableFormDialog({
+      title: 'Edit Variable',
+      name: varDef.name,
+      type: varDef.type,
+      initialValue: varDef.initialValue
+    });
+    if (!data || !data.name) return;
+
+    const trimmedName = data.name.trim();
     if (trimmedName !== varDef.name && gameVariableDefinitions.find(v => v.name === trimmedName)) {
       showNotification(`Variable "${trimmedName}" already exists`, 'warning');
       return;
     }
-    
-    const type = prompt('Variable type (boolean/number/string):', varDef.type);
-    if (!['boolean', 'number', 'string'].includes(type)) {
-      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
-      return;
-    }
-    
-    let initialValue = varDef.initialValue;
-    if (type === 'boolean') {
-      initialValue = confirm('Initial value (OK = true, Cancel = false):') ? true : false;
-    } else if (type === 'number') {
-      const num = prompt('Initial value (number):', String(initialValue));
-      initialValue = Number(num) || 0;
-    } else {
-      initialValue = prompt('Initial value (string):', String(initialValue));
-    }
-    
-    // Aggiorna definizione
+
     varDef.name = trimmedName;
-    varDef.type = type;
-    varDef.initialValue = initialValue;
-    
-    // Aggiorna valore nello stato se esiste
-    if (Game.hasVar(varDef.name)) {
-      Game.setVar(trimmedName, initialValue);
-    }
-    
+    varDef.type = data.type;
+    varDef.initialValue = data.initialValue;
+    Game.setVar(trimmedName, data.initialValue);
+
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${trimmedName}" updated`, 'success');
   };
-  
-  window.deleteGameVariable = function(index) {
+
+  window.deleteGameVariable = async function(index) {
     if (index < 0 || index >= gameVariableDefinitions.length) return;
-    
+
     const varDef = gameVariableDefinitions[index];
-    if (!confirm(`Delete variable "${varDef.name}"?`)) return;
-    
+    const ok = await showConfirmDialog({
+      title: 'Delete Variable',
+      message: `Delete variable "${varDef.name}"?`,
+      danger: true
+    });
+    if (!ok) return;
+
     gameVariableDefinitions.splice(index, 1);
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${varDef.name}" deleted`, 'info');
   };
 
@@ -10205,11 +10478,9 @@ window.selectRoom = function(roomId) {
   function syncDialogueGraphEditor() {
     const GE = window.AmiantoDialogueGraphEditor;
     if (!GE) return;
+    // setDialogue already soft-refreshes when the id is unchanged (keeps selection / typing focus)
     if (typeof GE.setDialogue === 'function') {
       GE.setDialogue(selectedDialogueId);
-    }
-    if (typeof GE.getMode === 'function' && GE.getMode() === 'visual' && typeof GE.refresh === 'function') {
-      GE.refresh();
     }
   }
 
@@ -10383,6 +10654,14 @@ window.selectRoom = function(roomId) {
   function renderDialogueNodesList() {
     const container = document.getElementById('dialogue-nodes-list');
     if (!container) return;
+    // Don't wipe the form while the user is typing in a node field
+    const ae = document.activeElement;
+    if (ae && container.contains(ae)) {
+      const tag = (ae.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable) {
+        return;
+      }
+    }
     const dlg = getSelectedDialogue();
     container.innerHTML = '';
     if (!dlg) return;
@@ -10469,7 +10748,7 @@ window.selectRoom = function(roomId) {
     });
 
     container.querySelectorAll('[data-dlg-field]').forEach(el => {
-      el.addEventListener('change', () => {
+      const applyField = () => {
         const nodeId = el.getAttribute('data-node');
         const field = el.getAttribute('data-dlg-field');
         const n = dlg.nodes[nodeId];
@@ -10481,7 +10760,10 @@ window.selectRoom = function(roomId) {
           n[field] = val;
         }
         markDialoguesDirty();
-      });
+      };
+      // Live sync so typing is never lost / fields stay editable across autosave hooks
+      el.addEventListener('input', applyField);
+      el.addEventListener('change', applyField);
     });
     container.querySelectorAll('[data-dlg-portrait-pick]').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -10529,7 +10811,7 @@ window.selectRoom = function(roomId) {
       });
     });
     container.querySelectorAll('[data-dlg-opt]').forEach(el => {
-      el.addEventListener('change', () => {
+      const applyOpt = () => {
         const nodeId = el.getAttribute('data-node');
         const field = el.getAttribute('data-dlg-opt');
         const oi = Number(el.getAttribute('data-opt-index'));
@@ -10537,7 +10819,9 @@ window.selectRoom = function(roomId) {
         if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
         n.options[oi][field] = el.value;
         markDialoguesDirty();
-      });
+      };
+      el.addEventListener('input', applyOpt);
+      el.addEventListener('change', applyOpt);
     });
     container.querySelectorAll('[data-dlg-opt-once]').forEach(el => {
       el.addEventListener('change', () => {
@@ -10570,10 +10854,10 @@ window.selectRoom = function(roomId) {
       });
     });
     container.querySelectorAll('[data-del-node]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const nodeId = btn.getAttribute('data-del-node');
         if (!nodeId || !dlg.nodes[nodeId]) return;
-        if (!confirm(`Delete node "${nodeId}"?`)) return;
+        if (!(await showConfirmDialog({ title: 'Delete Node', message: `Delete node "${nodeId}"?`, danger: true }))) return;
         delete dlg.nodes[nodeId];
         if (dlg.startNodeId === nodeId) {
           const keys = Object.keys(dlg.nodes);
@@ -10607,13 +10891,13 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.onDialogueSelectChange = function() {
+  window.onDialogueSelectChange = async function() {
     const select = document.getElementById('dialogue-select');
     selectedDialogueId = select && select.value ? select.value : null;
     renderDialoguesEditor();
   };
 
-  window.onDialogueStartNodeChange = function() {
+  window.onDialogueStartNodeChange = async function() {
     const dlg = getSelectedDialogue();
     const input = document.getElementById('dialogue-start-node');
     if (!dlg || !input) return;
@@ -10622,8 +10906,8 @@ window.selectRoom = function(roomId) {
     renderDialogueNodesList();
   };
 
-  window.addProjectDialogue = function() {
-    const name = prompt('Dialogue name:', 'New Dialogue');
+  window.addProjectDialogue = async function() {
+    const name = await showInputPrompt({ title: 'New Dialogue', message: 'Dialogue name:', defaultValue: 'New Dialogue' });
     if (!name || !name.trim()) return;
     const id = uidDialogue('dlg');
     const endId = 'n_end';
@@ -10656,20 +10940,20 @@ window.selectRoom = function(roomId) {
     showNotification(`Dialogue "${dialogue.name}" created — use start_dialogue("${dialogue.name}")`, 'success');
   };
 
-  window.renameProjectDialogue = function() {
+  window.renameProjectDialogue = async function() {
     const dlg = getSelectedDialogue();
     if (!dlg) return;
-    const name = prompt('Dialogue name:', dlg.name || dlg.id);
+    const name = await showInputPrompt({ title: 'Rename Dialogue', message: 'Dialogue name:', defaultValue: dlg.name || dlg.id });
     if (!name || !name.trim()) return;
     dlg.name = name.trim();
     markDialoguesDirty();
     renderDialoguesEditor();
   };
 
-  window.deleteProjectDialogue = function() {
+  window.deleteProjectDialogue = async function() {
     const dlg = getSelectedDialogue();
     if (!dlg) return;
-    if (!confirm(`Delete dialogue "${dlg.name || dlg.id}"?`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete Dialogue', message: `Delete dialogue "${dlg.name || dlg.id}"?`, danger: true }))) return;
     window.projectDialogues = (window.projectDialogues || []).filter(d => d.id !== dlg.id);
     selectedDialogueId = null;
     markDialoguesDirty();
@@ -10829,13 +11113,14 @@ window.selectRoom = function(roomId) {
     showNotification(`Attached script "${scriptName}" to scene object`, 'success');
   };
 
-  window.attachScriptToRoom = function() {
+    window.attachScriptToRoom = function() {
     const selector = document.getElementById('script-selector');
     const scriptName = selector.value;
     const targetSel = document.getElementById('room-script-target');
     const roomId = targetSel.value || currentRoomId;
     if (!scriptName || !roomId) { showNotification('Select a script and a room', 'warning'); return; }
-    roomScripts.set(roomId, scriptName);
+    const parts = parseRoomScriptKeyParts(scriptName);
+    attachRoomScript(roomId, scriptName, parts && parts.eventId);
     showNotification(`Attached script "${scriptName}" to room`, 'success');
   };
 
@@ -11178,6 +11463,84 @@ window.selectRoom = function(roomId) {
   }
   window.showLoadingOverlay = showLoadingOverlay;
   window.hideLoadingOverlay = hideLoadingOverlay;
+
+  function yieldToUi() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+  }
+
+  /**
+   * Overlay di avanzamento per Export Game (HTML).
+   * @param {string} [message]
+   * @param {number} [percent]
+   */
+  function showExportProgressOverlay(message, percent) {
+    let overlay = document.getElementById('exportProgressOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'exportProgressOverlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'exportProgressTitle');
+      overlay.style.cssText = [
+        'position:fixed',
+        'inset:0',
+        'z-index:10070',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'background:rgba(0,0,0,0.88)',
+        'backdrop-filter:blur(4px)',
+        'font-family:Segoe UI,Tahoma,sans-serif'
+      ].join(';');
+      overlay.innerHTML = `
+        <div style="width:min(420px,92vw);padding:28px 24px;background:#121212;border:1px solid #2a2a2a;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.55);">
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;">
+            <img src="img/mnt.png" alt="" width="48" height="48" style="object-fit:contain;flex-shrink:0;">
+            <div>
+              <div id="exportProgressTitle" style="color:#39ff14;font-size:18px;font-weight:600;line-height:1.2;">Exporting game…</div>
+              <div id="exportProgressDetail" style="color:#aaa;font-size:13px;margin-top:4px;">Preparing</div>
+            </div>
+          </div>
+          <div style="background:#1e1e1e;border:1px solid #333;border-radius:8px;height:14px;overflow:hidden;">
+            <div id="exportProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#39ff14,#66ff66);transition:width 0.2s ease;box-shadow:0 0 10px rgba(57,255,20,0.45);"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+            <span id="exportProgressStep" style="color:#888;font-size:12px;">Step 0</span>
+            <span id="exportProgressPercent" style="color:#39ff14;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;">0%</span>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+    updateExportProgress(message, percent);
+  }
+
+  /**
+   * @param {string} [message]
+   * @param {number} [percent] 0–100
+   * @param {{ step?: string }} [extra]
+   */
+  function updateExportProgress(message, percent, extra) {
+    const overlay = document.getElementById('exportProgressOverlay');
+    if (!overlay) return;
+    const detail = document.getElementById('exportProgressDetail');
+    const bar = document.getElementById('exportProgressBar');
+    const pctEl = document.getElementById('exportProgressPercent');
+    const stepEl = document.getElementById('exportProgressStep');
+    if (typeof message === 'string' && detail) detail.textContent = message;
+    const pct = Math.max(0, Math.min(100, Number(percent)));
+    if (Number.isFinite(pct)) {
+      if (bar) bar.style.width = pct + '%';
+      if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+    }
+    if (extra && extra.step && stepEl) stepEl.textContent = extra.step;
+  }
+
+  function hideExportProgressOverlay() {
+    const overlay = document.getElementById('exportProgressOverlay');
+    if (overlay) overlay.remove();
+  }
 
   // Function to close project selection modal deterministically
   function closeProjectModal() {
@@ -11673,19 +12036,28 @@ window.selectRoom = function(roomId) {
       }
     });
     
-    // Esegui script di room
+    // Esegui script di room (legacy Room:id + chiavi event-specific)
     if (embeddedRuntime.gameState.currentRoomId) {
-      const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
-      if (scripts[roomScriptName]) {
-        const newRoomId = embeddedRuntime.gameState.currentRoomId;
+      const newRoomId = embeddedRuntime.gameState.currentRoomId;
+      const roomScriptCandidates = [
+        `Room:${newRoomId}:on_before_room_change`,
+        `Room:${newRoomId}:on_room_change`,
+        `Room:${newRoomId}`
+      ];
+      roomScriptCandidates.forEach(roomScriptName => {
+        if (!scripts[roomScriptName]) return;
         sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
-        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_before_room_change', [null, newRoomId], {
-          roomId: newRoomId
-        });
-        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
-          roomId: newRoomId
-        });
-      }
+        if (roomScriptName.endsWith(':on_before_room_change') || roomScriptName === `Room:${newRoomId}`) {
+          executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_before_room_change', [null, newRoomId], {
+            roomId: newRoomId
+          });
+        }
+        if (roomScriptName.endsWith(':on_room_change') || roomScriptName === `Room:${newRoomId}`) {
+          executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
+            roomId: newRoomId
+          });
+        }
+      });
     }
   }
 
@@ -12371,11 +12743,13 @@ window.selectRoom = function(roomId) {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(nextId);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(nextId, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+      }
     }
     setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
   };
@@ -13589,7 +13963,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  window.enterLocalMode = function() {
+  window.enterLocalMode = async function() {
     currentUser = getLocalUser();
     updateAppState({ user: currentUser, initialized: true, loading: false });
     localStorage.setItem('amiantoCurrentUser', currentUser.username);
@@ -13607,7 +13981,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   window.logout = async function() {
-    if (confirm('Close the current project and return to project selection?')) {
+    if (await showConfirmDialog({ title: 'Close Project', message: 'Close the current project and return to project selection?' })) {
       try { await cleanupUnsavedCharacterFrames(); } catch (_) {}
       localStorage.removeItem('amiantoActiveProjectName');
       localStorage.removeItem('amiantoActiveProjectOwner');
@@ -13915,16 +14289,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       type: g.type || 'MainInterface',
       settings: serializeGuiSettings(g.settings, g.type),
       background: serializeImage(g.background),
-      buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
-        id: b.id,
-        name: b.name,
-        x: Number(b.x)||0,
-        y: Number(b.y)||0,
-        w: Number(b.w)||0,
-        h: Number(b.h)||0,
-        text: b.text || '',
-        backgroundImage: serializeImage(b.backgroundImage)
-      })) : []
+      buttons: Array.isArray(g.buttons) ? g.buttons.map(b => {
+        const out = {
+          id: b.id,
+          name: b.name,
+          x: Number(b.x)||0,
+          y: Number(b.y)||0,
+          w: Number(b.w)||0,
+          h: Number(b.h)||0,
+          text: b.text || '',
+          backgroundImage: serializeImage(b.backgroundImage)
+        };
+        if (b.role === 'saveSlot' || b.slotKey != null) {
+          out.role = 'saveSlot';
+          out.slotKey = String(b.slotKey != null ? b.slotKey : '1');
+        } else if (b.role) {
+          out.role = b.role;
+        }
+        return out;
+      }) : []
     })) : [];
   }
 
@@ -13996,7 +14379,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         x: typeof spawn.x === 'number' ? spawn.x : 0,
         y: typeof spawn.y === 'number' ? spawn.y : 0,
         direction: spawn.direction || 'south',
-        moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
+        moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100,
+        scaleMoveSpeedWithDepth: spawn.scaleMoveSpeedWithDepth !== false
       };
       out.directions = serializeDirectionsMap(charData ? charData.directions : null);
       if (charData && charData.animations && Object.keys(charData.animations).length > 0) {
@@ -14257,9 +14641,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return obj;
   }
 
+  function serializeRoomScriptsAttachments() {
+    const obj = {};
+    try {
+      roomScripts.forEach((v, k) => {
+        if (!k) return;
+        if (typeof v === 'string') {
+          if (v) obj[String(k)] = String(v);
+        } else if (v && typeof v === 'object') {
+          const entry = {};
+          Object.keys(v).forEach(ek => {
+            if (v[ek]) entry[ek] = String(v[ek]);
+          });
+          if (Object.keys(entry).length) obj[String(k)] = entry;
+        }
+      });
+    } catch (_) {}
+    return obj;
+  }
+
   function serializeAttachments() {
     return {
-      roomScripts: mapToObject(roomScripts),
+      roomScripts: serializeRoomScriptsAttachments(),
       objectScripts: mapToObject(objectScripts),
       characterScripts: mapToObject(characterScripts),
       inventoryScripts: mapToObject(inventoryScripts),
@@ -14815,7 +15218,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (!m || typeof m !== 'object') continue;
         const next = {};
         for (const [k, v] of Object.entries(m)) {
-          next[migrateLegacyScriptKey(k)] = String(v || '');
+          if (mapName === 'roomScripts' && v && typeof v === 'object' && !Array.isArray(v)) {
+            const entry = {};
+            Object.keys(v).forEach(ek => {
+              if (v[ek]) entry[ek] = migrateLegacyScriptKey(String(v[ek]));
+            });
+            next[String(k)] = entry;
+          } else {
+            next[migrateLegacyScriptKey(k)] = String(v || '');
+          }
         }
         payload.attachments[mapName] = next;
       }
@@ -17571,13 +17982,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 const assetId = b.backgroundImage.replace('asset:', '');
                 imageAssetMap.set(btnBg, { assetId, type: 'gui', projectId });
               }
-              buttons.push({
+              const btnOut = {
                 id: b.id || uid('btn'),
                 name: b.name || 'Button',
                 x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
                 text: b.text || '',
-                backgroundImage: btnBg
-              });
+                backgroundImage: btnBg,
+                role: b.role === 'saveSlot' ? 'saveSlot' : (b.role || 'button')
+              };
+              if (btnOut.role === 'saveSlot') {
+                btnOut.slotKey = String(b.slotKey != null && b.slotKey !== '' ? b.slotKey : '1');
+              }
+              buttons.push(btnOut);
             }
           }
           
@@ -17920,7 +18336,20 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         hotspotScripts.clear(); // âš ï¸ hotspotScripts Map non piÃ¹ usata per gli hotspot (script salvati in hotspot.scripts.onClick)
         if (projectObj.attachments && typeof projectObj.attachments === 'object') {
           const A = projectObj.attachments;
-          if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
+          if (A.roomScripts && typeof A.roomScripts === 'object') {
+            Object.entries(A.roomScripts).forEach(([k, v]) => {
+              if (!k || v == null) return;
+              if (typeof v === 'object' && !Array.isArray(v)) {
+                const entry = {};
+                Object.keys(v).forEach(ek => {
+                  if (v[ek]) entry[ek] = String(v[ek]);
+                });
+                if (Object.keys(entry).length) roomScripts.set(String(k), entry);
+              } else if (v) {
+                roomScripts.set(String(k), String(v));
+              }
+            });
+          }
           if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
           if (A.characterScripts && typeof A.characterScripts === 'object') {
             Object.entries(A.characterScripts).forEach(([k,v]) => { 
@@ -18369,11 +18798,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   async function deleteProjectByName(projectName) {
     ensureCurrentUser();
     if (!projectName) return;
-    if (!confirm(
-      `Remove "${projectName}" from the editor?\n\n` +
-      'Local cache, IndexedDB assets, and editor backups will be deleted.\n' +
-      'Your .amnt file on disk (if any) will NOT be deleted — remove it manually if needed.'
-    )) return;
+    if (!(await showConfirmDialog({
+      title: 'Remove Project',
+      message: `Remove "${projectName}" from the editor?\n\n` +
+        'Local cache, IndexedDB assets, and editor backups will be deleted.\n' +
+        'Your .amnt file on disk (if any) will NOT be deleted — remove it manually if needed.',
+      danger: true
+    }))) return;
 
     const projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
 
@@ -18587,7 +19018,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }, { capture: true });
     // New / Import
     modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
-      const projectName = prompt('Enter project name:');
+      const projectName = await showInputPrompt({ title: 'New Project', message: 'Enter project name:', defaultValue: '' });
       if (!projectName || !projectName.trim()) return;
 
       const created = await window.createNewProject(projectName.trim(), true);
@@ -18704,134 +19135,214 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Export a single self-contained HTML game (runtime + project + assets).
    * Open the file in a browser — no editor required.
    */
+  /**
+   * Export standalone HTML game.
+   * Electron path (required for large projects):
+   *   1) package .amnt from editor
+   *   2) write temp .amnt (chunked IPC)
+   *   3) Node CLI builds HTML (separate process) → out.html
+   */
   window.exportStandaloneGame = async function exportStandaloneGame() {
+    let progressVisible = false;
+    const setProgress = async (message, percent, step) => {
+      if (!progressVisible) {
+        showExportProgressOverlay(message, percent);
+        progressVisible = true;
+      } else {
+        updateExportProgress(message, percent, step ? { step } : undefined);
+      }
+      await yieldToUi();
+    };
+    const finishProgress = async (message, ok) => {
+      if (!progressVisible) return;
+      updateExportProgress(message, 100, { step: ok ? 'Done' : 'Failed' });
+      await yieldToUi();
+      await new Promise((r) => setTimeout(r, ok ? 500 : 3200));
+      hideExportProgressOverlay();
+      progressVisible = false;
+    };
+
+    const nativeFs = window.amiantoNativeFs;
+    const safeBase = (window.AmiantoStandaloneExport && window.AmiantoStandaloneExport.safeFileBase)
+      ? window.AmiantoStandaloneExport.safeFileBase
+      : (name) => String(name || 'game').replace(/[^\w\-]+/g, '_');
+
     try {
       ensureCurrentUser();
-      if (!window.AmiantoStandaloneExport || typeof window.AmiantoStandaloneExport.buildStandaloneHtml !== 'function') {
-        showNotification('Standalone export module not loaded — restart the app', 'error');
-        return;
-      }
       if (!window.AmiantoAmnt) {
-        showNotification('Project format module not loaded', 'error');
-        return;
+        showNotification('Project format module not loaded — restart the app', 'error');
+        return { ok: false, error: 'amnt_missing' };
       }
 
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (!activeProjectName) {
         showNotification('Open a project before exporting the game', 'warning');
-        return;
+        return { ok: false, error: 'no_project' };
       }
 
-      const base = window.AmiantoStandaloneExport.safeFileBase(activeProjectName);
-      const defaultName = `${base}.html`;
+      const defaultName = `${safeBase(activeProjectName)}.html`;
 
-      // 1) Chiedi subito dove salvare (feedback immediato)
-      let targetPath = null;
-      let downloadFallback = false;
-
-      if (window.amiantoNativeFs && typeof window.amiantoNativeFs.showSaveDialog === 'function') {
-        try {
-          targetPath = await window.amiantoNativeFs.showSaveDialog(defaultName, { kind: 'html' });
-        } catch (dialogErr) {
-          console.error('[ExportGame] Native save dialog failed:', dialogErr);
-          showNotification('Save dialog failed: ' + (dialogErr.message || dialogErr), 'error');
-          return;
-        }
-        if (!targetPath) {
-          showNotification('Export cancelled', 'info');
-          return;
-        }
-      } else if (window.showSaveFilePicker) {
-        try {
-          const handle = await window.showSaveFilePicker({
-            suggestedName: defaultName,
-            types: [{ description: 'HTML Game', accept: { 'text/html': ['.html'] } }]
-          });
-          targetPath = handle;
-        } catch (pickerErr) {
-          if (pickerErr && pickerErr.name === 'AbortError') {
-            showNotification('Export cancelled', 'info');
-            return;
-          }
-          downloadFallback = true;
-        }
-      } else {
-        downloadFallback = true;
+      // Export HTML requires the desktop app (Electron) for large projects
+      if (!window.amiantoElectron || !nativeFs) {
+        showNotification(
+          'Export Game richiede l\'app desktop. Chiudi il browser e avvia: npm start',
+          'error'
+        );
+        return { ok: false, error: 'electron_required' };
       }
 
-      showNotification('Building standalone HTML… (may take a moment)', 'info');
+      const hasExport =
+        typeof nativeFs.exportGame === 'function' ||
+        typeof nativeFs.exportStandaloneHtml === 'function';
+      if (
+        typeof nativeFs.showSaveDialog !== 'function' ||
+        typeof nativeFs.writeFileChunkedBegin !== 'function' ||
+        !hasExport
+      ) {
+        showNotification(
+          'Modulo export obsoleto — chiudi TUTTE le finestre Amianto e rilancia npm start',
+          'error'
+        );
+        return { ok: false, error: 'preload_outdated', version: window.amiantoExportApiVersion };
+      }
 
-      let projectObj = window.serializeProject();
+      let htmlPath = null;
+      try {
+        htmlPath = await nativeFs.showSaveDialog(defaultName, { kind: 'html' });
+      } catch (dialogErr) {
+        showNotification('Save dialog failed: ' + (dialogErr.message || dialogErr), 'error');
+        return { ok: false, error: 'dialog_failed' };
+      }
+      if (!htmlPath) {
+        showNotification('Export cancelled', 'info');
+        return { ok: false, error: 'cancelled' };
+      }
+
+      await setProgress('Preparing project…', 10, 'Step 1/5');
+      let projectObj = (typeof buildPlaytestProjectPayload === 'function')
+        ? buildPlaytestProjectPayload()
+        : window.serializeProject();
+      if (!projectObj || typeof projectObj !== 'object') {
+        await finishProgress('Export failed: could not serialize project', false);
+        showNotification('Export failed: could not serialize project', 'error');
+        return { ok: false, error: 'serialize_failed' };
+      }
+      projectObj.format = 'amianto-game';
+      if (projectObj.version == null) projectObj.version = 1;
+
+      await setProgress('Syncing assets…', 25, 'Step 2/5');
       try {
         projectObj = await saveAllAssetsToStorage(
           projectObj,
           getStableProjectId(projectObj.settings, activeProjectName)
         );
-      } catch (_) {}
-
-      const pkg = await buildAmntPackageFromEditor(projectObj);
-      const runtimeSource = await loadRuntimeSourceForExport();
-      if (!runtimeSource) {
-        showNotification('Could not load JS/runtime.js for export', 'error');
-        return;
-      }
-
-      let faviconDataUrl = null;
-      try {
-        const favRes = await fetch('img/mnt.png', { cache: 'no-store' });
-        if (favRes.ok) {
-          const blob = await favRes.blob();
-          faviconDataUrl = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
+        if (projectObj) {
+          projectObj.format = 'amianto-game';
+          if (typeof reinjectHotspotScriptsForPlaytest === 'function') {
+            reinjectHotspotScriptsForPlaytest(projectObj);
+          }
         }
-      } catch (_) {}
-
-      const html = window.AmiantoStandaloneExport.buildStandaloneHtml(pkg, runtimeSource, {
-        title: activeProjectName,
-        faviconDataUrl: faviconDataUrl || undefined
-      });
-
-      if (typeof targetPath === 'string' && window.amiantoNativeFs) {
-        const written = await writeLargeTextFile(targetPath, html);
-        const mb = (written.bytes / (1024 * 1024)).toFixed(1);
-        showNotification(`Game exported (${mb} MB): ${targetPath}`, 'success');
-        return;
+      } catch (assetErr) {
+        console.warn('[ExportGame] saveAllAssetsToStorage:', assetErr);
       }
 
-      if (targetPath && typeof targetPath.createWritable === 'function') {
-        const writable = await targetPath.createWritable();
-        await writable.write(html);
-        await writable.close();
-        showNotification('Game exported as HTML', 'success');
-        return;
+      await setProgress('Packaging .amnt…', 40, 'Step 3/5');
+      const pkg = await buildAmntPackageFromEditor(projectObj);
+      if (!pkg || !pkg.project) {
+        await finishProgress('Export failed: empty package', false);
+        showNotification('Export failed: empty package', 'error');
+        return { ok: false, error: 'package_empty' };
+      }
+      pkg.project.format = 'amianto-game';
+      if (typeof reinjectHotspotScriptsForPlaytest === 'function') {
+        reinjectHotspotScriptsForPlaytest(pkg.project);
       }
 
-      if (downloadFallback || !targetPath) {
-        downloadBlob(html, defaultName, 'text/html;charset=utf-8');
-        showNotification('Game exported as HTML (download started)', 'success');
+      const assetCount = Array.isArray(pkg.assets) ? pkg.assets.length : 0;
+      const referencedIds = collectAssetIdsFromProject(pkg.project);
+      if (assetCount === 0 && referencedIds.size > 0) {
+        await finishProgress('Export failed: no assets embedded', false);
+        showNotification(
+          'Export failed: images missing from package. Save Project, then export again.',
+          'error'
+        );
+        return { ok: false, error: 'assets_missing' };
+      }
+
+      const tempDir = await nativeFs.getTempDir();
+      const tempAmntPath =
+        String(tempDir).replace(/[/\\]+$/, '') +
+        (String(tempDir).includes('\\') ? '\\' : '/') +
+        `amianto-export-${Date.now()}.amnt`;
+
+      try {
+        await setProgress(
+          assetCount ? `Writing package (${assetCount} assets)…` : 'Writing package…',
+          55,
+          'Step 4/5'
+        );
+        const amntText = window.AmiantoAmnt.stringify(pkg, false);
+        await writeLargeTextFile(tempAmntPath, amntText, {
+          onProgress: async (written, total) => {
+            const ratio = total > 0 ? written / total : 1;
+            await setProgress(
+              `Writing package… ${Math.round(ratio * 100)}%`,
+              55 + Math.round(ratio * 15),
+              'Step 4/5'
+            );
+          }
+        });
+
+        await setProgress('Building HTML (export engine)…', 78, 'Step 5/5');
+        const exportFn = nativeFs.exportGame || nativeFs.exportStandaloneHtml;
+        const result = await exportFn({
+          amntPath: tempAmntPath,
+          htmlPath: htmlPath,
+          title: activeProjectName
+        });
+
+        const bytes = (result && result.bytes) || 0;
+        const mb = (bytes / (1024 * 1024)).toFixed(1);
+        await finishProgress(`Exported (${mb} MB)`, true);
+        showNotification(`Game exported (${mb} MB): ${htmlPath}`, 'success');
+        return { ok: true, bytes, path: htmlPath, mode: 'cli' };
+      } finally {
+        try { await nativeFs.deleteFile(tempAmntPath); } catch (_) {}
       }
     } catch (err) {
       console.error('[ExportGame] Failed:', err);
-      showNotification('Export failed: ' + (err && err.message ? err.message : err), 'error');
+      const msg = err && err.message ? err.message : String(err);
+      try {
+        await finishProgress('Export failed: ' + msg, false);
+      } catch (_) {
+        hideExportProgressOverlay();
+      }
+      showNotification('Export failed: ' + msg, 'error');
+      return { ok: false, error: msg };
     }
   };
 
   /** Scrive HTML grandi a chunk via IPC (un solo invoke fallisce oltre pochi MB). */
-  async function writeLargeTextFile(filePath, content) {
+  async function writeLargeTextFile(filePath, content, options) {
     const text = String(content || '');
     const fsApi = window.amiantoNativeFs;
     if (!fsApi) throw new Error('Native FS unavailable');
+    const onProgress = options && typeof options.onProgress === 'function' ? options.onProgress : null;
 
     if (typeof fsApi.writeFileChunkedBegin === 'function') {
       const CHUNK = 512 * 1024; // 512 KB per messaggio IPC
+      const total = text.length;
       const id = await fsApi.writeFileChunkedBegin(filePath);
       try {
-        for (let i = 0; i < text.length; i += CHUNK) {
+        let lastUi = 0;
+        for (let i = 0; i < total; i += CHUNK) {
           await fsApi.writeFileChunkedAppend(id, text.slice(i, i + CHUNK));
+          const written = Math.min(total, i + CHUNK);
+          // Throttle UI updates (~every 1MB or last chunk)
+          if (onProgress && (written - lastUi >= 1024 * 1024 || written >= total)) {
+            lastUi = written;
+            await onProgress(written, total);
+          }
         }
         return await fsApi.writeFileChunkedEnd(id);
       } catch (err) {
@@ -18846,63 +19357,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
+    if (onProgress) await onProgress(text.length, text.length);
     await fsApi.writeFile(filePath, text);
     return { bytes: new Blob([text]).size, filePath };
   }
 
-  async function fetchAppTextFile(relPath) {
-    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.readAppFile === 'function') {
-      try {
-        const text = await window.amiantoNativeFs.readAppFile(relPath);
-        if (text && text.length > 20) return text;
-      } catch (err) {
-        console.warn('[ExportGame] readAppFile failed for', relPath, err);
-      }
-    }
-    try {
-      const res = await fetch(relPath, { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text.length > 20) return text;
-      }
-    } catch (err) {
-      console.warn('[ExportGame] fetch failed for', relPath, err);
-    }
-    return await new Promise((resolve) => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', relPath, true);
-        xhr.onload = () => {
-          if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
-            resolve(xhr.responseText && xhr.responseText.length > 20 ? xhr.responseText : null);
-          } else {
-            resolve(null);
-          }
-        };
-        xhr.onerror = () => resolve(null);
-        xhr.send();
-      } catch (_) {
-        resolve(null);
-      }
-    });
-  }
-
-  /**
-   * Standalone export embeds libs + runtime as one script (same order as runtime.html).
-   */
-  async function loadRuntimeSourceForExport() {
-    const parts = [
-      await fetchAppTextFile('JS/lib/game-save-format.js'),
-      await fetchAppTextFile('JS/lib/dialogue-logic.js'),
-      await fetchAppTextFile('JS/runtime.js')
-    ];
-    if (!parts[2] || parts[2].length < 100) return null;
-    // Libs are optional for older installs, but preferred
-    return parts.filter(Boolean).join('\n;\n');
-  }
-
   // Debug function to test coordinate conversion
-  window.debugCoordinateConversion = function() {
+  window.debugCoordinateConversion = async function() {
     window.debugCoordinates = true;
     console.log('Debug mode enabled. Click on the canvas to see coordinate conversion details.');
     console.log('Canvas internal dimensions:', canvas.width, 'x', canvas.height);
@@ -18923,8 +19384,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Multiple GUI management functions
-  window.createGUI = function() {
-    const name = prompt('Enter GUI name:', `GUI ${guis.length + 1}`);
+  window.createGUI = async function() {
+    const name = await showInputPrompt({ title: 'New GUI', message: 'Enter GUI name:', defaultValue: `GUI ${guis.length + 1}` });
     if (!name) return;
     
     const newGui = {
@@ -18942,7 +19403,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`GUI "${name}" created`, 'success');
   };
 
-  window.renameGUI = function() {
+  window.renameGUI = async function() {
     if (!currentGuiId) {
       showNotification('No GUI selected', 'warning');
       return;
@@ -18951,7 +19412,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const gui = guis.find(g => g.id === currentGuiId);
     if (!gui) return;
     
-    const newName = prompt('Enter new GUI name:', gui.name);
+    const newName = await showInputPrompt({ title: 'Rename GUI', message: 'Enter new GUI name:', defaultValue: gui.name });
     if (!newName || newName === gui.name) return;
     
     gui.name = newName;
@@ -18959,7 +19420,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`GUI renamed to "${newName}"`, 'success');
   };
 
-  window.deleteGUI = function() {
+  window.deleteGUI = async function() {
     if (!currentGuiId) {
       showNotification('No GUI selected', 'warning');
       return;
@@ -18968,7 +19429,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const gui = guis.find(g => g.id === currentGuiId);
     if (!gui) return;
     
-    if (!confirm(`Delete GUI "${gui.name}"? This action cannot be undone.`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete GUI', message: `Delete GUI "${gui.name}"? This action cannot be undone.`, danger: true }))) return;
     
     guis = guis.filter(g => g.id !== currentGuiId);
     
@@ -19148,7 +19609,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`Cursor created for category: ${category}`, 'success');
   };
 
-  window.onCursorCategoryChange = function() {
+  window.onCursorCategoryChange = async function() {
     const categoryEl = document.getElementById('cursor-category');
     const category = categoryEl ? categoryEl.value : null;
     if (!category || !CURSOR_CATEGORIES.includes(category)) return;
@@ -19172,12 +19633,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`Cursor category set to: ${category}`, 'info');
   };
 
-  window.editCursor = function() {
+  window.editCursor = async function() {
     // Kept for compatibility — meta updates happen via updateSelectedCursorMeta / select
     window.updateSelectedCursorMeta();
   };
 
-  window.updateSelectedCursorMeta = function() {
+  window.updateSelectedCursorMeta = async function() {
     if (!selectedCursorId) return;
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
@@ -19186,7 +19647,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     refreshCursorsList();
   };
 
-  window.deleteCursor = function() {
+  window.deleteCursor = async function() {
     if (!selectedCursorId) {
       showNotification('No cursor selected', 'warning');
       return;
@@ -19195,7 +19656,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
 
-    if (!confirm(`Delete cursor for category "${cursor.category}"?`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete Cursor', message: `Delete cursor for category "${cursor.category}"?`, danger: true }))) return;
 
     contextualCursors = contextualCursors.filter(c => c.id !== selectedCursorId);
     selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
@@ -19362,11 +19823,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   window.selectCursor = selectCursor;
 
-  window.deleteCursorById = function(cursorId) {
+  window.deleteCursorById = async function(cursorId) {
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
 
-    if (!confirm(`Delete cursor for category "${cursor.category}"?`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete Cursor', message: `Delete cursor for category "${cursor.category}"?`, danger: true }))) return;
 
     contextualCursors = contextualCursors.filter(c => c.id !== cursorId);
     if (selectedCursorId === cursorId) {

@@ -8,7 +8,10 @@
   "scripts": {
     "start": "electron .",
     "test": "node tests/run-smoke.js",
-    "dist": "electron-builder --win",
+    "export-game": "node electron/export-cli.js",
+    "dist": "electron-builder --win --linux",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
     "dist:portable": "electron-builder --win portable"
   },
   "build": {
@@ -27,8 +30,13 @@
       "!*.md",
       "!API_UNIFICATION_CHECKLIST.md",
       "!ROADMAP.md",
-      "!# *"
+      "!# *",
+      "!agent-transcripts/**",
+      "!tests/**"
     ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
     "win": {
       "target": [
         {
@@ -45,6 +53,28 @@
         }
       ],
       "icon": "img/mnt.png"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "icon": "img/mnt.png",
+      "maintainer": "Amianto",
+      "synopsis": "Editor offline per avventure point-and-click",
+      "description": "Amianto Editor — editor offline per avventure point-and-click",
+      "desktop": {
+        "entry": {
+          "Name": "Amianto Editor",
+          "Comment": "Editor offline per avventure point-and-click",
+          "Categories": "Development;Graphics;"
+        }
+      }
     },
     "nsis": {
       "oneClick": false,

@@ -331,7 +331,7 @@
               <button class="btn btn-info btn-sm w-100 mb-2" id="btn-load-project">
                 Load Project
               </button>
-              <button class="btn btn-outline-success btn-sm w-100 mb-2" id="btn-export-standalone" type="button" onclick="(function(btn){ if (typeof window.exportStandaloneGame !== 'function') { alert('Export not ready — restart the app (npm start)'); return; } if (btn.dataset.busy === '1') return; btn.dataset.busy = '1'; btn.disabled = true; Promise.resolve(window.exportStandaloneGame()).finally(function(){ btn.dataset.busy = '0'; btn.disabled = false; }); })(this)" title="Export a single HTML file that plays the game without the editor">
+              <button class="btn btn-outline-success btn-sm w-100 mb-2" id="btn-export-standalone" type="button" onclick="(function(btn){ if (typeof window.exportStandaloneGame !== 'function') { if (window.showConfirmDialog) { window.showConfirmDialog({ title: 'Export', message: 'Export not ready — restart the app (npm start)', okLabel: 'OK', cancelLabel: 'Close' }); } else { console.warn('Export not ready — restart the app'); } return; } if (btn.dataset.busy === '1') return; btn.dataset.busy = '1'; btn.disabled = true; var done = function(){ btn.dataset.busy = '0'; btn.disabled = false; }; try { Promise.resolve(window.exportStandaloneGame()).then(done, function(err){ console.error('[ExportGame]', err); done(); }); } catch (err) { console.error('[ExportGame]', err); done(); } })(this)" title="Export a single HTML file that plays the game without the editor">
                 Export Game (HTML)
               </button>
               <input type="file" id="project-file-input" accept=".amnt,.json,application/json" hidden>
@@ -833,7 +833,14 @@
               <div id="character-spawn-speed-container">
                 <label class="form-label text-light">Movement speed (pixel/second):</label>
                 <input type="number" class="form-control form-control-sm" id="character-spawn-speed" value="100" min="1" max="1000" step="1">
-                <small class="text-muted">Character movement speed in pixels per second</small>
+                <small class="text-muted">Base speed at the foreground (max scale) line. Used as-is if depth scaling is off.</small>
+                <div class="form-check mt-2">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-scale-speed" checked>
+                  <label class="form-check-label text-light" for="character-spawn-scale-speed">
+                    Scale speed with depth
+                  </label>
+                </div>
+                <small class="text-muted">When enabled, speed decreases toward the background (min scale) line, matching character size.</small>
               </div>
 
               <div class="mt-3 pt-2" style="border-top:1px solid #333;" id="character-portraits-panel">
@@ -938,6 +945,7 @@
               <div class="btn-group w-100" role="group">
                 <button class="btn btn-success btn-sm" id="btn-add-gui-bg">Add GUI Background</button>
                 <button class="btn btn-primary btn-sm" id="btn-new-gui-button">Draw Button</button>
+                <button class="btn btn-info btn-sm" id="btn-new-gui-save-slot" style="display:none;">Draw Save Slot</button>
                 <button class="btn btn-outline-danger btn-sm" id="btn-delete-gui-button">Delete Selected</button>
               </div>
             </div>
@@ -952,6 +960,7 @@
                   <option value="MainInterface">MainInterface</option>
                   <option value="DialogBox">DialogBox</option>
                   <option value="Menu">Menu</option>
+                  <option value="SaveLoad">SaveLoad</option>
                   <option value="VerbGUI">VerbGUI</option>
                   <option value="VerbCoin">VerbCoin</option>
                   <option value="OverlayCustom">OverlayCustom</option>
@@ -962,14 +971,14 @@
 
             <div class="mb-3">
               <div class="alert alert-info" role="alert">
-                <small>
+                <small id="gui-draw-hint">
                   Draw buttons as rectangles on the canvas (GUI overlay). Click to select, drag to move. Use Delete Selected to remove.
                 </small>
               </div>
             </div>
 
             <div class="mb-3">
-              <h6 class="text-light">Buttons list</h6>
+              <h6 class="text-light" id="gui-buttons-list-heading">Buttons list</h6>
               <div id="gui-buttons-list" class="list-group"></div>
             </div>
           </div>
@@ -1258,6 +1267,7 @@
   <script src="node_modules/sortablejs/Sortable.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js'"></script>
   <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js'"></script>
   <script src="JS/app-mode.js"></script>
+  <script src="JS/editor-dialogs.js"></script>
   <script src="JS/amnt-format.js"></script>
   <script src="JS/export-standalone.js"></script>
   <script src="JS/local-storage.js"></script>

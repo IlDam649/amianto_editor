@@ -1,8 +1,57 @@
 const { app, BrowserWindow, shell, ipcMain, dialog, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
+const os = require('os');
+const { spawn } = require('child_process');
+const { exportAmntToHtml, resolveAppRoot } = require('./export-html');
 
 const isDev = !app.isPackaged;
+const EXPORT_API_VERSION = 3;
+
+/**
+ * Run export in a separate process (ELECTRON_RUN_AS_NODE) so large games
+ * don't OOM the editor renderer/main. Falls back to in-process export.
+ */
+function runExportCliProcess(amntPath, htmlPath, title) {
+  return new Promise((resolve, reject) => {
+    const script = path.join(__dirname, 'export-cli.js');
+    const args = [script, amntPath, htmlPath];
+    if (title) args.push(String(title));
+    const child = spawn(process.execPath, args, {
+      env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }),
+      windowsHide: true
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += String(d); });
+    child.stderr.on('data', (d) => { stderr += String(d); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+      const last = lines[lines.length - 1] || '';
+      let parsed = null;
+      try { parsed = JSON.parse(last); } catch (_) {}
+      if (parsed && parsed.ok) {
+        resolve(parsed);
+        return;
+      }
+      const errMsg =
+        (parsed && parsed.error) ||
+        stderr.trim() ||
+        ('Export CLI failed (code ' + code + ')');
+      reject(new Error(errMsg));
+    });
+  });
+}
+
+async function exportGameNative(amntPath, htmlPath, title) {
+  try {
+    return await runExportCliProcess(amntPath, htmlPath, title);
+  } catch (cliErr) {
+    console.warn('[Export] CLI process failed, in-process fallback:', cliErr && cliErr.message ? cliErr.message : cliErr);
+    return exportAmntToHtml(amntPath, htmlPath, title);
+  }
+}
 
 /** Logo software — stesso ovunque (editor, playtest, taskbar, installer). */
 const APP_ICON_PATH = path.join(__dirname, '..', 'img', 'mnt.png');
@@ -182,13 +231,65 @@ ipcMain.handle('amianto:read-app-file', async (_event, relativePath) => {
   if (!rel || rel.includes('..') || !rel.startsWith('JS/')) {
     throw new Error('Invalid app file path');
   }
-  const fullPath = path.join(__dirname, '..', ...rel.split('/'));
-  return await fs.readFile(fullPath, 'utf8');
+  const rootDir = resolveAppRoot();
+  const fullPath = path.join(rootDir, ...rel.split('/'));
+  try {
+    return await fs.readFile(fullPath, 'utf8');
+  } catch (err) {
+    throw new Error('Could not find ' + rel + ' at ' + fullPath + (err && err.message ? ' (' + err.message + ')' : ''));
+  }
+});
+
+ipcMain.handle('amianto:get-temp-dir', async () => os.tmpdir());
+
+ipcMain.handle('amianto:get-export-api-info', async () => {
+  try {
+    const root = resolveAppRoot();
+    const runtimeOk = require('fs').existsSync(path.join(root, 'JS', 'runtime.js'));
+    return { ok: true, root, runtimeOk, version: EXPORT_API_VERSION };
+  } catch (err) {
+    return {
+      ok: false,
+      root: null,
+      runtimeOk: false,
+      version: EXPORT_API_VERSION,
+      error: String(err && err.message ? err.message : err)
+    };
+  }
+});
+
+/**
+ * Export game HTML from an on-disk .amnt (separate Node process).
+ * payload: { amntPath, htmlPath, title? }
+ */
+ipcMain.handle('amianto:export-game', async (_event, payload) => {
+  const opts = payload || {};
+  if (!opts.htmlPath) throw new Error('Missing htmlPath');
+  if (!opts.amntPath) throw new Error('Missing amntPath');
+  return await exportGameNative(opts.amntPath, opts.htmlPath, opts.title || null);
+});
+
+/** @deprecated keep alias for older renderers mid-reload */
+ipcMain.handle('amianto:export-standalone-html', async (_event, payload) => {
+  const opts = payload || {};
+  if (!opts.htmlPath) throw new Error('Missing htmlPath');
+  if (!opts.amntPath) throw new Error('Missing amntPath');
+  return await exportGameNative(opts.amntPath, opts.htmlPath, opts.title || null);
 });
 
 ipcMain.handle('amianto:write-file', async (_event, filePath, content) => {
   if (!filePath) throw new Error('Missing file path');
   await fs.writeFile(filePath, content, 'utf8');
+  return true;
+});
+
+ipcMain.handle('amianto:delete-file', async (_event, filePath) => {
+  if (!filePath) throw new Error('Missing file path');
+  try {
+    await fs.unlink(filePath);
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') throw err;
+  }
   return true;
 });
 
