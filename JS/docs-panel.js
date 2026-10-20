@@ -222,7 +222,10 @@ if (Game.getVar("door_open")) {
 
     <h3>Rooms</h3>
     <ul>
-      <li><code>load_room(roomIdOrName, playerX?, playerY?, playerDirection?)</code> — runs destination <strong>Before</strong> scripts, then loads the room, places the player, then runs <strong>After</strong> scripts</li>
+      <li><code>load_room(roomIdOrName, playerX?, playerY?, playerDirection?, options?)</code> — runs destination <strong>Before</strong> scripts, loads the room, places the player, runs <strong>After</strong> scripts, then plays the room transition (the previous frame stays up until After finishes, so visibility changes are already applied when the new room appears). <code>options</code> may be <code>{ transition, duration }</code>. You can also pass a single object: <code>load_room(room, { x, y, direction, transition, duration })</code>.</li>
+      <li><code>set_room_transition(type, durationMs?)</code> — session default for later <code>load_room</code> calls (<code>none</code>, <code>fade</code>, <code>fade_to_black</code>, <code>fade_to_white</code>, <code>slide</code>, <code>dissolve</code>, <code>iris</code>). Does not rewrite Project Settings; the menu value returns on the next play.</li>
+      <li><code>get_room_transition()</code> — <code>{ type, duration }</code> currently in effect</li>
+      <li><code>transition_to_room(roomIdOrName, type?, durationMs?, playerX?, playerY?, playerDirection?)</code> — same as <code>load_room</code>, with an explicit effect for this call only</li>
       <li><code>get_current_room()</code></li>
       <li><code>get_room_objects()</code> → array of plain objects</li>
       <li><code>set_room_background(imageUrlOrDataUrl)</code> — empty string clears</li>

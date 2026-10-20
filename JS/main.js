@@ -8639,7 +8639,8 @@ window.selectRoom = function(roomId) {
     'play_animation', 'stop_animation', 'show_animation', 'hide_animation',
     'show_image', 'hide_image',
     'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
-    'load_room', 'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
+    'load_room', 'set_room_transition', 'get_room_transition', 'transition_to_room',
+    'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
     'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
     'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
     'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
@@ -13112,6 +13113,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       description: '',
       canvasWidth: gameViewport.width || 800,
       canvasHeight: gameViewport.height || 600,
+      roomTransition: 'none',
+      roomTransitionDuration: 600,
       enableFullscreen: true,
       enableSound: true,
       enableMusic: true
@@ -13128,6 +13131,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         currentSettings.description = s.description || '';
         currentSettings.canvasWidth = s.canvasWidth || gameViewport.width || 800;
         currentSettings.canvasHeight = s.canvasHeight || gameViewport.height || 600;
+        const loadedTransition = String(s.roomTransition || 'none').trim().toLowerCase();
+        currentSettings.roomTransition = [
+          'none', 'fade', 'fade_to_black', 'fade_to_white', 'slide', 'dissolve', 'iris'
+        ].indexOf(loadedTransition) >= 0
+          ? loadedTransition
+          : 'none';
+        currentSettings.roomTransitionDuration = Number.isFinite(Number(s.roomTransitionDuration))
+          ? Number(s.roomTransitionDuration)
+          : 600;
         currentSettings.enableFullscreen = s.enableFullscreen !== undefined ? s.enableFullscreen : true;
         currentSettings.enableSound = s.enableSound !== undefined ? s.enableSound : true;
         currentSettings.enableMusic = s.enableMusic !== undefined ? s.enableMusic : true;
@@ -13186,6 +13198,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               <div class="mb-3">
                 <label for="canvasHeight" class="form-label">Canvas Height</label>
                 <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="${currentSettings.canvasHeight || 600}">
+              </div>
+              <div class="mb-3">
+                <label for="roomTransition" class="form-label">Room transition</label>
+                <select class="form-select bg-secondary text-light border-secondary" id="roomTransition">
+                  <option value="none" ${currentSettings.roomTransition === 'none' ? 'selected' : ''}>None</option>
+                  <option value="fade" ${currentSettings.roomTransition === 'fade' ? 'selected' : ''}>Fade</option>
+                  <option value="fade_to_black" ${currentSettings.roomTransition === 'fade_to_black' ? 'selected' : ''}>Fade to black</option>
+                  <option value="fade_to_white" ${currentSettings.roomTransition === 'fade_to_white' ? 'selected' : ''}>Fade to white</option>
+                  <option value="slide" ${currentSettings.roomTransition === 'slide' ? 'selected' : ''}>Slide</option>
+                  <option value="dissolve" ${currentSettings.roomTransition === 'dissolve' ? 'selected' : ''}>Dissolve</option>
+                  <option value="iris" ${currentSettings.roomTransition === 'iris' ? 'selected' : ''}>Iris</option>
+                </select>
+                <div class="form-text text-secondary">Default effect for load_room. A script can override it with set_room_transition or transition_to_room.</div>
+              </div>
+              <div class="mb-3">
+                <label for="roomTransitionDuration" class="form-label">Transition duration (ms)</label>
+                <input type="number" min="0" max="10000" step="50" class="form-control bg-secondary text-light border-secondary" id="roomTransitionDuration" value="${Number.isFinite(Number(currentSettings.roomTransitionDuration)) ? Number(currentSettings.roomTransitionDuration) : 600}">
+                <div class="form-text text-secondary">Time of the effect, in milliseconds. 0 skips the animation.</div>
               </div>
               <div class="mb-3">
                 <div class="form-check">
@@ -13252,6 +13282,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
     const newProjectName = document.getElementById('projectName').value.trim();
+    const transitionTypeRaw = (document.getElementById('roomTransition').value || 'none').trim().toLowerCase();
+    const allowedTransitions = [
+      'none', 'fade', 'fade_to_black', 'fade_to_white', 'slide', 'dissolve', 'iris'
+    ];
+    const roomTransition = allowedTransitions.indexOf(transitionTypeRaw) >= 0 ? transitionTypeRaw : 'none';
+    let roomTransitionDuration = parseInt(document.getElementById('roomTransitionDuration').value, 10);
+    if (!Number.isFinite(roomTransitionDuration) || roomTransitionDuration < 0) roomTransitionDuration = 600;
+    if (roomTransitionDuration > 10000) roomTransitionDuration = 10000;
     
     if (!newProjectName) {
       showNotification('Project name cannot be empty', 'warning');
@@ -13265,6 +13303,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       description: document.getElementById('projectDescription').value,
       canvasWidth: newWidth,
       canvasHeight: newHeight,
+      roomTransition: roomTransition,
+      roomTransitionDuration: roomTransitionDuration,
       enableFullscreen: document.getElementById('enableFullscreen').checked,
       enableSound: document.getElementById('enableSound').checked,
       enableMusic: document.getElementById('enableMusic').checked
@@ -17046,7 +17086,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         id: trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_'),
         name: trimmedName,
         canvasWidth: 800,
-        canvasHeight: 600
+        canvasHeight: 600,
+        roomTransition: 'none',
+        roomTransitionDuration: 600
       },
       rooms: [
         {

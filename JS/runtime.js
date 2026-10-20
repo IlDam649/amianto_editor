@@ -77,6 +77,44 @@
   let canvasWidth = 800;
   let canvasHeight = 600;
 
+  /** Tipi di transizione tra stanze. `none` = taglio netto. */
+  const ROOM_TRANSITION_TYPES = [
+    'none',
+    'fade',
+    'fade_to_black',
+    'fade_to_white',
+    'slide',
+    'dissolve',
+    'iris'
+  ];
+  const ROOM_TRANSITION_DURATION_DEFAULT = 600;
+  const ROOM_TRANSITION_DURATION_MAX = 10000;
+  const ROOM_TRANSITION_TYPE_HINT = ROOM_TRANSITION_TYPES.join(', ');
+
+  /**
+   * Default di sessione (da settings progetto, sovrascrivibile con set_room_transition)
+   * più stato del fotogramma in corso.
+   */
+  const roomTransitionRuntime = {
+    type: 'none',
+    duration: ROOM_TRANSITION_DURATION_DEFAULT,
+    active: false,
+    holdSnapshot: null,
+    snapshot: null,
+    effectType: 'none',
+    effectDuration: 0,
+    startedAt: 0,
+    onComplete: null,
+    inputLockHeld: false
+  };
+  let roomTransitionSerial = 0;
+  let dissolveNoise = null;
+  let dissolveNoiseW = 0;
+  let dissolveNoiseH = 0;
+  let dissolveMaskCanvas = null;
+  let worldBuffer = null;
+  let transitionBuffer = null;
+
   // Assets caricati (immagini)
   const loadedImages = new Map(); // cache immagini (deprecato, mantenuto per compatibilità)
   
@@ -1826,6 +1864,7 @@
       canvasHeight = settings.canvasHeight || 600;
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
+      applyProjectRoomTransitionSettings(settings);
 
       updateLoadingMessage('Loading variables...');
       await initializeVariables(projectData.variables);
@@ -7703,16 +7742,30 @@
       return true;
     },
 
-    load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
+    /**
+     * Carica una stanza.
+     * Transizione: default da Impostazioni progetto / set_room_transition.
+     * Override per questa chiamata:
+     *   load_room(room, { transition, duration, x, y, direction })
+     *   load_room(room, x, y, direction, { transition, duration })
+     */
+    load_room: function(roomIdOrName, playerX, playerY, playerDirection, transitionOptions) {
       if (typeof roomIdOrName !== 'string' && typeof roomIdOrName !== 'number') {
         GameAPI.error('load_room: roomIdOrName must be a string or number');
         return Promise.resolve(false);
       }
 
+      const placement = parseLoadRoomCall(playerX, playerY, playerDirection, transitionOptions);
+      const effect = resolveRoomTransitionEffect(placement.transition, placement.duration);
+      const placeX = placement.playerX;
+      const placeY = placement.playerY;
+      const placeDirection = placement.playerDirection;
+
       const targetRoom = String(roomIdOrName);
       const previousRoomId = gameState.currentRoomId;
 
-      // Ordine: before (vecchia stanza attiva) → cambio stanza → posiziona player → after.
+      // Ordine: before (vecchia stanza attiva) → snapshot → cambio stanza → posiziona player
+      // → transizione visiva → after.
       // Dialoghi in before/after non bloccano (enqueueScriptCommand in room-transition).
       const roomPromise = (async () => {
         log(`[Runtime] load_room: inizio → "${targetRoom}" (da "${previousRoomId || ''}")`, 'info');
@@ -7731,65 +7784,141 @@
           log(`[Runtime] on_before_room_change before load_room: ${err && err.message ? err.message : err}`, 'error');
         }
 
-        await changeRoom(targetRoom, { skipRoomScripts: true, skipAfterRoomScripts: true });
+        const sameRoom = previousRoomId && previousRoomId === resolvedTargetId;
+        const useVisual = effect.type !== 'none' &&
+          effect.duration > 0 &&
+          !!previousRoomId &&
+          !sameRoom &&
+          !!canvas &&
+          !!ctx;
+        let transitionToken = null;
 
-        const arrivedRoomId = gameState.currentRoomId || resolvedTargetId;
-        log(`[Runtime] load_room: stanza attiva "${arrivedRoomId}"`, 'info');
-
-        if (playerX !== undefined && playerY !== undefined) {
-          let player = null;
-          for (const [, char] of gameState.characters.entries()) {
-            const charDef = gameState.characterDefinitions.get(char.name);
-            const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
-            if (isPlayer) {
-              player = char;
-              break;
-            }
+        try {
+          if (useVisual) {
+            transitionToken = beginRoomTransitionHold();
           }
 
-          if (!player) {
-            log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
-          } else {
-            player.x = Number(playerX) || 0;
-            player.y = Number(playerY) || 0;
-            player.renderX = player.x;
-            player.renderY = player.y;
-            player.targetY = player.y;
-            player.velocityY = 0;
-            player.isMoving = false;
-            player.path = null;
-            player.pathIndex = 0;
-            player.roomId = arrivedRoomId;
-            // Non forzare visible=true: rispetta set_character_visibility / opacity da script
+          await changeRoom(targetRoom, { skipRoomScripts: true, skipAfterRoomScripts: true });
 
-            if (playerDirection !== undefined && playerDirection !== null) {
-              const charDef = gameState.characterDefinitions.get(player.name);
-              if (charDef && charDef.directions[playerDirection]) {
-                player.direction = playerDirection;
-                player.currentFrame = 0;
-                player.frameTime = 0;
-              } else {
-                log(`[Runtime] load_room: Direzione "${playerDirection}" non disponibile per player "${player.name}"`, 'warning');
+          const arrivedRoomId = gameState.currentRoomId || resolvedTargetId;
+          const arrivedOk = String(gameState.currentRoomId || '') === resolvedTargetId;
+          log(`[Runtime] load_room: stanza attiva "${arrivedRoomId}"`, 'info');
+
+          if (!arrivedOk && transitionToken != null) {
+            completeRoomTransition(transitionToken);
+            transitionToken = null;
+          }
+
+          if (placeX !== undefined && placeY !== undefined) {
+            let player = null;
+            for (const [, char] of gameState.characters.entries()) {
+              const charDef = gameState.characterDefinitions.get(char.name);
+              const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
+              if (isPlayer) {
+                player = char;
+                break;
               }
             }
 
-            log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${arrivedRoomId}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
+            if (!player) {
+              log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
+            } else {
+              player.x = Number(placeX) || 0;
+              player.y = Number(placeY) || 0;
+              player.renderX = player.x;
+              player.renderY = player.y;
+              player.targetY = player.y;
+              player.velocityY = 0;
+              player.isMoving = false;
+              player.path = null;
+              player.pathIndex = 0;
+              player.roomId = arrivedRoomId;
+              // Non forzare visible=true: rispetta set_character_visibility / opacity da script
+
+              if (placeDirection !== undefined && placeDirection !== null) {
+                const charDef = gameState.characterDefinitions.get(player.name);
+                if (charDef && charDef.directions[placeDirection]) {
+                  player.direction = placeDirection;
+                  player.currentFrame = 0;
+                  player.frameTime = 0;
+                } else {
+                  log(`[Runtime] load_room: Direzione "${placeDirection}" non disponibile per player "${player.name}"`, 'warning');
+                }
+              }
+
+              log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${arrivedRoomId}${placeDirection ? ` con direzione "${placeDirection}"` : ''}`, 'info');
+            }
+          }
+
+          // After: la nuova stanza è già caricata ma ancora coperta dallo snapshot,
+          // così visibilità e posizionamenti valgono dal primo frame visibile.
+          try {
+            await executeRoomChangeScripts(previousRoomId, arrivedRoomId);
+          } catch (err) {
+            log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
+          }
+
+          if (useVisual && transitionToken != null && transitionToken === roomTransitionSerial) {
+            startRoomTransitionAnimation(effect.type, effect.duration);
+            const done = waitRoomTransition(transitionToken);
+            armRoomTransitionCompletion(transitionToken);
+            await done;
+          }
+          return true;
+        } finally {
+          if (transitionToken != null) {
+            completeRoomTransition(transitionToken);
           }
         }
-
-        // After room load: dopo posizionamento, e awaited così set_character_visibility ecc. sono applicati
-        try {
-          await executeRoomChangeScripts(previousRoomId, arrivedRoomId);
-        } catch (err) {
-          log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
-        }
-        return true;
       })().catch((err) => {
         GameAPI.error(`load_room: ${err && err.message ? err.message : err}`);
         return false;
       });
 
       return trackScriptSideEffect(roomPromise);
+    },
+
+    /**
+     * Imposta la transizione usata dai load_room successivi in questa sessione.
+     * Non riscrive le impostazioni progetto: al prossimo avvio torna il default del menu.
+     * @param {string} type none | fade | fade_to_black | fade_to_white | slide | dissolve | iris
+     * @param {number} [durationMs] millisecondi (0–10000)
+     */
+    set_room_transition: function(type, durationMs) {
+      const normalized = normalizeRoomTransitionType(type);
+      if (!normalized) {
+        GameAPI.error(`set_room_transition: type must be ${ROOM_TRANSITION_TYPE_HINT}`);
+        return false;
+      }
+      roomTransitionRuntime.type = normalized;
+      if (durationMs !== undefined && durationMs !== null && String(durationMs).trim() !== '') {
+        const duration = normalizeRoomTransitionDuration(durationMs);
+        if (duration == null) {
+          GameAPI.error('set_room_transition: duration must be a non-negative number of milliseconds');
+          return false;
+        }
+        roomTransitionRuntime.duration = duration;
+      }
+      log(`[Runtime] Default transizione: ${roomTransitionRuntime.type}, ${roomTransitionRuntime.duration} ms`, 'info');
+      return true;
+    },
+
+    get_room_transition: function() {
+      return {
+        type: roomTransitionRuntime.type,
+        duration: roomTransitionRuntime.duration
+      };
+    },
+
+    /**
+     * Come load_room, con tipo e durata espliciti per questa sola chiamata.
+     * transition_to_room(room, type?, durationMs?, playerX?, playerY?, playerDirection?)
+     */
+    transition_to_room: function(roomIdOrName, type, durationMs, playerX, playerY, playerDirection) {
+      const opt = {};
+      if (type !== undefined) opt.transition = type;
+      if (durationMs !== undefined) opt.duration = durationMs;
+      return GameAPI.load_room(roomIdOrName, playerX, playerY, playerDirection, opt);
     },
 
     // Oggetti
@@ -9084,6 +9213,9 @@
       { name: 'get_room_objects', value: bindGameApiMethod(api, 'get_room_objects') },
       { name: 'set_room_background', value: bindGameApiMethod(api, 'set_room_background') },
       { name: 'load_room', value: bindGameApiMethod(api, 'load_room') },
+      { name: 'set_room_transition', value: bindGameApiMethod(api, 'set_room_transition') },
+      { name: 'get_room_transition', value: bindGameApiMethod(api, 'get_room_transition') },
+      { name: 'transition_to_room', value: bindGameApiMethod(api, 'transition_to_room') },
       { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
       { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
       { name: 'enableHotspot', value: bindGameApiMethod(api, 'enableHotspot') },
@@ -9231,6 +9363,322 @@
   exposeScriptGlobals();
 
   // ============================================
+  // TRANSIZIONI TRA STANZE
+  // ============================================
+  function normalizeRoomTransitionType(value) {
+    if (value == null) return null;
+    const key = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (key === 'cut' || key === 'instant') return 'none';
+    if (key === 'fadeblack' || key === 'fadetoblack' || key === 'black') return 'fade_to_black';
+    if (key === 'fadewhite' || key === 'fadetowhite' || key === 'white') return 'fade_to_white';
+    if (ROOM_TRANSITION_TYPES.indexOf(key) >= 0) return key;
+    return null;
+  }
+
+  function normalizeRoomTransitionDuration(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.min(ROOM_TRANSITION_DURATION_MAX, Math.round(n));
+  }
+
+  function applyProjectRoomTransitionSettings(settings) {
+    const s = settings || {};
+    const type = normalizeRoomTransitionType(s.roomTransition);
+    roomTransitionRuntime.type = type || 'none';
+    const duration = normalizeRoomTransitionDuration(s.roomTransitionDuration);
+    roomTransitionRuntime.duration = duration == null ? ROOM_TRANSITION_DURATION_DEFAULT : duration;
+    cancelRoomTransitionVisual();
+  }
+
+  function parseLoadRoomCall(playerX, playerY, playerDirection, transitionOptions) {
+    if (playerX && typeof playerX === 'object') {
+      const opt = playerX;
+      return {
+        playerX: opt.x !== undefined ? opt.x : opt.playerX,
+        playerY: opt.y !== undefined ? opt.y : opt.playerY,
+        playerDirection: opt.direction !== undefined ? opt.direction : opt.playerDirection,
+        transition: opt.transition,
+        duration: opt.duration
+      };
+    }
+    const extra = (transitionOptions && typeof transitionOptions === 'object') ? transitionOptions : null;
+    return {
+      playerX: playerX,
+      playerY: playerY,
+      playerDirection: playerDirection,
+      transition: extra ? extra.transition : undefined,
+      duration: extra ? extra.duration : undefined
+    };
+  }
+
+  function resolveRoomTransitionEffect(transitionOverride, durationOverride) {
+    let type = roomTransitionRuntime.type;
+    if (transitionOverride !== undefined && transitionOverride !== null && String(transitionOverride).trim() !== '') {
+      const normalized = normalizeRoomTransitionType(transitionOverride);
+      if (!normalized) {
+        GameAPI.error(`Transizione non valida: usa ${ROOM_TRANSITION_TYPE_HINT}`);
+      } else {
+        type = normalized;
+      }
+    }
+    let duration = roomTransitionRuntime.duration;
+    if (durationOverride !== undefined && durationOverride !== null && String(durationOverride).trim() !== '') {
+      const normalizedDuration = normalizeRoomTransitionDuration(durationOverride);
+      if (normalizedDuration == null) {
+        GameAPI.error('Durata transizione non valida: serve un numero di millisecondi >= 0');
+      } else {
+        duration = normalizedDuration;
+      }
+    }
+    return { type: type, duration: duration };
+  }
+
+  function ensureSizedCanvas(current, width, height) {
+    if (current && current.width === width && current.height === height) return current;
+    const next = document.createElement('canvas');
+    next.width = width;
+    next.height = height;
+    return next;
+  }
+
+  function roomTransitionProgress() {
+    const dur = roomTransitionRuntime.effectDuration;
+    if (!(dur > 0)) return 1;
+    const raw = (performance.now() - roomTransitionRuntime.startedAt) / dur;
+    if (raw < 0) return 0;
+    if (raw > 1) return 1;
+    return raw;
+  }
+
+  function easeRoomTransition(t) {
+    const x = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return x * x * (3 - 2 * x);
+  }
+
+  function captureWorldFrame() {
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    const snap = document.createElement('canvas');
+    snap.width = w;
+    snap.height = h;
+    const sctx = snap.getContext('2d');
+    sctx.fillStyle = '#000';
+    sctx.fillRect(0, 0, w, h);
+    renderWorld(sctx);
+    return snap;
+  }
+
+  function beginRoomTransitionHold() {
+    roomTransitionSerial += 1;
+    const token = roomTransitionSerial;
+    const snap = captureWorldFrame();
+    roomTransitionRuntime.snapshot = snap;
+    roomTransitionRuntime.holdSnapshot = snap;
+    roomTransitionRuntime.active = false;
+    roomTransitionRuntime.onComplete = null;
+    if (!roomTransitionRuntime.inputLockHeld) {
+      acquireInputLock('room-transition');
+      roomTransitionRuntime.inputLockHeld = true;
+    }
+    return token;
+  }
+
+  function startRoomTransitionAnimation(type, duration) {
+    roomTransitionRuntime.holdSnapshot = null;
+    roomTransitionRuntime.effectType = type;
+    roomTransitionRuntime.effectDuration = duration;
+    roomTransitionRuntime.startedAt = performance.now();
+    roomTransitionRuntime.active = true;
+    log(`[Runtime] Transizione stanza "${type}" (${duration} ms)`, 'info');
+  }
+
+  function completeRoomTransition(expectedToken) {
+    if (expectedToken != null && expectedToken !== roomTransitionSerial) return;
+    const cb = roomTransitionRuntime.onComplete;
+    const held = roomTransitionRuntime.inputLockHeld;
+    roomTransitionRuntime.active = false;
+    roomTransitionRuntime.holdSnapshot = null;
+    roomTransitionRuntime.snapshot = null;
+    roomTransitionRuntime.onComplete = null;
+    roomTransitionRuntime.inputLockHeld = false;
+    if (held) releaseInputLock('room-transition');
+    if (typeof cb === 'function') cb();
+  }
+
+  function cancelRoomTransitionVisual() {
+    completeRoomTransition(roomTransitionSerial);
+  }
+
+  function waitRoomTransition(token) {
+    if (!roomTransitionRuntime.active || token !== roomTransitionSerial) {
+      return Promise.resolve();
+    }
+    return new Promise(resolve => {
+      roomTransitionRuntime.onComplete = resolve;
+    });
+  }
+
+  function armRoomTransitionCompletion(token) {
+    const step = () => {
+      if (token !== roomTransitionSerial) return;
+      if (!roomTransitionRuntime.active) return;
+      if (roomTransitionProgress() >= 1) {
+        completeRoomTransition(token);
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function tickRoomTransition() {
+    if (!roomTransitionRuntime.active) return;
+    if (roomTransitionProgress() >= 1) {
+      completeRoomTransition(roomTransitionSerial);
+    }
+  }
+
+  function ensureDissolveMask(progress) {
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    if (!dissolveNoise || dissolveNoiseW !== w || dissolveNoiseH !== h) {
+      dissolveNoise = new Uint8Array(w * h);
+      for (let i = 0; i < dissolveNoise.length; i++) {
+        dissolveNoise[i] = (Math.random() * 256) | 0;
+      }
+      dissolveNoiseW = w;
+      dissolveNoiseH = h;
+      dissolveMaskCanvas = null;
+    }
+    dissolveMaskCanvas = ensureSizedCanvas(dissolveMaskCanvas, w, h);
+    const mctx = dissolveMaskCanvas.getContext('2d');
+    const img = mctx.createImageData(w, h);
+    const data = img.data;
+    const threshold = progress * 256;
+    const noise = dissolveNoise;
+    for (let i = 0, p = 0; i < noise.length; i++, p += 4) {
+      data[p + 3] = noise[i] < threshold ? 255 : 0;
+    }
+    mctx.putImageData(img, 0, 0);
+    return dissolveMaskCanvas;
+  }
+
+  function renderWorld(targetCtx) {
+    if (!targetCtx) return;
+    if (targetCtx === ctx) {
+      renderWorldContents();
+      return;
+    }
+    const previous = ctx;
+    ctx = targetCtx;
+    try {
+      renderWorldContents();
+    } finally {
+      ctx = previous;
+    }
+  }
+
+  function drawTransitionOverlay(targetCtx, progress) {
+    const w = canvas.width;
+    const h = canvas.height;
+    if (!roomTransitionRuntime.snapshot || w <= 0 || h <= 0) return;
+    transitionBuffer = ensureSizedCanvas(transitionBuffer, w, h);
+    const bctx = transitionBuffer.getContext('2d');
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.globalAlpha = 1;
+    bctx.globalCompositeOperation = 'source-over';
+    bctx.clearRect(0, 0, w, h);
+
+    const type = roomTransitionRuntime.effectType;
+    if (type === 'fade') {
+      bctx.globalAlpha = 1 - progress;
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+    } else if (type === 'iris') {
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+      bctx.globalCompositeOperation = 'destination-out';
+      bctx.fillStyle = '#000';
+      bctx.beginPath();
+      const radius = (Math.hypot(w, h) / 2 + 2) * progress;
+      bctx.arc(w / 2, h / 2, Math.max(0, radius), 0, Math.PI * 2);
+      bctx.fill();
+    } else if (type === 'dissolve') {
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+      bctx.globalCompositeOperation = 'destination-out';
+      bctx.drawImage(ensureDissolveMask(progress), 0, 0);
+    } else {
+      bctx.globalAlpha = 1 - progress;
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+    }
+
+    targetCtx.save();
+    targetCtx.globalAlpha = 1;
+    targetCtx.globalCompositeOperation = 'source-over';
+    targetCtx.drawImage(transitionBuffer, 0, 0);
+    targetCtx.restore();
+  }
+
+  function drawColorFadeTransition(color) {
+    const tr = roomTransitionRuntime;
+    const p = easeRoomTransition(roomTransitionProgress());
+    const w = canvas.width;
+    const h = canvas.height;
+    // Prima metà: stanza vecchia → colore. Seconda metà: colore → stanza nuova.
+    if (p < 0.5) {
+      const cover = p / 0.5;
+      if (tr.snapshot) ctx.drawImage(tr.snapshot, 0, 0);
+      ctx.save();
+      ctx.globalAlpha = cover;
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+      return;
+    }
+    const uncover = (p - 0.5) / 0.5;
+    renderWorld(ctx);
+    ctx.save();
+    ctx.globalAlpha = 1 - uncover;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  function drawWorldWithRoomTransition() {
+    const tr = roomTransitionRuntime;
+    if (tr.holdSnapshot && !tr.active) {
+      ctx.drawImage(tr.holdSnapshot, 0, 0);
+      return;
+    }
+    if (tr.active && tr.effectType === 'fade_to_black') {
+      drawColorFadeTransition('#000');
+      return;
+    }
+    if (tr.active && tr.effectType === 'fade_to_white') {
+      drawColorFadeTransition('#fff');
+      return;
+    }
+    if (tr.active && tr.effectType === 'slide' && tr.snapshot) {
+      const p = easeRoomTransition(roomTransitionProgress());
+      const w = canvas.width;
+      const h = canvas.height;
+      worldBuffer = ensureSizedCanvas(worldBuffer, Math.max(1, w), Math.max(1, h));
+      const bctx = worldBuffer.getContext('2d');
+      bctx.setTransform(1, 0, 0, 1, 0, 0);
+      bctx.globalAlpha = 1;
+      bctx.globalCompositeOperation = 'source-over';
+      bctx.fillStyle = '#000';
+      bctx.fillRect(0, 0, worldBuffer.width, worldBuffer.height);
+      renderWorld(bctx);
+      ctx.drawImage(tr.snapshot, Math.round(-p * w), 0);
+      ctx.drawImage(worldBuffer, Math.round((1 - p) * w), 0);
+      return;
+    }
+    renderWorld(ctx);
+    if (tr.active && tr.snapshot) {
+      drawTransitionOverlay(ctx, easeRoomTransition(roomTransitionProgress()));
+    }
+  }
+
+  // ============================================
   // RENDERING
   // ============================================
   /**
@@ -9248,10 +9696,17 @@
       return;
     }
 
-    // Clear canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    drawWorldWithRoomTransition();
+    renderOverlayHud();
+  }
+
+  function renderWorldContents() {
     // Renderizza room corrente
     if (gameState.currentRoom) {
       const room = gameState.currentRoom;
@@ -9371,7 +9826,9 @@
         ctx.restore();
       });
     }
+  }
 
+  function renderOverlayHud() {
     renderDialogueBalloon(ctx);
     renderDialogueChoices(ctx);
 
@@ -9433,6 +9890,7 @@
   // GAME LOOP
   // ============================================
   function update(deltaTime) {
+    tickRoomTransition();
     updateDialogueAppear(deltaTime);
 
     if (gameState.currentRoom && Array.isArray(gameState.currentRoom.animationInstances)) {
@@ -9688,6 +10146,7 @@
 
   function stopGameLoop() {
     gameState.isRunning = false;
+    cancelRoomTransitionVisual();
     endAllDialogue();
     if (gameState.animationFrameId) {
       cancelAnimationFrame(gameState.animationFrameId);
