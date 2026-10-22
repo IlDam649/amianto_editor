@@ -543,12 +543,18 @@ document.addEventListener("DOMContentLoaded", () => {
   function disableRoomCanvasEditing() {
     isDrawingWalkable = false;
     isDrawingHotspot = false;
+    isDrawingWalkBehind = false;
     isDraggingWalkableVertex = false;
     isDraggingHotspotVertex = false;
+    isDraggingWalkBehindVertex = false;
+    isDraggingWalkBehindBaseline = false;
     draggedWalkableVertexIndex = -1;
     draggedHotspotVertexIndex = -1;
+    draggedWalkBehindVertexIndex = -1;
+    draggedWalkBehindBaselineId = null;
     selectedWalkableVertexIndex = -1;
     selectedHotspotVertexIndex = -1;
+    selectedWalkBehindVertexIndex = -1;
     isDraggingObject = false;
     draggedObject = null;
     isDraggingAnimationInstance = false;
@@ -601,6 +607,19 @@ document.addEventListener("DOMContentLoaded", () => {
   let isDraggingHotspotVertex = false;
   let draggedHotspotVertexIndex = -1;
   let selectedHotspotVertexIndex = -1;
+
+  // Walk-behinds (multiple polygons per room + depth baseline)
+  // Each: { id, name, points: [{x,y}], baselineY }
+  // Character above baselineY = behind (masked by polygon); below = in front
+  let walkBehinds = [];
+  let activeWalkBehindId = null;
+  let isDrawingWalkBehind = false;
+  let showWalkBehinds = true;
+  let isDraggingWalkBehindVertex = false;
+  let draggedWalkBehindVertexIndex = -1;
+  let selectedWalkBehindVertexIndex = -1;
+  let isDraggingWalkBehindBaseline = false;
+  let draggedWalkBehindBaselineId = null;
 
   // Character scaling system
   let scalingForegroundY = null; // Y coordinate for foreground (first plane) - max scale - must be BELOW background
@@ -713,7 +732,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], walkBehinds: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
@@ -748,15 +767,20 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedSceneObjectId = null;
     walkableArea = [];
     hotspots = [];
+    walkBehinds = [];
     activeHotspotId = null;
+    activeWalkBehindId = null;
     selectedWalkableVertexIndex = -1;
     selectedHotspotVertexIndex = -1;
+    selectedWalkBehindVertexIndex = -1;
     draggedWalkableVertexIndex = -1;
     draggedHotspotVertexIndex = -1;
+    draggedWalkBehindVertexIndex = -1;
     scalingForegroundY = null;
     scalingBackgroundY = null;
     isDrawingWalkable = false;
     isDrawingHotspot = false;
+    isDrawingWalkBehind = false;
     disableRoomCanvasEditing();
   }
 
@@ -811,6 +835,11 @@ document.addEventListener("DOMContentLoaded", () => {
     hotspots = r.hotspots;
     if (activeHotspotId && !hotspots.some(h => h.id === activeHotspotId)) {
       activeHotspotId = null;
+    }
+    if (!Array.isArray(r.walkBehinds)) r.walkBehinds = [];
+    walkBehinds = r.walkBehinds;
+    if (activeWalkBehindId && !walkBehinds.some(wb => wb.id === activeWalkBehindId)) {
+      activeWalkBehindId = null;
     }
     // Load character scaling data
     try {
@@ -1800,6 +1829,58 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.restore();
     }
 
+    // Walk-behinds overlay (polygon + depth baseline)
+    if (showWalkBehinds && walkBehinds.length > 0) {
+      ctx.save();
+      for (const wb of walkBehinds) {
+        if (!wb) continue;
+        const pts = Array.isArray(wb.points) ? wb.points : [];
+        const isSelected = wb.id === activeWalkBehindId;
+        if (pts.length > 1) {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = isSelected ? 'rgba(200,80,255,1.0)' : 'rgba(180,70,230,0.9)';
+          ctx.fillStyle = isSelected ? 'rgba(200,80,255,0.18)' : 'rgba(180,70,230,0.12)';
+          ctx.lineWidth = isSelected ? 3 : 2;
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          if (!isDrawingWalkBehind && pts.length > 2) ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          for (let i = 0; i < pts.length; i++) {
+            const p = pts[i];
+            ctx.beginPath();
+            const isSelectedVertex = isSelected && i === selectedWalkBehindVertexIndex;
+            const radius = isSelectedVertex ? 5 : 3;
+            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = isSelectedVertex ? 'rgba(255,200,255,1.0)' : 'rgba(200,80,255,0.95)';
+            ctx.fill();
+          }
+        }
+        if (typeof wb.baselineY === 'number') {
+          ctx.strokeStyle = isSelected ? 'rgba(255,80,180,1.0)' : 'rgba(255,80,180,0.75)';
+          ctx.lineWidth = (isSelected ? 3 : 2) / editorState.zoom;
+          ctx.setLineDash([8, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, wb.baselineY);
+          ctx.lineTo(gameViewport.width, wb.baselineY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.save();
+          const label = (wb.name || 'Walk-Behind') + ' baseline (above=behind)';
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(5, wb.baselineY - 20, Math.min(320, label.length * 7 + 16), 16);
+          ctx.fillStyle = 'rgba(255,80,180,1.0)';
+          ctx.font = 'bold 11px Arial';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, 10, wb.baselineY - 12);
+          ctx.restore();
+        }
+      }
+      ctx.restore();
+    }
+
     // Character scaling lines overlay
     if (showScalingLines) {
       ctx.save();
@@ -2078,9 +2159,34 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
         }
+        // Check for walk-behind baseline drag (rooms tab)
+        if (activeTab === 'rooms' && showWalkBehinds && !isDrawingWalkable && !isDrawingHotspot && !isDrawingWalkBehind) {
+          const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+          const wbBaselineId = findWalkBehindBaselineNear(x, y);
+          if (wbBaselineId) {
+            e.preventDefault();
+            isDraggingWalkBehindBaseline = true;
+            draggedWalkBehindBaselineId = wbBaselineId;
+            if (activeWalkBehindId !== wbBaselineId) {
+              activeWalkBehindId = wbBaselineId;
+              activeHotspotId = null;
+              selectedHotspotVertexIndex = -1;
+              selectedWalkBehindVertexIndex = -1;
+              selectedSceneObjectId = null;
+              selectedAnimationInstanceId = null;
+              refreshWalkBehindsListUI();
+              refreshHotspotsListUI();
+              refreshSceneObjectsListUI();
+              refreshRoomAnimationInstancesListUI();
+            }
+            canvas.style.cursor = 'ns-resize';
+            redraw();
+            return;
+          }
+        }
         // Check for scaling line drag (only in rooms tab, before scene objects)
         // Reuse activeTab already declared above
-        if (activeTab === 'rooms' && showScalingLines && !isDrawingWalkable && !isDrawingHotspot) {
+        if (activeTab === 'rooms' && showScalingLines && !isDrawingWalkable && !isDrawingHotspot && !isDrawingWalkBehind) {
           const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
           const lineType = findScalingLineNear(x, y);
           if (lineType) {
@@ -2095,8 +2201,8 @@ document.addEventListener("DOMContentLoaded", () => {
         // Check if clicking on a scene object or room animation (rooms tab only)
         if (activeTab === 'rooms') {
           const worldPos = screenToWorld(e.clientX, e.clientY);
-          // Lock scene objects / animations if a hotspot is selected
-          if (activeHotspotId) {
+          // Lock scene objects / animations if a hotspot or walk-behind is selected
+          if (activeHotspotId || activeWalkBehindId) {
             return;
           }
 
@@ -2168,11 +2274,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     canvas.addEventListener('mousemove', function(e) {
       // Don't override cursor / hit hints while dragging room items
-      if (!isDraggingObject && !isDraggingAnimationInstance && !isDraggingScalingLine && !editorState.isPanning) {
+      if (!isDraggingObject && !isDraggingAnimationInstance && !isDraggingScalingLine && !isDraggingWalkBehindBaseline && !editorState.isPanning) {
         checkContextualCursor(e);
-        const scalingCursorSet = updateScalingCursor(e);
-        if (!scalingCursorSet) {
-          updateHotspotCursor(e);
+        const wbCursorSet = typeof updateWalkBehindCursor === 'function' && updateWalkBehindCursor(e);
+        if (!wbCursorSet) {
+          const scalingCursorSet = updateScalingCursor(e);
+          if (!scalingCursorSet) {
+            updateHotspotCursor(e);
+          }
         }
       }
       
@@ -2187,6 +2296,22 @@ document.addEventListener("DOMContentLoaded", () => {
         editorState.lastPanX = e.clientX;
         editorState.lastPanY = e.clientY;
         
+        redraw();
+      } else if (isDraggingWalkBehindBaseline && draggedWalkBehindBaselineId) {
+        if (!isRoomCanvasActive()) {
+          isDraggingWalkBehindBaseline = false;
+          draggedWalkBehindBaselineId = null;
+          return;
+        }
+        e.preventDefault();
+        const { y } = eventToRoomCoordinates(e.clientX, e.clientY);
+        const clampedY = Math.max(0, Math.min(gameViewport.height, y));
+        const wb = walkBehinds.find(w => w.id === draggedWalkBehindBaselineId);
+        if (wb) {
+          wb.baselineY = clampedY;
+          persistWalkBehindsToRoom();
+        }
+        canvas.style.cursor = 'ns-resize';
         redraw();
       } else if (isDraggingScalingLine && draggedScalingLineType) {
         if (!isRoomCanvasActive()) {
@@ -2230,8 +2355,8 @@ document.addEventListener("DOMContentLoaded", () => {
           canvas.style.cursor = 'default';
           return;
         }
-        // Lock scene objects if a hotspot is selected
-        if (activeHotspotId) {
+        // Lock scene objects if a hotspot or walk-behind is selected
+        if (activeHotspotId || activeWalkBehindId) {
           isDraggingObject = false;
           draggedObject = null;
           canvas.style.cursor = 'default';
@@ -2260,7 +2385,7 @@ document.addEventListener("DOMContentLoaded", () => {
           canvas.style.cursor = 'default';
           return;
         }
-        if (activeHotspotId) {
+        if (activeHotspotId || activeWalkBehindId) {
           isDraggingAnimationInstance = false;
           draggedAnimationInstance = null;
           canvas.style.cursor = 'default';
@@ -2405,6 +2530,19 @@ document.addEventListener("DOMContentLoaded", () => {
       if (editorState.isPanning) {
         editorState.isPanning = false;
         canvas.style.cursor = 'default';
+      } else if (isDraggingWalkBehindBaseline) {
+        if (draggedWalkBehindBaselineId) {
+          const wb = walkBehinds.find(w => w.id === draggedWalkBehindBaselineId);
+          if (wb && typeof wb.baselineY === 'number') {
+            wb.baselineY = Math.round(wb.baselineY);
+            persistWalkBehindsToRoom();
+            if (typeof refreshWalkBehindsListUI === 'function') refreshWalkBehindsListUI();
+          }
+        }
+        isDraggingWalkBehindBaseline = false;
+        draggedWalkBehindBaselineId = null;
+        canvas.style.cursor = 'default';
+        redraw();
       } else if (isDraggingScalingLine) {
         // Round final coordinates when drag ends
         if (draggedScalingLineType === 'foreground' && scalingForegroundY !== null) {
@@ -2703,6 +2841,18 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    if (isDrawingWalkBehind) {
+      if (!activeWalkBehindId) return;
+      const wb = walkBehinds.find(w => w.id === activeWalkBehindId);
+      if (!wb) return;
+      if (!Array.isArray(wb.points)) wb.points = [];
+      wb.points.push({ x: Math.round(x), y: Math.round(y) });
+      persistWalkBehindsToRoom();
+      refreshWalkBehindsListUI();
+      redraw();
+      return;
+    }
+
     // âš ï¸ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
     // sul canvas dell'EDITOR, causando doppia esecuzione perchÃ©:
     // 1. Il listener in main.js gestiva i click sul canvas dell'editor
@@ -2798,8 +2948,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // giÃ  gestito sopra
     if (isDraggingWalkableVertex) return;
-    // evita conflitti con hotspot: se stai disegnando hotspot non selezionare walkable
-    if (isDrawingHotspot) return;
+    // evita conflitti con hotspot / walk-behind
+    if (isDrawingHotspot || isDrawingWalkBehind) return;
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
     const idx = findWalkableVertexNear(x, y);
     if (idx >= 0) {
@@ -2819,6 +2969,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Walkable area controls
   window.startWalkableDrawing = function() {
     if (!isRoomCanvasActive()) return;
+    isDrawingHotspot = false;
+    isDrawingWalkBehind = false;
     isDrawingWalkable = true; showWalkable = true; redraw();
   };
   window.finishWalkableDrawing = function() {
@@ -3017,12 +3169,15 @@ document.addEventListener("DOMContentLoaded", () => {
           selectedHotspotVertexIndex = -1;
         } else {
           activeHotspotId = hs.id;
+          activeWalkBehindId = null;
+          selectedWalkBehindVertexIndex = -1;
           selectedSceneObjectId = null;
           selectedAnimationInstanceId = null;
           isDrawingHotspot = false;
           selectedHotspotVertexIndex = -1;
         }
         refreshHotspotsListUI();
+        if (typeof refreshWalkBehindsListUI === 'function') refreshWalkBehindsListUI();
         refreshSceneObjectsListUI();
         refreshRoomAnimationInstancesListUI();
         redraw();
@@ -3143,8 +3298,11 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     hotspots.push(hs);
     activeHotspotId = hs.id;
+    activeWalkBehindId = null;
+    selectedWalkBehindVertexIndex = -1;
     const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
     refreshHotspotsListUI();
+    if (typeof refreshWalkBehindsListUI === 'function') refreshWalkBehindsListUI();
     if (typeof refreshHotspotScriptTargets === 'function') refreshHotspotScriptTargets();
     if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     redraw();
@@ -3157,6 +3315,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     isDrawingWalkable = false; // ensure mutually exclusive
+    isDrawingWalkBehind = false;
     isDrawingHotspot = true;
     showHotspots = true;
     redraw();
@@ -3231,7 +3390,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.button !== 0) return; // only left button for dragging vertices
     if (editorState.isPanning) return; // already handled by panning
     if (!isRoomCanvasActive()) return;
-    if (isDrawingWalkable) return; // hotspot vertex editing disabled while drawing walkable
+    if (isDrawingWalkable || isDrawingWalkBehind) return; // hotspot vertex editing disabled while drawing walkable/wb
 
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
     if (!hs) return;
@@ -3343,7 +3502,7 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener('click', (e) => {
     if (!isRoomCanvasActive()) return;
     if (isDrawingWalkable) return; // handled earlier
-    if (isDrawingHotspot) return; // handled earlier for adding points
+    if (isDrawingHotspot || isDrawingWalkBehind) return; // handled earlier for adding points
     if (isDraggingHotspotVertex) return; // avoid double triggering after drag
     
     const { hs, x, y } = getActiveHotspotAndLocalXY(e.clientX, e.clientY);
@@ -3421,21 +3580,37 @@ document.addEventListener("DOMContentLoaded", () => {
     return false; // Return false to indicate cursor was not set
   }
 
-  // Keyboard shortcuts for hotspot vertex editing
+  // Keyboard shortcuts for hotspot / walk-behind vertex editing
   document.addEventListener('keydown', (e) => {
-    // Only handle if we're in the rooms tab and have an active hotspot
     const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
-    if (activeTab !== 'rooms' || !activeHotspotId) return;
-    
-    // Delete key - delete selected hotspot vertex
+    if (activeTab !== 'rooms') return;
+
+    if (activeWalkBehindId) {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedWalkBehindVertexIndex >= 0) {
+          e.preventDefault();
+          deleteSelectedWalkBehindVertex();
+        }
+      }
+      if (e.key === 'Escape') {
+        if (selectedWalkBehindVertexIndex >= 0) {
+          e.preventDefault();
+          selectedWalkBehindVertexIndex = -1;
+          redraw();
+        }
+      }
+      return;
+    }
+
+    if (!activeHotspotId) return;
+
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (selectedHotspotVertexIndex >= 0) {
         e.preventDefault();
         deleteSelectedHotspotVertex();
       }
     }
-    
-    // Escape key - deselect vertex
+
     if (e.key === 'Escape') {
       if (selectedHotspotVertexIndex >= 0) {
         e.preventDefault();
@@ -3444,6 +3619,406 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
   });
+
+  // ===== Walk-Behinds controls & UI =====
+  const walkBehindsListContainer = document.getElementById('walkbehinds-list');
+
+  function defaultWalkBehindBaselineY() {
+    return Math.round((gameViewport && gameViewport.height) ? gameViewport.height * 0.5 : 300);
+  }
+
+  function persistWalkBehindsToRoom() {
+    const r = rooms.get(currentRoomId);
+    if (r) r.walkBehinds = walkBehinds;
+  }
+
+  function refreshWalkBehindsListUI() {
+    if (!walkBehindsListContainer) return;
+    walkBehindsListContainer.innerHTML = '';
+
+    walkBehinds.forEach((wb) => {
+      const item = document.createElement('div');
+      item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      item.dataset.walkBehindId = wb.id;
+      const isSelected = activeWalkBehindId === wb.id;
+
+      const name = document.createElement('div');
+      name.innerHTML = `<strong>${wb.name || 'Walk-Behind'}</strong>`;
+      const meta = document.createElement('div');
+      meta.className = 'small text-muted mt-1';
+      const bl = (typeof wb.baselineY === 'number') ? Math.round(wb.baselineY) : '—';
+      meta.textContent = `Baseline Y: ${bl} · pts: ${(wb.points && wb.points.length) || 0}`;
+      name.appendChild(meta);
+
+      const controls = document.createElement('div');
+
+      const btnSelect = document.createElement('button');
+      btnSelect.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      btnSelect.title = isSelected ? 'Click to deselect' : 'Select walk-behind (locks objects & animations)';
+      btnSelect.textContent = isSelected ? 'Selected' : 'Select';
+      btnSelect.addEventListener('click', () => {
+        if (activeWalkBehindId === wb.id) {
+          activeWalkBehindId = null;
+          selectedWalkBehindVertexIndex = -1;
+        } else {
+          activeWalkBehindId = wb.id;
+          activeHotspotId = null;
+          selectedHotspotVertexIndex = -1;
+          selectedSceneObjectId = null;
+          selectedAnimationInstanceId = null;
+          isDrawingWalkBehind = false;
+          selectedWalkBehindVertexIndex = -1;
+        }
+        refreshWalkBehindsListUI();
+        refreshHotspotsListUI();
+        refreshSceneObjectsListUI();
+        refreshRoomAnimationInstancesListUI();
+        redraw();
+      });
+
+      const btnEdit = document.createElement('button');
+      btnEdit.className = 'btn btn-sm btn-outline-light me-1';
+      btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
+      btnEdit.textContent = 'Rename';
+      btnEdit.disabled = !isSelected;
+      btnEdit.addEventListener('click', async () => {
+        if (!isSelected) {
+          showNotification('Select the walk-behind before editing it', 'warning');
+          return;
+        }
+        const newName = await showInputPrompt({
+          title: 'Rename Walk-Behind',
+          message: 'Walk-behind name:',
+          defaultValue: wb.name || 'Walk-Behind'
+        });
+        if (newName && newName.trim() !== '') {
+          wb.name = newName.trim();
+          persistWalkBehindsToRoom();
+          refreshWalkBehindsListUI();
+          if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
+        }
+      });
+
+      const btnClear = document.createElement('button');
+      btnClear.className = 'btn btn-sm btn-outline-danger me-1';
+      btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
+      btnClear.textContent = 'Clear';
+      btnClear.disabled = !isSelected;
+      btnClear.addEventListener('click', () => {
+        if (!isSelected) {
+          showNotification('Select the walk-behind before editing it', 'warning');
+          return;
+        }
+        wb.points = [];
+        if (activeWalkBehindId === wb.id) selectedWalkBehindVertexIndex = -1;
+        persistWalkBehindsToRoom();
+        refreshWalkBehindsListUI();
+        redraw();
+      });
+
+      const btnDelete = document.createElement('button');
+      btnDelete.className = 'btn btn-sm btn-danger';
+      btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
+      btnDelete.textContent = 'Delete';
+      btnDelete.disabled = !isSelected;
+      btnDelete.addEventListener('click', async () => {
+        if (!isSelected) {
+          showNotification('Select the walk-behind before editing it', 'warning');
+          return;
+        }
+        if (!(await showConfirmDialog({ title: 'Delete Walk-Behind', message: 'Delete this walk-behind?', danger: true }))) return;
+        const index = walkBehinds.findIndex(w => w.id === wb.id);
+        if (index >= 0) walkBehinds.splice(index, 1);
+        if (activeWalkBehindId === wb.id) activeWalkBehindId = walkBehinds[0] ? walkBehinds[0].id : null;
+        selectedWalkBehindVertexIndex = -1;
+        persistWalkBehindsToRoom();
+        refreshWalkBehindsListUI();
+        redraw();
+      });
+
+      controls.appendChild(btnSelect);
+      controls.appendChild(btnEdit);
+      controls.appendChild(btnClear);
+      controls.appendChild(btnDelete);
+
+      item.appendChild(name);
+      item.appendChild(controls);
+      walkBehindsListContainer.appendChild(item);
+    });
+
+    if (typeof Sortable !== 'undefined') {
+      Sortable.create(walkBehindsListContainer, {
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        filter: 'input,button,label,.form-check',
+        preventOnFilter: false,
+        onEnd: (evt) => {
+          const oldI = evt.oldIndex;
+          const newI = evt.newIndex;
+          if (oldI === newI) return;
+          const moved = walkBehinds.splice(oldI, 1)[0];
+          walkBehinds.splice(newI, 0, moved);
+          persistWalkBehindsToRoom();
+          refreshWalkBehindsListUI();
+          redraw();
+        }
+      });
+    }
+  }
+
+  window.addWalkBehind = async function() {
+    const defaultName = `Walk-Behind ${walkBehinds.length + 1}`;
+    const name = await showInputPrompt({
+      title: 'New Walk-Behind',
+      message: 'Walk-behind name:',
+      defaultValue: defaultName
+    });
+    if (name === null) return;
+    const wb = {
+      id: uid('walkbehind'),
+      name: name && name.trim() !== '' ? name.trim() : defaultName,
+      points: [],
+      baselineY: defaultWalkBehindBaselineY()
+    };
+    walkBehinds.push(wb);
+    activeWalkBehindId = wb.id;
+    activeHotspotId = null;
+    selectedHotspotVertexIndex = -1;
+    selectedSceneObjectId = null;
+    selectedAnimationInstanceId = null;
+    persistWalkBehindsToRoom();
+    refreshWalkBehindsListUI();
+    refreshHotspotsListUI();
+    refreshSceneObjectsListUI();
+    refreshRoomAnimationInstancesListUI();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
+    redraw();
+  };
+
+  window.startWalkBehindDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    if (!activeWalkBehindId) {
+      showNotification('No walk-behind selected. Create one first.', 'warning');
+      return;
+    }
+    isDrawingWalkable = false;
+    isDrawingHotspot = false;
+    isDrawingWalkBehind = true;
+    showWalkBehinds = true;
+    redraw();
+  };
+
+  window.finishWalkBehindDrawing = function() {
+    if (!isRoomCanvasActive()) return;
+    isDrawingWalkBehind = false;
+    redraw();
+  };
+
+  window.clearActiveWalkBehind = function() {
+    if (!activeWalkBehindId) return;
+    const wb = walkBehinds.find(w => w.id === activeWalkBehindId);
+    if (!wb) return;
+    wb.points = [];
+    selectedWalkBehindVertexIndex = -1;
+    persistWalkBehindsToRoom();
+    refreshWalkBehindsListUI();
+    redraw();
+  };
+
+  window.toggleWalkBehindsVisibility = function() {
+    showWalkBehinds = !showWalkBehinds;
+    redraw();
+  };
+
+  window.deleteSelectedWalkBehindVertex = function() {
+    if (!activeWalkBehindId) return;
+    if (selectedWalkBehindVertexIndex < 0) return;
+    const wb = walkBehinds.find(w => w.id === activeWalkBehindId);
+    if (!wb || !Array.isArray(wb.points)) return;
+    if (wb.points.length <= 3) {
+      showNotification('A walk-behind must have at least 3 vertices', 'warning');
+      return;
+    }
+    wb.points.splice(selectedWalkBehindVertexIndex, 1);
+    selectedWalkBehindVertexIndex = -1;
+    persistWalkBehindsToRoom();
+    refreshWalkBehindsListUI();
+    redraw();
+    showNotification('Vertex removed from walk-behind', 'success');
+  };
+
+  function getActiveWalkBehindAndLocalXY(clientX, clientY) {
+    if (!activeWalkBehindId) return { wb: null, x: 0, y: 0 };
+    const wb = walkBehinds.find(w => w.id === activeWalkBehindId);
+    if (!wb) return { wb: null, x: 0, y: 0 };
+    const worldPos = screenToWorld(clientX, clientY);
+    return { wb, x: worldPos.x, y: worldPos.y };
+  }
+
+  function findWalkBehindVertexIndexNear(walkBehind, x, y, threshold = 10) {
+    if (!walkBehind.points || walkBehind.points.length === 0) return -1;
+    for (let i = 0; i < walkBehind.points.length; i++) {
+      const point = walkBehind.points[i];
+      const distance = Math.sqrt((point.x - x) ** 2 + (point.y - y) ** 2);
+      if (distance <= threshold) return i;
+    }
+    return -1;
+  }
+
+  function findClosestWalkBehindEdgeIndex(walkBehind, x, y, threshold = 15) {
+    if (!walkBehind.points || walkBehind.points.length < 2) return -1;
+    let closestEdgeIndex = -1;
+    let minDistance = Infinity;
+    for (let i = 0; i < walkBehind.points.length; i++) {
+      const p1 = walkBehind.points[i];
+      const p2 = walkBehind.points[(i + 1) % walkBehind.points.length];
+      const distance = pointToLineDistance(x, y, p1.x, p1.y, p2.x, p2.y);
+      if (distance < minDistance && distance <= threshold) {
+        minDistance = distance;
+        closestEdgeIndex = i;
+      }
+    }
+    return closestEdgeIndex;
+  }
+
+  function findWalkBehindBaselineNear(x, y, tolerance = 10) {
+    if (!showWalkBehinds) return null;
+    // Prefer selected walk-behind baseline when multiple overlap
+    const ordered = [];
+    if (activeWalkBehindId) {
+      const selected = walkBehinds.find(w => w.id === activeWalkBehindId);
+      if (selected) ordered.push(selected);
+    }
+    for (const wb of walkBehinds) {
+      if (!wb || (activeWalkBehindId && wb.id === activeWalkBehindId)) continue;
+      ordered.push(wb);
+    }
+    for (const wb of ordered) {
+      if (typeof wb.baselineY !== 'number') continue;
+      if (Math.abs(y - wb.baselineY) <= tolerance) return wb.id;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (editorState.isPanning) return;
+    if (!isRoomCanvasActive()) return;
+    if (isDrawingWalkable || isDrawingHotspot || isDrawingWalkBehind) return;
+    if (isDraggingWalkBehindBaseline) return;
+
+    const { wb, x, y } = getActiveWalkBehindAndLocalXY(e.clientX, e.clientY);
+    if (!wb) return;
+
+    // Baseline drag has priority (handled in the main rooms mousedown)
+    if (findWalkBehindBaselineNear(x, y)) return;
+
+    const idx = findWalkBehindVertexIndexNear(wb, x, y);
+    if (idx >= 0) {
+      isDraggingWalkBehindVertex = true;
+      draggedWalkBehindVertexIndex = idx;
+      selectedWalkBehindVertexIndex = idx;
+      canvas.style.cursor = 'grabbing';
+      redraw();
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!isDraggingWalkBehindVertex) return;
+    if (!isRoomCanvasActive()) return;
+    const { wb, x, y } = getActiveWalkBehindAndLocalXY(e.clientX, e.clientY);
+    if (!wb) return;
+    const idx = draggedWalkBehindVertexIndex;
+    if (idx < 0 || idx >= wb.points.length) return;
+    wb.points[idx].x = x;
+    wb.points[idx].y = y;
+    persistWalkBehindsToRoom();
+    redraw();
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    if (isDraggingWalkBehindVertex) {
+      if (draggedWalkBehindVertexIndex >= 0) {
+        const wb = walkBehinds.find(w => w.id === activeWalkBehindId);
+        if (wb && wb.points[draggedWalkBehindVertexIndex]) {
+          wb.points[draggedWalkBehindVertexIndex].x = Math.round(wb.points[draggedWalkBehindVertexIndex].x);
+          wb.points[draggedWalkBehindVertexIndex].y = Math.round(wb.points[draggedWalkBehindVertexIndex].y);
+          persistWalkBehindsToRoom();
+        }
+      }
+      isDraggingWalkBehindVertex = false;
+      draggedWalkBehindVertexIndex = -1;
+      canvas.style.cursor = 'default';
+      redraw();
+    }
+    if (isDraggingWalkBehindBaseline) {
+      if (draggedWalkBehindBaselineId) {
+        const wb = walkBehinds.find(w => w.id === draggedWalkBehindBaselineId);
+        if (wb && typeof wb.baselineY === 'number') {
+          wb.baselineY = Math.round(wb.baselineY);
+          persistWalkBehindsToRoom();
+          refreshWalkBehindsListUI();
+        }
+      }
+      isDraggingWalkBehindBaseline = false;
+      draggedWalkBehindBaselineId = null;
+      canvas.style.cursor = 'default';
+      redraw();
+    }
+  });
+
+  canvas.addEventListener('click', (e) => {
+    if (!isRoomCanvasActive()) return;
+    if (isDrawingWalkable || isDrawingHotspot || isDrawingWalkBehind) return;
+    if (isDraggingWalkBehindVertex || isDraggingWalkBehindBaseline) return;
+
+    const { wb, x, y } = getActiveWalkBehindAndLocalXY(e.clientX, e.clientY);
+    if (!wb) return;
+
+    const vertexIdx = findWalkBehindVertexIndexNear(wb, x, y);
+    if (vertexIdx >= 0) {
+      selectedWalkBehindVertexIndex = vertexIdx;
+      redraw();
+      return;
+    }
+
+    const edgeIdx = findClosestWalkBehindEdgeIndex(wb, x, y);
+    if (edgeIdx >= 0) {
+      const newVertex = { x: Math.round(x), y: Math.round(y) };
+      wb.points.splice(edgeIdx + 1, 0, newVertex);
+      selectedWalkBehindVertexIndex = edgeIdx + 1;
+      persistWalkBehindsToRoom();
+      refreshWalkBehindsListUI();
+      redraw();
+      showNotification('Vertex added to walk-behind', 'success');
+    }
+  });
+
+  function updateWalkBehindCursor(e) {
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    if (activeTab !== 'rooms' || isDraggingWalkBehindVertex || isDraggingWalkBehindBaseline || editorState.isPanning) {
+      return false;
+    }
+
+    const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
+    if (findWalkBehindBaselineNear(x, y)) {
+      canvas.style.cursor = 'ns-resize';
+      return true;
+    }
+
+    const { wb } = getActiveWalkBehindAndLocalXY(e.clientX, e.clientY);
+    if (!wb) return false;
+
+    if (findWalkBehindVertexIndexNear(wb, x, y) >= 0) {
+      canvas.style.cursor = 'grab';
+      return true;
+    }
+    if (findClosestWalkBehindEdgeIndex(wb, x, y) >= 0) {
+      canvas.style.cursor = 'crosshair';
+      return true;
+    }
+    return false;
+  }
 
   // Fit canvas to screen (centered, like inventory preview)
   window.fitToScreen = function() {
@@ -3699,12 +4274,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], walkBehinds: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
     refreshForegroundListUI();
     refreshSceneObjectsListUI();
     refreshHotspotsListUI();
+    refreshWalkBehindsListUI();
     refreshRoomsSelector();
     refreshRoomIdDisplay();
     redraw();
@@ -3776,6 +4352,7 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshForegroundListUI();
     refreshSceneObjectsListUI();
     refreshHotspotsListUI();
+    refreshWalkBehindsListUI();
     refreshRoomsSelector();
     refreshRoomIdDisplay();
     redraw();
@@ -3807,6 +4384,7 @@ window.selectRoom = function(roomId) {
     refreshRoomAnimationInstancesListUI();
     refreshRoomAnimationPickerUI();
     refreshHotspotsListUI();
+    refreshWalkBehindsListUI();
     refreshRoomsSelector();
     refreshRoomIdDisplay();
     redraw();
@@ -5459,6 +6037,7 @@ window.selectRoom = function(roomId) {
     refreshSceneObjectsListUI();
     refreshRoomAnimationInstancesListUI();
     refreshHotspotsListUI();
+    if (typeof refreshWalkBehindsListUI === 'function') refreshWalkBehindsListUI();
     if (typeof refreshForegroundListUI === 'function') refreshForegroundListUI();
   }
 
@@ -5472,6 +6051,9 @@ window.selectRoom = function(roomId) {
       activeHotspotId = null;
       selectedHotspotVertexIndex = -1;
       isDrawingHotspot = false;
+      activeWalkBehindId = null;
+      selectedWalkBehindVertexIndex = -1;
+      isDrawingWalkBehind = false;
     }
     refreshRoomSelectionLists();
     redraw();
@@ -7571,6 +8153,9 @@ window.selectRoom = function(roomId) {
       activeHotspotId = null;
       selectedHotspotVertexIndex = -1;
       isDrawingHotspot = false;
+      activeWalkBehindId = null;
+      selectedWalkBehindVertexIndex = -1;
+      isDrawingWalkBehind = false;
     }
     refreshRoomSelectionLists();
     redraw();
@@ -14239,6 +14824,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           autoPlay: inst.autoPlay === true
         })) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+        walkBehinds: Array.isArray(r.walkBehinds) ? r.walkBehinds.map(wb => ({
+          id: wb.id,
+          name: wb.name || 'Walk-Behind',
+          points: Array.isArray(wb.points) ? wb.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+          baselineY: (typeof wb.baselineY === 'number' && !isNaN(wb.baselineY)) ? Number(wb.baselineY) : null
+        })) : [],
         hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
           // âš ï¸ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
           const hotspotObj = {
@@ -14628,6 +15219,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       r.sceneObjects = sceneObjects;
       r.foregrounds = foregrounds;
       r.hotspots = hotspots;
+      r.walkBehinds = walkBehinds;
       r.walkableArea = walkableArea;
     } catch (e) {
       console.warn('[Serialize] syncEditorRoomStateBeforeSerialize:', e);
@@ -17099,7 +17691,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           sceneObjects: [],
           animationInstances: [],
           walkableArea: [],
-          hotspots: []
+          hotspots: [],
+          walkBehinds: []
         }
       ],
       guis: [],
@@ -17800,6 +18393,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               autoPlay: inst.autoPlay === true
             })) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+            walkBehinds: Array.isArray(r.walkBehinds) ? r.walkBehinds.map(wb => ({
+              id: wb.id || uid('walkbehind'),
+              name: wb.name || 'Walk-Behind',
+              points: Array.isArray(wb.points) ? wb.points.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
+              baselineY: (typeof wb.baselineY === 'number' && !isNaN(wb.baselineY)) ? Number(wb.baselineY) : null
+            })) : [],
             hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
               const hotspotObj = {
                 id: h.id || uid('hotspot'),
@@ -17984,6 +18583,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
               if (!isStaleProjectLoad(loadGen)) {
                 refreshHotspotsListUI();
+                if (typeof refreshWalkBehindsListUI === 'function') refreshWalkBehindsListUI();
                 scheduleProjectSizeIndicatorRefresh(300);
               }
           });
@@ -17991,7 +18591,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       } else {
         // assicura almeno una stanza
         const rid = uid('room');
-        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], walkBehinds: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
       // Seleziona prima stanza e sincronizza riferimenti (walkable/hotspot del progetto corrente)
       const firstRoom = rooms.keys().next().value;
@@ -18002,6 +18602,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       refreshSceneObjectsListUI();
       refreshRoomAnimationInstancesListUI();
       refreshHotspotsListUI();
+      refreshWalkBehindsListUI();
       refreshRoomsSelector();
       try { refreshStartRoomSelector(); } catch(_) {}
       redraw();
@@ -18700,6 +19301,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (leaving) {
         leaving.walkableArea = Array.isArray(walkableArea) ? walkableArea.slice() : [];
         leaving.hotspots = Array.isArray(hotspots) ? hotspots : [];
+        leaving.walkBehinds = Array.isArray(walkBehinds) ? walkBehinds : [];
       }
     }
 

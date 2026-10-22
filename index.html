@@ -544,6 +544,27 @@
         <div id="hotspots-list" class="list-group"></div>
       </div>
 
+      <!-- Walk-Behinds Section -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Walk-Behinds</h5>
+        <div class="btn-group w-100 mb-2" role="group">
+          <button class="btn btn-outline-light btn-sm" onclick="addWalkBehind()">New Walk-Behind</button>
+          <button class="btn btn-outline-light btn-sm" onclick="startWalkBehindDrawing()">Start Drawing</button>
+          <button class="btn btn-outline-success btn-sm" onclick="finishWalkBehindDrawing()">Finish</button>
+          <button class="btn btn-outline-danger btn-sm" onclick="clearActiveWalkBehind()">Clear Points</button>
+          <button class="btn btn-outline-warning btn-sm" onclick="toggleWalkBehindsVisibility()">Show/Hide All</button>
+        </div>
+        <small class="text-muted d-block mb-2">
+          <strong>Editing:</strong> Select a walk-behind and click on the canvas to add vertices. Click Finish to close.<br>
+          <strong>Baseline:</strong> Each walk-behind has a horizontal depth line. Above it the character is behind (masked); below it the character is in front.<br>
+          <strong>Vertices:</strong> Click a vertex to select it, drag to move it. Click an edge to add a new vertex. Drag the baseline to adjust depth.
+        </small>
+        <div class="d-grid gap-2 mb-2">
+          <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedWalkBehindVertex()">Delete Selected Vertex</button>
+        </div>
+        <div id="walkbehinds-list" class="list-group"></div>
+      </div>
+
       <!-- Character Scaling Section -->
       <div class="mt-4">
         <h5 style="color: #39ff14; margin-bottom: 15px;">Character Scaling</h5>

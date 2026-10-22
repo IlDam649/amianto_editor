@@ -2530,6 +2530,25 @@
       }
     }
 
+    const walkBehinds = [];
+    if (room.walkBehinds && Array.isArray(room.walkBehinds)) {
+      for (const wbData of room.walkBehinds) {
+        if (!wbData) continue;
+        const points = Array.isArray(wbData.points)
+          ? wbData.points.map(p => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 }))
+          : [];
+        if (points.length < 3) continue;
+        walkBehinds.push({
+          id: wbData.id || `walkbehind_${walkBehinds.length + 1}`,
+          name: wbData.name || 'Walk-Behind',
+          points,
+          baselineY: (typeof wbData.baselineY === 'number' && !isNaN(wbData.baselineY))
+            ? wbData.baselineY
+            : null
+        });
+      }
+    }
+
     gameState.currentRoomId = resolvedRoomId;
     gameState.currentRoom = {
       ...room,
@@ -2538,6 +2557,7 @@
       objects,
       animationInstances,
       hotspots,
+      walkBehinds,
       walkableArea: room.walkableArea || null,
       // Usa valori di default solo se non sono definiti, ma preserva 0 e null
       scalingMinScale: (typeof room.scalingMinScale === 'number' && !isNaN(room.scalingMinScale)) 
@@ -9441,6 +9461,72 @@
     return next;
   }
 
+  // Offscreen buffer for walk-behind character masking
+  let characterWalkBehindBuffer = null;
+
+  /**
+   * Walk-behinds whose baseline places the character behind (character Y above baseline).
+   * Only the portion overlapping the polygon is erased from the character sprite.
+   */
+  function getWalkBehindMasksForCharacter(characterY, room) {
+    if (!room || !Array.isArray(room.walkBehinds) || room.walkBehinds.length === 0) {
+      return [];
+    }
+    const masks = [];
+    for (const wb of room.walkBehinds) {
+      if (!wb || !Array.isArray(wb.points) || wb.points.length < 3) continue;
+      if (typeof wb.baselineY !== 'number' || isNaN(wb.baselineY)) continue;
+      // Above baseline = behind; below = in front
+      if (characterY < wb.baselineY) {
+        masks.push(wb);
+      }
+    }
+    return masks;
+  }
+
+  function fillWalkBehindPolygon(ctx, points) {
+    if (!points || points.length < 3) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /**
+   * Draws character content via drawFn; if behind any walk-behind, punches out
+   * the overlapping polygon portion so only that part of the sprite disappears.
+   */
+  function drawCharacterWithWalkBehindMask(targetCtx, characterY, room, drawFn) {
+    const masks = getWalkBehindMasksForCharacter(characterY, room);
+    if (masks.length === 0) {
+      drawFn(targetCtx);
+      return;
+    }
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) {
+      drawFn(targetCtx);
+      return;
+    }
+    characterWalkBehindBuffer = ensureSizedCanvas(characterWalkBehindBuffer, w, h);
+    const bctx = characterWalkBehindBuffer.getContext('2d');
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.globalAlpha = 1;
+    bctx.globalCompositeOperation = 'source-over';
+    bctx.clearRect(0, 0, w, h);
+    drawFn(bctx);
+    bctx.globalCompositeOperation = 'destination-out';
+    bctx.fillStyle = '#000';
+    for (const wb of masks) {
+      fillWalkBehindPolygon(bctx, wb.points);
+    }
+    bctx.globalCompositeOperation = 'source-over';
+    targetCtx.drawImage(characterWalkBehindBuffer, 0, 0);
+  }
+
   function roomTransitionProgress() {
     const dur = roomTransitionRuntime.effectDuration;
     if (!(dur > 0)) return 1;
@@ -9773,57 +9859,54 @@
         const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
         const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
 
-        ctx.save();
-        ctx.globalAlpha = drawOpacity;
-        
-        if (frame) {
-          try {
-            // Calcola dimensioni frame originali
-            const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
-            const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
-            
-            // Usa le posizioni di rendering (renderX, renderY) per movimento fluido con sub-pixel
-            let drawX = character.renderX;
-            let drawY = character.renderY;
-            
-            // If character has a pivot, adjust drawing position
-            if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
-              // The character.renderX e character.renderY rappresentano la posizione del pivot
-              // Il pivot è relativo al frame originale, quindi calcoliamo l'offset considerando lo scaling
-              drawX = character.renderX - (charDef.pivotX * scale);
-              drawY = character.renderY - (charDef.pivotY * scale);
-            } else {
-              // Senza pivot, il character.renderX e renderY sono la posizione top-left
-              drawX = character.renderX;
-              drawY = character.renderY;
-            }
-            
-            // Disegna il frame scalato
-            const scaledWidth = frameWidth * scale;
-            const scaledHeight = frameHeight * scale;
-            
-            // Abilita sub-pixel rendering per movimento più fluido
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'high';
-            
-            // Se è un canvas (frame specchiato), disegna il canvas
-            if (frame instanceof HTMLCanvasElement) {
-              ctx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
-            } else {
-              // Frame normale (Image)
-              ctx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
-            }
-          } catch (error) {
-            log(`[Runtime] Error rendering character ${character.id}: ${error.message}`, 'warning');
-            // Se c'è un errore, renderizza comunque un placeholder
-            renderCharacterPlaceholder(ctx, character, charDef, scale);
-          }
-        } else {
-          // Nessun frame disponibile, renderizza un placeholder per non far scomparire il character
-          renderCharacterPlaceholder(ctx, character, charDef, scale);
-        }
+        // Depth Y for walk-behind: feet/pivot position (renderY during smooth move)
+        const depthY = (character.renderY !== undefined && character.renderY !== null)
+          ? character.renderY
+          : character.y;
 
-        ctx.restore();
+        const drawCharacterBody = (drawCtx) => {
+          drawCtx.save();
+          drawCtx.globalAlpha = drawOpacity;
+
+          if (frame) {
+            try {
+              const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
+              const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
+
+              let drawX = character.renderX;
+              let drawY = character.renderY;
+
+              if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+                drawX = character.renderX - (charDef.pivotX * scale);
+                drawY = character.renderY - (charDef.pivotY * scale);
+              } else {
+                drawX = character.renderX;
+                drawY = character.renderY;
+              }
+
+              const scaledWidth = frameWidth * scale;
+              const scaledHeight = frameHeight * scale;
+
+              drawCtx.imageSmoothingEnabled = true;
+              drawCtx.imageSmoothingQuality = 'high';
+
+              if (frame instanceof HTMLCanvasElement) {
+                drawCtx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
+              } else {
+                drawCtx.drawImage(frame, drawX, drawY, scaledWidth, scaledHeight);
+              }
+            } catch (error) {
+              log(`[Runtime] Error rendering character ${character.id}: ${error.message}`, 'warning');
+              renderCharacterPlaceholder(drawCtx, character, charDef, scale);
+            }
+          } else {
+            renderCharacterPlaceholder(drawCtx, character, charDef, scale);
+          }
+
+          drawCtx.restore();
+        };
+
+        drawCharacterWithWalkBehindMask(ctx, depthY, room, drawCharacterBody);
       });
     }
   }
