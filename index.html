@@ -23,10 +23,27 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.css">
   <!-- Override tema hints CodeMirror in verde acido (dopo i CSS vendor) -->
   <link rel="stylesheet" href="CSS/codemirror-hints-override.css">
-  <!-- CodeMirror core + JS mode -->
-  <script src="node_modules/codemirror/lib/codemirror.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js'"></script>
-  <script src="node_modules/codemirror/mode/javascript/javascript.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.js'"></script>
-  <script src="node_modules/codemirror/addon/hint/show-hint.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.js'"></script>
+  <!-- CodeMirror core + JS mode.
+       GitHub Pages non pubblica node_modules: lo script locale risponde 404.
+       Cambiare script.src in onerror non riesegue uno script del parser, quindi si inserisce un nuovo tag. -->
+  <script src="node_modules/codemirror/lib/codemirror.js"></script>
+  <script>
+    if (typeof CodeMirror === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js"><\/script>');
+    }
+  </script>
+  <script src="node_modules/codemirror/mode/javascript/javascript.js"></script>
+  <script>
+    if (typeof CodeMirror !== 'undefined' && (!CodeMirror.modes || !CodeMirror.modes.javascript)) {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.js"><\/script>');
+    }
+  </script>
+  <script src="node_modules/codemirror/addon/hint/show-hint.js"></script>
+  <script>
+    if (typeof CodeMirror !== 'undefined' && typeof CodeMirror.showHint !== 'function') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.js"><\/script>');
+    }
+  </script>
   <!-- Jailed rimosso - ora usiamo solo iframe sandboxed -->
 </head>
 <body>
@@ -1264,8 +1281,18 @@
     </div>
   </div>
 
-  <script src="node_modules/sortablejs/Sortable.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js'"></script>
-  <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js'"></script>
+  <script src="node_modules/sortablejs/Sortable.min.js"></script>
+  <script>
+    if (typeof Sortable === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"><\/script>');
+    }
+  </script>
+  <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    if (typeof bootstrap === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"><\/script>');
+    }
+  </script>
   <script src="JS/app-mode.js"></script>
   <script src="JS/editor-dialogs.js"></script>
   <script src="JS/amnt-format.js"></script>
