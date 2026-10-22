@@ -16,7 +16,17 @@
 
 # Amianto Editor
 
-Offline point-and-click game editor for Windows (Electron) and modern browsers. Design rooms, place scene objects, draw walkable areas, manage characters and animations, and script behaviors with JavaScript — no cloud account required.
+Offline point-and-click game editor for Windows / Linux (Electron) and modern browsers. Design rooms, place scene objects, draw walkable areas and **walk-behinds**, manage characters and animations, and script behaviors with JavaScript — no cloud account required.
+
+## Try Amianto Editor
+
+| Mode | How |
+|------|-----|
+| **Online (browser)** | Open **[https://ildam649.github.io/amianto_editor/](https://ildam649.github.io/amianto_editor/)** — no install |
+| **Desktop (local)** | Download Windows or Linux builds from **[Releases](https://github.com/IlDam649/amianto_editor/releases)** |
+
+- **Windows:** installer (`Amianto Editor Setup …exe`) or portable (`Amianto Editor …exe`)
+- **Linux:** `amianto-editor-….tar.gz` — extract and run `amianto-editor`
 
 ## 📚 Documentation
 
@@ -37,7 +47,7 @@ Amianto Editor runs **fully offline**:
 | **Project file** | `.amnt` — single JSON bundle (project + embedded assets as base64) |
 | **Asset cache** | IndexedDB (`JS/local-storage.js`) |
 | **Project list / cache** | `localStorage` + OPFS backup |
-| **Desktop app** | Electron (`npm start` / `npm run dist` → Windows `.exe`) |
+| **Desktop app** | Electron (`npm start` / `npm run dist` → Windows `.exe` + Linux `.tar.gz`) |
 
 - **Create project** — choose save path for the `.amnt` file (native dialog in Electron)
 - **Save Project** — header button updates the linked `.amnt` file
@@ -51,9 +61,9 @@ Amianto Editor runs **fully offline**:
 
 - Rooms Manager
   - Create, rename, delete, and switch rooms
-  - Per-room assets: background, foreground layers, scene objects, **room animation placements**, walkable area
+  - Per-room assets: background, foreground layers, scene objects, **room animation placements**, walkable area, **walk-behinds**
 - Canvas Workspace (context-aware)
-  - Rooms: renders background, **room animations**, scene objects, foregrounds, walkable overlay
+  - Rooms: renders background, **room animations**, scene objects, foregrounds, walkable / walk-behind overlays
   - Animations: preview room/environment animation frames on the main canvas
   - Characters: preview character animation frames in the main canvas
   - Scripts: editor-focused canvas
@@ -61,6 +71,10 @@ Amianto Editor runs **fully offline**:
 - Walkable Area (Level Design)
   - Click-to-add polygon vertices (Start/Finish/Clear/Show/Hide)
   - Select/move/delete vertices; per-room shape stored in project state
+- Walk-Behinds (Level Design)
+  - Polygonal masks (same draw/edit flow as hotspots): New → Start Drawing → Finish
+  - Each walk-behind has a **movable horizontal baseline**: above = character behind (only the overlapping sprite portion is masked); below = character in front
+  - Saved per room as `walkBehinds[]` (`points` + `baselineY`); applied at runtime / Play Test
 - Hotspots
   - Create polygonal hotspots; add/finish/clear points; show/hide all
   - Select/move/delete vertices; list and manage hotspots
@@ -326,16 +340,18 @@ on_room_change(function(oldRoom, newRoom) {
 
 ## Quick Start
 
-### Desktop (recommended)
+**Prefer not to build from source?** Use the [online editor](https://ildam649.github.io/amianto_editor/) or download a desktop build from [Releases](https://github.com/IlDam649/amianto_editor/releases).
+
+### Desktop (from source)
 
 ```bash
 npm install
 npm start          # run Electron app
-npm run dist       # build Windows installer in dist/
+npm run dist       # build Windows + Linux packages in dist/
 ```
 
 1. Create or **Load Project** from the Projects tab (`.amnt` file).
-2. Rooms → create a room, add background, objects, walkable area; place room animations.
+2. Rooms → create a room, add background, objects, walkable area, **walk-behinds**; place room animations.
 3. Animations → create ambient/prop animations (optional).
 4. Characters → upload walking frames; set game start room/position.
 5. Scripts → write JavaScript; **Dialogues** → Form/Visual for branching conversations; use **PLAY** to test.
@@ -343,7 +359,7 @@ npm run dist       # build Windows installer in dist/
 
 ### Browser only
 
-1. Open `index.html` in a modern browser (or serve the folder locally).
+1. Open the hosted build at **[https://ildam649.github.io/amianto_editor/](https://ildam649.github.io/amianto_editor/)**, or open `index.html` locally.
 2. Same workflow as above; use the browser file picker for load/save where native dialogs are unavailable.
 
 ## Keyboard & Tips
@@ -451,7 +467,7 @@ See `# 🎮 Funzioni da Implementare - Amianto editor.md` for the complete list 
 
 # Amianto Editor (Italiano)
 
-Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure browser). Progetta stanze, oggetti, personaggi e script JavaScript — senza account cloud.
+Editor offline per avventure punta‑e‑clicca (Windows / Linux via Electron, oppure browser). Progetta stanze, oggetti, **walk-behind**, personaggi e script JavaScript — senza account cloud.
 
 ## 📚 Documentazione
 
@@ -459,11 +475,18 @@ Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure br
 - 🗺️ **[ROADMAP](ROADMAP.md)** — piano di sviluppo e stato implementazioni
 - 🔗 **[API_UNIFICATION_CHECKLIST](API_UNIFICATION_CHECKLIST.md)** — unificazione API editor ↔ runtime (Fasi A–D ✅)
 
+### Prova Amianto Editor
+
+| Modalità | Come |
+|----------|------|
+| **Online (browser)** | Vai su **[https://ildam649.github.io/amianto_editor/](https://ildam649.github.io/amianto_editor/)** — nessuna installazione |
+| **Desktop (locale)** | Scarica Windows o Linux dalle **[Releases](https://github.com/IlDam649/amianto_editor/releases)** |
+
 ### Modalità offline
 
 - File progetto **`.amnt`** (JSON + asset embedded)
 - Asset in **IndexedDB**; lista progetti in **localStorage**
-- App desktop: `npm start` / `npm run dist`
+- App desktop: `npm start` / `npm run dist` (Windows + Linux)
 - **Save Project** e **Project Settings** in alto a destra
 
 ---
@@ -472,9 +495,9 @@ Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure br
 
 - Gestione Stanze
   - Crea, rinomina, elimina e seleziona stanze
-  - Dati per stanza: background, livelli di foreground, oggetti di scena, **posizionamenti animazioni**, zona camminabile
+  - Dati per stanza: background, livelli di foreground, oggetti di scena, **posizionamenti animazioni**, zona camminabile, **walk-behind**
 - Canvas (contestuale alla tab)
-  - Rooms: render di background, **animazioni di stanza**, oggetti, foreground e overlay walkable
+  - Rooms: render di background, **animazioni di stanza**, oggetti, foreground e overlay walkable / walk-behind
   - Animations: anteprima animazioni ambiente sul canvas principale
   - Characters: anteprima frame d’animazione sul canvas principale
   - Scripts: canvas dedicato all’editor
@@ -482,6 +505,10 @@ Editor offline per avventure punta‑e‑clicca (Windows via Electron, oppure br
 - Zona Camminabile (Level Design)
   - Clic per aggiungere vertici del poligono (Start/Finish/Clear/Show/Hide)
   - Selezione/spostamento/eliminazione vertici; poligono salvato per stanza
+- Walk-Behind (Level Design)
+  - Maschere poligonali (stesso flusso di disegno degli hotspot): New → Start Drawing → Finish
+  - Ogni walk-behind ha una **linea di profondità** orizzontale spostabile: sopra = personaggio dietro (si maschera solo la porzione sotto il poligono); sotto = personaggio davanti
+  - Salvato per stanza in `walkBehinds[]` (`points` + `baselineY`); applicato a runtime / Play Test
 - Hotspot
   - Crea hotspot poligonali; aggiungi/termina/svuota punti; mostra/nascondi tutti
   - Selezione/spostamento/eliminazione vertici; lista hotspot
@@ -702,12 +729,14 @@ on_room_change(function(oldRoom, newRoom) {
 
 ## Avvio Rapido
 
-**Desktop:** `npm install` → `npm start`. Crea o carica un progetto `.amnt`, lavora nelle tab, salva con **Save Project**.
+**Senza compilare:** editor **[online](https://ildam649.github.io/amianto_editor/)** oppure download dalle **[Releases](https://github.com/IlDam649/amianto_editor/releases)** (Windows / Linux).
 
-**Browser:** apri `index.html`, stesso flusso (file picker al posto dei dialoghi nativi).
+**Desktop (da sorgente):** `npm install` → `npm start`. Crea o carica un progetto `.amnt`, lavora nelle tab, salva con **Save Project**. Build: `npm run dist`.
+
+**Browser:** apri [https://ildam649.github.io/amianto_editor/](https://ildam649.github.io/amianto_editor/) oppure `index.html` in locale.
 
 1. Projects → nuovo progetto o Load Project
-2. Rooms → stanza, background, oggetti, walkable, hotspot; posiziona animazioni di stanza
+2. Rooms → stanza, background, oggetti, walkable, **walk-behind**, hotspot; posiziona animazioni di stanza
 3. Animations → animazioni ambiente (opzionale)
 4. Characters → frame walking, posizione iniziale
 5. Scripts → JavaScript; **Dialogues** → Form/Visual per conversazioni ramificate; PLAY per testare

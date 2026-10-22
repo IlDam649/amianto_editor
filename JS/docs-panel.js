@@ -8,8 +8,10 @@
 <article class="docs-article">
   <section id="doc-overview" class="docs-section">
     <h2>Overview</h2>
-    <p><strong>Amianto Editor</strong> is an offline point-and-click adventure game editor (Windows Electron app or browser). You build rooms, place interactive objects, define walkable areas and hotspots, manage characters and inventory, design GUI overlays, and drive game logic with <strong>JavaScript</strong> scripts executed in a sandboxed runtime.</p>
+    <p><strong>Amianto Editor</strong> is an offline point-and-click adventure game editor (Windows / Linux Electron app or browser). You build rooms, place interactive objects, define walkable areas, <strong>walk-behinds</strong>, and hotspots, manage characters and inventory, design GUI overlays, and drive game logic with <strong>JavaScript</strong> scripts executed in a sandboxed runtime.</p>
     <ul>
+      <li><strong>Try online</strong> — <a href="https://ildam649.github.io/amianto_editor/" target="_blank" rel="noopener">https://ildam649.github.io/amianto_editor/</a> (browser, no install).</li>
+      <li><strong>Desktop (local)</strong> — download Windows / Linux builds from <a href="https://github.com/IlDam649/amianto_editor/releases" target="_blank" rel="noopener">GitHub Releases</a>.</li>
       <li><strong>Editor</strong> (<code>index.html</code>) — design projects; save as <code>.amnt</code> files.</li>
       <li><strong>Runtime (Play Test window)</strong> (<code>runtime.html</code> + <code>JS/runtime.js</code>) — full-screen test player.</li>
       <li><strong>Script sandbox (in editor)</strong> (<code>runtime-sandbox.html</code> + <code>JS/runtime.js</code>) — isolated iframe for script execution with the same API.</li>
@@ -19,9 +21,10 @@
 
   <section id="doc-quickstart" class="docs-section">
     <h2>Quick start</h2>
+    <p>Prefer a ready-made build? Use the <a href="https://ildam649.github.io/amianto_editor/" target="_blank" rel="noopener">online editor</a> or install from <a href="https://github.com/IlDam649/amianto_editor/releases" target="_blank" rel="noopener">Releases</a>.</p>
     <ol>
       <li><strong>Projects</strong> → create (pick <code>.amnt</code> save path) or <strong>Load Project</strong>.</li>
-      <li><strong>Rooms</strong> — create a room, add background, scene objects, walkable polygon, hotspots; place <strong>room animations</strong> (see <strong>Animations</strong> tab).</li>
+      <li><strong>Rooms</strong> — create a room, add background, scene objects, walkable polygon, <strong>walk-behinds</strong>, hotspots; place <strong>room animations</strong> (see <strong>Animations</strong> tab).</li>
       <li><strong>Animations</strong> — create looping frame sequences for background or foreground layers; preview on canvas.</li>
       <li><strong>Characters</strong> — create the player, upload <strong>walking</strong> frames (8 directions), add optional <strong>custom animations</strong> (e.g. <code>wave</code>), set start room/position.</li>
       <li><strong>Inventory</strong> — define items (keys, tools, etc.).</li>
@@ -43,7 +46,7 @@ function on_game_start() {
       <tbody>
         <tr><td><strong>Projects</strong></td><td>Create <code>.amnt</code> projects, load from disk, manage local project list.</td></tr>
         <tr><td><strong>Resources</strong></td><td>Central image/sound library (local storage). Import once, pick assets everywhere.</td></tr>
-        <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, <strong>room animation placements</strong>, scene objects, walkable area, hotspots.</td></tr>
+        <tr><td><strong>Rooms</strong></td><td>Rooms manager, background, foreground layers, <strong>room animation placements</strong>, scene objects, walkable area, <strong>walk-behinds</strong>, hotspots.</td></tr>
         <tr><td><strong>Inventory</strong></td><td>Inventory items and slot grid for the player UI.</td></tr>
         <tr><td><strong>Characters</strong></td><td>Walking animation + named custom animations (8 directions each), FPS, preview; game start spawn settings.</td></tr>
         <tr><td><strong>Animations</strong></td><td>Room/environment animations: frame sequences, FPS, layer (background/foreground), loop default, canvas preview.</td></tr>
@@ -69,8 +72,9 @@ function on_game_start() {
     <h2>Recommended workflow</h2>
     <h3>Rooms &amp; level design</h3>
     <ul>
-      <li>Each <strong>room</strong> has its own background, foreground layers, objects, walkable polygon, and hotspots.</li>
+      <li>Each <strong>room</strong> has its own background, foreground layers, objects, walkable polygon, walk-behinds, and hotspots.</li>
       <li><strong>Walkable area</strong>: Start Drawing → click vertices → Finish. Players pathfind only inside this polygon.</li>
+      <li><strong>Walk-behinds</strong>: New Walk-Behind → Start Drawing → Finish (same polygon editing as hotspots). Each area has a <strong>movable baseline</strong>: when the character’s Y is <em>above</em> the line they are behind and only the sprite portion under the polygon is masked; <em>below</em> the line they stay in front. Drag the pink baseline on the canvas to set depth.</li>
       <li><strong>Hotspots</strong>: polygon click regions for doors, items, NPCs. Use <strong>Is active?</strong> for the default state; toggle at runtime with <code>enableHotspot</code> / <code>disableHotspot</code>.</li>
       <li><strong>Scene objects</strong>: draggable images; position on canvas or via inspector.</li>
       <li><strong>Room animations</strong>: create definitions in <strong>Animations</strong>, then in <strong>Rooms → Room Animations</strong> add an instance and drag the first frame on the canvas. <strong>Background</strong> layer draws behind scene objects; <strong>foreground</strong> layer draws in front.</li>

@@ -126,6 +126,7 @@
 - **Animazioni GUI**: Nessun sistema di animazioni per elementi GUI
   - **Prossimo passo**: Fade in/out, slide, scale per elementi GUI
 - **Animazioni stanza (ambiente)**: ✅ Tab Animations + posizionamento in Rooms; runtime con layer background/foreground; `play_animation` / `stop_animation`
+- **Walk-behind**: ✅ Poligoni in Rooms (stesso flusso hotspot) + linea baseline spostabile; a runtime maschera solo la porzione del personaggio sotto il poligono quando Y è sopra la baseline
 - **Stili GUI**: Nessun sistema di temi/stili per GUI
   - **Prossimo passo**: Sistema di stili (colori, font, bordi) per GUI
 
@@ -197,7 +198,8 @@
   - ✅ Cambio stanza con cleanup risorse
   - ✅ `load_room`: esegue `on_before_room_change` (destinazione) → carica stanza → posiziona player → `on_room_change` (awaited)
   - ✅ Script Before/After come asset distinti in editor; non forzare `visible=true` sul player al load (rispetta `set_character_visibility`)
-  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot)
+  - ✅ Caricamento asset stanza (background, foregrounds, oggetti, hotspot, walk-behind)
+  - ✅ Walk-behind runtime: maschera parziale del personaggio (poligono + baselineY)
   - ✅ Gestione transizione tra stanze (senza effetti fade — backlog Fase 3.2)
 - **Interazioni click**: ✅ Sistema completo di hit detection e dispatch eventi
   - ✅ Hit detection per hotspot (polygon), oggetti (bounding box), character (bounding box), GUI buttons

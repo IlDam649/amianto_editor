@@ -1,6 +1,6 @@
 {
   "name": "amianto-editor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Amianto Editor — editor offline per avventure point-and-click",
   "main": "electron/main.js",
   "author": "Amianto",
@@ -28,6 +28,7 @@
       "!tmp-*.js",
       "!_test_*",
       "!*.md",
+      "!*.amnt",
       "!API_UNIFICATION_CHECKLIST.md",
       "!ROADMAP.md",
       "!# *",
