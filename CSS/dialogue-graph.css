@@ -1,0 +1,482 @@
+/* Visual Dialogue Editor — Amianto */
+
+.dlg-form-main {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 180px);
+  background: #141414;
+  border-radius: 8px;
+  border: 1px solid #333;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+}
+
+.dlg-form-main-inner {
+  max-width: 420px;
+  padding: 2rem 1.5rem;
+}
+
+.dlg-graph-main {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 180px);
+  background: #141414;
+  border-radius: 8px;
+  border: 1px solid #333;
+  overflow: hidden;
+}
+
+.dlg-graph-main.is-visible {
+  display: flex;
+}
+
+.dlg-graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #1e1e1e;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.dlg-graph-toolbar .dlg-title {
+  font-weight: 600;
+  color: #eee;
+  margin-right: 8px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlg-graph-toolbar .dlg-dirty {
+  color: #f0ad4e;
+  font-size: 0.8em;
+}
+
+.dlg-graph-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.dlg-graph-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 1px 1px, #2a2a2a 1px, transparent 0) 0 0 / 20px 20px,
+    #121212;
+  cursor: grab;
+}
+
+.dlg-graph-canvas-wrap.is-panning {
+  cursor: grabbing;
+}
+
+.dlg-graph-canvas-wrap.is-connecting {
+  cursor: crosshair;
+}
+
+.dlg-graph-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.dlg-graph-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.dlg-graph-edges path {
+  fill: none;
+  stroke: #6a6a6a;
+  stroke-width: 2;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.dlg-graph-edges path.dlg-edge-selected {
+  stroke: #39ff14;
+  stroke-width: 2.5;
+}
+
+.dlg-graph-edges path.dlg-edge-broken {
+  stroke: #ff5555;
+  stroke-dasharray: 6 4;
+}
+
+.dlg-graph-edges path.dlg-edge-temp {
+  stroke: #39ff14;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.dlg-graph-nodes {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.dlg-node {
+  position: absolute;
+  width: 200px;
+  background: #1f1f1f;
+  border: 1px solid #444;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  color: #e8e8e8;
+  font-size: 12px;
+  user-select: none;
+  z-index: 2;
+}
+
+.dlg-node.is-selected {
+  border-color: #39ff14;
+  box-shadow: 0 0 0 1px #39ff14, 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.dlg-node.is-start {
+  border-color: #2ecc71;
+}
+
+.dlg-node.is-error {
+  border-color: #ff5555;
+}
+
+.dlg-node.is-warn {
+  border-color: #f0ad4e;
+}
+
+.dlg-node.is-orphan {
+  opacity: 0.72;
+}
+
+.dlg-node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #333;
+  border-radius: 8px 8px 0 0;
+  cursor: move;
+}
+
+.dlg-node[data-type="line"] .dlg-node-header { background: #1a3340; }
+.dlg-node[data-type="choice"] .dlg-node-header { background: #2a2540; }
+.dlg-node[data-type="jump"] .dlg-node-header { background: #3a2a18; }
+.dlg-node[data-type="action"] .dlg-node-header { background: #2a3a1a; }
+.dlg-node[data-type="end"] .dlg-node-header { background: #3a1a1a; }
+
+.dlg-node-type {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #ccc;
+}
+
+.dlg-node-badges {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.dlg-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #333;
+  color: #ddd;
+}
+
+.dlg-badge-start {
+  background: #1e7e34;
+  color: #fff;
+}
+
+.dlg-badge-once {
+  background: #6c5ce7;
+  color: #fff;
+}
+
+.dlg-badge-cond {
+  background: #0984e3;
+  color: #fff;
+}
+
+.dlg-node-body {
+  padding: 6px 8px 8px;
+  position: relative;
+}
+
+.dlg-node-preview {
+  color: #bbb;
+  line-height: 1.35;
+  max-height: 3.2em;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.dlg-node-id {
+  color: #666;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.dlg-port {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #555;
+  border: 2px solid #999;
+  z-index: 3;
+  cursor: crosshair;
+}
+
+.dlg-port-in {
+  left: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.dlg-port-out {
+  right: -7px;
+  background: #39ff14;
+  border-color: #1a8a0a;
+}
+
+.dlg-port-out[data-port="next"],
+.dlg-port-out[data-port="target"] {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.dlg-choice-ports {
+  margin-top: 6px;
+}
+
+.dlg-choice-port-row {
+  position: relative;
+  padding: 4px 14px 4px 4px;
+  margin-bottom: 3px;
+  background: #181818;
+  border-radius: 4px;
+  border: 1px solid #333;
+  min-height: 22px;
+}
+
+.dlg-choice-port-row.has-cond {
+  border-left: 3px solid #0984e3;
+}
+
+.dlg-choice-port-row.has-once {
+  border-right: 3px solid #6c5ce7;
+}
+
+.dlg-choice-port-row .dlg-port-out {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.dlg-graph-inspector {
+  width: 300px;
+  flex-shrink: 0;
+  background: #1a1a1a;
+  border-left: 1px solid #333;
+  overflow: auto;
+  padding: 10px;
+  font-size: 12px;
+}
+
+.dlg-graph-inspector h6 {
+  color: #eee;
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.dlg-graph-inspector label {
+  display: block;
+  color: #999;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.dlg-graph-inspector .form-control,
+.dlg-graph-inspector .form-select {
+  margin-bottom: 8px;
+  background: #222;
+  border-color: #444;
+  color: #eee;
+  font-size: 12px;
+}
+
+.dlg-graph-inspector .form-control:focus,
+.dlg-graph-inspector .form-select:focus {
+  background: #222;
+  color: #fff;
+  border-color: #39ff14;
+  box-shadow: none;
+}
+
+.dlg-insp-section {
+  border-top: 1px solid #333;
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.dlg-insp-option,
+.dlg-insp-action {
+  background: #222;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.dlg-graph-status {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+  font-size: 11px;
+  color: #7dff7d;
+  min-height: 26px;
+}
+
+.dlg-graph-status.has-errors {
+  color: #ff8888;
+}
+
+.dlg-graph-status.has-warnings {
+  color: #f0c36d;
+}
+
+.dlg-ctx-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 160px;
+  background: #222;
+  border: 1px solid #444;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  padding: 4px 0;
+  display: none;
+}
+
+.dlg-ctx-menu.is-open {
+  display: block;
+}
+
+.dlg-ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #ddd;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.dlg-ctx-menu button:hover {
+  background: #333;
+  color: #39ff14;
+}
+
+.dlg-ctx-menu .dlg-ctx-sep {
+  height: 1px;
+  background: #333;
+  margin: 4px 0;
+}
+
+.dlg-mode-toggle .btn.active {
+  background: #39ff14;
+  color: #111;
+  border-color: #39ff14;
+}
+
+.dlg-sidebar-list {
+  max-height: 140px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.dlg-sidebar-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #ccc;
+  font-size: 12px;
+}
+
+.dlg-sidebar-item:hover {
+  background: #2a2a2a;
+}
+
+.dlg-sidebar-item.is-active {
+  background: #243024;
+  color: #39ff14;
+}
+
+.dlg-empty-hint {
+  color: #7dff7d;
+  text-align: center;
+  padding: 40px 16px;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* CodeMirror dentro inspector run_script */
+.dlg-insp-action .CodeMirror {
+  border: 1px solid #444;
+  border-radius: 4px;
+  font-size: 11px;
+  height: 180px;
+  margin-bottom: 4px;
+}
+
+.dlg-insp-action .CodeMirror-scroll {
+  min-height: 160px;
+}
+
+/* Hint / help text — stesso verde acido della sidebar editor */
+.dlg-graph-main .text-muted,
+.dlg-graph-toolbar .text-muted,
+.dlg-graph-inspector .text-muted,
+.dlg-graph-inspector label,
+.dlg-form-main .text-muted,
+#dialogue-visual-hint,
+#dialogue-visual-hint.text-muted,
+#dialogue-editor-empty,
+#dialogue-editor-empty .text-muted,
+#dialogue-sidebar-list .text-muted,
+#dialogue-form-mode .text-muted,
+#dialogue-form-mode .form-label.text-muted,
+#dialogue-nodes-list .text-muted {
+  color: #7dff7d !important;
+}

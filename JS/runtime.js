@@ -26,11 +26,14 @@
     variableDefinitions: new Map(), // name -> { type, initialValue, ... } da projectData.variables
     objects: new Map(), // oggetti caricati con immagini
     guis: new Map(), // GUI caricate
-    characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, roomId}>
+    characters: new Map(), // Character attivi nel gioco: Map<characterId, {name, x, y, direction, currentFrame, frameTime, visible, opacity, roomId}>
     characterDefinitions: new Map(), // Definizioni dei character dal progetto: Map<characterName, {directions: {...}}>
+    roomAnimationDefinitions: new Map(), // Definizioni animazioni stanza: Map<animId, {fps, loop, frames}>
     scripts: {}, // script del progetto
     attachments: {}, // script collegati a eventi
     isRunning: false,
+    /** 'loading' | 'scripts' | 'ready' — input e gioco attivo solo in 'ready' */
+    bootPhase: 'loading',
     lastFrameTime: 0,
     animationFrameId: null,
     // ⚠️ CACHE SCRIPT COMPILATI: Memorizza gli handler estratti dagli script
@@ -38,9 +41,29 @@
     // Ogni script viene compilato UNA SOLA VOLTA, gli handler vengono estratti e cache-ati
     // Questo previene riesecuzione di codice JS a ogni evento
     compiledScripts: new Map(),
+    /** Hash contenuto script per invalidare cache compilazione quando il codice cambia (playtest senza chiudere finestra). */
+    compiledScriptHashes: new Map(),
     inventory: null, // { enabled, displayMode, popupEdgeHeight, background, toggleIcon, toggleIconRect, slots, itemDefs, contents, visible, carriedItem, pointerX, pointerY }
+    cursors: new Map(), // category -> { category, image, actionText, pivotX, pivotY }
+    /** Ultimo hover cursore in playtest: category + actionText per overlay. */
+    cursorHover: { x: 0, y: 0, category: 'default', actionText: '', visible: false },
     resourceFileIndex: null, // Map<filenameLower, "asset:assetId"> — cache Resources per spawn_object
-    resourceFileIndexKey: null
+    resourceFileIndexKey: null,
+    audioFileIndex: null,
+    audioFileIndexKey: null,
+    audio: {
+      music: null,
+      sounds: new Map(),
+      musicVolume: 1,
+      soundVolume: 1
+    },
+    /** Dialoghi ramificati dal progetto: Map<id, dialogueDef> + indice per nome */
+    dialogues: new Map(),
+    dialogueNameIndex: new Map(),
+    /** Choice once-only consumate in questa partita: Set<"dialogueId::optionId"> */
+    dialogueConsumed: new Set(),
+    /** Prefisso storage salvataggi gioco (per progetto) */
+    saveGamePrefix: null
   };
 
   // ⚠️ FLAG PROTEZIONE DOPPI EVENTI
@@ -54,12 +77,51 @@
   let canvasWidth = 800;
   let canvasHeight = 600;
 
+  /** Tipi di transizione tra stanze. `none` = taglio netto. */
+  const ROOM_TRANSITION_TYPES = [
+    'none',
+    'fade',
+    'fade_to_black',
+    'fade_to_white',
+    'slide',
+    'dissolve',
+    'iris'
+  ];
+  const ROOM_TRANSITION_DURATION_DEFAULT = 600;
+  const ROOM_TRANSITION_DURATION_MAX = 10000;
+  const ROOM_TRANSITION_TYPE_HINT = ROOM_TRANSITION_TYPES.join(', ');
+
+  /**
+   * Default di sessione (da settings progetto, sovrascrivibile con set_room_transition)
+   * più stato del fotogramma in corso.
+   */
+  const roomTransitionRuntime = {
+    type: 'none',
+    duration: ROOM_TRANSITION_DURATION_DEFAULT,
+    active: false,
+    holdSnapshot: null,
+    snapshot: null,
+    effectType: 'none',
+    effectDuration: 0,
+    startedAt: 0,
+    onComplete: null,
+    inputLockHeld: false
+  };
+  let roomTransitionSerial = 0;
+  let dissolveNoise = null;
+  let dissolveNoiseW = 0;
+  let dissolveNoiseH = 0;
+  let dissolveMaskCanvas = null;
+  let worldBuffer = null;
+  let transitionBuffer = null;
+
   // Assets caricati (immagini)
   const loadedImages = new Map(); // cache immagini (deprecato, mantenuto per compatibilità)
   
   // Asset Registry centralizzato - memorizza tutte le immagini caricate
   const AssetRegistry = {
     images: new Map(), // key: assetId/URL, value: Image object
+    fonts: new Map(), // key: font ref, value: loaded fontFamily string
     isLoading: false,
     loadComplete: false
   };
@@ -67,11 +129,13 @@
   // Categorie usate per risolvere asset: (include 'resource' per immagini da Resources centralizzate)
   const ASSET_RESOLVE_CATEGORIES = [
     'resource',
+    'audio',
     'background',
     'foreground',
     'sprite',
     'gui',
     'character',
+    'animation',
     'cursor'
   ];
 
@@ -93,6 +157,34 @@
     }
   }
 
+  function isPlaytestSession() {
+    try {
+      if (window.opener && window.opener !== window) return true;
+      // Runtime aperto via Electron IPC (senza opener)
+      if (window.amiantoElectron && !!(window.amiantoNativeFs && window.amiantoNativeFs.onRuntimeMessage)) {
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isGamePlayable() {
+    return gameState.bootPhase === 'ready' && gameState.isRunning;
+  }
+
+  function configureLoadingOverlayForSession() {
+    const overlay = document.getElementById('loading-overlay');
+    if (!overlay) return;
+    const logo = document.getElementById('loading-logo');
+    const title = document.getElementById('loading-title');
+    const playtest = isPlaytestSession();
+    overlay.classList.toggle('playtest-loading', playtest);
+    if (logo) logo.hidden = !playtest;
+    if (title) title.textContent = playtest ? 'Starting playtest...' : 'Loading Runtime...';
+  }
+
   function hideLoadingOverlay() {
     const overlay = document.getElementById('loading-overlay');
     if (overlay) {
@@ -104,39 +196,124 @@
     const overlay = document.getElementById('loading-overlay');
     if (overlay) {
       overlay.classList.remove('hidden');
+      configureLoadingOverlayForSession();
     }
   }
 
+  function markBootReady() {
+    gameState.bootPhase = 'ready';
+    log('[Runtime] Boot completato — gioco giocabile', 'success');
+  }
+
   // Funzione per mostrare messaggi visibili a schermo
+  function ensureGameNotificationStyles() {
+    if (document.getElementById('amianto-game-notification-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'amianto-game-notification-styles';
+    style.textContent = `
+      .game-notification {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 300px;
+        max-width: 500px;
+        background: #1a1a1a;
+        border: 2px solid #39ff14;
+        border-radius: 8px;
+        padding: 16px 20px;
+        color: #eee;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        font-size: 14px;
+        z-index: 10000;
+        box-shadow: 0 4px 20px rgba(57, 255, 20, 0.3);
+        animation: amiantoSlideInCenter 0.3s ease-out;
+        word-wrap: break-word;
+      }
+      @keyframes amiantoSlideInCenter {
+        from { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+        to { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+      }
+      .game-notification.fade-out {
+        animation: amiantoFadeOutCenter 0.3s ease-out forwards;
+      }
+      @keyframes amiantoFadeOutCenter {
+        from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        to { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+      }
+      .game-notification .close-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: transparent;
+        border: none;
+        color: #39ff14;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .game-notification .close-btn:hover { color: #fff; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Mostra un messaggio overlay. Promise risolta a chiusura (click × o timeout).
+   * @param {string} text
+   * @param {number} [duration=3000]
+   * @returns {Promise<void>}
+   */
   function showGameMessage(text, duration = 3000) {
-    if (!text) return;
-    
+    if (!text) return Promise.resolve();
+    ensureGameNotificationStyles();
+
     // Rimuovi notifiche precedenti se ce ne sono troppe
     const existingNotifications = document.querySelectorAll('.game-notification');
     if (existingNotifications.length > 5) {
       existingNotifications[0].remove();
     }
-    
-    const notification = document.createElement('div');
-    notification.className = 'game-notification';
-    notification.innerHTML = `
-      <button class="close-btn" onclick="this.parentElement.remove()" title="Close">×</button>
-      <div style="padding-right: 24px;">${escapeHtml(text)}</div>
-    `;
-    
-    document.body.appendChild(notification);
-    
-    // Rimuovi automaticamente dopo la durata specificata
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.classList.add('fade-out');
-        setTimeout(() => {
-          if (notification.parentNode) {
-            notification.remove();
-          }
-        }, 300);
+
+    return new Promise(resolve => {
+      let settled = false;
+      const notification = document.createElement('div');
+      notification.className = 'game-notification';
+      notification.innerHTML = `
+        <button type="button" class="close-btn" title="Close">×</button>
+        <div style="padding-right: 24px;">${escapeHtml(text)}</div>
+      `;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (notification.parentNode) {
+          notification.classList.add('fade-out');
+          setTimeout(() => {
+            if (notification.parentNode) notification.remove();
+          }, 300);
+        }
+        resolve();
+      };
+
+      const closeBtn = notification.querySelector('.close-btn');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          finish();
+        });
       }
-    }, duration);
+
+      document.body.appendChild(notification);
+      const ms = Math.max(0, Number(duration) || 0);
+      if (ms > 0) setTimeout(finish, ms);
+      else finish();
+    });
   }
 
   function escapeHtml(text) {
@@ -153,17 +330,98 @@
   const commandQueue = [];
   let isProcessingQueue = false;
 
-  // Blocco input durante comandi await (es. walk_character con wait)
+  // Promise in sospeso da API sync-looking (load_room / play_music senza await nello script)
+  // Stack per livello di executeScriptHandler: evita deadlock load_room → on_room_change → play_music
+  let pendingScriptSideEffects = [];
+
+  // Durante on_before_room_change / on_room_change: show_dialogue/start_dialogue non devono
+  // tenere in sospeso changeRoom/load_room (il balloon resta in coda e aspetta il click).
+  let roomTransitionScriptDepth = 0;
+
+  function beginRoomTransitionScripts() {
+    roomTransitionScriptDepth++;
+  }
+
+  function endRoomTransitionScripts() {
+    roomTransitionScriptDepth = Math.max(0, roomTransitionScriptDepth - 1);
+  }
+
+  function isInsideRoomTransitionScript() {
+    return roomTransitionScriptDepth > 0;
+  }
+
+  /**
+   * Accoda un comando. Fuori dalle room-transition lo script può await-are il completamento;
+   * dentro on_room_change / on_before_room_change restituisce subito così load_room non resta bloccato.
+   */
+  function enqueueScriptCommand(commandFn, delay = 0) {
+    const queued = queueCommand(commandFn, delay);
+    if (isInsideRoomTransitionScript()) {
+      // Non blocca load_room / room scripts; il comando resta in coda
+      return Promise.resolve();
+    }
+    return trackScriptSideEffect(queued);
+  }
+
+  /** API che devono sospendere lo script finché non completano (auto-await in compile). */
+  const AUTO_AWAIT_BLOCKING_APIS = [
+    'show_message',
+    'showText',
+    'show_dialogue',
+    'show_dialogue_text',
+    'start_dialogue',
+    'show_image',
+    'wait'
+  ];
+
+  /**
+   * Inserisce `await` davanti alle API bloccanti se assente
+   * (così show_message(...); comandoSuccessivo aspetta la chiusura del messaggio).
+   */
+  function injectAutoAwaitBlockingApis(code) {
+    let out = String(code || '');
+    AUTO_AWAIT_BLOCKING_APIS.forEach(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Match show_message( / Game.show_message( / GameAPI.show_message(
+      // Evita doppio await e property su altri oggetti (foo.show_message)
+      const re = new RegExp(
+        `(?<!\\bawait\\s)(?<![\\w.$])((?:Game(?:API)?\\.)?${escaped}\\s*\\()`,
+        'g'
+      );
+      out = out.replace(re, 'await $1');
+    });
+    return out;
+  }
+
+  function trackScriptSideEffect(promise) {
+    if (!promise || typeof promise.then !== 'function') return promise;
+    const bucket = pendingScriptSideEffects;
+    bucket.push(promise);
+    promise.catch(() => {}).finally(() => {
+      const i = bucket.indexOf(promise);
+      if (i >= 0) bucket.splice(i, 1);
+    });
+    return promise;
+  }
+
+  async function flushScriptSideEffects() {
+    while (pendingScriptSideEffects.length > 0) {
+      const batch = pendingScriptSideEffects.splice(0, pendingScriptSideEffects.length);
+      await Promise.allSettled(batch);
+    }
+  }
   let inputLockDepth = 0;
 
   function acquireInputLock(reason) {
     inputLockDepth++;
     log(`[Runtime] Input lock acquisito (${reason}, depth=${inputLockDepth})`, 'info');
+    refreshCursorFromLastPointer();
   }
 
   function releaseInputLock(reason) {
     inputLockDepth = Math.max(0, inputLockDepth - 1);
     log(`[Runtime] Input lock rilasciato (${reason}, depth=${inputLockDepth})`, 'info');
+    refreshCursorFromLastPointer();
   }
 
   function isInputLocked() {
@@ -172,6 +430,7 @@
 
   function resetInputLock() {
     inputLockDepth = 0;
+    refreshCursorFromLastPointer();
   }
 
   /**
@@ -238,6 +497,71 @@
   };
 
   const RESOURCE_IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+  const AUDIO_FILE_EXT = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|webm)$/i;
+
+  function guessAudioMimeFromRef(audioRef) {
+    const name = String(audioRef || '').split(/[/\\]/).pop().toLowerCase();
+    const ext = name.includes('.') ? name.split('.').pop() : '';
+    switch (ext) {
+      case 'ogg':
+      case 'oga':
+      case 'opus':
+        return 'audio/ogg';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'aac':
+        return 'audio/aac';
+      case 'flac':
+        return 'audio/flac';
+      case 'webm':
+        return 'audio/webm';
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * @deprecated kept for compatibility; playback uses WebAudio decode on raw bytes.
+   */
+  async function ensurePlayableAudioUrl(url, audioRef) {
+    if (!url || typeof url !== 'string') return url;
+    if (!url.startsWith('blob:')) return url;
+
+    let preferred = guessAudioMimeFromRef(audioRef);
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const current = String(blob.type || '').toLowerCase();
+
+      if (!preferred) {
+        try {
+          const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+          if (head[0] === 0x4f && head[1] === 0x67 && head[2] === 0x67 && head[3] === 0x53) {
+            preferred = 'audio/ogg';
+          }
+        } catch (_) {}
+      }
+
+      const needsFix = !current ||
+        current === 'application/octet-stream' ||
+        current === 'application/ogg' ||
+        current === 'binary/octet-stream' ||
+        (preferred && current !== preferred && !current.startsWith('audio/'));
+
+      if (!needsFix) return url;
+
+      const mime = preferred || (current === 'application/ogg' ? 'audio/ogg' : null);
+      if (!mime) return url;
+      const buf = await blob.arrayBuffer();
+      return URL.createObjectURL(new Blob([buf], { type: mime }));
+    } catch (_) {
+      return url;
+    }
+  }
 
   function getActualProjectId() {
     let id = projectInfo.projectId;
@@ -250,6 +574,754 @@
   function invalidateResourceFileIndex() {
     gameState.resourceFileIndex = null;
     gameState.resourceFileIndexKey = null;
+    invalidateAudioFileIndex();
+  }
+
+  function invalidateAudioFileIndex() {
+    gameState.audioFileIndex = null;
+    gameState.audioFileIndexKey = null;
+  }
+
+  /**
+   * loop: true | 'loop' | 'infinite' → loop forever
+   *       false | 'once' | 'none' | 0 | 1 → play once
+   *       number N > 1 → play N times
+   */
+  function parseAudioLoopOption(loop, defaultInfinite) {
+    if (loop === undefined || loop === null) {
+      return defaultInfinite ? { mode: 'infinite' } : { mode: 'once' };
+    }
+    if (loop === true || loop === 'loop' || loop === 'infinite' || loop === 'repeat') {
+      return { mode: 'infinite' };
+    }
+    if (loop === false || loop === 'once' || loop === 'none') {
+      return { mode: 'once' };
+    }
+    const n = Number(loop);
+    if (!Number.isNaN(n)) {
+      if (n <= 1) return { mode: 'once' };
+      return { mode: 'count', count: Math.floor(n) };
+    }
+    return defaultInfinite ? { mode: 'infinite' } : { mode: 'once' };
+  }
+
+  function applyAudioLoop(audio, loopOpt) {
+    if (!audio || !loopOpt) return;
+    audio.loop = loopOpt.mode === 'infinite';
+    if (loopOpt.mode !== 'count') return;
+
+    let remaining = loopOpt.count;
+    const onEnded = () => {
+      remaining -= 1;
+      if (remaining > 0) {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        audio.removeEventListener('ended', onEnded);
+      }
+    };
+    audio.addEventListener('ended', onEnded);
+  }
+
+  let sharedAudioContext = null;
+  const pendingAudioUnlockResolvers = [];
+
+  function getSharedAudioContext() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!sharedAudioContext) {
+      try {
+        sharedAudioContext = new AC();
+      } catch (_) {
+        return null;
+      }
+    }
+    return sharedAudioContext;
+  }
+
+  function flushPendingAudioUnlock() {
+    if (!pendingAudioUnlockResolvers.length) return;
+    const list = pendingAudioUnlockResolvers.splice(0, pendingAudioUnlockResolvers.length);
+    list.forEach((fn) => {
+      try { fn(); } catch (_) {}
+    });
+  }
+
+  async function ensureAudioContextRunning() {
+    const ctx = getSharedAudioContext();
+    if (!ctx) return null;
+
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (_) {}
+    }
+
+    if (ctx.state === 'running') {
+      flushPendingAudioUnlock();
+      return ctx;
+    }
+
+    // Non fare timeout che poi avvia audio in silenzio: resta suspended → caller usa HTMLAudio
+    return ctx;
+  }
+
+  let htmlAudioUnlocked = false;
+  let audioUnlockWaiters = [];
+  const deferredHtmlAudioJobs = [];
+  /** Solo per sbloccare l'autoplay — MAI usarlo per play_music/play_sound */
+  let unlockedMediaEl = null;
+  /** Player dedicato per la musica di sottofondo (loop fino a stop_music) */
+  let musicAudioEl = null;
+  let musicObjectUrl = null;
+  /** WAV silenzioso (1 sample) per unlock autoplay senza gesture (Electron / policy permissiva) */
+  const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+
+  function notifyAudioUnlocked() {
+    htmlAudioUnlocked = true;
+    const waiters = audioUnlockWaiters.splice(0, audioUnlockWaiters.length);
+    waiters.forEach((fn) => { try { fn(); } catch (_) {} });
+    flushDeferredHtmlAudioJobs();
+    flushDeferredAudioStarts();
+  }
+
+  /**
+   * Tenta lo sblocco audio all'avvio (senza click).
+   * Funziona in Electron con autoplay-policy=no-user-gesture-required;
+   * in browser restrittivi fallisce in silenzio e resta il fallback al primo gesture.
+   */
+  async function tryAutoUnlockAudioAtBoot() {
+    if (htmlAudioUnlocked) return true;
+    try {
+      const ctx = getSharedAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        try { await ctx.resume(); } catch (_) {}
+      }
+      if (!unlockedMediaEl) {
+        unlockedMediaEl = document.createElement('audio');
+        unlockedMediaEl.setAttribute('playsinline', '');
+        unlockedMediaEl.setAttribute('data-amianto-unlocked', '1');
+        unlockedMediaEl.preload = 'auto';
+        unlockedMediaEl.volume = 0.001;
+        unlockedMediaEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+        if (document.body) document.body.appendChild(unlockedMediaEl);
+      }
+      unlockedMediaEl.src = SILENT_WAV_DATA_URI;
+      await unlockedMediaEl.play();
+      try { unlockedMediaEl.pause(); unlockedMediaEl.currentTime = 0; } catch (_) {}
+      notifyAudioUnlocked();
+      log('[Runtime] Audio sbloccato all\'avvio (nessun click richiesto)', 'info');
+      return true;
+    } catch (err) {
+      log('[Runtime] Auto-unlock audio non disponibile — fallback al primo gesture', 'info');
+      return false;
+    }
+  }
+
+  function waitForAudioUnlock(timeoutMs) {
+    if (htmlAudioUnlocked) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        resolve(!!ok);
+      };
+      audioUnlockWaiters.push(() => finish(true));
+      if (timeoutMs > 0) setTimeout(() => finish(htmlAudioUnlocked), timeoutMs);
+    });
+  }
+
+  function flushDeferredAudioStarts() {
+    // no-op placeholder (legacy WebAudio deferral)
+  }
+
+  function flushDeferredHtmlAudioJobs() {
+    if (!deferredHtmlAudioJobs.length) return;
+    const list = deferredHtmlAudioJobs.splice(0, deferredHtmlAudioJobs.length);
+    list.forEach((job) => {
+      try { job(); } catch (_) {}
+    });
+  }
+
+  /**
+   * Chiamare IN SINCRONO dentro pointerdown/click (prima di await).
+   * Invoca play() subito così il gesture è ancora valido.
+   * Non tocca musicAudioEl.
+   */
+  function unlockAudioSyncFromUserGesture() {
+    try {
+      if (!unlockedMediaEl) {
+        unlockedMediaEl = document.createElement('audio');
+        unlockedMediaEl.setAttribute('playsinline', '');
+        unlockedMediaEl.setAttribute('data-amianto-unlocked', '1');
+        unlockedMediaEl.preload = 'auto';
+        unlockedMediaEl.volume = 0.001;
+        unlockedMediaEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+        document.body.appendChild(unlockedMediaEl);
+      }
+      unlockedMediaEl.src = SILENT_WAV_DATA_URI;
+      const p = unlockedMediaEl.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          try { unlockedMediaEl.pause(); unlockedMediaEl.currentTime = 0; } catch (_) {}
+          notifyAudioUnlocked();
+        }).catch(() => {});
+      } else {
+        notifyAudioUnlocked();
+      }
+    } catch (_) {}
+
+    const ctx = getSharedAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().then(() => {
+        flushPendingAudioUnlock();
+        notifyAudioUnlocked();
+      }).catch(() => {});
+    }
+    resumeMusicIfNeeded();
+  }
+
+  function unlockAudioContextFromGesture() {
+    unlockAudioSyncFromUserGesture();
+  }
+
+  async function unlockHtmlAudioFromGestureAsync() {
+    unlockAudioSyncFromUserGesture();
+    if (htmlAudioUnlocked) return true;
+    return waitForAudioUnlock(800);
+  }
+
+  function ensureMusicAudioElement() {
+    if (musicAudioEl) return musicAudioEl;
+    musicAudioEl = document.createElement('audio');
+    musicAudioEl.preload = 'auto';
+    musicAudioEl.autoplay = true;
+    musicAudioEl.loop = true;
+    musicAudioEl.setAttribute('playsinline', '');
+    musicAudioEl.setAttribute('data-amianto-music', '1');
+    musicAudioEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(musicAudioEl);
+    // Rete di sicurezza: se loop nativo fallisce, riparti finché la musica è attiva
+    musicAudioEl.addEventListener('ended', () => {
+      if (!gameState.audio || !gameState.audio.music) return;
+      if (gameState.audio.music.element !== musicAudioEl) return;
+      try {
+        musicAudioEl.loop = true;
+        musicAudioEl.currentTime = 0;
+        musicAudioEl.play().catch(() => {});
+      } catch (_) {}
+    });
+    return musicAudioEl;
+  }
+
+  function revokeMusicObjectUrl() {
+    if (musicObjectUrl) {
+      try { URL.revokeObjectURL(musicObjectUrl); } catch (_) {}
+      musicObjectUrl = null;
+    }
+  }
+
+  ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click'].forEach((evt) => {
+    window.addEventListener(evt, unlockAudioSyncFromUserGesture, { capture: true, passive: true });
+  });
+
+  function stopPlaybackHandle(handle) {
+    if (!handle) return;
+    try {
+      // La musica si ferma SOLO via stopMusicPlayback / stop_music
+      if (handle._isMusic || handle._sharedUnlocked || handle.kind === 'deferred') {
+        return;
+      }
+      if (typeof handle._domCleanup === 'function') {
+        try { handle._domCleanup(); } catch (_) {}
+      }
+      if (handle.kind === 'webaudio') {
+        if (typeof handle._onEnded === 'function' && handle.source) {
+          try { handle.source.removeEventListener('ended', handle._onEnded); } catch (_) {}
+        }
+        if (handle.source) {
+          try { handle.source.stop(0); } catch (_) {}
+          try { handle.source.disconnect(); } catch (_) {}
+          handle.source = null;
+        }
+        if (handle.gain) {
+          try { handle.gain.disconnect(); } catch (_) {}
+          handle.gain = null;
+        }
+      } else if (handle.element) {
+        handle.element.pause();
+        handle.element.removeAttribute('src');
+        while (handle.element.firstChild) {
+          handle.element.removeChild(handle.element.firstChild);
+        }
+        handle.element.load();
+        try {
+          if (handle.element.parentNode) handle.element.parentNode.removeChild(handle.element);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  /** Adatta il handle al contratto usato da stop_* (.element.pause/load). */
+  function asAudioElementProxy(handle) {
+    if (!handle) return null;
+    if (handle.kind === 'element' && handle.element) return handle.element;
+    return {
+      pause: () => stopPlaybackHandle(handle),
+      removeAttribute: () => {},
+      load: () => {},
+      _amiantoAudioHandle: handle
+    };
+  }
+
+  function startWebAudioPlayback(ctx, audioBuffer, options) {
+    const loopOpt = options.loopOpt || { mode: 'once' };
+    const volume = Math.max(0, Math.min(1, Number(options.volume) || 1));
+    const gain = ctx.createGain();
+    gain.gain.value = volume;
+    gain.connect(ctx.destination);
+
+    const handle = {
+      kind: 'webaudio',
+      source: null,
+      gain,
+      _onEnded: null,
+      _playsLeft: loopOpt.mode === 'count' ? loopOpt.count : 1
+    };
+
+    const startSource = () => {
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.loop = loopOpt.mode === 'infinite';
+      source.connect(gain);
+      handle.source = source;
+
+      if (loopOpt.mode === 'count') {
+        handle._onEnded = () => {
+          handle._playsLeft -= 1;
+          if (handle._playsLeft > 0) {
+            startSource();
+          } else if (typeof options.onEnded === 'function') {
+            options.onEnded();
+          }
+        };
+        source.addEventListener('ended', handle._onEnded);
+      } else if (loopOpt.mode === 'once' && typeof options.onEnded === 'function') {
+        handle._onEnded = () => options.onEnded();
+        source.addEventListener('ended', handle._onEnded);
+      }
+
+      source.start(0);
+    };
+
+    startSource();
+    return handle;
+  }
+
+  function sniffContainerFormat(arrayBuffer) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 4) return null;
+    const u8 = new Uint8Array(arrayBuffer.slice(0, 12));
+    if (u8[0] === 0x4f && u8[1] === 0x67 && u8[2] === 0x67 && u8[3] === 0x53) return 'ogg';
+    if (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46) return 'wav';
+    if (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) return 'mp3';
+    if (u8[0] === 0xff && (u8[1] & 0xe0) === 0xe0) return 'mp3';
+    if (u8[0] === 0x66 && u8[1] === 0x4c && u8[2] === 0x61 && u8[3] === 0x43) return 'flac';
+    return null;
+  }
+
+  async function playWithHtmlAudio(url, audioRef, options) {
+    const loopOpt = options.loopOpt || { mode: 'once' };
+    const volume = Math.max(0, Math.min(1, Number(options.volume) || 1));
+
+    const attemptOnElement = (audio) => new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanupDom = () => {
+        try { audio.pause(); } catch (_) {}
+        try { audio.removeAttribute('src'); audio.load(); } catch (_) {}
+        try { if (audio.parentNode) audio.parentNode.removeChild(audio); } catch (_) {}
+      };
+      const ok = () => {
+        if (settled) return;
+        settled = true;
+        resolve({ kind: 'element', element: audio, _domCleanup: cleanupDom });
+      };
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanupDom();
+        reject(err || new Error('HTMLAudio play failed'));
+      };
+
+      audio.volume = volume;
+      applyAudioLoop(audio, loopOpt);
+      audio.src = url;
+
+      audio.addEventListener('playing', () => ok(), { once: true });
+      audio.addEventListener('error', () => {
+        const mediaErr = audio.error;
+        fail(new Error(mediaErr ? ('MediaError code ' + mediaErr.code) : 'audio element error'));
+      }, { once: true });
+
+      const tryPlay = () => {
+        const p = audio.play();
+        if (p && typeof p.then === 'function') {
+          p.then(() => { if (!settled && !audio.paused) ok(); }).catch(fail);
+        }
+      };
+      tryPlay();
+      setTimeout(() => { if (!settled) tryPlay(); }, 30);
+      setTimeout(() => { if (!settled) fail(new Error('HTMLAudio play timeout')); }, 1200);
+    });
+
+    if (!htmlAudioUnlocked) {
+      await waitForAudioUnlock(50);
+    }
+
+    const attemptNew = async () => {
+      const audio = document.createElement('audio');
+      audio.preload = 'auto';
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', '');
+      audio.setAttribute('data-amianto-audio', '1');
+      audio.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+      document.body.appendChild(audio);
+      return attemptOnElement(audio);
+    };
+
+    try {
+      return await attemptNew();
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      const notAllowed = /NotAllowed|user didn't interact|user.*gesture/i.test(msg);
+      if (!notAllowed) throw err;
+
+      log('[Runtime] Audio blocked by autoplay — queued until user click (non-blocking)', 'warning');
+      deferredHtmlAudioJobs.push(() => {
+        attemptNew().catch(() => {});
+      });
+      return {
+        kind: 'deferred',
+        element: { pause() {}, removeAttribute() {}, load() {} },
+        _domCleanup() {}
+      };
+    }
+  }
+
+  /**
+   * Musica di sottofondo: sempre in loop su un elemento dedicato.
+   * Non usa unlockedMediaEl (i click di unlock non devono interromperla).
+   */
+  async function playMusicFromRef(audioRef, options = {}) {
+    const url = await resolveAudioUrl(audioRef);
+    if (!url) return null;
+
+    let arrayBuffer = null;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      arrayBuffer = await res.arrayBuffer();
+    } catch (err) {
+      log('Could not load music "' + audioRef + '": ' + (err && err.message ? err.message : err), 'error');
+      return null;
+    }
+
+    if (!arrayBuffer || arrayBuffer.byteLength < 4) {
+      log('Music "' + audioRef + '" is empty or unreadable', 'error');
+      return null;
+    }
+
+    const container = sniffContainerFormat(arrayBuffer);
+    const preferredMime = guessAudioMimeFromRef(audioRef) ||
+      (container === 'ogg' ? 'audio/ogg' : null) ||
+      (container === 'mp3' ? 'audio/mpeg' : null) ||
+      (container === 'wav' ? 'audio/wav' : null) ||
+      'application/octet-stream';
+
+    revokeMusicObjectUrl();
+    musicObjectUrl = URL.createObjectURL(new Blob([arrayBuffer], { type: preferredMime }));
+
+    const audio = ensureMusicAudioElement();
+    audio.loop = true;
+    audio.volume = Math.max(0, Math.min(1, Number(options.volume) || 1));
+    audio.src = musicObjectUrl;
+
+    const tryStart = async () => {
+      // Non attendere il click: prova subito (Electron / autoplay policy).
+      // Se il browser blocca, si fa retry dopo tryAutoUnlock o al primo gesture.
+      if (!htmlAudioUnlocked) {
+        await tryAutoUnlockAudioAtBoot();
+      }
+      await audio.play();
+      if (!htmlAudioUnlocked) notifyAudioUnlocked();
+      return {
+        kind: 'element',
+        element: audio,
+        _isMusic: true,
+        _domCleanup() {}
+      };
+    };
+
+    try {
+      const handle = await tryStart();
+      log('[Runtime] Music via HTMLAudio loop (' + (container || preferredMime) + ')', 'info');
+      return handle;
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      const notAllowed = /NotAllowed|user didn't interact|user.*gesture/i.test(msg);
+      if (!notAllowed) {
+        log('Could not play music "' + audioRef + '": ' + msg, 'error');
+        return null;
+      }
+
+      // Secondo tentativo dopo unlock boot (a volte resume AudioContext basta)
+      try {
+        await tryAutoUnlockAudioAtBoot();
+        await audio.play();
+        if (!htmlAudioUnlocked) notifyAudioUnlocked();
+        log('[Runtime] Music via HTMLAudio loop after boot unlock (' + (container || preferredMime) + ')', 'info');
+        return {
+          kind: 'element',
+          element: audio,
+          _isMusic: true,
+          _domCleanup() {}
+        };
+      } catch (_) {}
+
+      log('[Runtime] Music blocked by autoplay — will start on next click (loop)', 'warning');
+      const pendingRef = audioRef;
+      const pendingVol = audio.volume;
+      deferredHtmlAudioJobs.push(() => {
+        const el = ensureMusicAudioElement();
+        el.loop = true;
+        el.volume = pendingVol;
+        if (musicObjectUrl) el.src = musicObjectUrl;
+        el.play().then(() => {
+          gameState.audio.music = {
+            handle: { kind: 'element', element: el, _isMusic: true, _domCleanup() {} },
+            element: el,
+            ref: pendingRef,
+            loopOpt: { mode: 'infinite' }
+          };
+          log('[Runtime] Music started after unlock (loop): "' + pendingRef + '"', 'info');
+        }).catch(() => {});
+      });
+      return {
+        kind: 'deferred',
+        element: audio,
+        _isMusic: true,
+        _domCleanup() {}
+      };
+    }
+  }
+
+  /** Se il browser mette in pausa l'audio (tab nascosta, ecc.), riprendi finché stop_music non è stato chiamato. */
+  function resumeMusicIfNeeded() {
+    if (!musicAudioEl || !gameState.audio || !gameState.audio.music) return;
+    if (gameState.audio.music.element !== musicAudioEl) return;
+    try {
+      musicAudioEl.loop = true;
+      if (musicAudioEl.paused && musicAudioEl.src) {
+        musicAudioEl.play().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) resumeMusicIfNeeded();
+  });
+  window.addEventListener('focus', resumeMusicIfNeeded);
+
+  function stopMusicPlayback() {
+    const music = gameState.audio && gameState.audio.music;
+    if (music && music.handle && music.handle.kind === 'webaudio') {
+      stopPlaybackHandle(music.handle);
+    }
+    if (musicAudioEl) {
+      try {
+        musicAudioEl.pause();
+        musicAudioEl.removeAttribute('src');
+        musicAudioEl.load();
+      } catch (_) {}
+    }
+    revokeMusicObjectUrl();
+    gameState.audio.music = null;
+  }
+
+  function stopSoundPlayback(soundKey) {
+    if (!gameState.audio || !gameState.audio.sounds) return;
+    const key = String(soundKey || '').trim().toLowerCase();
+    if (!key) return;
+    const entry = gameState.audio.sounds.get(key);
+    if (!entry) return;
+    stopPlaybackHandle(entry.handle || (entry.element && entry.element._amiantoAudioHandle) || { kind: 'element', element: entry.element });
+    gameState.audio.sounds.delete(key);
+  }
+
+  function stopAllAudioPlayback() {
+    stopMusicPlayback();
+    if (gameState.audio && gameState.audio.sounds) {
+      for (const key of [...gameState.audio.sounds.keys()]) {
+        stopSoundPlayback(key);
+      }
+    }
+  }
+
+  async function refreshAudioFileIndex() {
+    const projectId = getActualProjectId();
+    if (!projectId) return new Map();
+
+    const userId = projectInfo.userId || 'local';
+    const cacheKey = `${userId}|${projectId}|audio`;
+    if (gameState.audioFileIndex && gameState.audioFileIndexKey === cacheKey) {
+      return gameState.audioFileIndex;
+    }
+
+    const index = new Map();
+
+    if (window.assetStorage && typeof window.assetStorage.listProjectAudio === 'function') {
+      try {
+        const entries = await window.assetStorage.listProjectAudio(projectId, userId);
+        for (const entry of entries || []) {
+          const aid = entry.assetId || normalizeResourceFileKey(entry.name).replace(/\.[^.]+$/, '');
+          const url = entry.publicUrl || null;
+          registerResourceFileAlias(index, entry.name, aid, url);
+          if (entry.fileName) registerResourceFileAlias(index, entry.fileName, aid, url);
+          if (entry.displayName) registerResourceFileAlias(index, entry.displayName, aid, url);
+          if (aid) {
+            registerResourceFileAlias(index, aid, aid, url);
+          }
+        }
+      } catch (err) {
+        log(`[Runtime] refreshAudioFileIndex: ${err.message}`, 'warning');
+      }
+    }
+
+    gameState.audioFileIndex = index;
+    gameState.audioFileIndexKey = cacheKey;
+    log(`[Runtime] Audio file index: ${index.size} alias`, 'info');
+    return index;
+  }
+
+  async function resolveAudioUrl(audioRef) {
+    const trimmed = String(audioRef == null ? '' : audioRef).trim();
+    if (!trimmed) return null;
+
+    if (
+      trimmed.startsWith('data:') ||
+      trimmed.startsWith('blob:') ||
+      /^https?:\/\//i.test(trimmed)
+    ) {
+      return trimmed;
+    }
+
+    let assetId = null;
+    if (trimmed.startsWith('asset:')) {
+      assetId = trimmed.slice(6);
+    } else if (/^asset_[\w-]+$/i.test(trimmed)) {
+      assetId = trimmed;
+    }
+
+    if (assetId) {
+      const url = await resolveAssetId(assetId, 'audio');
+      if (url) return url;
+    }
+
+    const key = normalizeResourceFileKey(trimmed);
+    const index = await refreshAudioFileIndex();
+    const fromIndex = index.get(key);
+    if (fromIndex) {
+      if (fromIndex.publicUrl) return fromIndex.publicUrl;
+      if (fromIndex.assetRef && fromIndex.assetRef.startsWith('asset:')) {
+        const id = fromIndex.assetRef.slice(6);
+        const url = await resolveAssetId(id, 'audio');
+        if (url) return url;
+      }
+    }
+
+    const withoutExt = key.replace(/\.[^.]+$/, '');
+    if (withoutExt && withoutExt !== key) {
+      const fromStem = index.get(withoutExt);
+      if (fromStem) {
+        if (fromStem.publicUrl) return fromStem.publicUrl;
+        if (fromStem.assetRef && fromStem.assetRef.startsWith('asset:')) {
+          const id = fromStem.assetRef.slice(6);
+          const url = await resolveAssetId(id, 'audio');
+          if (url) return url;
+        }
+      }
+    }
+
+    if (AUDIO_FILE_EXT.test(key)) {
+      log(
+        `Audio "${trimmed}" not found. Import it in Resources → Audio and use the file name, asset id, or asset:... ref.`,
+        'error'
+      );
+    } else {
+      log(`Audio "${trimmed}" not found in project audio library.`, 'error');
+    }
+    return null;
+  }
+
+  async function playAudioFromRef(audioRef, options = {}) {
+    const url = await resolveAudioUrl(audioRef);
+    if (!url) return null;
+
+    let arrayBuffer = null;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      arrayBuffer = await res.arrayBuffer();
+    } catch (err) {
+      log('Could not load audio "' + audioRef + '": ' + (err && err.message ? err.message : err), 'error');
+      return null;
+    }
+
+    if (!arrayBuffer || arrayBuffer.byteLength < 4) {
+      log('Audio "' + audioRef + '" is empty or unreadable', 'error');
+      return null;
+    }
+
+    const container = sniffContainerFormat(arrayBuffer);
+    const preferredMime = guessAudioMimeFromRef(audioRef) ||
+      (container === 'ogg' ? 'audio/ogg' : null) ||
+      (container === 'mp3' ? 'audio/mpeg' : null) ||
+      (container === 'wav' ? 'audio/wav' : null) ||
+      (container === 'flac' ? 'audio/flac' : null) ||
+      'application/octet-stream';
+
+    const typedUrl = URL.createObjectURL(new Blob([arrayBuffer], { type: preferredMime }));
+
+    // 1) HTMLAudio PRIMA — non dipende da AudioContext (evita musica silenziosa fino al click)
+    try {
+      unlockAudioContextFromGesture();
+      const handle = await playWithHtmlAudio(typedUrl, audioRef, options);
+      log('[Runtime] Audio via HTMLAudio (' + (container || preferredMime) + ')', 'info');
+      return handle;
+    } catch (htmlErr) {
+      log('HTMLAudio failed for "' + audioRef + '": ' + (htmlErr && htmlErr.message ? htmlErr.message : htmlErr), 'warning');
+    }
+
+    // 2) WebAudio SOLO se il context è già running (mai start in suspended = silenzio)
+    const ctx = await ensureAudioContextRunning();
+    if (ctx && ctx.state === 'running') {
+      try {
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        const handle = startWebAudioPlayback(ctx, audioBuffer, options);
+        log('[Runtime] Audio via WebAudio (' + (container || 'unknown') + ', ' + audioBuffer.duration.toFixed(2) + 's)', 'info');
+        return handle;
+      } catch (decodeErr) {
+        const hint = container === 'ogg'
+          ? ' — OGG must be Vorbis or Opus'
+          : '';
+        log('WebAudio decode failed for "' + audioRef + '": ' + (decodeErr && decodeErr.message ? decodeErr.message : decodeErr) + hint, 'warning');
+      }
+    } else {
+      log('AudioContext not running; cannot use WebAudio fallback for "' + audioRef + '"', 'warning');
+    }
+
+    log('Could not play audio "' + audioRef + '"', 'error');
+    return null;
   }
 
   function normalizeResourceFileKey(fileRef) {
@@ -290,13 +1362,12 @@
       if (row.fileName) registerResourceFileAlias(index, row.fileName, row.assetId, url);
     }
     if (catalog.length > 0 && catalog.every(r => !r.publicUrl)) {
-      log('[Runtime] resourcesCatalog slim (senza publicUrl); URL da Supabase/Firestore assets', 'info');
+      log('[Runtime] resourcesCatalog slim (senza publicUrl); URL da storage locale', 'info');
     }
   }
 
   /**
    * Indice nome file Resources (es. "chiave.png") → "asset:assetId".
-   * Usa Supabase listProjectResources + metadata Firestore (displayName originale).
    */
   async function refreshResourceFileIndex() {
     const projectId = getActualProjectId();
@@ -304,10 +1375,8 @@
       return new Map();
     }
 
-    const userId = projectInfo.userId || (window.firebaseAuth && window.firebaseAuth.currentUser
-      ? window.firebaseAuth.currentUser.uid
-      : null);
-    const cacheKey = `${userId || ''}|${projectId}`;
+    const userId = projectInfo.userId || 'local';
+    const cacheKey = `${userId}|${projectId}`;
     if (gameState.resourceFileIndex && gameState.resourceFileIndexKey === cacheKey) {
       return gameState.resourceFileIndex;
     }
@@ -318,9 +1387,9 @@
       loadResourcesCatalogIntoIndex(index, gameState.projectData.resourcesCatalog);
     }
 
-    if (window.supabaseStorage && typeof window.supabaseStorage.listProjectResources === 'function') {
+    if (window.assetStorage && typeof window.assetStorage.listProjectResources === 'function') {
       try {
-        const entries = await window.supabaseStorage.listProjectResources(projectId, userId);
+        const entries = await window.assetStorage.listProjectResources(projectId, userId);
         for (const entry of entries || []) {
           const aid = entry.assetId || normalizeResourceFileKey(entry.name).replace(/\.[^.]+$/, '');
           const url = entry.publicUrl || null;
@@ -330,27 +1399,7 @@
           }
         }
       } catch (err) {
-        log(`[Runtime] refreshResourceFileIndex Supabase: ${err.message}`, 'warning');
-      }
-    }
-
-    if (userId && window.firebaseDB) {
-      try {
-        const snap = await window.firebaseDB
-          .collection('users').doc(userId)
-          .collection('projects').doc(projectId)
-          .collection('assets')
-          .where('type', '==', 'resource')
-          .get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          const aid = d.assetId || doc.id;
-          const url = d.publicUrl || null;
-          if (d.name) registerResourceFileAlias(index, d.name, aid, url);
-          if (d.fileName) registerResourceFileAlias(index, d.fileName, aid, url);
-        });
-      } catch (err) {
-        log(`[Runtime] refreshResourceFileIndex Firestore: ${err.message}`, 'warning');
+        log(`[Runtime] refreshResourceFileIndex: ${err.message}`, 'warning');
       }
     }
 
@@ -422,160 +1471,33 @@
     });
   }
 
-  // Risolve un assetId in URL Supabase
   async function resolveAssetId(assetId, category, roomName = null, characterName = null) {
     try {
-      log(`[Runtime] resolveAssetId chiamato: assetId=${assetId}, category=${category}${roomName ? `, roomName=${roomName}` : ''}${characterName ? `, characterName=${characterName}` : ''}`, 'info');
-      
-      // PRIMA: Prova a recuperare URL da Firestore se disponibile (più affidabile)
-      if (typeof window !== 'undefined' && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userId = window.firebaseAuth.currentUser.uid;
-          // Estrai projectId reale (potrebbe essere "username:projectname", dobbiamo usare solo il nome)
-          let actualProjectId = projectInfo.projectId;
-          if (actualProjectId && actualProjectId.includes(':')) {
-            actualProjectId = actualProjectId.split(':')[1]; // Prendi solo la parte dopo ":"
-          }
-          
-          if (actualProjectId) {
-            log(`[Runtime] resolveAssetId: tentativo recupero da Firestore (userId: ${userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}..., assetId: ${assetId})`, 'info');
-            const assetRef = window.firebaseDB
-              .collection('users')
-              .doc(userId)
-              .collection('projects')
-              .doc(actualProjectId)
-              .collection('assets')
-              .doc(assetId);
+      log(`[Runtime] resolveAssetId: assetId=${assetId}, category=${category}`, 'info');
+      const storage = window.assetStorage;
+      if (!storage || !storage.isAvailable()) return null;
 
-            const doc = await assetRef.get();
-            
-            if (doc.exists) {
-              const data = doc.data();
-              log(`[Runtime] resolveAssetId: metadata trovato in Firestore per assetId '${assetId}'`, 'info');
-              log(`[Runtime] resolveAssetId: hasPublicUrl=${!!data.publicUrl}, hasFileName=${!!data.fileName}, fileName='${data.fileName || 'N/A'}', type='${data.type || 'N/A'}'`, 'info');
-              
-              if (data.publicUrl) {
-                log(`[Runtime] resolveAssetId: ✓ URL trovato in Firestore: ${data.publicUrl.substring(0, 80)}...`, 'success');
-                return data.publicUrl;
-              } else if (data.fileName) {
-                // Usa il tipo salvato in Firestore (es. 'resource' per Resources centralizzate)
-                const metaCategory = data.type || category;
-                const folder = window.supabaseStorage.getSupabaseFolderForType
-                  ? window.supabaseStorage.getSupabaseFolderForType(metaCategory)
-                  : metaCategory;
-                const subfolder = data.subfolder || null;
-                log(`[Runtime] resolveAssetId: usando fileName da Firestore: '${data.fileName}', tipo metadata '${metaCategory}' -> folder '${folder}'${subfolder ? `, subfolder '${subfolder}'` : ''}`, 'info');
-                const url = window.supabaseStorage.getAssetPublicUrl(
-                  userId,
-                  actualProjectId,
-                  metaCategory,
-                  data.fileName,
-                  subfolder
-                );
-                if (url) {
-                  log(`[Runtime] resolveAssetId: ✓ URL costruito da fileName Firestore: ${url}`, 'success');
-                  return url;
-                } else {
-                  log(`[Runtime] resolveAssetId: ⚠️ fileName trovato ma URL non generato. fileName='${data.fileName}', category='${category}', folder='${folder}', subfolder='${subfolder || 'N/A'}'`, 'warning');
-                }
-              } else {
-                log(`[Runtime] resolveAssetId: ⚠️ ERRORE CRITICO - metadata trovato in Firestore ma publicUrl e fileName mancanti!`, 'error');
-                log(`[Runtime] resolveAssetId: Questo significa che l'asset è stato caricato ma il metadata è incompleto.`, 'error');
-                log(`[Runtime] resolveAssetId: Data completa:`, data, 'error');
-                log(`[Runtime] resolveAssetId: Soluzione: ricarica l'asset o verifica che saveAssetMetadata venga chiamato correttamente.`, 'error');
-              }
-            } else {
-              log(`[Runtime] resolveAssetId: ⚠️ WARNING - asset not found in Firestore (assetId: '${assetId}')`, 'warning');
-              log(`[Runtime] resolveAssetId: Questo significa che il metadata dell'asset non è stato salvato correttamente.`, 'warning');
-              log(`[Runtime] resolveAssetId: Proverò pattern di fallback, ma potrebbero non funzionare se il fileName include un baseName.`, 'warning');
-              log(`[Runtime] resolveAssetId: Soluzione: assicurati che saveAssetMetadata venga chiamato dopo ogni upload.`, 'warning');
-            }
-          }
-        } catch (firestoreError) {
-          log(`[Runtime] resolveAssetId: Firestore error (continuing with Supabase): ${firestoreError.message}`, 'info');
-        }
-      }
-      
-      // SECONDO: Fallback a Supabase Storage diretto
-      // Verifica se Supabase è disponibile
-      if (typeof window === 'undefined' || !window.supabaseStorage) {
-        log(`[Runtime] resolveAssetId: Supabase non disponibile (window.supabaseStorage mancante)`, 'warning');
-        return null;
-      }
-
-      const isAvailable = window.supabaseStorage.isAvailable ? window.supabaseStorage.isAvailable() : false;
-      if (!isAvailable) {
-        log(`[Runtime] resolveAssetId: Supabase non disponibile (isAvailable() = false)`, 'warning');
-        return null;
-      }
-      log(`[Runtime] resolveAssetId: Supabase disponibile, tentativo risoluzione diretta`, 'info');
-
-      if (!projectInfo.projectId) {
-        log(`[Runtime] resolveAssetId: projectInfo.projectId mancante, impossibile risolvere`, 'warning');
-        return null;
-      }
-
-      // Estrai projectId reale (rimuovi "username:" se presente per path legacy)
       let actualProjectId = projectInfo.projectId;
-      if (actualProjectId.includes(':')) {
-        actualProjectId = actualProjectId.split(':')[1]; // Prendi solo la parte dopo ":"
-        log(`[Runtime] resolveAssetId: projectId estratto da formato "username:name" -> ${actualProjectId}`, 'info');
+      if (actualProjectId && actualProjectId.includes(':')) {
+        actualProjectId = actualProjectId.split(':')[1];
       }
+      if (!actualProjectId) return null;
 
-      const hasUserId = !!projectInfo.userId;
-      if (!hasUserId) {
-        log(`[Runtime] resolveAssetId: userId mancante in projectInfo, proverò comunque risoluzione diretta via Supabase (path legacy senza userId).`, 'warning');
-      } else {
-        log(`[Runtime] resolveAssetId: projectInfo disponibile (userId: ${projectInfo.userId.substring(0, 20)}..., projectId: ${actualProjectId.substring(0, 30)}...)`, 'info');
-      }
+      const useRoomSubfolder = category !== 'resource' && category !== 'gui' && category !== 'cursor';
+      const subfolder = useRoomSubfolder
+        ? (roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null))
+        : null;
 
-      // PRIMO TENTATIVO: chiedi direttamente a Supabase lo storagePath reale,
-      // evitando di indovinare l'estensione. Usa resolveAssetUrl che fa una list()
-      // nella cartella del progetto e cerca un file che inizi con assetId.
-      if (window.supabaseStorage.resolveAssetUrl) {
-        try {
-          log(`[Runtime] resolveAssetId: tentativo risoluzione diretta via Supabase.resolveAssetUrl${roomName ? ` (roomName: ${roomName})` : ''}${characterName ? ` (characterName: ${characterName})` : ''}`, 'info');
-          // Resources/gui/cursor vivono nella cartella di categoria, non in rooms/characters
-          const useRoomSubfolder = category !== 'resource' && category !== 'gui' && category !== 'cursor';
-          const subfolder = useRoomSubfolder
-            ? (roomName ? `rooms/${roomName}` : (characterName ? `characters/${characterName}` : null))
-            : null;
-          const directUrl = await window.supabaseStorage.resolveAssetUrl(
-            actualProjectId,
-            assetId,
-            category,
-            null,
-            projectInfo.userId || null, // Passa esplicitamente l'userId del progetto
-            subfolder // Passa subfolder se abbiamo roomId
-          );
-          if (directUrl) {
-            log(
-              `[Runtime] resolveAssetId: ✓ URL ottenuto direttamente da Supabase: ${directUrl.substring(0, 100)}${directUrl.length > 100 ? '...' : ''}`,
-              'success'
-            );
-            return directUrl;
-          } else {
-            log(`[Runtime] resolveAssetId: resolveAssetUrl ha restituito null, interrompo risoluzione`, 'warning');
-          }
-        } catch (directErr) {
-          log(`[Runtime] resolveAssetId: errore in resolveAssetUrl Supabase: ${directErr.message}`, 'warning');
-        }
-      } else {
-        log(`[Runtime] resolveAssetId: window.supabaseStorage.resolveAssetUrl non disponibile`, 'warning');
-      }
-
-      // Se siamo arrivati qui significa che:
-      // - Firestore non aveva un publicUrl/fileName utilizzabile, e
-      // - Supabase.resolveAssetUrl non è riuscito a trovare un file reale.
-      // Non proviamo più a "indovinare" l'URL con pattern: falliamo in modo esplicito.
-      log(
-        `[Runtime] resolveAssetId: ✗ No URL found (Firestore+Supabase), stopping without fallback patterns`,
-        'warning'
+      const url = await storage.resolveAssetUrl(
+        actualProjectId, assetId, category, null, projectInfo.userId || 'local', subfolder
       );
+      if (url) {
+        log(`[Runtime] resolveAssetId: URL da storage locale`, 'success');
+        return url;
+      }
       return null;
     } catch (error) {
       log(`[Runtime] resolveAssetId: error: ${error.message}`, 'error');
-      console.error('Errore resolveAssetId:', error);
       return null;
     }
   }
@@ -738,21 +1660,81 @@
     });
   }
 
+  /** Progetti legacy: script in scripts['Hotspot:id'] → rooms[].hotspots[].scripts.onClick */
+  function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
+    if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
+    for (const [key, content] of Object.entries(projectObj.scripts)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      const legacyCode = String(content || '').trim();
+      if (!legacyCode) continue;
+      for (const room of projectObj.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (String(h.id) !== hotspotId) continue;
+          if (!h.scripts) h.scripts = {};
+          if (!h.scripts.onClick) h.scripts.onClick = { code: '', enabled: false };
+          const embedded = String(h.scripts.onClick.code || '').trim();
+          if (!embedded) {
+            h.scripts.onClick.code = legacyCode;
+            h.scripts.onClick.enabled = true;
+          }
+        }
+      }
+    }
+  }
+
+  function resolveHotspotOnClickScript(hotspotId, hotspot) {
+    let code = '';
+    if (hotspot && hotspot.scripts && hotspot.scripts.onClick) {
+      code = String(hotspot.scripts.onClick.code || '');
+    }
+    if (!code.trim()) {
+      const legacyKey = `Hotspot:${hotspotId}`;
+      if (gameState.scripts && gameState.scripts[legacyKey]) {
+        code = String(gameState.scripts[legacyKey]);
+        log(`[Runtime] Hotspot ${hotspotId}: codice da script legacy ${legacyKey}`, 'info');
+      }
+    }
+    const hasCode = code.trim().length > 0;
+    return { code, hasCode };
+  }
+
+  function isUseWithHandlerSuccess(outcome) {
+    return !!(outcome && outcome.found && outcome.result === true);
+  }
+
   // ============================================
   // INIZIALIZZAZIONE RUNTIME
   // ============================================
+  function normalizeProjectDataForRuntime(projectData) {
+    if (!projectData || typeof projectData !== 'object') {
+      throw new Error('Invalid project data');
+    }
+    // Standalone HTML / .amnt mistake: unwrap package wrapper
+    if (projectData.format === 'amianto-amnt' && projectData.project && typeof projectData.project === 'object') {
+      projectData = projectData.project;
+    }
+    if (projectData.format !== 'amianto-game') {
+      // Legacy / partial exports: accept game-shaped objects missing format
+      const looksLikeGame = !!(projectData.settings || projectData.rooms || projectData.scripts);
+      if (!looksLikeGame) {
+        throw new Error('Unsupported project format. Expected: amianto-game');
+      }
+      projectData = Object.assign({}, projectData, { format: 'amianto-game' });
+      if (projectData.version == null) projectData.version = 1;
+      log('[Runtime] Project format missing — coerced to amianto-game', 'warning');
+    }
+    return projectData;
+  }
+
   window.initRuntime = async function(projectData) {
     try {
       log('[Runtime] initRuntime chiamato', 'info');
-      
-      // Validazione progetto
-      if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Invalid project data');
-      }
 
-      if (projectData.format !== 'amianto-game') {
-        throw new Error('Unsupported project format. Expected: amianto-game');
-      }
+      projectData = normalizeProjectDataForRuntime(projectData);
+
+      mergeLegacyHotspotScriptsIntoRooms(projectData);
 
       // Se siamo in iframe, modalità playtest (sandboxed)
       if (isInIframe) {
@@ -764,7 +1746,8 @@
         gameState.attachments = projectData.attachments || {};
         invalidateResourceFileIndex();
         await initializeVariables(projectData.variables);
-        
+        loadInventory(projectData.inventory);
+
         // Invia conferma all'editor
         sendToEditor({
           type: 'PLAYTEST_STARTED',
@@ -780,14 +1763,9 @@
       showLoadingOverlay();
       updateLoadingMessage('Initializing runtime...');
 
-      // Validazione progetto
-      if (!projectData || typeof projectData !== 'object') {
-        throw new Error('Invalid project data');
-      }
-
-      if (projectData.format !== 'amianto-game') {
-        throw new Error('Unsupported project format. Expected: amianto-game');
-      }
+      // Ferma loop/interazione precedenti (reload playtest)
+      stopGameLoop();
+      gameState.initialized = false;
 
       // Reset stato
       gameState.projectData = projectData;
@@ -798,14 +1776,18 @@
       gameState.inventory = createEmptyInventoryState();
       gameState.characters.clear();
       gameState.characterDefinitions.clear();
+      gameState.cursors = new Map();
       gameState.scripts = projectData.scripts || {};
       gameState.attachments = projectData.attachments || {};
       
       // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati quando viene caricato un nuovo progetto
       // Questo garantisce che gli script vengano ricompilati con il nuovo contenuto
       gameState.compiledScripts.clear();
+      gameState.compiledScriptHashes.clear();
       invalidateResourceFileIndex();
+      stopAllAudioPlayback();
       resetInputLock();
+      gameState.bootPhase = 'loading';
       log('[Runtime] Cache script compilati resettata', 'info');
       
       // ⚠️ RESET FLAG EVENTI: Quando viene caricato un nuovo progetto, reset flag eventi
@@ -815,6 +1797,8 @@
       
       // Reset AssetRegistry
       AssetRegistry.images.clear();
+      AssetRegistry.fonts.clear();
+      dialogFontLoadPromises.clear();
       AssetRegistry.isLoading = false;
       AssetRegistry.loadComplete = false;
 
@@ -825,12 +1809,7 @@
         projectInfo.projectId = projectData._meta.projectId;
         log(`[Runtime] projectInfo impostato da _meta: userId=${projectInfo.userId}, projectId=${projectInfo.projectId}`, 'info');
       } else {
-        // Fallback: prova a recuperare da Firebase Auth se disponibile
-        if (typeof window !== 'undefined' && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          projectInfo.userId = window.firebaseAuth.currentUser.uid;
-          log(`[Runtime] projectInfo.userId recuperato da Firebase Auth: ${projectInfo.userId}`, 'info');
-        }
-        
+        projectInfo.userId = 'local';
         // Prova a recuperare projectId da settings, localStorage o nome progetto
         if (!projectInfo.projectId) {
           // Prova da settings se c'è un ID
@@ -847,11 +1826,16 @@
           }
           // Prova da localStorage (fallback)
           else if (typeof localStorage !== 'undefined') {
-            const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-            if (activeProjectName) {
-              // Normalizza il nome come viene fatto in saveCurrentProject
-              projectInfo.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-              log(`[Runtime] projectInfo.projectId normalizzato da localStorage activeProjectName "${activeProjectName}" -> "${projectInfo.projectId}"`, 'info');
+            const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
+            if (activeProjectId) {
+              projectInfo.projectId = activeProjectId;
+              log(`[Runtime] projectInfo.projectId recuperato da localStorage amiantoActiveProjectId: ${projectInfo.projectId}`, 'info');
+            } else {
+              const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+              if (activeProjectName) {
+                projectInfo.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+                log(`[Runtime] projectInfo.projectId normalizzato da localStorage activeProjectName "${activeProjectName}" -> "${projectInfo.projectId}"`, 'info');
+              }
             }
           }
         }
@@ -880,6 +1864,7 @@
       canvasHeight = settings.canvasHeight || 600;
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
+      applyProjectRoomTransitionSettings(settings);
 
       updateLoadingMessage('Loading variables...');
       await initializeVariables(projectData.variables);
@@ -896,6 +1881,12 @@
         // Continua anche se il preload fallisce parzialmente
       }
 
+      try {
+        await preloadDialogBoxFonts(projectData);
+      } catch (fontErr) {
+        log(`[Runtime] Dialog font preload: ${fontErr.message}`, 'warning');
+      }
+
       // Verifica che il preload sia completato prima di procedere
       if (!AssetRegistry.loadComplete) {
         log('[Runtime] ATTENZIONE: Preload non completato, potrebbe causare problemi di rendering', 'warning');
@@ -904,42 +1895,78 @@
       updateLoadingMessage('Loading characters...');
       await loadCharacterDefinitions(projectData.characters || []);
 
+      updateLoadingMessage('Loading cursors...');
+      await loadCursors(projectData.cursors || []);
+
+      updateLoadingMessage('Loading room animations...');
+      await loadRoomAnimationDefinitions(projectData.roomAnimations || []);
+
+      updateLoadingMessage('Loading dialogues...');
+      loadDialogues(projectData.dialogues || []);
+
       updateLoadingMessage('Loading initial room...');
-      const startRoomId = settings.startRoom || settings.startRoomId || (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
+      const playerCharForStartRoom = (projectData.characters || []).find(char =>
+        char.spawnSettings && char.spawnSettings.isPlayer === true
+      );
+      const playerStartRoomId = playerCharForStartRoom &&
+        playerCharForStartRoom.spawnSettings &&
+        playerCharForStartRoom.spawnSettings.roomId
+        ? playerCharForStartRoom.spawnSettings.roomId
+        : null;
+      const startRoomId = settings.startRoom || settings.startRoomId || playerStartRoomId ||
+        (projectData.rooms && projectData.rooms.length > 0 ? projectData.rooms[0].id : null);
       if (startRoomId) {
-        await changeRoom(startRoomId);
+        await changeRoom(startRoomId, { skipRoomScripts: true });
       } else {
         log('[Runtime] No initial room specified', 'warning');
       }
 
       // Spawn automatico player all'avvio se configurato
       // IMPORTANTE: Spawna DOPO il cambio room, così il player è nella room corretta
-      // PRIORITÀ 1: spawnSettings.isPlayer (più specifico e moderno)
-      const playerCharacter = (projectData.characters || []).find(char => 
+      // Unifica spawnSettings (Characters) + settings.startX/Y legacy (stesso punto di spawn)
+      const playerCharacter = (projectData.characters || []).find(char =>
         char.spawnSettings && char.spawnSettings.isPlayer === true
       );
-      
+
+      const legacyStartX = Number(settings.startX);
+      const legacyStartY = Number(settings.startY);
+      const hasLegacyStart = Number.isFinite(legacyStartX) && Number.isFinite(legacyStartY);
+
       if (playerCharacter && playerCharacter.spawnSettings) {
         const spawn = playerCharacter.spawnSettings;
-        // Verifica che il character esista nelle definizioni
         const charDef = gameState.characterDefinitions.get(playerCharacter.name);
         if (!charDef) {
           log(`[Runtime] Player "${playerCharacter.name}" not found in character definitions`, 'error');
         } else {
+          let spawnX = Number(spawn.x);
+          let spawnY = Number(spawn.y);
+          if (!Number.isFinite(spawnX)) spawnX = 0;
+          if (!Number.isFinite(spawnY)) spawnY = 0;
+          // Se spawnSettings è ancora (0,0) ma esiste Start Position legacy, usala
+          // (evita personaggio che "parte da un'altra parte" rispetto al marker in editor)
+          let coordSource = 'spawnSettings';
+          if (spawnX === 0 && spawnY === 0 && hasLegacyStart && (legacyStartX !== 0 || legacyStartY !== 0)) {
+            const legacyName = settings.startingPlayer ? String(settings.startingPlayer) : '';
+            if (!legacyName || legacyName === playerCharacter.name) {
+              spawnX = legacyStartX;
+              spawnY = legacyStartY;
+              coordSource = 'settings.startX/Y (fallback)';
+            }
+          }
           const playerId = GameAPI.spawn_character(
             playerCharacter.name,
-            spawn.x || 0,
-            spawn.y || 0,
+            spawnX,
+            spawnY,
             spawn.direction || 'south'
           );
           if (playerId) {
             GameAPI.setVariable('playerId', playerId);
-            log(`[Runtime] Player "${playerCharacter.name}" spawnato automaticamente da spawnSettings a (${spawn.x || 0}, ${spawn.y || 0}) in room ${gameState.currentRoomId}`, 'info');
+            log(`[Runtime] Player "${playerCharacter.name}" spawnato a (${spawnX}, ${spawnY}) via ${coordSource} in room ${gameState.currentRoomId}`, 'info');
           } else {
             log(`[Runtime] Error spawning player "${playerCharacter.name}"`, 'error');
           }
         }
-      } else if (settings.startingPlayer && settings.startX !== undefined && settings.startY !== undefined) {
+      } else if (settings.startingPlayer && hasLegacyStart) {
         // PRIORITÀ 2: settings legacy (per retrocompatibilità)
         const charDef = gameState.characterDefinitions.get(settings.startingPlayer);
         if (!charDef) {
@@ -947,13 +1974,13 @@
         } else {
           const playerId = GameAPI.spawn_character(
             settings.startingPlayer,
-            Number(settings.startX) || 0,
-            Number(settings.startY) || 0,
-            'south' // direzione di default
+            legacyStartX,
+            legacyStartY,
+            'south'
           );
           if (playerId) {
             GameAPI.setVariable('playerId', playerId);
-            log(`[Runtime] Player "${settings.startingPlayer}" spawnato automaticamente da settings legacy a (${settings.startX}, ${settings.startY}) in room ${gameState.currentRoomId}`, 'info');
+            log(`[Runtime] Player "${settings.startingPlayer}" spawnato da settings legacy a (${legacyStartX}, ${legacyStartY}) in room ${gameState.currentRoomId}`, 'info');
           } else {
             log(`[Runtime] Error spawning player "${settings.startingPlayer}"`, 'error');
           }
@@ -966,27 +1993,43 @@
       updateLoadingMessage('Loading inventory...');
       loadInventory(projectData.inventory);
 
+      gameState.initialized = true;
+
+      // Game loop sotto l'overlay: gli script possono await / avanzare animazioni
+      // PRIMA che il giocatore veda il canvas (così set_character_visibility in on_game_start
+      // non lascia un frame col player ancora visibile).
+      setupInteraction();
+      startGameLoop();
+
+      updateLoadingMessage('Compiling scripts...');
+      compileAllProjectScripts();
+
+      gameState.bootPhase = 'scripts';
       updateLoadingMessage('Running initial scripts...');
+
+      // Sblocca audio prima di on_game_start / play_music (niente attesa del primo click in Electron)
+      await tryAutoUnlockAudioAtBoot();
+
       await executeGameStartScripts();
 
-      gameState.initialized = true;
+      if (startRoomId) {
+        await executeBeforeRoomChangeScripts(null, startRoomId);
+        await executeRoomChangeScripts(null, startRoomId);
+      }
+
+      // Rivela il gioco solo dopo gli script iniziali (visibilità/opacity già applicate)
       hideLoadingOverlay();
+      markBootReady();
 
       refreshResourceFileIndex().catch(err => {
         log(`[Runtime] Resource index preload: ${err.message}`, 'warning');
       });
 
-      // ⚠️ SETUP INTERAZIONE: Configura listener click centralizzato
-      // IMPORTANTE: setupInteraction() viene chiamato QUI, dopo che il canvas è pronto
-      // e PRIMA di avviare il game loop. Questo garantisce che il listener sia
-      // registrato solo quando il runtime è completamente inizializzato.
-      setupInteraction();
-
-      // Avvia game loop solo se tutto è pronto
-      if (gameState.currentRoom && AssetRegistry.loadComplete) {
+      if (gameState.isRunning) {
+        log('[Runtime] Runtime inizializzato con successo - game loop avviato', 'success');
+      } else if (gameState.currentRoom) {
         log('[Runtime] All assets loaded, starting render...', 'info');
         startGameLoop();
-        log('[Runtime] Runtime inizializzato con successo - game loop avviato', 'success');
       } else {
         if (!gameState.currentRoom) {
           log('[Runtime] Runtime initialized but no room available', 'warning');
@@ -994,13 +2037,22 @@
         if (!AssetRegistry.loadComplete) {
           log('[Runtime] Runtime initialized but preload not complete', 'warning');
         }
-        // Avvia comunque il game loop, il rendering gestirà le immagini mancanti
         startGameLoop();
+      }
+
+      if (window.opener && !isInIframe) {
+        sendToEditor({
+          type: 'PLAYTEST_RUNTIME_READY',
+          timestamp: Date.now()
+        });
       }
     } catch (error) {
       log(`Runtime initialization error: ${error.message}`, 'error');
       console.error(error);
+      gameState.bootPhase = 'error';
       hideLoadingOverlay();
+      // Re-throw so standalone HTML boot can show #boot-error (playtest callers should .catch)
+      throw error;
     }
   };
 
@@ -1126,53 +2178,108 @@
             }
           });
         }
+        if (gui.type === 'DialogBox' && gui.settings && typeof gui.settings.balloon === 'string' && gui.settings.balloon) {
+          assetsWithCategory.set(gui.settings.balloon, { category: 'gui', roomName: null, characterName: null });
+        }
       });
     }
 
     // Inventory (background, toggle icon, item images)
+    // After prepareProjectPayloadForRepos / .amnt save, fields are often *Ref (imageRef, backgroundRef).
     const invData = projectData.inventory;
     if (invData && typeof invData === 'object' && !Array.isArray(invData)) {
-      if (invData.background && typeof invData.background === 'string') {
-        assetsWithCategory.set(invData.background, { category: 'gui', roomName: null, characterName: null });
+      const invBg = invData.backgroundRef || invData.background;
+      if (invBg && typeof invBg === 'string') {
+        assetsWithCategory.set(invBg, { category: 'gui', roomName: null, characterName: null });
       }
-      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
-        assetsWithCategory.set(invData.toggleIcon, { category: 'gui', roomName: null, characterName: null });
+      const invToggle = invData.toggleIconRef || invData.toggleIcon;
+      if (invToggle && typeof invToggle === 'string') {
+        assetsWithCategory.set(invToggle, { category: 'gui', roomName: null, characterName: null });
       }
       if (Array.isArray(invData.items)) {
         invData.items.forEach(item => {
-          if (item && item.image && typeof item.image === 'string') {
-            assetsWithCategory.set(item.image, { category: 'gui', roomName: null, characterName: null });
+          if (!item) return;
+          const itemImg = item.imageRef || item.image;
+          if (itemImg && typeof itemImg === 'string') {
+            assetsWithCategory.set(itemImg, { category: 'gui', roomName: null, characterName: null });
           }
         });
       }
     }
 
-    // Character frames (hanno characterName invece di roomName)
-    // NOTA: I frame specchiati (con proprietà mirror) non devono essere caricati come asset separati
-    if (projectData.characters && Array.isArray(projectData.characters)) {
-      projectData.characters.forEach(char => {
-        const characterName = char.name || char.id;
-        const collectCharacterFrameAssets = (directionsMap) => {
-          if (!directionsMap) return;
-          Object.values(directionsMap).forEach(dirData => {
-            if (dirData.frames && Array.isArray(dirData.frames)) {
-              dirData.frames.forEach(frame => {
-                if (frame && typeof frame === 'object' && frame.mirror) return;
-                if (frame && typeof frame === 'string') {
-                  assetsWithCategory.set(frame, { category: 'character', roomName: null, characterName });
-                }
+    // Room animation catalog frames (tab Animations)
+    if (projectData.roomAnimations && Array.isArray(projectData.roomAnimations)) {
+      projectData.roomAnimations.forEach(anim => {
+        const animName = anim && (anim.name || anim.id) ? String(anim.name || anim.id) : 'animation';
+        if (anim.frames && Array.isArray(anim.frames)) {
+          anim.frames.forEach(frameRef => {
+            if (frameRef && typeof frameRef === 'string') {
+              assetsWithCategory.set(frameRef, {
+                category: 'animation',
+                roomName: null,
+                characterName: null,
+                animationName: animName
               });
             }
           });
-        };
-        collectCharacterFrameAssets(char.directions);
-        if (char.animations) {
-          Object.values(char.animations).forEach(anim => collectCharacterFrameAssets(anim.directions));
         }
       });
     }
 
-    assetStats.total = assetsWithCategory.size;
+      // Character frames (hanno characterName invece di roomName)
+      // NOTA: I frame specchiati (con proprietà mirror) non devono essere caricati come asset separati
+      if (projectData.characters && Array.isArray(projectData.characters)) {
+        projectData.characters.forEach(char => {
+          const characterName = char.name || char.id;
+          const collectCharacterFrameAssets = (directionsMap) => {
+            if (!directionsMap) return;
+            Object.values(directionsMap).forEach(dirData => {
+              if (dirData.frames && Array.isArray(dirData.frames)) {
+                dirData.frames.forEach(frame => {
+                  if (frame && typeof frame === 'object' && frame.mirror) return;
+                  if (frame && typeof frame === 'string') {
+                    assetsWithCategory.set(frame, { category: 'character', roomName: null, characterName });
+                  }
+                });
+              }
+            });
+          };
+          collectCharacterFrameAssets(char.directions);
+          if (char.animations) {
+            Object.values(char.animations).forEach(anim => collectCharacterFrameAssets(anim.directions));
+          }
+          if (char.portraits && typeof char.portraits === 'object') {
+            Object.values(char.portraits).forEach(ref => {
+              if (ref && typeof ref === 'string') {
+                assetsWithCategory.set(ref, { category: 'character', roomName: null, characterName });
+              }
+            });
+          }
+        });
+      }
+
+      // Category cursors
+      if (projectData.cursors && Array.isArray(projectData.cursors)) {
+        projectData.cursors.forEach(c => {
+          if (c && c.category && c.cursorImage && typeof c.cursorImage === 'string') {
+            assetsWithCategory.set(c.cursorImage, { category: 'cursor', roomName: null, characterName: null });
+          }
+        });
+      }
+
+      // Dialogue line portraits (optional overrides on nodes)
+      if (Array.isArray(projectData.dialogues)) {
+        projectData.dialogues.forEach(dlg => {
+          if (!dlg || !dlg.nodes || typeof dlg.nodes !== 'object') return;
+          Object.values(dlg.nodes).forEach(node => {
+            if (node && node.portrait && typeof node.portrait === 'string') {
+              assetsWithCategory.set(node.portrait, { category: 'gui', roomName: null, characterName: null });
+            }
+          });
+        });
+      }
+
+      assetStats.total = assetsWithCategory.size;
     log(`[Runtime] Found ${assetStats.total} unique asset(s) to load`, 'info');
 
     if (assetStats.total === 0) {
@@ -1236,7 +2343,10 @@
    * Cambia la room corrente usando solo asset già caricati in AssetRegistry
    * NON carica nuove immagini, usa solo quelle pre-caricate
    */
-  async function changeRoom(roomId) {
+  async function changeRoom(roomId, options = {}) {
+    const skipRoomScripts = options.skipRoomScripts === true;
+    // load_room posiziona il player e poi gira on_room_change: non bloccare il load sugli after-script
+    const skipAfterRoomScripts = options.skipAfterRoomScripts === true;
     if (!gameState.projectData || !gameState.projectData.rooms) {
       log('No project loaded', 'error');
       return;
@@ -1248,10 +2358,19 @@
       return;
     }
 
-    log(`[Runtime] Cambio room: ${roomId}`, 'info');
+    // Canonico: sempre l'id di progetto (gli attachment Room: sono keyed per id)
+    const resolvedRoomId = String(room.id || roomId);
+
+    log(`[Runtime] Cambio room: ${resolvedRoomId}`, 'info');
+
+    endAllDialogue();
 
     const oldRoomId = gameState.currentRoomId;
-    gameState.currentRoomId = roomId;
+
+    // Prima del caricamento: stanza precedente ancora attiva
+    if (!skipRoomScripts) {
+      await executeBeforeRoomChangeScripts(oldRoomId, resolvedRoomId);
+    }
 
     // Recupera immagini dalla AssetRegistry (già caricate)
     let backgroundImg = null;
@@ -1384,11 +2503,40 @@
     }
 
     // Salva nello stato
+    const animationInstances = [];
+    if (room.animationInstances && Array.isArray(room.animationInstances)) {
+      for (const instData of room.animationInstances) {
+        const animDef = gameState.roomAnimationDefinitions.get(instData.animationId);
+        if (!animDef || !animDef.frames || animDef.frames.length === 0) {
+          log(`[Runtime] Room animation instance skipped (missing definition): ${instData.id || instData.name}`, 'warning');
+          continue;
+        }
+        const loopDefault = animDef.loop !== false;
+        animationInstances.push({
+          id: instData.id || `ainst_${Date.now()}`,
+          animationId: instData.animationId,
+          name: instData.name || instData.id || 'Animation',
+          x: Number(instData.x) || 0,
+          y: Number(instData.y) || 0,
+          layer: instData.layer === 'foreground' ? 'foreground' : 'background',
+          visible: instData.visible !== false,
+          loopDefault,
+          loopOpt: parseAudioLoopOption(null, loopDefault),
+          cyclesRemaining: null,
+          currentFrame: 0,
+          frameTime: 0,
+          playing: instData.autoPlay === true
+        });
+      }
+    }
+
+    gameState.currentRoomId = resolvedRoomId;
     gameState.currentRoom = {
       ...room,
       backgroundImg,
       foregrounds,
       objects,
+      animationInstances,
       hotspots,
       walkableArea: room.walkableArea || null,
       // Usa valori di default solo se non sono definiti, ma preserva 0 e null
@@ -1417,7 +2565,11 @@
       
       if (isPlayer) {
         // Aggiorna roomId del player
-        character.roomId = roomId;
+        character.roomId = resolvedRoomId;
+        // Interrompi walk in corso (coordinate della stanza precedente non sono valide)
+        character.isMoving = false;
+        character.path = null;
+        character.pathIndex = 0;
       } else {
         // Rimuovi solo se il character è nella room precedente e non è un player
         if (character.roomId === oldRoomId) {
@@ -1438,7 +2590,7 @@
         // Spawna se: autoSpawn è true, non è player, e roomId corrisponde
         return spawn.autoSpawn === true && 
                spawn.isPlayer !== true && 
-               spawn.roomId === roomId;
+               (spawn.roomId === resolvedRoomId || spawn.roomId === roomId);
       });
 
       for (const npcData of roomNPCs) {
@@ -1446,29 +2598,60 @@
         // Verifica che il character non sia già spawnato
         let alreadySpawned = false;
         gameState.characters.forEach((character) => {
-          if (character.name === npcData.name && character.roomId === roomId) {
+          if (character.name === npcData.name && character.roomId === resolvedRoomId) {
             alreadySpawned = true;
           }
         });
 
         if (!alreadySpawned) {
+          const nx = Number(spawn.x);
+          const ny = Number(spawn.y);
+          const spawnX = Number.isFinite(nx) ? nx : 0;
+          const spawnY = Number.isFinite(ny) ? ny : 0;
           const npcId = GameAPI.spawn_character(
             npcData.name,
-            spawn.x || 0,
-            spawn.y || 0,
+            spawnX,
+            spawnY,
             spawn.direction || 'south'
           );
           if (npcId) {
-            log(`[Runtime] NPC "${npcData.name}" spawnato automaticamente in room ${roomId} a (${spawn.x || 0}, ${spawn.y || 0})`, 'info');
+            log(`[Runtime] NPC "${npcData.name}" spawnato automaticamente in room ${resolvedRoomId} a (${spawnX}, ${spawnY})`, 'info');
           }
         }
       }
     }
 
-    // Esegui script on_room_change se presente
-    await executeRoomChangeScripts(oldRoomId, roomId);
+    // Dopo il caricamento: on_room_change (saltato se load_room lo esegue dopo aver posizionato il player)
+    if (!skipRoomScripts && !skipAfterRoomScripts) {
+      await executeRoomChangeScripts(oldRoomId, resolvedRoomId);
+    }
 
-    log(`[Runtime] Room changed: ${roomId} (bg: ${backgroundImg ? 'ok' : 'missing'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length})`, 'info');
+    log(`[Runtime] Room changed: ${resolvedRoomId} (bg: ${backgroundImg ? 'ok' : 'missing'}, fg: ${foregrounds.length}, obj: ${objects.length}, hotspots: ${hotspots.length}, anims: ${animationInstances.length})`, 'info');
+  }
+
+  /**
+   * Carica stanza + animazioni per script (sandbox iframe / RUN_SCRIPT) quando manca currentRoom.
+   */
+  async function ensureCurrentRoomForScripts(roomId) {
+    const targetRoomId = roomId || gameState.currentRoomId;
+    if (!targetRoomId || !gameState.projectData) return;
+    if (gameState.currentRoom && gameState.currentRoomId === targetRoomId &&
+        Array.isArray(gameState.currentRoom.animationInstances)) {
+      return;
+    }
+
+    if (gameState.roomAnimationDefinitions.size === 0) {
+      if (!AssetRegistry.loadComplete && gameState.projectData) {
+        try {
+          await preloadAssets(gameState.projectData);
+        } catch (preloadErr) {
+          log(`[Runtime] ensureCurrentRoomForScripts preload: ${preloadErr.message}`, 'warning');
+        }
+      }
+      await loadRoomAnimationDefinitions(gameState.projectData.roomAnimations || []);
+    }
+
+    await changeRoom(targetRoomId);
   }
 
   // ============================================
@@ -1488,10 +2671,14 @@
     gameState.characterDefinitions.clear();
 
     for (const charData of charactersData) {
-      const characterName = charData.name || charData.id;
+      // id === name sempre (se divergono in progetti legacy, vince name)
+      const characterName = String(charData.name || charData.id || '').trim();
       if (!characterName) {
         log('[Runtime] Character ignorato: nome mancante', 'warning');
         continue;
+      }
+      if (charData.id && charData.name && String(charData.id) !== String(charData.name)) {
+        log(`[Runtime] Character id "${charData.id}" ≠ name "${charData.name}" — uso name come id`, 'warning');
       }
 
       const loadDirectionsMap = (sourceDirections) => {
@@ -1549,6 +2736,19 @@
         if (charData.spawnSettings) {
           charDef.spawnSettings = charData.spawnSettings;
         }
+        charDef.id = characterName;
+        charDef.name = characterName;
+        // Optional dialogue portraits: { default: url, happy: url, ... }
+        if (charData.portraits && typeof charData.portraits === 'object') {
+          const portraits = {};
+          Object.keys(charData.portraits).forEach(moodKey => {
+            const ref = charData.portraits[moodKey];
+            if (typeof ref === 'string' && ref.trim()) {
+              portraits[String(moodKey).trim()] = ref.trim();
+            }
+          });
+          if (Object.keys(portraits).length) charDef.portraits = portraits;
+        }
         gameState.characterDefinitions.set(characterName, charDef);
         const animCount = Object.keys(animations).length;
         log(`[Runtime] Character definizione caricata: ${characterName} (${Object.keys(directions).length} walk dir${animCount ? `, ${animCount} custom anim` : ''})`, 'info');
@@ -1558,6 +2758,136 @@
     }
 
     log(`[Runtime] Character definitions loaded: ${gameState.characterDefinitions.size} character(s)`, 'success');
+  }
+
+  async function loadRoomAnimationDefinitions(animationsData) {
+    gameState.roomAnimationDefinitions.clear();
+    if (!Array.isArray(animationsData) || animationsData.length === 0) {
+      log('[Runtime] No room animations to load', 'info');
+      return;
+    }
+
+    log(`[Runtime] Loading ${animationsData.length} room animation definition(s)...`, 'info');
+    for (const src of animationsData) {
+      if (!src || !src.id) continue;
+      const frames = [];
+      if (Array.isArray(src.frames)) {
+        for (const frameRef of src.frames) {
+          if (frameRef && typeof frameRef === 'string') {
+            let img = AssetRegistry.images.get(frameRef);
+            if (!img || !img.complete || img.naturalWidth <= 0) {
+              try {
+                img = await loadImage(frameRef, 'animation');
+              } catch (loadErr) {
+                log(`[Runtime] Room animation frame load failed: ${src.id} (${String(frameRef).substring(0, 50)}) — ${loadErr.message}`, 'warning');
+                img = null;
+              }
+            }
+            if (img && img.complete && img.naturalWidth > 0) {
+              frames.push(img);
+            } else {
+              log(`[Runtime] Room animation frame not found in registry: ${src.id} (${String(frameRef).substring(0, 50)})`, 'warning');
+            }
+          }
+        }
+      }
+      if (frames.length > 0) {
+        gameState.roomAnimationDefinitions.set(src.id, {
+          id: src.id,
+          name: src.name || src.id,
+          fps: Number(src.fps) || 8,
+          loop: src.loop !== false,
+          layer: src.layer === 'foreground' ? 'foreground' : 'background',
+          frames
+        });
+        log(`[Runtime] Room animation loaded: ${src.name || src.id} (${frames.length} frame(s))`, 'info');
+      }
+    }
+    log(`[Runtime] Room animation definitions loaded: ${gameState.roomAnimationDefinitions.size}`, 'success');
+  }
+
+  function findRoomAnimationInstance(idOrName) {
+    const room = gameState.currentRoom;
+    if (!room || !Array.isArray(room.animationInstances)) return null;
+    const key = String(idOrName).trim();
+    if (!key) return null;
+
+    const byIdOrName = room.animationInstances.find(i => i.id === key || i.name === key);
+    if (byIdOrName) return byIdOrName;
+
+    const byAnimRef = room.animationInstances.filter(i => {
+      if (i.animationId === key) return true;
+      const def = gameState.roomAnimationDefinitions.get(i.animationId);
+      return def && (def.id === key || def.name === key);
+    });
+    if (byAnimRef.length === 1) return byAnimRef[0];
+    if (byAnimRef.length > 1) {
+      log(`[Runtime] play_animation: multiple instances match "${key}", using "${byAnimRef[0].name}"`, 'warning');
+      return byAnimRef[0];
+    }
+    return null;
+  }
+
+  function getRoomAnimationFrameImage(animDef, frameIndex) {
+    if (!animDef || !animDef.frames || !animDef.frames.length) return null;
+    const idx = Math.max(0, Math.min(frameIndex, animDef.frames.length - 1));
+    return animDef.frames[idx];
+  }
+
+  function updateRoomAnimationInstance(inst, animDef, deltaTime) {
+    if (!inst.playing || inst.visible === false) return;
+    if (!animDef || !animDef.frames || animDef.frames.length === 0) return;
+
+    if (animDef.frames.length === 1) {
+      inst.currentFrame = 0;
+      if (inst.loopOpt && inst.loopOpt.mode === 'once') inst.playing = false;
+      return;
+    }
+
+    inst.frameTime += deltaTime;
+    const frameDuration = 1000 / (Number(animDef.fps) || 8);
+    if (frameDuration <= 0) return;
+
+    while (inst.frameTime >= frameDuration) {
+      inst.frameTime -= frameDuration;
+      inst.currentFrame++;
+
+      if (inst.currentFrame < animDef.frames.length) {
+        continue;
+      }
+
+      const loopOpt = inst.loopOpt || parseAudioLoopOption(null, animDef.loop !== false);
+      if (loopOpt.mode === 'infinite') {
+        inst.currentFrame = 0;
+        break;
+      }
+      if (loopOpt.mode === 'count') {
+        if (inst.cyclesRemaining == null) inst.cyclesRemaining = loopOpt.count;
+        inst.cyclesRemaining -= 1;
+        if (inst.cyclesRemaining > 0) {
+          inst.currentFrame = 0;
+          continue;
+        }
+      }
+      inst.playing = false;
+      inst.currentFrame = animDef.frames.length - 1;
+      inst.cyclesRemaining = null;
+      break;
+    }
+  }
+
+  function drawRoomAnimationInstanceOnCanvas(ctx, inst) {
+    if (!inst || inst.visible === false) return;
+    const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+    if (!animDef) return;
+    const frameIndex = inst.playing ? inst.currentFrame : 0;
+    const frame = getRoomAnimationFrameImage(animDef, frameIndex);
+    if (!frame || !frame.complete || frame.naturalWidth <= 0) return;
+    try {
+      ctx.drawImage(frame, inst.x, inst.y);
+    } catch (error) {
+      log(`[Runtime] Error rendering room animation ${inst.id}: ${error.message}`, 'warning');
+    }
   }
 
   // Cache per frame specchiati (per evitare di ricrearli ogni frame)
@@ -1843,7 +3173,8 @@
             }
           }
           
-          buttons.push({
+          const role = btnData.role === 'saveSlot' ? 'saveSlot' : (btnData.role || 'button');
+          const btnOut = {
             id: btnData.id,
             name: btnData.name || btnData.id,
             x: Number(btnData.x) || 0,
@@ -1852,24 +3183,1448 @@
             h: Number(btnData.h) || 0,
             text: btnData.text || '',
             backgroundImage: btnImg,
-            enabled: true
-          });
+            enabled: true,
+            role
+          };
+          if (role === 'saveSlot') {
+            btnOut.slotKey = String(
+              btnData.slotKey != null && btnData.slotKey !== ''
+                ? btnData.slotKey
+                : (buttons.filter(b => b.role === 'saveSlot').length + 1)
+            );
+          }
+          buttons.push(btnOut);
         }
+      }
+
+      let balloonImage = null;
+      const guiType = guiData.type || 'MainInterface';
+      if (guiType === 'DialogBox' && guiData.settings && typeof guiData.settings.balloon === 'string' && guiData.settings.balloon) {
+        balloonImage = AssetRegistry.images.get(guiData.settings.balloon);
+        if (!balloonImage || !balloonImage.complete) {
+          log(`[Runtime] Dialog balloon not found in registry: ${guiData.id}`, 'warning');
+          balloonImage = null;
+        }
+      }
+
+      const settings = guiData.settings || {};
+      let visible = true;
+      if (guiType === 'SaveLoad') {
+        visible = settings.startVisible === true;
+      } else if (typeof settings.startVisible === 'boolean') {
+        visible = settings.startVisible;
       }
 
       gameState.guis.set(guiData.id, {
         id: guiData.id,
         name: guiData.name || guiData.id,
-        type: guiData.type || 'MainInterface',
-        settings: guiData.settings || {},
+        type: guiType,
+        settings,
         background: backgroundImg,
-        buttons
+        balloonImage,
+        buttons,
+        visible
       });
 
-      log(`[Runtime] GUI caricata: ${guiData.id} (bg: ${backgroundImg ? 'ok' : 'mancante'}, buttons: ${buttons.length})`, 'info');
+      log(`[Runtime] GUI caricata: ${guiData.id} (type: ${guiType}, visible: ${visible}, bg: ${backgroundImg ? 'ok' : 'mancante'}, buttons: ${buttons.length})`, 'info');
     }
 
     log(`[Runtime] GUI loading complete: ${guisData.length} GUI(s) loaded`, 'success');
+  }
+
+  function resolveGuiByIdOrName(idOrName) {
+    if (idOrName == null || idOrName === '') return null;
+    const key = String(idOrName);
+    if (gameState.guis.has(key)) return gameState.guis.get(key);
+    for (const gui of gameState.guis.values()) {
+      if (gui && gui.name === key) return gui;
+    }
+    return null;
+  }
+
+  function setGuiVisible(idOrName, visible) {
+    const gui = resolveGuiByIdOrName(idOrName);
+    if (!gui) {
+      log(`[Runtime] setGuiVisible: GUI "${idOrName}" not found`, 'warning');
+      return false;
+    }
+    gui.visible = !!visible;
+    return true;
+  }
+
+  function formatSaveSlotLabel(info, emptyLabel, slotKey) {
+    if (!info) return emptyLabel || 'Empty';
+    const label = (info.label && String(info.label).trim()) ? String(info.label).trim() : '';
+    const when = info.savedAt ? String(info.savedAt).replace('T', ' ').slice(0, 16) : '';
+    if (label && when) return `${label}\n${when}`;
+    if (label) return label;
+    if (when) return when;
+    return `Slot ${slotKey}`;
+  }
+
+  function getSaveLoadMode(gui) {
+    const mode = gui && gui.settings && gui.settings.mode;
+    if (mode === 'save' || mode === 'load' || mode === 'both') return mode;
+    return 'both';
+  }
+
+  async function handleSaveLoadSlotClick(gui, btn) {
+    const slotKey = String(btn.slotKey != null ? btn.slotKey : '1');
+    const mode = getSaveLoadMode(gui);
+    const info = (typeof GameAPI.get_save_info === 'function') ? GameAPI.get_save_info(slotKey) : null;
+    const filled = !!(info && (info.savedAt || info.label || info.roomId));
+
+    if (mode === 'load') {
+      if (!filled) {
+        if (typeof GameAPI.show_message === 'function') {
+          await GameAPI.show_message('Empty save slot.');
+        }
+        return true;
+      }
+      const result = await GameAPI.load_game(slotKey);
+      if (result && result.ok) gui.visible = false;
+      return true;
+    }
+
+    if (mode === 'save') {
+      const roomId = gameState.currentRoomId || '';
+      const label = roomId ? `Room ${roomId}` : `Slot ${slotKey}`;
+      GameAPI.save_game(slotKey, label);
+      if (typeof GameAPI.show_message === 'function') {
+        await GameAPI.show_message(`Saved to slot ${slotKey}.`);
+      }
+      return true;
+    }
+
+    // both: empty → save, filled → load
+    if (filled) {
+      const result = await GameAPI.load_game(slotKey);
+      if (result && result.ok) gui.visible = false;
+    } else {
+      const roomId = gameState.currentRoomId || '';
+      const label = roomId ? `Room ${roomId}` : `Slot ${slotKey}`;
+      GameAPI.save_game(slotKey, label);
+      if (typeof GameAPI.show_message === 'function') {
+        await GameAPI.show_message(`Saved to slot ${slotKey}.`);
+      }
+    }
+    return true;
+  }
+
+  async function handleVisibleSaveLoadGuiClick(x, y) {
+    for (const gui of gameState.guis.values()) {
+      if (gui.type !== 'SaveLoad' || gui.visible === false) continue;
+
+      if (gui.buttons && Array.isArray(gui.buttons)) {
+        for (const btn of gui.buttons) {
+          if (!btn.enabled) continue;
+          if (x < btn.x || x > btn.x + btn.w || y < btn.y || y > btn.y + btn.h) continue;
+
+          if (btn.role === 'saveSlot') {
+            log(`Click save slot GUI: ${btn.name} (key ${btn.slotKey})`, 'info');
+            await handleSaveLoadSlotClick(gui, btn);
+            return true;
+          }
+
+          log(`Click su pulsante GUI: ${btn.name}`, 'info');
+          const guiScripts = gameState.attachments.guiScripts || {};
+          if (typeof guiScripts === 'object' && guiScripts[btn.id]) {
+            const scriptName = guiScripts[btn.id];
+            if (gameState.scripts[scriptName]) {
+              await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y], scriptName);
+            }
+          }
+          for (const handler of eventHandlers.gui_click) {
+            try {
+              handler(btn.id, x, y);
+            } catch (error) {
+              log(`Errore handler on_gui_click: ${error.message}`, 'error');
+            }
+          }
+          return true;
+        }
+      }
+
+      if (gui.settings && gui.settings.closeOnClickOutside !== false) {
+        log(`[Runtime] SaveLoad GUI "${gui.name}": click outside → hide`, 'info');
+        gui.visible = false;
+      }
+      return true; // modal: swallow click even if close disabled
+    }
+    return false;
+  }
+
+  function renderSaveLoadSlot(ctx, gui, btn) {
+    const emptyLabel = (gui.settings && gui.settings.emptyLabel) || 'Empty';
+    const slotKey = String(btn.slotKey != null ? btn.slotKey : '1');
+    let info = null;
+    try {
+      info = GameAPI.get_save_info(slotKey);
+    } catch (_) {
+      info = null;
+    }
+    const filled = !!(info && (info.savedAt || info.label || info.roomId));
+
+    if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
+      try {
+        ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
+      } catch (_) { /* ignore */ }
+    } else {
+      ctx.fillStyle = filled ? 'rgba(180, 100, 255, 0.28)' : 'rgba(180, 100, 255, 0.12)';
+      ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+      ctx.strokeStyle = '#b464ff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+      ctx.setLineDash([]);
+    }
+
+    const lines = formatSaveSlotLabel(info, emptyLabel, slotKey).split('\n');
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const midY = btn.y + btn.h / 2;
+    if (lines.length === 1) {
+      ctx.fillText(lines[0], btn.x + btn.w / 2, midY);
+    } else {
+      ctx.fillText(lines[0], btn.x + btn.w / 2, midY - 8);
+      ctx.font = '11px Arial';
+      ctx.fillText(lines[1], btn.x + btn.w / 2, midY + 10);
+    }
+  }
+
+  // ============================================
+  // SISTEMA DIALOGHI (DialogBox GUI + balloon)
+  // ============================================
+  const DIALOGUE_MAX_TEXT_WIDTH = 280;
+  const DIALOGUE_PADDING = 14;
+  const DIALOGUE_GAP_ABOVE_CHARACTER = 10;
+  const DIALOGUE_FADE_MS = 250;
+  const DIALOGUE_FONT_SIZE_MIN = 8;
+  const DIALOGUE_FONT_SIZE_MAX = 96;
+  const DIALOGUE_PORTRAIT_SIZE = 96;
+  const DIALOGUE_PORTRAIT_GAP = 10;
+
+  let activeDialogue = null;
+  /**
+   * Sessione di dialogo a grafo (start_dialogue).
+   * { dialogueId, abortRequested, choiceState: null | { options, resolver } }
+   */
+  let activeDialogueSession = null;
+  const dialogFontLoadPromises = new Map();
+
+  const DIALOGUE_CHOICE_PAD_X = 16;
+  const DIALOGUE_CHOICE_PAD_Y = 10;
+  const DIALOGUE_CHOICE_GAP = 8;
+  const DIALOGUE_CHOICE_BOTTOM_MARGIN = 24;
+
+  function clampDialogueFontSize(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n)) return 16;
+    return Math.max(DIALOGUE_FONT_SIZE_MIN, Math.min(DIALOGUE_FONT_SIZE_MAX, Math.round(n)));
+  }
+
+  function normalizeDialogBoxSettings(settings) {
+    const s = settings || {};
+    return {
+      backgroundColor: s.backgroundColor || '#1a1a2e',
+      textColor: s.textColor || '#ffffff',
+      boxBorderColor: s.boxBorderColor || '#39ff14',
+      fontSize: clampDialogueFontSize(s.fontSize),
+      fontFamily: (typeof s.fontFamily === 'string' && s.fontFamily.trim()) ? s.fontFamily.trim() : '',
+      customFont: (typeof s.customFont === 'string' && s.customFont.trim()) ? s.customFont.trim() : '',
+      appear: s.appear || 'instant'
+    };
+  }
+
+  function buildDialogueFontCss(settings) {
+    const size = clampDialogueFontSize(settings && settings.fontSize);
+    const hasCustom = settings && settings.customFont && settings.fontFamily;
+    const family = hasCustom
+      ? `"${settings.fontFamily}", Arial, sans-serif`
+      : 'Arial, sans-serif';
+    return `${size}px ${family}`;
+  }
+
+  function getDialogueLineHeight(fontSize) {
+    return Math.max(12, Math.round(clampDialogueFontSize(fontSize) * 1.25));
+  }
+
+  async function resolveDialogueFontUrl(fontRef) {
+    if (!fontRef || typeof fontRef !== 'string') return null;
+    if (fontRef.startsWith('data:') || fontRef.startsWith('http')) return fontRef;
+    if (fontRef.startsWith('asset:')) {
+      const assetId = fontRef.replace('asset:', '');
+      const url = await resolveAssetId(assetId, 'gui');
+      return url || null;
+    }
+    return fontRef;
+  }
+
+  async function ensureDialogueFontLoaded(fontRef, fontFamily) {
+    if (!fontRef || !fontFamily) return null;
+    const key = `${fontRef}|${fontFamily}`;
+    if (AssetRegistry.fonts.has(key)) {
+      return AssetRegistry.fonts.get(key);
+    }
+    if (dialogFontLoadPromises.has(key)) {
+      return dialogFontLoadPromises.get(key);
+    }
+    const promise = (async () => {
+      try {
+        if (typeof FontFace === 'undefined' || !document.fonts) {
+          return null;
+        }
+        const url = await resolveDialogueFontUrl(fontRef);
+        if (!url) return null;
+        const face = new FontFace(fontFamily, `url(${url})`);
+        await face.load();
+        document.fonts.add(face);
+        AssetRegistry.fonts.set(key, fontFamily);
+        return fontFamily;
+      } catch (err) {
+        log(`[Runtime] Dialog font load failed (${fontFamily}): ${err.message}`, 'warning');
+        return null;
+      } finally {
+        dialogFontLoadPromises.delete(key);
+      }
+    })();
+    dialogFontLoadPromises.set(key, promise);
+    return promise;
+  }
+
+  async function preloadDialogBoxFonts(projectData) {
+    if (!projectData.guis || !Array.isArray(projectData.guis)) return;
+    const tasks = [];
+    projectData.guis.forEach(gui => {
+      if (gui.type !== 'DialogBox' || !gui.settings) return;
+      const st = normalizeDialogBoxSettings(gui.settings);
+      if (st.customFont && st.fontFamily) {
+        tasks.push(ensureDialogueFontLoaded(st.customFont, st.fontFamily));
+      }
+    });
+    if (tasks.length) {
+      await Promise.allSettled(tasks);
+    }
+  }
+
+  function getDialogBoxGui() {
+    for (const gui of gameState.guis.values()) {
+      if (gui.type === 'DialogBox') {
+        return gui;
+      }
+    }
+    return null;
+  }
+
+  function resolveCharacter(characterIdOrName) {
+    let character = gameState.characters.get(characterIdOrName);
+    if (character) {
+      return character;
+    }
+    for (const char of gameState.characters.values()) {
+      if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
+        return char;
+      }
+    }
+    return null;
+  }
+
+  function getCharacterSpriteBounds(character) {
+    const room = gameState.currentRoom;
+    if (!room) {
+      return { x: character.renderX, y: character.renderY, width: 0, height: 0 };
+    }
+
+    const charDef = gameState.characterDefinitions.get(character.name);
+    const scale = calculateCharacterScale(character.renderY, room);
+    const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
+    const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
+
+    if (!frame) {
+      return { x: character.renderX, y: character.renderY, width: 32 * scale, height: 64 * scale };
+    }
+
+    const frameWidth = frame instanceof HTMLCanvasElement ? frame.width : frame.width;
+    const frameHeight = frame instanceof HTMLCanvasElement ? frame.height : frame.height;
+    const scaledWidth = frameWidth * scale;
+    const scaledHeight = frameHeight * scale;
+
+    let drawX = character.renderX;
+    let drawY = character.renderY;
+    if (charDef && charDef.pivotX !== undefined && charDef.pivotY !== undefined) {
+      drawX = character.renderX - (charDef.pivotX * scale);
+      drawY = character.renderY - (charDef.pivotY * scale);
+    }
+
+    return { x: drawX, y: drawY, width: scaledWidth, height: scaledHeight };
+  }
+
+  function wrapDialogueText(ctx, text, maxWidth) {
+    const words = String(text).replace(/\s+/g, ' ').trim().split(' ');
+    if (!words.length || (words.length === 1 && words[0] === '')) {
+      return [''];
+    }
+
+    const lines = [];
+    let line = '';
+    words.forEach(word => {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width <= maxWidth) {
+        line = test;
+      } else {
+        if (line) {
+          lines.push(line);
+        }
+        line = word;
+      }
+    });
+    if (line) {
+      lines.push(line);
+    }
+    return lines.length ? lines : [''];
+  }
+
+  function dismissActiveDialogue() {
+    if (!activeDialogue) {
+      return;
+    }
+    if (activeDialogue.timeoutId) {
+      clearTimeout(activeDialogue.timeoutId);
+    }
+    const resolve = activeDialogue.dismissResolver;
+    activeDialogue = null;
+    if (typeof resolve === 'function') {
+      resolve();
+    }
+  }
+
+  /**
+   * Resolve portrait image for a dialogue line.
+   * Priority: explicit portrait ref → character.portraits[mood] → character.portraits.default
+   */
+  async function resolveDialoguePortrait(characterName, mood, portraitRef) {
+    const refs = [];
+    if (portraitRef && String(portraitRef).trim()) refs.push(String(portraitRef).trim());
+    const charDef = gameState.characterDefinitions.get(characterName)
+      || (characterName ? gameState.characterDefinitions.get(String(characterName)) : null);
+    // Also try by matching character instance name
+    let portraits = charDef && charDef.portraits ? charDef.portraits : null;
+    if (!portraits) {
+      for (const def of gameState.characterDefinitions.values()) {
+        if (def && def.name === characterName && def.portraits) {
+          portraits = def.portraits;
+          break;
+        }
+      }
+    }
+    if (portraits) {
+      const moodKey = String(mood || '').trim();
+      if (moodKey && portraits[moodKey]) refs.push(String(portraits[moodKey]).trim());
+      if (portraits.default) refs.push(String(portraits.default).trim());
+      if (portraits.neutral) refs.push(String(portraits.neutral).trim());
+    }
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i];
+      if (!ref) continue;
+      try {
+        let img = AssetRegistry.images.get(ref);
+        if (!img || !img.complete) {
+          img = await loadImage(ref, 'gui');
+        }
+        if (img && img.complete && img.naturalWidth > 0) return img;
+      } catch (_) { /* try next */ }
+    }
+    return null;
+  }
+
+  /**
+   * @param {string} characterIdOrName
+   * @param {string} text
+   * @param {{ mood?: string, portrait?: string }} [opts]
+   */
+  function showDialogueAndWait(characterIdOrName, text, opts) {
+    const character = resolveCharacter(characterIdOrName);
+    if (!character) {
+      GameAPI.error(`show_dialogue: character "${characterIdOrName}" not found (by ID or name in current room)`);
+      return Promise.resolve();
+    }
+    if (!character.visible || character.roomId !== gameState.currentRoomId) {
+      GameAPI.error(`show_dialogue: character "${characterIdOrName}" is not visible in the current room`);
+      return Promise.resolve();
+    }
+
+    dismissActiveDialogue();
+
+    const dialogGui = getDialogBoxGui();
+    const settings = normalizeDialogBoxSettings(dialogGui ? dialogGui.settings : {});
+    const balloonImage = dialogGui && dialogGui.balloonImage ? dialogGui.balloonImage : null;
+    const messageText = String(text);
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const mood = String(options.mood || '').trim();
+    const portraitRef = String(options.portrait || '').trim();
+
+    return (async () => {
+      if (settings.customFont && settings.fontFamily) {
+        await ensureDialogueFontLoaded(settings.customFont, settings.fontFamily);
+      }
+      const portraitImage = await resolveDialoguePortrait(character.name, mood, portraitRef);
+      return new Promise(resolve => {
+        activeDialogue = {
+          characterId: character.id,
+          text: messageText,
+          settings,
+          balloonImage,
+          portraitImage,
+          mood,
+          dismissResolver: resolve,
+          appear: settings.appear,
+          opacity: settings.appear === 'fade' ? 0 : 1,
+          slideOffset: settings.appear === 'slide' ? 12 : 0,
+          appearStart: performance.now()
+        };
+        activeDialogue.timeoutId = setTimeout(() => dismissActiveDialogue(), 120000);
+        log(`[Runtime] show_dialogue: "${character.name}"${mood ? ' [' + mood + ']' : ''} — ${messageText.substring(0, 60)}${messageText.length > 60 ? '…' : ''}`, 'info');
+      });
+    })();
+  }
+
+  function updateDialogueAppear(deltaTime) {
+    if (!activeDialogue) {
+      return;
+    }
+    const elapsed = performance.now() - activeDialogue.appearStart;
+    if (activeDialogue.appear === 'fade') {
+      activeDialogue.opacity = Math.min(1, elapsed / DIALOGUE_FADE_MS);
+    } else if (activeDialogue.appear === 'slide') {
+      const t = Math.min(1, elapsed / DIALOGUE_FADE_MS);
+      activeDialogue.slideOffset = 12 * (1 - t);
+      activeDialogue.opacity = 1;
+    } else {
+      activeDialogue.opacity = 1;
+      activeDialogue.slideOffset = 0;
+    }
+  }
+
+  function renderDialogueBalloon(ctx) {
+    if (!activeDialogue || !gameState.currentRoom) {
+      return;
+    }
+
+    const character = gameState.characters.get(activeDialogue.characterId);
+    if (!character || !character.visible || character.roomId !== gameState.currentRoomId) {
+      return;
+    }
+
+    const bounds = getCharacterSpriteBounds(character);
+    const settings = activeDialogue.settings;
+    const opacity = activeDialogue.opacity != null ? activeDialogue.opacity : 1;
+    const slideOffset = activeDialogue.slideOffset || 0;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+
+    const prevFont = ctx.font;
+    const prevAlign = ctx.textAlign;
+    const prevBaseline = ctx.textBaseline;
+    const lineHeight = getDialogueLineHeight(settings.fontSize);
+    ctx.font = buildDialogueFontCss(settings);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    const innerMaxWidth = DIALOGUE_MAX_TEXT_WIDTH;
+    const lines = wrapDialogueText(ctx, activeDialogue.text, innerMaxWidth);
+    const textWidth = Math.min(innerMaxWidth, Math.max(...lines.map(l => ctx.measureText(l).width), 40));
+    const textHeight = lines.length * lineHeight;
+    const boxWidth = textWidth + DIALOGUE_PADDING * 2;
+    const boxHeight = textHeight + DIALOGUE_PADDING * 2;
+
+    const portraitImg = activeDialogue.portraitImage;
+    const hasPortrait = !!(portraitImg && portraitImg.complete && portraitImg.naturalWidth > 0);
+    const portraitSize = hasPortrait ? DIALOGUE_PORTRAIT_SIZE : 0;
+    const portraitGap = hasPortrait ? DIALOGUE_PORTRAIT_GAP : 0;
+    const moodLabel = String(activeDialogue.mood || '').trim();
+    const moodExtraH = moodLabel && hasPortrait ? 16 : 0;
+    const totalWidth = portraitSize + portraitGap + boxWidth;
+    const totalHeight = Math.max(boxHeight, portraitSize + moodExtraH);
+
+    let groupX = bounds.x + bounds.width / 2 - totalWidth / 2;
+    let groupY = bounds.y - totalHeight - DIALOGUE_GAP_ABOVE_CHARACTER - slideOffset;
+
+    groupX = Math.max(4, Math.min(groupX, canvas.width - totalWidth - 4));
+    groupY = Math.max(4, Math.min(groupY, canvas.height - totalHeight - 4));
+
+    if (hasPortrait) {
+      try {
+        ctx.drawImage(portraitImg, groupX, groupY, portraitSize, portraitSize);
+        ctx.strokeStyle = settings.boxBorderColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(groupX, groupY, portraitSize, portraitSize);
+        if (moodLabel) {
+          const moodFontSize = Math.max(10, Math.round(clampDialogueFontSize(settings.fontSize) * 0.7));
+          ctx.font = `${moodFontSize}px Arial, sans-serif`;
+          ctx.fillStyle = settings.textColor;
+          ctx.fillText(moodLabel, groupX + 2, groupY + portraitSize + 2);
+        }
+      } catch (error) {
+        log(`[Runtime] Error rendering dialogue portrait: ${error.message}`, 'warning');
+      }
+    }
+
+    const boxX = groupX + portraitSize + portraitGap;
+    const boxY = groupY;
+
+    const balloonImg = activeDialogue.balloonImage;
+    if (balloonImg && balloonImg.complete && balloonImg.naturalWidth > 0) {
+      try {
+        ctx.drawImage(balloonImg, boxX, boxY, boxWidth, boxHeight);
+      } catch (error) {
+        log(`[Runtime] Error rendering dialog balloon image: ${error.message}`, 'warning');
+      }
+    } else {
+      ctx.fillStyle = settings.backgroundColor;
+      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.strokeStyle = settings.boxBorderColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+    }
+
+    ctx.font = buildDialogueFontCss(settings);
+    ctx.fillStyle = settings.textColor;
+    const textX = boxX + DIALOGUE_PADDING;
+    let textY = boxY + DIALOGUE_PADDING;
+    lines.forEach(line => {
+      ctx.fillText(line, textX, textY);
+      textY += lineHeight;
+    });
+
+    ctx.font = prevFont;
+    ctx.textAlign = prevAlign;
+    ctx.textBaseline = prevBaseline;
+    ctx.restore();
+  }
+
+  // ============================================
+  // DIALOGHI RAMIFICATI (grafo line / choice / end / jump / action)
+  // ============================================
+  function getDialogueLogic() {
+    return (typeof window !== 'undefined' && window.AmiantoDialogueLogic)
+      ? window.AmiantoDialogueLogic
+      : null;
+  }
+
+  function normalizeDialogueDef(raw) {
+    const logic = getDialogueLogic();
+    if (logic && typeof logic.normalizeDialogueDef === 'function') {
+      return logic.normalizeDialogueDef(raw);
+    }
+    // Fallback minimale se il lib non è caricato (export legacy / test)
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || '').trim();
+    if (!id) return null;
+    const name = String(raw.name || id).trim() || id;
+    const nodesIn = (raw.nodes && typeof raw.nodes === 'object') ? raw.nodes : {};
+    const nodes = {};
+    Object.keys(nodesIn).forEach(nid => {
+      const src = nodesIn[nid];
+      if (!src || typeof src !== 'object') return;
+      const nodeId = String(src.id || nid).trim();
+      if (!nodeId) return;
+      const type = String(src.type || 'end').toLowerCase();
+      if (type === 'line') {
+        const lineNode = {
+          id: nodeId, type: 'line',
+          speaker: String(src.speaker || '').trim(),
+          text: String(src.text != null ? src.text : ''),
+          next: String(src.next || '').trim()
+        };
+        if (src.mood) lineNode.mood = String(src.mood).trim();
+        if (src.portrait) lineNode.portrait = String(src.portrait).trim();
+        nodes[nodeId] = lineNode;
+      } else if (type === 'choice') {
+        const options = Array.isArray(src.options) ? src.options.map((opt, i) => ({
+          id: String((opt && opt.id) || `opt_${i}`).trim(),
+          text: String((opt && opt.text) != null ? opt.text : '').trim(),
+          next: String((opt && opt.next) || '').trim()
+        })).filter(o => o.id) : [];
+        nodes[nodeId] = { id: nodeId, type: 'choice', options };
+      } else if (type === 'jump') {
+        nodes[nodeId] = { id: nodeId, type: 'jump', target: String(src.target || src.next || '').trim() };
+      } else if (type === 'action') {
+        nodes[nodeId] = { id: nodeId, type: 'action', next: String(src.next || '').trim(), actions: [] };
+      } else {
+        nodes[nodeId] = { id: nodeId, type: 'end' };
+      }
+    });
+    let startNodeId = String(raw.startNodeId || '').trim();
+    if (!startNodeId || !nodes[startNodeId]) {
+      const keys = Object.keys(nodes);
+      startNodeId = keys.length ? keys[0] : '';
+    }
+    return { id, name, startNodeId, nodes };
+  }
+
+  function getDialogueConditionCtx() {
+    return {
+      hasItem: function(itemId) {
+        try { return !!(GameAPI && typeof GameAPI.has_item === 'function' && GameAPI.has_item(itemId)); }
+        catch (_) { return false; }
+      },
+      getVar: function(key) {
+        try {
+          if (GameAPI && typeof GameAPI.get_var === 'function') return GameAPI.get_var(key);
+          if (gameState.variables && gameState.variables.has(key)) return gameState.variables.get(key);
+        } catch (_) {}
+        return undefined;
+      }
+    };
+  }
+
+  /**
+   * Esegue azioni dichiarative di dialogo.
+   * @param {object[]} actions
+   * @param {{ dialogueId?: string, nodeId?: string, optionId?: string }} [ctx]
+   */
+  async function runDialogueActions(actions, ctx) {
+    if (!Array.isArray(actions) || !actions.length) return;
+    const context = ctx || {};
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+      if (!action || !action.type) continue;
+      try {
+        if (action.type === 'set_var') {
+          if (typeof GameAPI.set_var === 'function') GameAPI.set_var(action.key, action.value);
+          else if (typeof GameAPI.setVariable === 'function') GameAPI.setVariable(action.key, action.value);
+        } else if (action.type === 'add_item') {
+          if (typeof GameAPI.add_to_inventory === 'function') {
+            GameAPI.add_to_inventory(action.itemId, action.count || 1);
+          }
+        } else if (action.type === 'remove_item') {
+          if (typeof GameAPI.remove_from_inventory === 'function') {
+            GameAPI.remove_from_inventory(action.itemId, action.count || 1);
+          }
+        } else if (action.type === 'set_object_visible') {
+          if (typeof GameAPI.set_object_visible === 'function') {
+            GameAPI.set_object_visible(action.objectId, action.visible !== false);
+          }
+        } else if (action.type === 'run_script') {
+          const code = String(action.code || '').trim();
+          const handlerName = String(action.handler || 'on_dialogue_action').trim() || 'on_dialogue_action';
+          if (!code) {
+            log('[Runtime] dialogue action run_script: empty code', 'warning');
+          } else {
+            const cacheName = 'dlg_run_script:' + String(
+              action.id || context.nodeId || context.dialogueId || 'anon'
+            ) + ':' + String(i);
+            await executeScriptHandler(
+              code,
+              handlerName,
+              [context.dialogueId || null, context.nodeId || null, context.optionId || null],
+              cacheName
+            );
+          }
+        }
+      } catch (err) {
+        log(`[Runtime] dialogue action "${action.type}" failed: ${err && err.message ? err.message : err}`, 'warning');
+      }
+    }
+  }
+
+  function markDialogueChoiceConsumed(dialogueId, optionId) {
+    if (!gameState.dialogueConsumed) gameState.dialogueConsumed = new Set();
+    const logic = getDialogueLogic();
+    const key = logic && logic.makeConsumedKey
+      ? logic.makeConsumedKey(dialogueId, optionId)
+      : `${dialogueId}::${optionId}`;
+    if (key && key !== '::') gameState.dialogueConsumed.add(key);
+  }
+
+  function loadDialogues(dialoguesArray) {
+    gameState.dialogues = new Map();
+    gameState.dialogueNameIndex = new Map();
+    // New game / project load: once-only choices start fresh (saves restore separately)
+    gameState.dialogueConsumed = new Set();
+    if (!Array.isArray(dialoguesArray)) return;
+    dialoguesArray.forEach(raw => {
+      const def = normalizeDialogueDef(raw);
+      if (!def) return;
+      gameState.dialogues.set(def.id, def);
+      const nameKey = String(def.name || '').trim().toLowerCase();
+      if (nameKey) {
+        gameState.dialogueNameIndex.set(nameKey, def.id);
+      }
+    });
+    log(`[Runtime] Loaded ${gameState.dialogues.size} dialogue(s)`, 'info');
+  }
+
+  function resolveDialogue(idOrName) {
+    if (idOrName == null || idOrName === '') return null;
+    const key = String(idOrName).trim();
+    if (gameState.dialogues.has(key)) {
+      return gameState.dialogues.get(key);
+    }
+    const byName = gameState.dialogueNameIndex.get(key.toLowerCase());
+    if (byName && gameState.dialogues.has(byName)) {
+      return gameState.dialogues.get(byName);
+    }
+    return null;
+  }
+
+  function abortDialogueSession() {
+    if (!activeDialogueSession) return;
+    activeDialogueSession.abortRequested = true;
+    if (activeDialogueSession.choiceState && typeof activeDialogueSession.choiceState.resolver === 'function') {
+      const resolve = activeDialogueSession.choiceState.resolver;
+      activeDialogueSession.choiceState = null;
+      resolve(null);
+    }
+  }
+
+  function endAllDialogue() {
+    dismissActiveDialogue();
+    abortDialogueSession();
+  }
+
+  /** Stile testo scelte = stesso DialogBox dei balloon (fontSize / fontFamily). */
+  function getDialogueChoiceTextStyle() {
+    const dialogGui = getDialogBoxGui();
+    const settings = normalizeDialogBoxSettings(dialogGui ? dialogGui.settings : {});
+    return {
+      settings,
+      fontCss: buildDialogueFontCss(settings),
+      lineHeight: getDialogueLineHeight(settings.fontSize)
+    };
+  }
+
+  function layoutDialogueChoices(ctx, options) {
+    const style = getDialogueChoiceTextStyle();
+    const prevFont = ctx.font;
+    ctx.font = style.fontCss;
+    const maxTextW = Math.min(canvas.width - 80, 480);
+    const items = [];
+    let totalH = 0;
+    options.forEach((opt, index) => {
+      const lines = wrapDialogueText(ctx, opt.text || `Choice ${index + 1}`, maxTextW);
+      const textW = Math.min(maxTextW, Math.max(...lines.map(l => ctx.measureText(l).width), 40));
+      const boxW = textW + DIALOGUE_CHOICE_PAD_X * 2;
+      const boxH = lines.length * style.lineHeight + DIALOGUE_CHOICE_PAD_Y * 2;
+      items.push({ opt, lines, boxW, boxH, index });
+      totalH += boxH + (index > 0 ? DIALOGUE_CHOICE_GAP : 0);
+    });
+    ctx.font = prevFont;
+
+    let y = canvas.height - DIALOGUE_CHOICE_BOTTOM_MARGIN - totalH;
+    y = Math.max(8, y);
+    return items.map(item => {
+      const x = Math.max(8, (canvas.width - item.boxW) / 2);
+      const bounds = { x, y, w: item.boxW, h: item.boxH };
+      y += item.boxH + DIALOGUE_CHOICE_GAP;
+      return {
+        id: item.opt.id,
+        text: item.opt.text,
+        next: item.opt.next,
+        lines: item.lines,
+        bounds,
+        lineHeight: style.lineHeight
+      };
+    });
+  }
+
+  function renderDialogueChoices(ctx) {
+    if (!activeDialogueSession || !activeDialogueSession.choiceState) return;
+    const choiceState = activeDialogueSession.choiceState;
+    if (!Array.isArray(choiceState.rendered) || !choiceState.rendered.length) return;
+
+    const style = getDialogueChoiceTextStyle();
+    const settings = style.settings;
+    const prevFont = ctx.font;
+    const prevAlign = ctx.textAlign;
+    const prevBaseline = ctx.textBaseline;
+    ctx.font = style.fontCss;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    // Dim background strip behind choices
+    const first = choiceState.rendered[0].bounds;
+    const last = choiceState.rendered[choiceState.rendered.length - 1].bounds;
+    const panelY = first.y - 12;
+    const panelH = (last.y + last.h) - panelY + 12;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, panelY, canvas.width, panelH);
+
+    choiceState.rendered.forEach((item) => {
+      const b = item.bounds;
+      const lineHeight = item.lineHeight || style.lineHeight;
+      ctx.fillStyle = settings.backgroundColor || '#1a1a2e';
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.strokeStyle = settings.boxBorderColor || '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = settings.textColor || '#ffffff';
+      let ty = b.y + DIALOGUE_CHOICE_PAD_Y;
+      item.lines.forEach(line => {
+        ctx.fillText(line, b.x + DIALOGUE_CHOICE_PAD_X, ty);
+        ty += lineHeight;
+      });
+    });
+
+    ctx.font = prevFont;
+    ctx.textAlign = prevAlign;
+    ctx.textBaseline = prevBaseline;
+  }
+
+  function showDialogueChoicesAndWait(options) {
+    const opts = Array.isArray(options) ? options.filter(o => o && o.id) : [];
+    if (!opts.length) {
+      return Promise.resolve(null);
+    }
+    return new Promise(resolve => {
+      if (!activeDialogueSession) {
+        resolve(null);
+        return;
+      }
+      const rendered = layoutDialogueChoices(ctx, opts);
+      activeDialogueSession.choiceState = {
+        options: opts,
+        rendered,
+        resolver: resolve
+      };
+      log(`[Runtime] Dialogue choice: ${opts.length} option(s)`, 'info');
+    });
+  }
+
+  function tryHandleDialogueChoiceClick(x, y) {
+    if (!activeDialogueSession || !activeDialogueSession.choiceState) return false;
+    const choiceState = activeDialogueSession.choiceState;
+    const hit = (choiceState.rendered || []).find(item => {
+      const b = item.bounds;
+      return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+    });
+    if (!hit) return true; // block world clicks while choices are open
+    const resolve = choiceState.resolver;
+    activeDialogueSession.choiceState = null;
+    if (typeof resolve === 'function') {
+      resolve({ id: hit.id, text: hit.text, next: hit.next });
+    }
+    return true;
+  }
+
+  async function runDialogueGraph(dialogueDef) {
+    if (!dialogueDef || !dialogueDef.nodes) return;
+    if (activeDialogueSession) {
+      endAllDialogue();
+    }
+
+    activeDialogueSession = {
+      dialogueId: dialogueDef.id,
+      abortRequested: false,
+      choiceState: null
+    };
+
+    log(`[Runtime] start_dialogue: "${dialogueDef.name}" (${dialogueDef.id})`, 'info');
+
+    const logic = getDialogueLogic();
+    const condCtx = getDialogueConditionCtx();
+    let nodeId = dialogueDef.startNodeId;
+    const visitCounts = new Map();
+    let steps = 0;
+    const MAX_STEPS = 500;
+    const MAX_VISITS_PER_NODE = 8;
+
+    try {
+      while (nodeId && activeDialogueSession && !activeDialogueSession.abortRequested && steps < MAX_STEPS) {
+        steps += 1;
+        const visits = (visitCounts.get(nodeId) || 0) + 1;
+        visitCounts.set(nodeId, visits);
+        if (visits > MAX_VISITS_PER_NODE) {
+          log(`[Runtime] start_dialogue: loop detected at node "${nodeId}" (${visits} visits), stopping`, 'warning');
+          break;
+        }
+
+        const node = dialogueDef.nodes[nodeId];
+        if (!node) {
+          log(`[Runtime] start_dialogue: missing node "${nodeId}"`, 'warning');
+          break;
+        }
+
+        if (node.type === 'end') {
+          break;
+        }
+
+        if (node.type === 'jump') {
+          const target = String(node.target || '').trim();
+          if (!target) {
+            log(`[Runtime] start_dialogue: jump node "${node.id}" has no target`, 'warning');
+            break;
+          }
+          if (!dialogueDef.nodes[target]) {
+            log(`[Runtime] start_dialogue: jump target "${target}" missing`, 'warning');
+            break;
+          }
+          nodeId = target;
+          continue;
+        }
+
+        if (node.type === 'action') {
+          await runDialogueActions(node.actions || [], { dialogueId: dialogueDef.id, nodeId: node.id });
+          nodeId = node.next;
+          continue;
+        }
+
+        if (node.type === 'line') {
+          await runDialogueActions(node.actions || [], { dialogueId: dialogueDef.id, nodeId: node.id });
+          if (!node.speaker) {
+            GameAPI.error(`start_dialogue: line node "${node.id}" has no speaker`);
+            nodeId = node.next;
+            continue;
+          }
+          await showDialogueAndWait(node.speaker, node.text, {
+            mood: node.mood || '',
+            portrait: node.portrait || ''
+          });
+          if (!activeDialogueSession || activeDialogueSession.abortRequested) break;
+          nodeId = node.next;
+          continue;
+        }
+
+        if (node.type === 'choice') {
+          const rawOpts = node.options || [];
+          const available = logic && logic.filterChoiceOptions
+            ? logic.filterChoiceOptions(rawOpts, dialogueDef.id, gameState.dialogueConsumed, condCtx)
+            : rawOpts;
+          const selected = await showDialogueChoicesAndWait(available);
+          if (!activeDialogueSession || activeDialogueSession.abortRequested) break;
+          if (!selected) break;
+
+          // Re-validate at click time (state may have changed)
+          const stillOk = logic && logic.isOptionSelectable
+            ? logic.isOptionSelectable(selected, dialogueDef.id, gameState.dialogueConsumed, condCtx)
+            : true;
+          if (!stillOk) {
+            log(`[Runtime] start_dialogue: choice "${selected.id}" no longer valid, ignoring`, 'warning');
+            break;
+          }
+
+          const fullOpt = rawOpts.find(o => o && o.id === selected.id) || selected;
+          if (fullOpt.once === true) {
+            markDialogueChoiceConsumed(dialogueDef.id, fullOpt.id);
+          }
+          await runDialogueActions(fullOpt.actions || [], {
+            dialogueId: dialogueDef.id,
+            nodeId: node.id,
+            optionId: fullOpt.id || null
+          });
+          nodeId = fullOpt.next || selected.next;
+          continue;
+        }
+
+        log(`[Runtime] start_dialogue: unsupported node type "${node.type}" on "${node.id}"`, 'warning');
+        break;
+      }
+      if (steps >= MAX_STEPS) {
+        log(`[Runtime] start_dialogue: hit MAX_STEPS (${MAX_STEPS}), stopping`, 'warning');
+      }
+    } finally {
+      if (activeDialogueSession && activeDialogueSession.dialogueId === dialogueDef.id) {
+        activeDialogueSession = null;
+      }
+      dismissActiveDialogue();
+    }
+  }
+
+  // ============================================
+  // SAVE / LOAD STATO GIOCO (player saves)
+  // Separato dal salvataggio progetto editor (.amnt)
+  // ============================================
+  function getGameSaveHelpers() {
+    return (typeof window !== 'undefined' && window.AmiantoGameSave) ? window.AmiantoGameSave : null;
+  }
+
+  const _gs = getGameSaveHelpers();
+  const GAME_SAVE_FORMAT = (_gs && _gs.GAME_SAVE_FORMAT) || 'amianto-save';
+  const GAME_SAVE_VERSION = (_gs && _gs.GAME_SAVE_VERSION) || 1;
+  const GAME_SAVE_MAX_SLOTS = (_gs && _gs.GAME_SAVE_MAX_SLOTS) || 10;
+  const GAME_SAVE_KEY_PREFIX = (_gs && _gs.GAME_SAVE_KEY_PREFIX) || 'amianto-gamesave:v1:';
+
+  function getGameSaveProjectId() {
+    const settings = (gameState.projectData && gameState.projectData.settings) || {};
+    const meta = (gameState.projectData && gameState.projectData._meta) || {};
+    const id = settings.id || meta.projectId || settings.name || 'default';
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.sanitizeProjectId) return helpers.sanitizeProjectId(id);
+    return String(id).trim().replace(/[^a-zA-Z0-9._-]+/g, '_') || 'default';
+  }
+
+  function getGameSaveProjectName() {
+    const settings = (gameState.projectData && gameState.projectData.settings) || {};
+    return String(settings.name || getGameSaveProjectId());
+  }
+
+  function normalizeGameSaveSlot(slot, options) {
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.normalizeGameSaveSlot) {
+      return helpers.normalizeGameSaveSlot(slot, options);
+    }
+    if (options && options.requireExplicit && (slot == null || slot === '')) {
+      throw new Error('save slot is required');
+    }
+    if (slot == null || slot === '') return '1';
+    if (typeof slot === 'number' && Number.isFinite(slot)) {
+      const n = Math.floor(slot);
+      if (n < 1 || n > GAME_SAVE_MAX_SLOTS) {
+        throw new Error(`save slot must be 1–${GAME_SAVE_MAX_SLOTS}`);
+      }
+      return String(n);
+    }
+    const s = String(slot).trim();
+    if (!s) return '1';
+    const asNum = Number(s);
+    if (Number.isFinite(asNum) && String(asNum) === s) {
+      const n = Math.floor(asNum);
+      if (n < 1 || n > GAME_SAVE_MAX_SLOTS) {
+        throw new Error(`save slot must be 1–${GAME_SAVE_MAX_SLOTS}`);
+      }
+      return String(n);
+    }
+    return s.slice(0, 64);
+  }
+
+  function gameSaveStorageKey(slot) {
+    return GAME_SAVE_KEY_PREFIX + getGameSaveProjectId() + ':' + normalizeGameSaveSlot(slot);
+  }
+
+  function validateAndMigrateGameSave(data) {
+    const helpers = getGameSaveHelpers();
+    if (helpers && helpers.migrateGameSave) {
+      return helpers.migrateGameSave(data);
+    }
+    if (!data || data.format !== GAME_SAVE_FORMAT) {
+      throw new Error('Unrecognized save format');
+    }
+    if (!data.state || typeof data.state !== 'object') {
+      throw new Error('Invalid save payload');
+    }
+    return data;
+  }
+
+  function syncLiveRoomEntitiesToProjectData() {
+    if (!gameState.projectData || !gameState.currentRoomId || !gameState.currentRoom) return;
+    const roomData = (gameState.projectData.rooms || []).find(
+      r => r.id === gameState.currentRoomId || r.name === gameState.currentRoomId
+    );
+    if (!roomData) return;
+
+    if (Array.isArray(gameState.currentRoom.objects) && Array.isArray(roomData.sceneObjects)) {
+      gameState.currentRoom.objects.forEach(live => {
+        const src = roomData.sceneObjects.find(o => o.id === live.id || o.name === live.name);
+        if (!src) return;
+        src.visible = live.visible !== false;
+        src.enabled = live.enabled !== false;
+        src.x = Number(live.x) || 0;
+        src.y = Number(live.y) || 0;
+        if (typeof live.rotationRad === 'number') src.rotationRad = live.rotationRad;
+        if (typeof live.scaleX === 'number') src.scaleX = live.scaleX;
+        if (typeof live.scaleY === 'number') src.scaleY = live.scaleY;
+      });
+    }
+
+    if (Array.isArray(gameState.currentRoom.hotspots) && Array.isArray(roomData.hotspots)) {
+      gameState.currentRoom.hotspots.forEach(live => {
+        const src = roomData.hotspots.find(h => h.id === live.id || h.name === live.name);
+        if (!src) return;
+        src.visible = live.visible !== false;
+      });
+    }
+  }
+
+  function collectRoomEntitySnapshot() {
+    syncLiveRoomEntitiesToProjectData();
+    const rooms = {};
+    const list = (gameState.projectData && gameState.projectData.rooms) || [];
+    list.forEach(room => {
+      if (!room || !room.id) return;
+      const objects = {};
+      (room.sceneObjects || []).forEach(o => {
+        if (!o || !o.id) return;
+        objects[o.id] = {
+          visible: o.visible !== false,
+          enabled: o.enabled !== false,
+          x: Number(o.x) || 0,
+          y: Number(o.y) || 0,
+          rotationRad: Number(o.rotationRad) || 0,
+          scaleX: Number(o.scaleX) > 0 ? Number(o.scaleX) : 1,
+          scaleY: Number(o.scaleY) > 0 ? Number(o.scaleY) : 1
+        };
+      });
+      const hotspots = {};
+      (room.hotspots || []).forEach(h => {
+        if (!h || !h.id) return;
+        hotspots[h.id] = { visible: h.visible !== false };
+      });
+      rooms[room.id] = { objects, hotspots };
+    });
+    return rooms;
+  }
+
+  function applyRoomEntitySnapshot(roomsSnap) {
+    if (!roomsSnap || typeof roomsSnap !== 'object' || !gameState.projectData) return;
+    (gameState.projectData.rooms || []).forEach(room => {
+      const snap = roomsSnap[room.id];
+      if (!snap) return;
+      if (snap.objects && Array.isArray(room.sceneObjects)) {
+        room.sceneObjects.forEach(o => {
+          const s = snap.objects[o.id];
+          if (!s) return;
+          if (typeof s.visible === 'boolean') o.visible = s.visible;
+          if (typeof s.enabled === 'boolean') o.enabled = s.enabled;
+          if (typeof s.x === 'number') o.x = s.x;
+          if (typeof s.y === 'number') o.y = s.y;
+          if (typeof s.rotationRad === 'number') o.rotationRad = s.rotationRad;
+          if (typeof s.scaleX === 'number') o.scaleX = s.scaleX;
+          if (typeof s.scaleY === 'number') o.scaleY = s.scaleY;
+        });
+      }
+      if (snap.hotspots && Array.isArray(room.hotspots)) {
+        room.hotspots.forEach(h => {
+          const s = snap.hotspots[h.id];
+          if (!s) return;
+          if (typeof s.visible === 'boolean') h.visible = s.visible;
+        });
+      }
+    });
+  }
+
+  function serializeGameStateForSave(label) {
+    syncLiveRoomEntitiesToProjectData();
+    const variables = {};
+    gameState.variables.forEach((value, key) => {
+      variables[key] = value;
+    });
+
+    const inv = ensureInventoryState();
+    const contents = {};
+    inv.contents.forEach((count, key) => {
+      const c = Math.max(0, Number(count) || 0);
+      if (c > 0) contents[key] = c;
+    });
+
+    const characters = [];
+    gameState.characters.forEach(ch => {
+      const name = ch.name || ch.id;
+      characters.push({
+        id: name, // id === name sempre
+        name: name,
+        x: Number(ch.renderX != null ? ch.renderX : ch.x) || 0,
+        y: Number(ch.renderY != null ? ch.renderY : ch.y) || 0,
+        direction: ch.direction || 'south',
+        visible: ch.visible !== false,
+        opacity: getCharacterDrawOpacity(ch),
+        roomId: ch.roomId || gameState.currentRoomId
+      });
+    });
+
+    if (!gameState.dialogueConsumed) gameState.dialogueConsumed = new Set();
+    const dialogueConsumed = Array.from(gameState.dialogueConsumed);
+
+    return {
+      format: GAME_SAVE_FORMAT,
+      version: GAME_SAVE_VERSION,
+      label: label != null ? String(label).slice(0, 80) : '',
+      savedAt: new Date().toISOString(),
+      projectId: getGameSaveProjectId(),
+      projectName: getGameSaveProjectName(),
+      state: {
+        currentRoomId: gameState.currentRoomId,
+        variables,
+        inventory: {
+          contents,
+          carriedItemKey: inv.carriedItem
+            ? (resolveUseWithItemId(inv.carriedItem.key) || inv.carriedItem.key)
+            : null,
+          visible: !!inv.visible
+        },
+        characters,
+        rooms: collectRoomEntitySnapshot(),
+        dialogueConsumed
+      }
+    };
+  }
+
+  function writeGameSaveToStorage(slot, payload) {
+    // Validate before write so a bad serialize never overwrites a valid save
+    const migrated = validateAndMigrateGameSave(payload);
+    const key = gameSaveStorageKey(slot);
+    let json;
+    try {
+      json = JSON.stringify(migrated);
+    } catch (serErr) {
+      throw new Error('Failed to serialize save: ' + (serErr && serErr.message ? serErr.message : serErr));
+    }
+    if (!json || json.length < 2) {
+      throw new Error('Refusing to write empty save');
+    }
+    // Two-phase write: temp key first, then commit to final key
+    const tmpKey = key + ':tmp';
+    try {
+      localStorage.setItem(tmpKey, json);
+      localStorage.setItem(key, json);
+      try { localStorage.removeItem(tmpKey); } catch (_) {}
+      return { ok: true, bytes: json.length, key };
+    } catch (err) {
+      try { localStorage.removeItem(tmpKey); } catch (_) {}
+      const msg = (err && err.name === 'QuotaExceededError')
+        ? 'Storage quota exceeded (browser localStorage full). Delete old saves or free space.'
+        : (err && err.message ? err.message : String(err));
+      throw new Error(msg);
+    }
+  }
+
+  function readGameSaveFromStorage(slot) {
+    const key = gameSaveStorageKey(slot);
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    try {
+      const data = JSON.parse(raw);
+      return validateAndMigrateGameSave(data);
+    } catch (err) {
+      throw new Error('Corrupt save data: ' + (err.message || err));
+    }
+  }
+
+  function deleteGameSaveFromStorage(slot) {
+    const key = gameSaveStorageKey(slot);
+    localStorage.removeItem(key);
+    return true;
+  }
+
+  function listGameSavesFromStorage() {
+    const prefix = GAME_SAVE_KEY_PREFIX + getGameSaveProjectId() + ':';
+    const results = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      const slot = key.slice(prefix.length);
+      try {
+        const raw = localStorage.getItem(key);
+        const data = raw ? JSON.parse(raw) : null;
+        if (!data || data.format !== GAME_SAVE_FORMAT) continue;
+        results.push({
+          slot,
+          label: data.label || '',
+          savedAt: data.savedAt || null,
+          projectId: data.projectId || null,
+          projectName: data.projectName || null,
+          roomId: data.state && data.state.currentRoomId ? data.state.currentRoomId : null
+        });
+      } catch (_) {}
+    }
+    results.sort((a, b) => {
+      const na = Number(a.slot);
+      const nb = Number(b.slot);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+      return String(a.slot).localeCompare(String(b.slot));
+    });
+    return results;
+  }
+
+  async function restoreGameStateFromSave(data) {
+    const migrated = validateAndMigrateGameSave(data);
+    const st = migrated.state;
+    endAllDialogue();
+    resetInputLock();
+
+    // Restore once-only dialogue choices before room/scripts side-effects
+    gameState.dialogueConsumed = new Set();
+    if (Array.isArray(st.dialogueConsumed)) {
+      st.dialogueConsumed.forEach(k => {
+        if (k != null && String(k).trim()) gameState.dialogueConsumed.add(String(k).trim());
+      });
+    }
+
+    applyRoomEntitySnapshot(st.rooms);
+
+    // Patch spawn positions so auto-spawn NPCs on room change match the save
+    const chars = Array.isArray(st.characters) ? st.characters : [];
+    if (gameState.projectData && Array.isArray(gameState.projectData.characters)) {
+      chars.forEach(ch => {
+        if (!ch || !ch.name) return;
+        const def = gameState.projectData.characters.find(c => c.name === ch.name);
+        if (!def) return;
+        if (!def.spawnSettings || typeof def.spawnSettings !== 'object') {
+          def.spawnSettings = {};
+        }
+        def.spawnSettings.x = Number(ch.x) || 0;
+        def.spawnSettings.y = Number(ch.y) || 0;
+        def.spawnSettings.direction = ch.direction || 'south';
+        if (ch.roomId) def.spawnSettings.roomId = ch.roomId;
+      });
+    }
+
+    // Variables (restore after room so playerId can be overwritten by spawn)
+    const savedVars = (st.variables && typeof st.variables === 'object') ? { ...st.variables } : {};
+
+    // Inventory
+    const inv = ensureInventoryState();
+    inv.contents.clear();
+    clearCarriedInventoryItem();
+    if (st.inventory && st.inventory.contents && typeof st.inventory.contents === 'object') {
+      Object.keys(st.inventory.contents).forEach(key => {
+        const c = Math.max(0, Number(st.inventory.contents[key]) || 0);
+        if (c > 0) inv.contents.set(key, c);
+      });
+    }
+    if (st.inventory && typeof st.inventory.visible === 'boolean') {
+      inv.visible = st.inventory.visible;
+    }
+
+    const targetRoom = st.currentRoomId || gameState.currentRoomId;
+    if (targetRoom) {
+      await changeRoom(targetRoom, { skipRoomScripts: true });
+    }
+
+    // Replace live characters with save snapshot for the current room
+    gameState.characters.clear();
+    let restoredPlayerId = null;
+    chars.forEach(ch => {
+      if (!ch || !ch.name) return;
+      const inThisRoom = !ch.roomId || ch.roomId === gameState.currentRoomId;
+      if (!inThisRoom) return;
+      const id = GameAPI.spawn_character(
+        ch.name,
+        ch.x || 0,
+        ch.y || 0,
+        ch.direction || 'south'
+      );
+      if (!id) return;
+      const live = gameState.characters.get(id);
+      if (live) {
+        live.visible = ch.visible !== false;
+        const op = clampCharacterOpacity(ch.opacity);
+        live.opacity = op == null ? 1 : op;
+        live.roomId = gameState.currentRoomId;
+      }
+      const charDef = gameState.characterDefinitions.get(ch.name);
+      if (charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true) {
+        restoredPlayerId = id;
+      }
+    });
+
+    gameState.variables.clear();
+    Object.keys(savedVars).forEach(key => {
+      gameState.variables.set(key, savedVars[key]);
+    });
+    if (restoredPlayerId) {
+      gameState.variables.set('playerId', restoredPlayerId);
+    }
+
+    if (st.inventory && st.inventory.carriedItemKey) {
+      GameAPI.set_carried_item(st.inventory.carriedItemKey);
+    }
+
+    syncInventoryStateToEditor();
+    log(`[Runtime] load_game: restored room "${targetRoom}" (${gameState.characters.size} character(s))`, 'success');
+    return true;
   }
 
   // ============================================
@@ -1892,7 +4647,9 @@
       carriedItem: null,
       pointerX: 0,
       pointerY: 0,
-      suppressPanelUntilDrop: false
+      suppressPanelUntilDrop: false,
+      /** Popup: true dopo hover sul bordo inferiore, finché il puntatore non esce dal panel. */
+      popupPanelEngaged: false
     };
   }
 
@@ -1949,11 +4706,19 @@
         invData.toggleIconBounds,
         defaultRuntimeToggleIconBounds()
       );
-      if (invData.background && typeof invData.background === 'string') {
-        inv.background = AssetRegistry.images.get(invData.background) || null;
+      const bgRef = (invData.backgroundRef && typeof invData.backgroundRef === 'string')
+        ? invData.backgroundRef
+        : (invData.background && typeof invData.background === 'string' ? invData.background : null);
+      if (bgRef) {
+        inv.backgroundRef = bgRef;
+        inv.background = resolveInventoryItemImageFromRef(bgRef);
       }
-      if (invData.toggleIcon && typeof invData.toggleIcon === 'string') {
-        inv.toggleIcon = AssetRegistry.images.get(invData.toggleIcon) || null;
+      const toggleRef = (invData.toggleIconRef && typeof invData.toggleIconRef === 'string')
+        ? invData.toggleIconRef
+        : (invData.toggleIcon && typeof invData.toggleIcon === 'string' ? invData.toggleIcon : null);
+      if (toggleRef) {
+        inv.toggleIconRef = toggleRef;
+        inv.toggleIcon = resolveInventoryItemImageFromRef(toggleRef);
       }
       if (Array.isArray(invData.slots)) {
         inv.slots = invData.slots.map(s => ({
@@ -1976,16 +4741,17 @@
       if (!item) return;
       const id = String(item.id || item.name || '').trim();
       if (!id) return;
-      let image = null;
-      if (item.image && typeof item.image === 'string') {
-        image = AssetRegistry.images.get(item.image) || null;
-      }
-      inv.itemDefs.set(id, {
+      const imageRef = (item.imageRef && typeof item.imageRef === 'string')
+        ? item.imageRef
+        : (item.image && typeof item.image === 'string' ? item.image : null);
+      const def = {
         id,
         name: item.name || id,
         scriptName: item.scriptName || item.name || id,
-        image
-      });
+        imageRef,
+        image: resolveInventoryItemImageFromRef(imageRef)
+      };
+      inv.itemDefs.set(id, def);
       if (item.name && item.name !== id) {
         inv.itemDefs.set(String(item.name), inv.itemDefs.get(id));
       }
@@ -2030,8 +4796,23 @@
       const edge = inv.popupEdgeHeight || 48;
       const panel = getInventoryPanelRect();
       const inBottomEdge = inCanvas && canvasY >= canvas.height - edge;
-      const inPanel = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
-      inv.visible = inBottomEdge || inPanel;
+      const inPanelRect = inCanvas && isPointInInventoryRect(canvasX, canvasY, panel);
+      const inSlot = inCanvas && findInventorySlotIndexAt(canvasX, canvasY, false) >= 0;
+      const inPanel = inPanelRect || inSlot;
+
+      if (inBottomEdge) {
+        inv.popupPanelEngaged = true;
+        inv.visible = true;
+      } else if (inPanel && inv.popupPanelEngaged) {
+        inv.visible = true;
+      } else {
+        if (!inPanel) {
+          inv.popupPanelEngaged = false;
+        }
+        inv.visible = false;
+      }
+    } else if (inv.displayMode === 'toggle') {
+      // visibility gestita dal click sull'icona toggle
     }
   }
 
@@ -2070,8 +4851,42 @@
     return list;
   }
 
+  function resolveInventoryItemImageFromRef(imageRef) {
+    if (!imageRef || typeof imageRef !== 'string') return null;
+    return AssetRegistry.images.get(imageRef) || loadedImages.get(imageRef) || null;
+  }
+
+  /** Ricollega immagini item da AssetRegistry (utile se il preload termina dopo loadInventory). */
+  function refreshInventoryItemImages() {
+    const inv = gameState.inventory;
+    if (!inv || !inv.itemDefs) return;
+    const seen = new Set();
+    inv.itemDefs.forEach(def => {
+      if (!def || seen.has(def.id)) return;
+      seen.add(def.id);
+      if (def.imageRef) {
+        const resolved = resolveInventoryItemImageFromRef(def.imageRef);
+        if (resolved) def.image = resolved;
+      }
+    });
+    if (inv.backgroundRef && !inv.background) {
+      inv.background = resolveInventoryItemImageFromRef(inv.backgroundRef);
+    }
+    if (inv.toggleIconRef && !inv.toggleIcon) {
+      inv.toggleIcon = resolveInventoryItemImageFromRef(inv.toggleIconRef);
+    }
+  }
+
+  function isDrawableInventoryImage(img) {
+    if (!img) return false;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    return w > 0 && h > 0;
+  }
+
   /** Disegna l'immagine nello slot mantenendo le proporzioni (fit contain, centrata). */
   function drawImageContainedInRect(ctx, img, x, y, maxW, maxH) {
+    if (!isDrawableInventoryImage(img)) return;
     const imgW = img.naturalWidth || img.width;
     const imgH = img.naturalHeight || img.height;
     if (imgW <= 0 || imgH <= 0) return;
@@ -2102,9 +4917,10 @@
     return true;
   }
 
-  function findInventorySlotIndexAt(x, y) {
+  function findInventorySlotIndexAt(x, y, requireVisible) {
     const inv = gameState.inventory;
-    if (!inv || !inv.enabled || !inv.visible) return -1;
+    if (!inv || !inv.enabled) return -1;
+    if (requireVisible !== false && !inv.visible) return -1;
     for (let i = 0; i < inv.slots.length; i++) {
       const slot = inv.slots[i];
       if (isPointInInventoryRect(x, y, slot)) return i;
@@ -2133,22 +4949,431 @@
     inv.pointerY = y;
     updateInventoryCursorStyle();
     log(`[Runtime] Inventario: preso in mano "${entry.def.name || entry.key}"`, 'info');
+    syncInventoryStateToEditor();
   }
 
-  function clearCarriedInventoryItem() {
+  function releaseCarriedInventoryItem() {
     const inv = gameState.inventory;
     if (!inv || !inv.carriedItem) return;
     const name = inv.carriedItem.def && inv.carriedItem.def.name;
     inv.carriedItem = null;
     inv.suppressPanelUntilDrop = false;
+    if (inv.displayMode === 'always') {
+      inv.visible = true;
+    }
     updateInventoryCursorStyle();
     log(`[Runtime] Inventario: oggetto rilasciato${name ? ` ("${name}")` : ''}`, 'info');
+    syncInventoryStateToEditor();
+  }
+
+  /** Alias usato dalle API inventario / save-load */
+  function clearCarriedInventoryItem() {
+    releaseCarriedInventoryItem();
+  }
+
+  let suppressInventoryStateSync = false;
+  let inventoryStateSyncTimer = null;
+
+  /** Snapshot JSON-serializable dello stato inventario runtime (contenuti + oggetto in mano). */
+  function serializeInventoryRuntimeSnapshot() {
+    const inv = gameState.inventory;
+    if (!inv) {
+      return { contents: {}, carriedItemKey: null };
+    }
+    const contents = {};
+    if (inv.contents && typeof inv.contents.forEach === 'function') {
+      inv.contents.forEach((count, key) => {
+        const c = Math.max(0, Number(count) || 0);
+        if (c > 0) contents[key] = c;
+      });
+    }
+    const carriedItemKey = inv.carriedItem && inv.carriedItem.key
+      ? String(inv.carriedItem.key)
+      : null;
+    return { contents, carriedItemKey };
+  }
+
+  function applyCarriedItemFromSnapshot(carriedItemKey) {
+    const inv = ensureInventoryState();
+    refreshInventoryItemImages();
+    if (!carriedItemKey) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    const key = resolveInventoryContentKey(carriedItemKey);
+    if (!key || Number(inv.contents.get(key) || 0) <= 0) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    const def = resolveInventoryItemDef(key);
+    if (!def) {
+      if (inv.carriedItem) clearCarriedInventoryItem();
+      return;
+    }
+    inv.carriedItem = {
+      key,
+      def,
+      sourceSlotIndex: -1,
+      slotW: 48,
+      slotH: 48
+    };
+    inv.suppressPanelUntilDrop = true;
+    if (inv.displayMode === 'toggle' || inv.displayMode === 'popup') {
+      inv.visible = false;
+    }
+    updateInventoryCursorStyle();
+  }
+
+  /** Applica snapshot inventario da editor (UPDATE_CONTEXT / RUN_SCRIPT context). */
+  function applyInventoryRuntimeSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      return;
+    }
+    suppressInventoryStateSync = true;
+    try {
+      const inv = ensureInventoryState();
+      refreshInventoryItemImages();
+      inv.contents.clear();
+      if (snapshot.contents && typeof snapshot.contents === 'object') {
+        Object.keys(snapshot.contents).forEach(key => {
+          const count = Math.max(0, Number(snapshot.contents[key]) || 0);
+          if (count > 0) {
+            inv.contents.set(String(key), count);
+          }
+        });
+      }
+      const carriedKey = snapshot.carriedItemKey != null && snapshot.carriedItemKey !== ''
+        ? String(snapshot.carriedItemKey)
+        : null;
+      applyCarriedItemFromSnapshot(carriedKey);
+    } finally {
+      suppressInventoryStateSync = false;
+    }
+  }
+
+  function syncInventoryStateToEditor() {
+    if (suppressInventoryStateSync) return;
+    if (!isInIframe && !window.opener) return;
+    if (inventoryStateSyncTimer) clearTimeout(inventoryStateSyncTimer);
+    inventoryStateSyncTimer = setTimeout(() => {
+      inventoryStateSyncTimer = null;
+      sendToEditor({
+        type: 'INVENTORY_STATE',
+        inventory: serializeInventoryRuntimeSnapshot(),
+        timestamp: Date.now()
+      });
+    }, 40);
+  }
+
+  function applyRuntimeContext(context) {
+    if (!context || typeof context !== 'object') return;
+    if (context.roomId !== undefined) {
+      gameState.currentRoomId = context.roomId;
+    }
+    if (context.objectId !== undefined) {
+      gameState.objectId = context.objectId;
+    }
+    if (context.variables && typeof context.variables === 'object') {
+      Object.keys(context.variables).forEach(key => {
+        gameState.variables.set(key, context.variables[key]);
+      });
+    }
+    if (context.inventory !== undefined) {
+      applyInventoryRuntimeSnapshot(context.inventory);
+    }
   }
 
   function updateInventoryCursorStyle() {
     if (!canvas) return;
     const inv = gameState.inventory;
-    canvas.style.cursor = (inv && inv.carriedItem) ? 'none' : 'pointer';
+    if (inv && inv.carriedItem) {
+      canvas.style.cursor = 'none';
+      setCursorHoverState(inv.pointerX || 0, inv.pointerY || 0, 'grab', '', false);
+      return;
+    }
+    const x = inv && typeof inv.pointerX === 'number' ? inv.pointerX : 0;
+    const y = inv && typeof inv.pointerY === 'number' ? inv.pointerY : 0;
+    updateGameCursorAt(x, y);
+  }
+
+  function refreshCursorFromLastPointer() {
+    const inv = gameState.inventory;
+    const x = inv && typeof inv.pointerX === 'number' ? inv.pointerX : (gameState.cursorHover && gameState.cursorHover.x) || 0;
+    const y = inv && typeof inv.pointerY === 'number' ? inv.pointerY : (gameState.cursorHover && gameState.cursorHover.y) || 0;
+    updateGameCursorAt(x, y);
+  }
+
+  function getCursorByCategory(category) {
+    if (!gameState.cursors || !category) return null;
+    return gameState.cursors.get(category) || null;
+  }
+
+  /** Prima categoria definita nell'elenco (con immagine), altrimenti `fallback`. */
+  function pickDefinedCursorCategory(preferred, fallback) {
+    const list = Array.isArray(preferred) ? preferred : [preferred];
+    for (const cat of list) {
+      const def = getCursorByCategory(cat);
+      if (def && def.image) return cat;
+    }
+    if (fallback) {
+      const fb = getCursorByCategory(fallback);
+      if (fb && fb.image) return fallback;
+    }
+    return list[0] || fallback || 'default';
+  }
+
+  function setCursorHoverState(x, y, category, actionText, visible) {
+    if (!gameState.cursorHover) {
+      gameState.cursorHover = { x: 0, y: 0, category: 'default', actionText: '', visible: false };
+    }
+    gameState.cursorHover.x = x;
+    gameState.cursorHover.y = y;
+    gameState.cursorHover.category = category || 'default';
+    gameState.cursorHover.actionText = actionText || '';
+    gameState.cursorHover.visible = !!visible;
+  }
+
+  function applyCategoryCursorStyle(category) {
+    if (!canvas) return false;
+    let def = getCursorByCategory(category);
+    if (!def || !def.image) {
+      if (category !== 'default') def = getCursorByCategory('default');
+    }
+    if (def && def.image && def.image.src) {
+      const px = typeof def.pivotX === 'number' ? def.pivotX : 0;
+      const py = typeof def.pivotY === 'number' ? def.pivotY : 0;
+      canvas.style.cursor = `url("${def.image.src}") ${px} ${py}, auto`;
+      return true;
+    }
+    return false;
+  }
+
+  function isPointerOverInventoryInteractive(x, y) {
+    const inv = gameState.inventory;
+    if (!inv || !inv.enabled) return false;
+    if (inv.displayMode === 'toggle' && inv.toggleIconRect && isPointInInventoryRect(x, y, inv.toggleIconRect)) {
+      return true;
+    }
+    if (!shouldDrawInventoryPanel()) return false;
+    const panel = getInventoryPanelRect();
+    if (!isPointInInventoryRect(x, y, panel)) return false;
+    return true;
+  }
+
+  function isPointerOverGuiButton(x, y) {
+    if (!gameState.guis || gameState.guis.size === 0) return false;
+    for (const gui of gameState.guis.values()) {
+      if (!gui || gui.type === 'DialogBox' || gui.type === 'Inventory') continue;
+      if (!Array.isArray(gui.buttons)) continue;
+      for (const btn of gui.buttons) {
+        if (!btn || btn.enabled === false) continue;
+        if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function isCursorActionTextEnabled() {
+    const settings = gameState.projectData && gameState.projectData.settings;
+    return !!(settings && settings.showCursorActionText);
+  }
+
+  /**
+   * Risolve categoria cursore + action text sotto il puntatore.
+   * Priorità allineata ai click: inventario → GUI → hotspot → oggetto → personaggio → walkable → default.
+   * actionText: solo testo esplicito del cursore (mai nome oggetto), se abilitato in settings.
+   */
+  function resolvePointerCursorInfo(x, y) {
+    const actionEnabled = isCursorActionTextEnabled();
+
+    if (isInputLocked()) {
+      const category = pickDefinedCursorCategory(['wait', 'inactive', 'default'], 'default');
+      const def = getCursorByCategory(category);
+      return {
+        category,
+        actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+        interactive: true
+      };
+    }
+
+    if (isPointerOverInventoryInteractive(x, y)) {
+      const category = pickDefinedCursorCategory(['grab', 'use', 'look', 'default'], 'default');
+      const def = getCursorByCategory(category);
+      return {
+        category,
+        actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+        interactive: true
+      };
+    }
+
+    if (isPointerOverGuiButton(x, y)) {
+      const category = pickDefinedCursorCategory(['use', 'look', 'default'], 'default');
+      const def = getCursorByCategory(category);
+      return {
+        category,
+        actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+        interactive: true
+      };
+    }
+
+    const room = gameState.currentRoom;
+    if (room) {
+      if (Array.isArray(room.hotspots)) {
+        for (const hotspot of room.hotspots) {
+          if (!hotspot.visible || !hotspot.points || hotspot.points.length < 3) continue;
+          if (!isPointInPolygon(hotspot.points, x, y)) continue;
+          const nameHint = String(hotspot.name || hotspot.id || '').toLowerCase();
+          const preferExit = /exit|door|uscita|porta/.test(nameHint);
+          const category = pickDefinedCursorCategory(
+            preferExit ? ['exit', 'use', 'look', 'default'] : ['use', 'look', 'default'],
+            'default'
+          );
+          const def = getCursorByCategory(category);
+          return {
+            category,
+            actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+            interactive: true
+          };
+        }
+      }
+
+      if (Array.isArray(room.objects)) {
+        for (let i = room.objects.length - 1; i >= 0; i--) {
+          const obj = room.objects[i];
+          if (!obj.visible || !obj.enabled || !obj.img) continue;
+          if (!isPointOnSceneObject(obj, x, y)) continue;
+          const category = pickDefinedCursorCategory(['use', 'look', 'grab', 'default'], 'default');
+          const def = getCursorByCategory(category);
+          return {
+            category,
+            actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+            interactive: true
+          };
+        }
+      }
+
+      const playerId = gameState.variables.get('playerId');
+      for (const character of gameState.characters.values()) {
+        if (!character.visible || character.roomId !== gameState.currentRoomId) continue;
+        if (getCharacterDrawOpacity(character) <= 0) continue;
+        if (playerId && character.id === playerId) continue;
+        const bounds = getCharacterSpriteBounds(character);
+        if (x >= bounds.x && x <= bounds.x + bounds.width &&
+            y >= bounds.y && y <= bounds.y + bounds.height) {
+          const category = pickDefinedCursorCategory(['talk', 'use', 'look', 'default'], 'default');
+          const def = getCursorByCategory(category);
+          return {
+            category,
+            actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+            interactive: true
+          };
+        }
+      }
+
+      const walkable = room.walkableArea;
+      if (Array.isArray(walkable) && walkable.length >= 3 && isPointInPolygon(walkable, x, y)) {
+        const category = pickDefinedCursorCategory(['walk', 'default'], 'default');
+        const def = getCursorByCategory(category);
+        return {
+          category,
+          actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+          interactive: false
+        };
+      }
+    }
+
+    const category = pickDefinedCursorCategory(['default'], 'default');
+    const def = getCursorByCategory(category);
+    return {
+      category,
+      actionText: actionEnabled && def && def.actionText ? def.actionText : '',
+      interactive: false
+    };
+  }
+
+  function updateGameCursorAt(x, y) {
+    if (!canvas) return;
+    const inv = gameState.inventory;
+    if (inv && inv.carriedItem) {
+      canvas.style.cursor = 'none';
+      setCursorHoverState(x, y, 'grab', '', false);
+      return;
+    }
+
+    const info = resolvePointerCursorInfo(x, y);
+    const actionText = (info.actionText || '').trim();
+    const showHint = isCursorActionTextEnabled() && !!actionText && info.interactive;
+    setCursorHoverState(x, y, info.category, actionText, showHint);
+
+    if (!applyCategoryCursorStyle(info.category)) {
+      canvas.style.cursor = info.interactive ? 'pointer' : 'default';
+    }
+  }
+
+  function renderCursorActionHint(ctx) {
+    if (!isCursorActionTextEnabled()) return;
+    const hover = gameState.cursorHover;
+    if (!hover || !hover.visible || !hover.actionText) return;
+    const inv = gameState.inventory;
+    if (inv && inv.carriedItem) return;
+
+    const text = String(hover.actionText);
+    const padX = 8;
+    const padY = 5;
+    ctx.save();
+    ctx.font = '13px "Segoe UI", Tahoma, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const metrics = ctx.measureText(text);
+    const tw = Math.ceil(metrics.width);
+    const th = 16;
+    let bx = Math.round(hover.x + 18);
+    let by = Math.round(hover.y + 18);
+    if (bx + tw + padX * 2 > canvas.width) bx = Math.max(4, canvas.width - tw - padX * 2 - 4);
+    if (by + th + padY * 2 > canvas.height) by = Math.max(4, hover.y - th - padY * 2 - 12);
+    ctx.fillStyle = 'rgba(8, 12, 10, 0.82)';
+    ctx.strokeStyle = 'rgba(57, 255, 20, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(bx, by, tw + padX * 2, th + padY * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e8ffe8';
+    ctx.fillText(text, bx + padX, by + padY);
+    ctx.restore();
+  }
+
+  async function loadCursors(cursorsData) {
+    gameState.cursors = new Map();
+    if (!Array.isArray(cursorsData) || cursorsData.length === 0) {
+      log('[Runtime] No category cursors defined', 'info');
+      return;
+    }
+
+    for (const c of cursorsData) {
+      if (!c || !c.category) continue;
+      let img = null;
+      if (c.cursorImage && typeof c.cursorImage === 'string') {
+        img = AssetRegistry.images.get(c.cursorImage) || null;
+        if (!img) {
+          try {
+            img = await loadImage(c.cursorImage, 'cursor');
+          } catch (err) {
+            log(`[Runtime] Cursor image failed (${c.category}): ${err.message}`, 'warning');
+          }
+        }
+      }
+      gameState.cursors.set(c.category, {
+        category: c.category,
+        image: img,
+        actionText: c.actionText || '',
+        pivotX: typeof c.pivotX === 'number' ? c.pivotX : 0,
+        pivotY: typeof c.pivotY === 'number' ? c.pivotY : 0
+      });
+    }
+    log(`[Runtime] Cursors loaded: ${gameState.cursors.size} categor${gameState.cursors.size === 1 ? 'y' : 'ies'}`, 'success');
   }
 
   function updateInventoryCarriedPointer(x, y) {
@@ -2174,8 +5399,10 @@
     if (!inv || !inv.enabled || !inv.visible) return;
     if (!shouldDrawInventoryPanel()) return;
 
+    refreshInventoryItemImages();
+
     const panel = inv.panel || defaultRuntimeInventoryPanel();
-    if (inv.background && inv.background.complete && inv.background.naturalWidth > 0) {
+    if (isDrawableInventoryImage(inv.background)) {
       try {
         ctx.drawImage(inv.background, panel.x, panel.y, panel.w, panel.h);
       } catch (error) {
@@ -2188,9 +5415,9 @@
     inv.slots.forEach((slot, index) => {
       if (index === carriedSlot) return;
       const entry = contents[index];
-      if (!entry || !entry.def || !entry.def.image) return;
+      if (!entry || !entry.def) return;
       const img = entry.def.image;
-      if (!img.complete || img.naturalWidth <= 0) return;
+      if (!isDrawableInventoryImage(img)) return;
       try {
         drawImageContainedInRect(ctx, img, slot.x, slot.y, slot.w, slot.h);
       } catch (error) {
@@ -2202,8 +5429,9 @@
   function renderInventoryCarriedItem(ctx) {
     const inv = gameState.inventory;
     if (!inv || !inv.carriedItem || !inv.carriedItem.def) return;
+    refreshInventoryItemImages();
     const img = inv.carriedItem.def.image;
-    if (!img || !img.complete || img.naturalWidth <= 0) return;
+    if (!isDrawableInventoryImage(img)) return;
     const slotW = inv.carriedItem.slotW || 48;
     const slotH = inv.carriedItem.slotH || 48;
     const x = inv.pointerX - slotW / 2;
@@ -2235,7 +5463,270 @@
     renderInventoryCarriedItem(ctx);
   }
 
-  function handleInventorySlotClick(x, y) {
+  /**
+   * Id usato negli script use-with (nome item, come in Inventory:nome e negli esempi docs).
+   * I contenuti inventario usano def.id interno; senza normalizzazione usedItemId non combacia.
+   */
+  function resolveUseWithItemId(itemKey) {
+    const def = resolveInventoryItemDef(itemKey);
+    if (def) {
+      const name = String(def.name || '').trim();
+      if (name) return name;
+      if (def.id) return String(def.id);
+    }
+    return String(itemKey || '').trim();
+  }
+
+  function isUseWithMode(usedItemId) {
+    return usedItemId !== undefined && usedItemId !== null && String(usedItemId).trim() !== '';
+  }
+
+  function resolveInventoryItemScriptName(itemKey) {
+    const def = resolveInventoryItemDef(itemKey);
+    const invScripts = gameState.attachments.inventoryScripts || {};
+    if (def) {
+      if (def.name && invScripts[def.name]) return invScripts[def.name];
+      if (def.id && invScripts[def.id]) return invScripts[def.id];
+      const scriptName = String(def.scriptName || '').trim();
+      if (scriptName && gameState.scripts[scriptName]) return scriptName;
+      if (def.name) {
+        const byName = `Inventory:${def.name}`;
+        if (gameState.scripts[byName]) return byName;
+      }
+      if (def.id) {
+        const byId = `Inventory:${def.id}`;
+        if (gameState.scripts[byId]) return byId;
+      }
+    }
+    const key = String(itemKey || '').trim();
+    if (key && invScripts[key]) return invScripts[key];
+    const legacyKey = `Inventory:${key}`;
+    if (legacyKey && gameState.scripts[legacyKey]) return legacyKey;
+    return null;
+  }
+
+  /**
+   * Esegue un handler se presente nello script; restituisce { found, result }.
+   * result === true indica combinazione/use-with gestita con successo.
+   */
+  async function tryExecuteScriptHandler(scriptContent, handlerName, argsArray = [], scriptName = null) {
+    if (!scriptContent || !handlerName) {
+      return { found: false, result: undefined };
+    }
+
+    if (!scriptName) {
+      let hash = 0;
+      for (let i = 0; i < scriptContent.length; i++) {
+        const char = scriptContent.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      scriptName = `script_${Math.abs(hash)}`;
+    }
+
+    try {
+      const handlerFunction = getCompiledHandler(scriptName, scriptContent, handlerName);
+      if (!handlerFunction || typeof handlerFunction !== 'function') {
+        return { found: false, result: undefined };
+      }
+      const result = handlerFunction.apply(null, argsArray);
+      if (result && typeof result.then === 'function') {
+        return { found: true, result: await result };
+      }
+      return { found: true, result };
+    } catch (error) {
+      log(`[Runtime] tryExecuteScriptHandler: Error executing handler '${handlerName}': ${error.message}`, 'error');
+      console.error(error);
+      return { found: true, result: false };
+    }
+  }
+
+  async function executeCharacterClickScripts(characterId, x, y, usedItemId) {
+    const characterScripts = gameState.attachments.characterScripts || {};
+    const useWithMode = isUseWithMode(usedItemId);
+    const args = useWithMode
+      ? [characterId, x, y, usedItemId]
+      : [characterId, x, y];
+    let handled = false;
+
+    if (typeof characterScripts === 'object' && characterScripts[characterId]) {
+      const scriptName = characterScripts[characterId];
+      if (gameState.scripts[scriptName]) {
+        if (useWithMode) {
+          const outcome = await tryExecuteScriptHandler(
+            gameState.scripts[scriptName],
+            'on_character_click',
+            args,
+            scriptName
+          );
+          handled = isUseWithHandlerSuccess(outcome);
+        } else {
+          await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', args, scriptName);
+        }
+      }
+    }
+
+    if (!useWithMode) {
+      for (const handler of eventHandlers.character_click) {
+        try {
+          handler(characterId, x, y);
+        } catch (error) {
+          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        }
+      }
+      return;
+    }
+
+    if (!handled) {
+      for (const handler of eventHandlers.character_click) {
+        try {
+          const result = handler(characterId, x, y, usedItemId);
+          const resolved = result && typeof result.then === 'function' ? await result : result;
+          if (resolved === true) {
+            handled = true;
+            break;
+          }
+        } catch (error) {
+          log(`Errore handler on_character_click: ${error.message}`, 'error');
+        }
+      }
+    }
+
+    return handled;
+  }
+
+  async function executeTargetUseWithScript(itemKey, targetType, targetId, x, y) {
+    const usedItemId = resolveUseWithItemId(itemKey);
+    if (targetType === 'hotspot') {
+      if (!gameState.currentRoom || !Array.isArray(gameState.currentRoom.hotspots)) return false;
+      const hotspot = gameState.currentRoom.hotspots.find(h => String(h.id) === String(targetId));
+      if (!hotspot) return false;
+      return await executeHotspotScript(targetId, hotspot, x, y, usedItemId);
+    }
+    if (targetType === 'object') {
+      return await executeObjectClickScripts(targetId, x, y, usedItemId);
+    }
+    if (targetType === 'character') {
+      return await executeCharacterClickScripts(targetId, x, y, usedItemId);
+    }
+    if (targetType === 'inventory') {
+      const targetScriptName = resolveInventoryItemScriptName(targetId);
+      if (!targetScriptName || !gameState.scripts[targetScriptName]) return false;
+      const outcome = await tryExecuteScriptHandler(
+        gameState.scripts[targetScriptName],
+        'on_use_with',
+        ['inventory', usedItemId, x, y],
+        targetScriptName
+      );
+      return isUseWithHandlerSuccess(outcome);
+    }
+    return false;
+  }
+
+  async function tryExecuteItemScriptUseWith(itemKey, scriptName, scriptContent, targetType, targetId, x, y) {
+    const useWith = await tryExecuteScriptHandler(
+      scriptContent,
+      'on_use_with',
+      [targetType, targetId, x, y],
+      scriptName
+    );
+    if (isUseWithHandlerSuccess(useWith)) {
+      return true;
+    }
+
+    // Alias: accetta on_inventory_use_with anche nello script dell'item (itemId = oggetto in mano)
+    const invUseWith = await tryExecuteScriptHandler(
+      scriptContent,
+      'on_inventory_use_with',
+      [itemKey, targetType, targetId, x, y],
+      scriptName
+    );
+    return isUseWithHandlerSuccess(invUseWith);
+  }
+
+  async function dispatchInventoryUseWith(itemKey, targetType, targetId, x, y) {
+    const normalizedItemId = resolveUseWithItemId(itemKey);
+    log(
+      `[Runtime] dispatchInventoryUseWith: "${normalizedItemId}" (raw: "${itemKey}") → ${targetType}:${targetId}`,
+      'info'
+    );
+    let handled = false;
+
+    const itemScriptName = resolveInventoryItemScriptName(itemKey);
+    if (itemScriptName && gameState.scripts[itemScriptName]) {
+      handled = await tryExecuteItemScriptUseWith(
+        normalizedItemId,
+        itemScriptName,
+        gameState.scripts[itemScriptName],
+        targetType,
+        targetId,
+        x,
+        y
+      );
+    }
+
+    if (!handled) {
+      const globalScripts = gameState.attachments.globalScripts || {};
+      const globalScriptName = globalScripts.on_inventory_use_with;
+      if (globalScriptName && gameState.scripts[globalScriptName]) {
+        const outcome = await tryExecuteScriptHandler(
+          gameState.scripts[globalScriptName],
+          'on_inventory_use_with',
+          [normalizedItemId, targetType, targetId, x, y],
+          globalScriptName
+        );
+        if (isUseWithHandlerSuccess(outcome)) {
+          handled = true;
+        }
+      }
+    }
+
+    if (!handled) {
+      const globalCandidates = ['Global:main', 'main'];
+      for (const gKey of globalCandidates) {
+        if (!gameState.scripts[gKey]) continue;
+        const outcome = await tryExecuteScriptHandler(
+          gameState.scripts[gKey],
+          'on_inventory_use_with',
+          [normalizedItemId, targetType, targetId, x, y],
+          gKey
+        );
+        if (isUseWithHandlerSuccess(outcome)) {
+          handled = true;
+          break;
+        }
+      }
+    }
+
+    if (!handled) {
+      for (const handler of eventHandlers.inventory_use_with) {
+        try {
+          const result = handler(normalizedItemId, targetType, targetId, x, y);
+          const resolved = result && typeof result.then === 'function' ? await result : result;
+          if (resolved === true) {
+            handled = true;
+            break;
+          }
+        } catch (error) {
+          log(`Errore handler on_inventory_use_with: ${error.message}`, 'error');
+        }
+      }
+    }
+
+    if (!handled) {
+      handled = await executeTargetUseWithScript(itemKey, targetType, targetId, x, y);
+    }
+
+    if (handled) {
+      clearCarriedInventoryItem();
+      log('[Runtime] dispatchInventoryUseWith: combinazione riuscita', 'success');
+    } else {
+      showGameMessage("That doesn't work.");
+      log('[Runtime] dispatchInventoryUseWith: combinazione non gestita', 'info');
+    }
+  }
+
+  async function handleInventorySlotClick(x, y) {
     const inv = gameState.inventory;
     if (!inv || !inv.enabled || !inv.visible) return false;
 
@@ -2249,6 +5740,7 @@
         clearCarriedInventoryItem();
         return true;
       }
+      await dispatchInventoryUseWith(inv.carriedItem.key, 'inventory', entry.key, x, y);
       return true;
     }
 
@@ -2346,11 +5838,16 @@
   /** Handler estratti dagli script utente (compileScript / executeScriptHandler) */
   const SUPPORTED_SCRIPT_HANDLERS = [
     'on_game_start',
+    'on_before_room_change',
     'on_room_change',
     'on_object_click',
     'on_character_click',
     'on_hotspot_click',
-    'on_gui_click'
+    'on_gui_click',
+    'on_use_with',
+    'on_inventory_use_with',
+    'on_dialogue_action',
+    'on_dialogue_preview'
   ];
 
   /**
@@ -2387,27 +5884,70 @@
   }
 
   /**
-   * Esegue un handler utente con with(scriptScope): API + variabili nello scope lessicale.
+   * Ricompila un handler con API + variabili nello scope lessicale (non solo in this).
+   * Necessario perché with() non influenza le lookup dentro funzioni già definite.
+   */
+  function rebindHandlerWithExecutionScope(handlerFunc, scriptScope) {
+    if (typeof handlerFunc !== 'function') return handlerFunc;
+
+    const apiBindings = getScriptApiBindings();
+    const scopeKeys = Object.keys(scriptScope).filter(k => !apiBindings.some(b => b.name === k));
+    const paramNames = [...apiBindings.map(b => b.name), ...scopeKeys];
+    const paramValues = [...apiBindings.map(b => b.value), ...scopeKeys.map(k => scriptScope[k])];
+
+    const src = Function.prototype.toString.call(handlerFunc).trim();
+    let fnParams = '';
+    let fnBody = '';
+    let isAsync = false;
+
+    let m = src.match(/^async\s+function(?:\s+[\w$]+)?\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/);
+    if (m) {
+      isAsync = true;
+      fnParams = m[1];
+      fnBody = m[2];
+    } else {
+      m = src.match(/^function(?:\s+[\w$]+)?\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/);
+      if (m) {
+        fnParams = m[1];
+        fnBody = m[2];
+      } else {
+        m = src.match(/^async\s*\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}\s*$/);
+        if (m) {
+          isAsync = true;
+          fnParams = m[1];
+          fnBody = m[2];
+        } else {
+          m = src.match(/^\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}\s*$/);
+          if (m) {
+            fnParams = m[1];
+            fnBody = m[2];
+          } else {
+            return handlerFunc;
+          }
+        }
+      }
+    }
+
+    // Auto-await solo nel body dell'handler (non a top-level compile)
+    const bodyWithAwait = injectAutoAwaitBlockingApis(fnBody);
+    const factory = new Function(
+      ...paramNames,
+      `return ${isAsync ? 'async ' : ''}function(${fnParams}) { ${bodyWithAwait} };`
+    );
+    return factory(...paramValues);
+  }
+
+  /**
+   * Esegue un handler utente con API + variabili nello scope lessicale.
    */
   async function runHandlerWithExecutionScope(handlerFunc, args) {
     const scriptScope = buildHandlerExecutionScope();
-    const runner = new Function(
-      'scriptScope',
-      'handlerFunc',
-      'args',
-      `
-      return (async function() {
-        with (scriptScope) {
-          const result = handlerFunc.apply(scriptScope, args);
-          if (result && typeof result.then === 'function') {
-            return await result;
-          }
-          return result;
-        }
-      })();
-      `
-    );
-    return await runner(scriptScope, handlerFunc, args);
+    const rebound = rebindHandlerWithExecutionScope(handlerFunc, scriptScope);
+    const result = rebound.apply(scriptScope, args);
+    if (result && typeof result.then === 'function') {
+      return await result;
+    }
+    return result;
   }
 
   // ⚠️ SISTEMA DI CACHE SCRIPT:
@@ -2481,9 +6021,9 @@
         
         // Pattern 4: function handlerName(...) { ... } (dichiarazione funzione)
         // Questo è il pattern più importante per casi come "function on_hotspot_click(...)"
-        // Usa il flag 'gm' per sostituire tutte le occorrenze e multiline
+        // Evita "async async function" se l'handler è già dichiarato async
         processedScriptContent = processedScriptContent.replace(
-          new RegExp(`function\\s+${escapedName}\\s*\\(`, 'gm'),
+          new RegExp(`(?<!async\\s)function\\s+${escapedName}\\s*\\(`, 'gm'),
           'async function ' + handlerName + '('
         );
         
@@ -2523,10 +6063,8 @@
 
       const compileBody = `
         try {
-          (async () => {
-            ${processedScriptContent}
-            ${handlerExtractionBlock}
-          })();
+          ${processedScriptContent}
+          ${handlerExtractionBlock}
         } catch (e) {
           GameAPI.error('Script compile error: ' + (e && e.message ? e.message : String(e)));
         }
@@ -2594,9 +6132,26 @@
    * @param {string} handlerName - Nome dell'handler da recuperare (es: 'on_hotspot_click')
    * @returns {Function|null} Funzione handler o null se not found
    */
+  function getScriptContentHash(scriptContent) {
+    const s = String(scriptContent || '');
+    if (!s) return '0';
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = ((h << 5) - h) + s.charCodeAt(i);
+      h |= 0;
+    }
+    return String(h);
+  }
+
   function getCompiledHandler(scriptName, scriptContent, handlerName) {
-    // Compila lo script se non è già in cache
-    if (!gameState.compiledScripts.has(scriptName)) {
+    const contentHash = getScriptContentHash(scriptContent);
+    const cachedHash = gameState.compiledScriptHashes.get(scriptName);
+    if (cachedHash !== contentHash) {
+      gameState.compiledScripts.delete(scriptName);
+      gameState.compiledScriptHashes.set(scriptName, contentHash);
+      compileScript(scriptName, scriptContent);
+    } else if (!gameState.compiledScripts.has(scriptName)) {
+      gameState.compiledScriptHashes.set(scriptName, contentHash);
       compileScript(scriptName, scriptContent);
     }
     
@@ -2761,9 +6316,18 @@
         // ⚠️ PROTEZIONE: Verifica che l'handler non sia già stato eseguito in questo contesto
         const handlerId = `${scriptName}_${handlerName}_${Date.now()}`;
         log(`[Runtime] executeScriptHandler: Esecuzione handler ID: ${handlerId}`, 'info');
-        const result = handlerFunction.apply(null, argsArray);
-        if (result && typeof result.then === 'function') {
-          await result;
+
+        const parentSideEffects = pendingScriptSideEffects;
+        pendingScriptSideEffects = [];
+        try {
+          const result = handlerFunction.apply(null, argsArray);
+          if (result && typeof result.then === 'function') {
+            await result;
+          }
+          // Attendi side-effect API anche se lo script non ha usato await (es. load_room / play_music)
+          await flushScriptSideEffects();
+        } finally {
+          pendingScriptSideEffects = parentSideEffects;
         }
 
         log(`[Runtime] executeScriptHandler: Handler '${handlerName}' completato (ID: ${handlerId})`, 'info');
@@ -2774,6 +6338,21 @@
       log(`[Runtime] executeScriptHandler: Error executing handler '${handlerName}': ${error.message}`, 'error');
       console.error(error);
     }
+  }
+
+  function compileAllProjectScripts() {
+    const scripts = gameState.scripts || {};
+    let count = 0;
+    for (const [scriptName, scriptContent] of Object.entries(scripts)) {
+      if (!scriptContent || typeof scriptContent !== 'string' || !scriptContent.trim()) continue;
+      try {
+        compileScript(scriptName, scriptContent);
+        count++;
+      } catch (error) {
+        log(`[Runtime] compileAllProjectScripts: errore su '${scriptName}': ${error.message}`, 'error');
+      }
+    }
+    log(`[Runtime] Pre-compilati ${count} script di progetto`, 'info');
   }
 
   async function executeGameStartScripts() {
@@ -2822,103 +6401,155 @@
     // PRIORITÀ 4: Esegui handler registrati tramite on_game_start(function() {...})
     for (const handler of eventHandlers.game_start) {
       try {
-        handler();
+        const result = handler();
+        if (result && typeof result.then === 'function') {
+          await result;
+        }
       } catch (error) {
         log(`Error in on_game_start handler: ${error.message}`, 'error');
       }
     }
   }
 
-  async function executeRoomChangeScripts(oldRoomId, newRoomId) {
-    // Set per tracciare gli script già eseguiti (evita doppia esecuzione)
-    const executedScripts = new Set();
-    
-    // Set di script collegati a stanze specifiche (devono essere eseguiti SOLO quando si entra in quella stanza)
-    const roomSpecificScripts = new Set();
-    const roomScripts = gameState.attachments.roomScripts || {};
-    if (typeof roomScripts === 'object') {
-      for (const [roomId, scriptName] of Object.entries(roomScripts)) {
-        if (scriptName) {
-          roomSpecificScripts.add(scriptName);
-        }
-      }
+  function collectAttachedRoomScriptNames(roomScriptsAtt, roomId, handlerName) {
+    const names = [];
+    const push = (n) => {
+      if (n && typeof n === 'string' && names.indexOf(n) < 0) names.push(n);
+    };
+    if (!roomScriptsAtt || typeof roomScriptsAtt !== 'object') {
+      push(`Room:${roomId}:${handlerName}`);
+      push(`Room:${roomId}`);
+      return names;
     }
-    
-    // PRIORITÀ 1: Esegui script collegati esplicitamente alla room tramite attachments
-    // ⚠️ IMPORTANTE: Esegue SOLO quando si entra nella stanza (newRoomId === roomId)
-    if (typeof roomScripts === 'object') {
-      for (const [roomId, scriptName] of Object.entries(roomScripts)) {
-        if (roomId === newRoomId && scriptName && gameState.scripts[scriptName]) {
+    const entry = roomScriptsAtt[roomId];
+    if (typeof entry === 'string') {
+      push(entry);
+    } else if (entry && typeof entry === 'object') {
+      if (entry[handlerName]) push(entry[handlerName]);
+      if (entry.legacy) push(entry.legacy);
+    }
+    push(`Room:${roomId}:${handlerName}`);
+    push(`Room:${roomId}`);
+    return names;
+  }
+
+  function collectAllRoomAttachmentScriptNames(roomScriptsAtt) {
+    const set = new Set();
+    if (!roomScriptsAtt || typeof roomScriptsAtt !== 'object') return set;
+    Object.values(roomScriptsAtt).forEach(entry => {
+      if (typeof entry === 'string' && entry) set.add(entry);
+      else if (entry && typeof entry === 'object') {
+        Object.values(entry).forEach(v => {
+          if (typeof v === 'string' && v) set.add(v);
+        });
+      }
+    });
+    return set;
+  }
+
+  async function executeRoomTransitionScripts(handlerName, registeredHandlersKey, oldRoomId, newRoomId) {
+    beginRoomTransitionScripts();
+    try {
+      const executedScripts = new Set();
+      const roomScripts = gameState.attachments.roomScripts || {};
+      const roomSpecificScripts = collectAllRoomAttachmentScriptNames(roomScripts);
+
+      const attachedForRoom = collectAttachedRoomScriptNames(roomScripts, newRoomId, handlerName);
+      for (const scriptName of attachedForRoom) {
+        if (!scriptName || executedScripts.has(scriptName)) continue;
+        if (!gameState.scripts[scriptName]) continue;
+        executedScripts.add(scriptName);
+        await executeScriptHandler(gameState.scripts[scriptName], handlerName, [oldRoomId, newRoomId], scriptName);
+      }
+
+      // Global event-specific scripts (Global:on_before_room_change / Global:on_room_change)
+      const globalEventKey = `Global:${handlerName}`;
+      if (gameState.scripts[globalEventKey] && !executedScripts.has(globalEventKey)) {
+        executedScripts.add(globalEventKey);
+        await executeScriptHandler(gameState.scripts[globalEventKey], handlerName, [oldRoomId, newRoomId], globalEventKey);
+      }
+
+      const reservedScript = gameState.scripts[handlerName];
+      if (reservedScript && !executedScripts.has(handlerName) && !roomSpecificScripts.has(handlerName)) {
+        executedScripts.add(handlerName);
+        await executeScriptHandler(reservedScript, handlerName, [oldRoomId, newRoomId], handlerName);
+      }
+
+      const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerName}\\s*\\(`);
+      for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
+        if (executedScripts.has(scriptName)) continue;
+        if (roomSpecificScripts.has(scriptName)) continue;
+        // Evita di eseguire script Room: di altre stanze via scan generico
+        if (String(scriptName).startsWith('Room:')) {
+          const prefix = `Room:${newRoomId}`;
+          const isThisRoom =
+            scriptName === prefix ||
+            scriptName === `${prefix}:${handlerName}` ||
+            scriptName.startsWith(`${prefix}:`);
+          if (!isThisRoom) continue;
+        }
+        if (scriptContent && typeof scriptContent === 'string' && handlerRegex.test(scriptContent)) {
           executedScripts.add(scriptName);
-          // ⚠️ Passa scriptName per garantire cache corretta
-          await executeScriptHandler(gameState.scripts[scriptName], 'on_room_change', [oldRoomId, newRoomId], scriptName);
+          await executeScriptHandler(scriptContent, handlerName, [oldRoomId, newRoomId], scriptName);
         }
       }
-    }
 
-    // PRIORITÀ 2: Cerca script con nome riservato "on_room_change" (solo se non già eseguito e non collegato a una stanza specifica)
-    if (gameState.scripts.on_room_change && !executedScripts.has('on_room_change') && !roomSpecificScripts.has('on_room_change')) {
-      executedScripts.add('on_room_change');
-      // ⚠️ Passa scriptName per garantire cache corretta
-      await executeScriptHandler(gameState.scripts.on_room_change, 'on_room_change', [oldRoomId, newRoomId], 'on_room_change');
-    }
-
-    // PRIORITÀ 3: Scansione regex di tutti gli script (solo quelli non già eseguiti e NON collegati a stanze specifiche)
-    // ⚠️ IMPORTANTE: Salta gli script collegati a stanze specifiche - questi vengono eseguiti SOLO nella PRIORITÀ 1
-    for (const [scriptName, scriptContent] of Object.entries(gameState.scripts)) {
-      // Salta script già eseguiti
-      if (executedScripts.has(scriptName)) {
-        continue;
-      }
-      
-      // ⚠️ Salta script collegati a stanze specifiche - devono essere eseguiti SOLO quando si entra in quella stanza
-      if (roomSpecificScripts.has(scriptName)) {
-        continue;
-      }
-      
-      if (scriptContent && typeof scriptContent === 'string') {
-        const hasHandler = /function\s+on_room_change\s*\(/.test(scriptContent);
-        if (hasHandler) {
-          executedScripts.add(scriptName);
-          // ⚠️ Passa scriptName per garantire cache corretta
-          await executeScriptHandler(scriptContent, 'on_room_change', [oldRoomId, newRoomId], scriptName);
+      const handlers = eventHandlers[registeredHandlersKey];
+      if (Array.isArray(handlers)) {
+        for (const handler of handlers) {
+          try {
+            const result = handler(oldRoomId, newRoomId);
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
+          } catch (error) {
+            log(`Error in ${handlerName} handler: ${error.message}`, 'error');
+          }
         }
       }
-    }
-
-    // PRIORITÀ 4: Esegui handler registrati tramite on_room_change(function() {...})
-    for (const handler of eventHandlers.room_change) {
-      try {
-        handler(oldRoomId, newRoomId);
-      } catch (error) {
-        log(`Error in on_room_change handler: ${error.message}`, 'error');
-      }
+    } finally {
+      endRoomTransitionScripts();
     }
   }
 
-  async function executeObjectClickScripts(objectId, x, y) {
-    // ⚠️ MODIFICATO: Esegui SOLO lo script specifico dell'object cliccato
-    // Non eseguire script generici o script di altri oggetti
-    
-    // Esegui SOLO lo script collegato esplicitamente to object tramite attachments
-    // Questo garantisce che ogni object esegua solo il proprio script, non quello di altri oggetti
+  async function executeBeforeRoomChangeScripts(oldRoomId, newRoomId) {
+    await executeRoomTransitionScripts('on_before_room_change', 'before_room_change', oldRoomId, newRoomId);
+  }
+
+  async function executeRoomChangeScripts(oldRoomId, newRoomId) {
+    await executeRoomTransitionScripts('on_room_change', 'room_change', oldRoomId, newRoomId);
+  }
+
+  async function executeObjectClickScripts(objectId, x, y, usedItemId) {
+    const useWithMode = isUseWithMode(usedItemId);
+    const args = useWithMode
+      ? [objectId, x, y, usedItemId]
+      : [objectId, x, y];
+
     const objectScripts = gameState.attachments.objectScripts || {};
     if (typeof objectScripts === 'object' && objectScripts[objectId]) {
       const scriptName = objectScripts[objectId];
       if (gameState.scripts[scriptName]) {
-        // ⚠️ Passa scriptName per garantire cache corretta
-        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', [objectId, x, y], scriptName);
-        return; // Esegui SOLO lo script specifico dell'object, poi esci
-      } else {
-        log(`[executeObjectClickScripts] Script "${scriptName}" associato to object "${objectId}" not found`, 'warning');
+        if (useWithMode) {
+          const outcome = await tryExecuteScriptHandler(
+            gameState.scripts[scriptName],
+            'on_object_click',
+            args,
+            scriptName
+          );
+          return isUseWithHandlerSuccess(outcome);
+        }
+        await executeScriptHandler(gameState.scripts[scriptName], 'on_object_click', args, scriptName);
+        return;
       }
+      log(`[executeObjectClickScripts] Script "${scriptName}" associato to object "${objectId}" not found`, 'warning');
     } else {
       log(`[executeObjectClickScripts] No script associato to object "${objectId}"`, 'info');
     }
-    
-    // ⚠️ PRIORITÀ 2, 3 e 4 RIMOSSE: Non eseguire più script generici, scansioni o handler dinamici
-    // Questo previene che script di altri oggetti vengano eseguiti quando si clicca su un object specifico
-    // Ogni object deve avere il proprio script associato tramite attachments.objectScripts
+
+    if (useWithMode) {
+      return false;
+    }
   }
 
   // Verifica se un punto è dentro un poligono (ray casting algorithm)
@@ -3035,6 +6666,47 @@
   }
 
   /**
+   * Fattore di velocità in base alla profondità (scaling Y della room).
+   * Alla linea di foreground (max scale) = 1; verso background rallenta proporzionalmente.
+   * Se lo scaling non è configurato, restituisce 1.
+   */
+  function getDepthMoveSpeedFactor(characterY, room) {
+    if (!room) return 1;
+    const backgroundY = room.scalingBackgroundY;
+    const foregroundY = room.scalingForegroundY;
+    if (typeof backgroundY !== 'number' || typeof foregroundY !== 'number' ||
+        isNaN(backgroundY) || isNaN(foregroundY) || backgroundY >= foregroundY) {
+      return 1;
+    }
+    const maxScale = (typeof room.scalingMaxScale === 'number' && !isNaN(room.scalingMaxScale) && room.scalingMaxScale > 0)
+      ? room.scalingMaxScale
+      : 1.5;
+    const scale = calculateCharacterScale(characterY, room);
+    // Evita velocità troppo basse che bloccano il pathfinding
+    return Math.max(0.15, scale / maxScale);
+  }
+
+  /**
+   * Velocità effettiva in px/s: moveSpeed base × fattore profondità (se abilitato).
+   * moveSpeed resta la velocità alla linea di foreground.
+   */
+  function getEffectiveMoveSpeed(character, room) {
+    const base = (character && character.moveSpeed > 0) ? character.moveSpeed : 100;
+    if (!character || character.scaleMoveSpeedWithDepth === false) {
+      return base;
+    }
+    return base * getDepthMoveSpeedFactor(character.y, room);
+  }
+
+  function resolveScaleMoveSpeedWithDepth(charDef, existingValue) {
+    if (existingValue === true || existingValue === false) return existingValue;
+    if (charDef && charDef.spawnSettings && charDef.spawnSettings.scaleMoveSpeedWithDepth === false) {
+      return false;
+    }
+    return true; // default: attiva
+  }
+
+  /**
    * Attende il completamento del movimento di un character
    * @param {string} characterId - ID del character
    * @returns {Promise} Promise che si risolve quando il movimento è completato
@@ -3067,20 +6739,99 @@
     });
   }
 
-  function findCharacterInCurrentRoom(characterIdOrName) {
-    let character = gameState.characters.get(characterIdOrName);
-    let characterId = characterIdOrName;
-    if (!character) {
-      for (const [id, char] of gameState.characters.entries()) {
-        if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
-          character = char;
-          characterId = id;
-          break;
-        }
+  /** Pending visibility/opacity set before the character instance exists (e.g. on_game_start). */
+  const pendingCharacterVisualState = new Map(); // name/id -> { visible?, opacity? }
+
+  function getPendingCharacterKey(characterIdOrName) {
+    return String(characterIdOrName == null ? '' : characterIdOrName).trim();
+  }
+
+  function rememberPendingCharacterVisual(characterIdOrName, patch) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return;
+    const prev = pendingCharacterVisualState.get(key) || {};
+    pendingCharacterVisualState.set(key, Object.assign({}, prev, patch || {}));
+  }
+
+  function applyPendingCharacterVisualState(character) {
+    if (!character) return;
+    const keys = [character.id, character.name].filter(Boolean).map(k => String(k));
+    let patch = null;
+    for (const key of keys) {
+      if (pendingCharacterVisualState.has(key)) {
+        patch = Object.assign({}, patch || {}, pendingCharacterVisualState.get(key));
+        pendingCharacterVisualState.delete(key);
       }
     }
-    if (!character) return null;
-    return { character, characterId };
+    if (!patch) return;
+    if (typeof patch.visible === 'boolean') character.visible = patch.visible;
+    if (patch.opacity != null && Number.isFinite(Number(patch.opacity))) {
+      const clamped = clampCharacterOpacity(patch.opacity);
+      if (clamped != null) character.opacity = clamped;
+    }
+    log(
+      `[Runtime] Applied pending visual state on "${character.name}": visible=${character.visible}, opacity=${character.opacity}`,
+      'info'
+    );
+  }
+
+  /**
+   * Find a live character by id or name.
+   * Prefers current room, then any room (id===name instances may live across rooms).
+   */
+  function findCharacterInCurrentRoom(characterIdOrName) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return null;
+
+    // Direct Map lookup (id === name)
+    let character = gameState.characters.get(key);
+    if (character) {
+      return { character, characterId: key };
+    }
+
+    // Prefer same room by name
+    const currentRoomId = gameState.currentRoomId;
+    for (const [id, char] of gameState.characters.entries()) {
+      if (char && char.name === key && char.roomId === currentRoomId) {
+        return { character: char, characterId: id };
+      }
+    }
+
+    // Fallback: any room (useful in on_game_start / room transitions)
+    for (const [id, char] of gameState.characters.entries()) {
+      if (char && (char.name === key || id === key)) {
+        return { character: char, characterId: id };
+      }
+    }
+
+    return null;
+  }
+
+  function characterDefinitionExists(characterIdOrName) {
+    const key = getPendingCharacterKey(characterIdOrName);
+    if (!key) return false;
+    if (gameState.characterDefinitions.has(key)) return true;
+    for (const [name] of gameState.characterDefinitions.entries()) {
+      if (name === key) return true;
+    }
+    if (gameState.projectData && Array.isArray(gameState.projectData.characters)) {
+      return gameState.projectData.characters.some(
+        c => c && (c.name === key || c.id === key)
+      );
+    }
+    return false;
+  }
+
+  function clampCharacterOpacity(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function getCharacterDrawOpacity(character) {
+    if (!character) return 1;
+    const clamped = clampCharacterOpacity(character.opacity);
+    return clamped == null ? 1 : clamped;
   }
 
   function waitForCharacterAnimation(characterId) {
@@ -3104,6 +6855,50 @@
         log(`[Runtime] waitForCharacterAnimation: Timeout per character ${characterId}`, 'warning');
         resolve();
       }, 30000);
+    });
+  }
+
+  function estimateRoomAnimationMaxWaitMs(inst, animDef, loopOpt) {
+    if (!animDef || !animDef.frames || animDef.frames.length === 0) return 30000;
+    const frameDuration = 1000 / (Number(animDef.fps) || 8);
+    const framesPerCycle = animDef.frames.length;
+    const cycleMs = framesPerCycle * frameDuration;
+    let cycles = 1;
+    if (loopOpt && loopOpt.mode === 'count') cycles = Math.max(1, loopOpt.count);
+    else if (loopOpt && loopOpt.mode === 'infinite') return 120000;
+    return Math.min(120000, Math.ceil(cycleMs * cycles) + 2000);
+  }
+
+  function waitForRoomAnimationInstance(instanceOrKey) {
+    const inst = (instanceOrKey && typeof instanceOrKey === 'object')
+      ? instanceOrKey
+      : findRoomAnimationInstance(instanceOrKey);
+    return new Promise((resolve) => {
+      if (!inst || !inst.playing) {
+        resolve();
+        return;
+      }
+
+      const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+      const loopOpt = inst.loopOpt || parseAudioLoopOption(null, inst.loopDefault);
+      const maxMs = estimateRoomAnimationMaxWaitMs(inst, animDef, loopOpt);
+      const startedAt = performance.now();
+
+      function tick() {
+        if (!inst.playing) {
+          resolve();
+          return;
+        }
+        if (performance.now() - startedAt >= maxMs) {
+          log(`[Runtime] waitForRoomAnimationInstance: timeout "${inst.name}"`, 'warning');
+          inst.playing = false;
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      }
+
+      requestAnimationFrame(tick);
     });
   }
 
@@ -3511,78 +7306,195 @@
    * - Log script eseguito
    * - Errore se più di uno script viene eseguito
    */
-  async function executeHotspotScript(hotspotId, hotspot, x, y) {
+  async function executeHotspotScript(hotspotId, hotspot, x, y, usedItemId) {
     log(`[Runtime] [DEBUG] executeHotspotScript: INIZIO esecuzione script hotspot ${hotspotId}`, 'info');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot name: ${hotspot.name || 'unnamed'}`, 'info');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Coordinate click: (${Math.round(x)}, ${Math.round(y)})`, 'info');
-    
-    // Verifica che l'hotspot abbia la struttura scripts.onClick
-    if (!hotspot || !hotspot.scripts || !hotspot.scripts.onClick) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ Hotspot ${hotspotId} non ha struttura scripts.onClick`, 'warning');
-      log(`[Runtime] [DEBUG] executeHotspotScript: Hotspot structure: ${JSON.stringify({ id: hotspot?.id, hasScripts: !!hotspot?.scripts, hasOnClick: !!hotspot?.scripts?.onClick })}`, 'info');
-      return;
-    }
-    
-    const onClickScript = hotspot.scripts.onClick;
-    
-    // ⚠️ LOG DI SICUREZZA: Logga stato enabled, hotspot id e script info prima dell'esecuzione
-    const enabledStatus = typeof onClickScript.enabled === 'boolean' ? onClickScript.enabled : 'undefined';
-    const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
-    log(`[Runtime] [DEBUG] executeHotspotScript: [SICUREZZA] Hotspot ID: ${hotspotId}, Enabled: ${enabledStatus}, Has Code: ${hasCode}, Code Length: ${onClickScript.code ? onClickScript.code.length : 0}`, 'info');
-    
-    // AUTOMATIZZAZIONE: Se c'è codice, lo script deve essere eseguito (ignorando enabled=false)
-    // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+    const useWithMode = isUseWithMode(usedItemId);
+
+    const { code, hasCode } = resolveHotspotOnClickScript(hotspotId, hotspot);
     if (!hasCode) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: Script onClick dell'hotspot ${hotspotId} è vuoto o non valido`, 'info');
-      return;
+      log(`[Runtime] executeHotspotScript: nessun codice per hotspot ${hotspotId}`, 'info');
+      return useWithMode ? false : undefined;
     }
-    
-    // Se c'è codice, esegui sempre (ignorando enabled=false)
-    // Questo permette agli hotspot di funzionare automaticamente quando hanno codice
-    if (onClickScript.enabled === false) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: [AUTO-ENABLE] Hotspot ${hotspotId} ha codice ma enabled=false, esecuzione forzata per presenza codice`, 'warning');
+
+    const onClick = hotspot && hotspot.scripts && hotspot.scripts.onClick;
+    if (!useWithMode && onClick && onClick.enabled === false) {
+      log(`[Runtime] executeHotspotScript: hotspot ${hotspotId} disabilitato (click normale)`, 'info');
+      return undefined;
     }
-    
-    log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script valido e abilitato per hotspot ${hotspotId}`, 'success');
-    log(`[Runtime] [DEBUG] executeHotspotScript: Script code length: ${onClickScript.code.length} caratteri`, 'info');
-    
-    // ⚠️ CONTROLLO ANTI-DOPPIA ESECUZIONE: Traccia esecuzioni in corso
-    if (!window._hotspotScriptExecutions) {
-      window._hotspotScriptExecutions = new Set();
-    }
-    
-    const executionKey = `${hotspotId}_${Date.now()}`;
-    if (window._hotspotScriptExecutions.has(hotspotId)) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ⚠️ ERRORE: Script per hotspot ${hotspotId} già in esecuzione!`, 'error');
-      log(`[Runtime] [DEBUG] executeHotspotScript: Questo NON dovrebbe mai accadere con la nuova struttura`, 'error');
-      return;
-    }
-    
-    window._hotspotScriptExecutions.add(hotspotId);
-    
+
+    const normalizedUsedItemId = useWithMode ? resolveUseWithItemId(usedItemId) : usedItemId;
+    const args = useWithMode
+      ? [hotspotId, x, y, normalizedUsedItemId]
+      : [hotspotId, x, y];
+    const scriptName = `hotspot_${hotspotId}_onClick`;
+
     try {
-      // Log di conferma esecuzione come richiesto
-      const hotspotName = hotspot.name || hotspotId;
-      log(`[Runtime] Esecuzione script per hotspot: ${hotspotName}`, 'info');
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Esecuzione script onClick per hotspot ${hotspotId} (${hotspot.name})`, 'success');
-      
-      // Esegui SOLO lo script dell'hotspot cliccato
-      // Usa uno scriptName univoco basato sull'hotspotId per la cache
-      const scriptName = `hotspot_${hotspotId}_onClick`;
-      log(`[Runtime] [DEBUG] executeHotspotScript: Script name: ${scriptName}`, 'info');
-      
-      await executeScriptHandler(onClickScript.code, 'on_hotspot_click', [hotspotId, x, y], scriptName);
-      
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✓ Script completato con successo per hotspot ${hotspotId}`, 'success');
+      if (useWithMode) {
+        const outcome = await tryExecuteScriptHandler(code, 'on_hotspot_click', args, scriptName);
+        if (!outcome.found) {
+          log(`[Runtime] executeHotspotScript: on_hotspot_click non trovato per ${hotspotId}`, 'warning');
+          return false;
+        }
+        if (!isUseWithHandlerSuccess(outcome)) {
+          log(`[Runtime] executeHotspotScript: combinazione non gestita su ${hotspotId} (item: ${normalizedUsedItemId})`, 'info');
+          return false;
+        }
+        return true;
+      }
+      await executeScriptHandler(code, 'on_hotspot_click', args, scriptName);
     } catch (error) {
-      log(`[Runtime] [DEBUG] executeHotspotScript: ✗ Error executing script per hotspot ${hotspotId}: ${error.message}`, 'error');
+      log(`[Runtime] executeHotspotScript: errore ${hotspotId}: ${error.message}`, 'error');
       console.error('[Runtime] executeHotspotScript error:', error);
-    } finally {
-      // Rimuovi dal set dopo un breve delay per permettere eventuali callback asincroni
-      setTimeout(() => {
-        window._hotspotScriptExecutions.delete(hotspotId);
-      }, 100);
+      if (useWithMode) return false;
     }
+  }
+
+  // ============================================
+  // FULLSCREEN IMAGE OVERLAY (show_image / hide_image)
+  // ============================================
+  let fullscreenImageState = null; // { el, resolve, waitClick }
+
+  function getFullscreenImageHost() {
+    return document.getElementById('game-canvas-container') || document.getElementById('game-container') || document.body;
+  }
+
+  function dismissFullscreenImage(reason) {
+    if (!fullscreenImageState) return;
+    const state = fullscreenImageState;
+    fullscreenImageState = null;
+    if (state.el && state.el.parentNode) {
+      try { state.el.parentNode.removeChild(state.el); } catch (_) {}
+    }
+    if (typeof state.resolve === 'function') {
+      try { state.resolve({ ok: true, reason: reason || 'dismissed' }); } catch (_) {}
+    }
+    if (state.locked) releaseInputLock('show_image');
+    log(`[Runtime] hide_image (${reason || 'dismissed'})`, 'info');
+  }
+
+  /**
+   * Mostra un'immagine a tutto schermo (sopra il canvas).
+   * @param {string} imageName - Nome file Resources (es. "cutscene.png"), asset:…, URL o data:
+   * @param {{ waitClick?: boolean, fit?: 'contain'|'cover' }} [options]
+   *   waitClick default true → Promise risolta al click (o hide_image)
+   * @returns {Promise}
+   */
+  async function showFullscreenImage(imageName, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const waitClick = opts.waitClick !== false;
+    const fit = opts.fit === 'cover' ? 'cover' : 'contain';
+    const name = String(imageName == null ? '' : imageName).trim();
+    if (!name) {
+      GameAPI.error('show_image: image name is required (Resources file name, e.g. "photo.png")');
+      return { ok: false, error: 'missing_name' };
+    }
+
+    if (fullscreenImageState) {
+      dismissFullscreenImage('replaced');
+    }
+
+    let src = '';
+    try {
+      src = await resolveSpawnObjectImageRef(name);
+    } catch (err) {
+      GameAPI.error('show_image: resolve failed — ' + (err && err.message ? err.message : err));
+      return { ok: false, error: 'resolve_failed' };
+    }
+    if (!src) {
+      GameAPI.error(`show_image: image "${name}" not found in Resources`);
+      return { ok: false, error: 'not_found' };
+    }
+
+    let img = null;
+    try {
+      const categoryHint = String(src).startsWith('asset:') ? 'resource' : null;
+      img = await loadImage(src, categoryHint);
+    } catch (err) {
+      GameAPI.error('show_image: load failed — ' + (err && err.message ? err.message : err));
+      return { ok: false, error: 'load_failed' };
+    }
+    if (!img || !img.src) {
+      GameAPI.error(`show_image: could not load "${name}"`);
+      return { ok: false, error: 'load_failed' };
+    }
+
+    const host = getFullscreenImageHost();
+    const el = document.createElement('div');
+    el.id = 'amianto-fullscreen-image';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Fullscreen image');
+    el.style.cssText = [
+      'position:absolute',
+      'inset:0',
+      'z-index:5000',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'background:#000',
+      'cursor:pointer',
+      'user-select:none'
+    ].join(';');
+
+    const imgEl = document.createElement('img');
+    imgEl.src = img.src;
+    imgEl.alt = name;
+    imgEl.draggable = false;
+    imgEl.style.cssText = [
+      'max-width:100%',
+      'max-height:100%',
+      'width:100%',
+      'height:100%',
+      'object-fit:' + fit,
+      'pointer-events:none',
+      'image-rendering:auto'
+    ].join(';');
+    el.appendChild(imgEl);
+
+    if (waitClick) {
+      const hint = document.createElement('div');
+      hint.textContent = 'Click to continue';
+      hint.style.cssText = [
+        'position:absolute',
+        'bottom:12px',
+        'left:50%',
+        'transform:translateX(-50%)',
+        'color:#39ff14',
+        'font:12px/1.2 monospace',
+        'opacity:0.85',
+        'pointer-events:none',
+        'text-shadow:0 0 4px #000'
+      ].join(';');
+      el.appendChild(hint);
+    }
+
+    host.appendChild(el);
+
+    return new Promise((resolve) => {
+      fullscreenImageState = {
+        el,
+        resolve: waitClick ? resolve : null,
+        waitClick,
+        imageName: name,
+        locked: false
+      };
+      if (waitClick) {
+        acquireInputLock('show_image');
+        fullscreenImageState.locked = true;
+        const onClick = (e) => {
+          if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          el.removeEventListener('click', onClick);
+          dismissFullscreenImage('click');
+        };
+        el.addEventListener('click', onClick);
+      } else {
+        // Overlay resta fino a hide_image(); Promise risolta subito
+        resolve({ ok: true, reason: 'shown' });
+      }
+      log(`[Runtime] show_image: "${name}" (waitClick=${waitClick}, fit=${fit})`, 'info');
+    });
   }
 
   // ============================================
@@ -3591,11 +7503,13 @@
   // Sistema di eventi registrati
   const eventHandlers = {
     game_start: [],
+    before_room_change: [],
     room_change: [],
     object_click: [],
     character_click: [],
     hotspot_click: [],
-    gui_click: []
+    gui_click: [],
+    inventory_use_with: []
   };
 
   // ⚠️ PROTEZIONE ANTI-DOPPIA-ESECUZIONE PER PRINT:
@@ -3661,6 +7575,22 @@
 
     log: function() {
       GameAPI.print.apply(GameAPI, arguments);
+    },
+
+    /**
+     * Pausa lo script per un tempo fisso (millisecondi).
+     * Usare con await in handler async: await wait(1500);
+     * @param {number} ms - Durata in millisecondi (>= 0)
+     * @returns {Promise<void>}
+     */
+    wait: function(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n < 0) {
+        GameAPI.error('wait: ms must be a non-negative number');
+        return Promise.resolve();
+      }
+      if (n === 0) return Promise.resolve();
+      return new Promise(resolve => setTimeout(resolve, n));
     },
 
     error: function() {
@@ -3812,60 +7742,183 @@
       return true;
     },
 
-    load_room: function(roomIdOrName, playerX, playerY, playerDirection) {
+    /**
+     * Carica una stanza.
+     * Transizione: default da Impostazioni progetto / set_room_transition.
+     * Override per questa chiamata:
+     *   load_room(room, { transition, duration, x, y, direction })
+     *   load_room(room, x, y, direction, { transition, duration })
+     */
+    load_room: function(roomIdOrName, playerX, playerY, playerDirection, transitionOptions) {
       if (typeof roomIdOrName !== 'string' && typeof roomIdOrName !== 'number') {
         GameAPI.error('load_room: roomIdOrName must be a string or number');
-        return false;
+        return Promise.resolve(false);
       }
-      
-      // Cambia stanza
-      changeRoom(String(roomIdOrName));
-      
-      // Se sono specificati parametri per il player, posizionalo
-      if (playerX !== undefined && playerY !== undefined) {
-        // Trova il player
-        let player = null;
-        let playerId = null;
-        
-        // Cerca il player tra i character
-        for (const [id, char] of gameState.characters.entries()) {
-          const charDef = gameState.characterDefinitions.get(char.name);
-          const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
-          if (isPlayer) {
-            player = char;
-            playerId = id;
-            break;
-          }
+
+      const placement = parseLoadRoomCall(playerX, playerY, playerDirection, transitionOptions);
+      const effect = resolveRoomTransitionEffect(placement.transition, placement.duration);
+      const placeX = placement.playerX;
+      const placeY = placement.playerY;
+      const placeDirection = placement.playerDirection;
+
+      const targetRoom = String(roomIdOrName);
+      const previousRoomId = gameState.currentRoomId;
+
+      // Ordine: before (vecchia stanza attiva) → snapshot → cambio stanza → posiziona player
+      // → transizione visiva → after.
+      // Dialoghi in before/after non bloccano (enqueueScriptCommand in room-transition).
+      const roomPromise = (async () => {
+        log(`[Runtime] load_room: inizio → "${targetRoom}" (da "${previousRoomId || ''}")`, 'info');
+
+        // Risolvi id canonico per gli script Before della stanza di destinazione
+        let resolvedTargetId = targetRoom;
+        if (gameState.projectData && Array.isArray(gameState.projectData.rooms)) {
+          const roomDef = gameState.projectData.rooms.find(r => r.id === targetRoom || r.name === targetRoom);
+          if (roomDef) resolvedTargetId = String(roomDef.id || targetRoom);
         }
-        
-        if (player) {
-          // Posiziona il player
-          player.x = Number(playerX) || 0;
-          player.y = Number(playerY) || 0;
-          player.renderX = player.x;
-          player.renderY = player.y;
-          player.targetY = player.y;
-          player.velocityY = 0;
-          
-          // Imposta direzione se specificata
-          if (playerDirection !== undefined && playerDirection !== null) {
-            const charDef = gameState.characterDefinitions.get(player.name);
-            if (charDef && charDef.directions[playerDirection]) {
-              player.direction = playerDirection;
-              player.currentFrame = 0;
-              player.frameTime = 0;
+
+        // Before room load: stanza precedente ancora attiva (anche via load_room)
+        try {
+          await executeBeforeRoomChangeScripts(previousRoomId, resolvedTargetId);
+        } catch (err) {
+          log(`[Runtime] on_before_room_change before load_room: ${err && err.message ? err.message : err}`, 'error');
+        }
+
+        const sameRoom = previousRoomId && previousRoomId === resolvedTargetId;
+        const useVisual = effect.type !== 'none' &&
+          effect.duration > 0 &&
+          !!previousRoomId &&
+          !sameRoom &&
+          !!canvas &&
+          !!ctx;
+        let transitionToken = null;
+
+        try {
+          if (useVisual) {
+            transitionToken = beginRoomTransitionHold();
+          }
+
+          await changeRoom(targetRoom, { skipRoomScripts: true, skipAfterRoomScripts: true });
+
+          const arrivedRoomId = gameState.currentRoomId || resolvedTargetId;
+          const arrivedOk = String(gameState.currentRoomId || '') === resolvedTargetId;
+          log(`[Runtime] load_room: stanza attiva "${arrivedRoomId}"`, 'info');
+
+          if (!arrivedOk && transitionToken != null) {
+            completeRoomTransition(transitionToken);
+            transitionToken = null;
+          }
+
+          if (placeX !== undefined && placeY !== undefined) {
+            let player = null;
+            for (const [, char] of gameState.characters.entries()) {
+              const charDef = gameState.characterDefinitions.get(char.name);
+              const isPlayer = charDef && charDef.spawnSettings && charDef.spawnSettings.isPlayer === true;
+              if (isPlayer) {
+                player = char;
+                break;
+              }
+            }
+
+            if (!player) {
+              log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
             } else {
-              log(`[Runtime] load_room: Direzione "${playerDirection}" non disponibile per player "${player.name}"`, 'warning');
+              player.x = Number(placeX) || 0;
+              player.y = Number(placeY) || 0;
+              player.renderX = player.x;
+              player.renderY = player.y;
+              player.targetY = player.y;
+              player.velocityY = 0;
+              player.isMoving = false;
+              player.path = null;
+              player.pathIndex = 0;
+              player.roomId = arrivedRoomId;
+              // Non forzare visible=true: rispetta set_character_visibility / opacity da script
+
+              if (placeDirection !== undefined && placeDirection !== null) {
+                const charDef = gameState.characterDefinitions.get(player.name);
+                if (charDef && charDef.directions[placeDirection]) {
+                  player.direction = placeDirection;
+                  player.currentFrame = 0;
+                  player.frameTime = 0;
+                } else {
+                  log(`[Runtime] load_room: Direzione "${placeDirection}" non disponibile per player "${player.name}"`, 'warning');
+                }
+              }
+
+              log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${arrivedRoomId}${placeDirection ? ` con direzione "${placeDirection}"` : ''}`, 'info');
             }
           }
-          
-          log(`[Runtime] Player posizionato a (${player.x}, ${player.y}) in room ${roomIdOrName}${playerDirection ? ` con direzione "${playerDirection}"` : ''}`, 'info');
-        } else {
-          log(`[Runtime] load_room: Player not found, impossibile posizionare`, 'warning');
+
+          // After: la nuova stanza è già caricata ma ancora coperta dallo snapshot,
+          // così visibilità e posizionamenti valgono dal primo frame visibile.
+          try {
+            await executeRoomChangeScripts(previousRoomId, arrivedRoomId);
+          } catch (err) {
+            log(`[Runtime] on_room_change after load_room: ${err && err.message ? err.message : err}`, 'error');
+          }
+
+          if (useVisual && transitionToken != null && transitionToken === roomTransitionSerial) {
+            startRoomTransitionAnimation(effect.type, effect.duration);
+            const done = waitRoomTransition(transitionToken);
+            armRoomTransitionCompletion(transitionToken);
+            await done;
+          }
+          return true;
+        } finally {
+          if (transitionToken != null) {
+            completeRoomTransition(transitionToken);
+          }
         }
+      })().catch((err) => {
+        GameAPI.error(`load_room: ${err && err.message ? err.message : err}`);
+        return false;
+      });
+
+      return trackScriptSideEffect(roomPromise);
+    },
+
+    /**
+     * Imposta la transizione usata dai load_room successivi in questa sessione.
+     * Non riscrive le impostazioni progetto: al prossimo avvio torna il default del menu.
+     * @param {string} type none | fade | fade_to_black | fade_to_white | slide | dissolve | iris
+     * @param {number} [durationMs] millisecondi (0–10000)
+     */
+    set_room_transition: function(type, durationMs) {
+      const normalized = normalizeRoomTransitionType(type);
+      if (!normalized) {
+        GameAPI.error(`set_room_transition: type must be ${ROOM_TRANSITION_TYPE_HINT}`);
+        return false;
       }
-      
+      roomTransitionRuntime.type = normalized;
+      if (durationMs !== undefined && durationMs !== null && String(durationMs).trim() !== '') {
+        const duration = normalizeRoomTransitionDuration(durationMs);
+        if (duration == null) {
+          GameAPI.error('set_room_transition: duration must be a non-negative number of milliseconds');
+          return false;
+        }
+        roomTransitionRuntime.duration = duration;
+      }
+      log(`[Runtime] Default transizione: ${roomTransitionRuntime.type}, ${roomTransitionRuntime.duration} ms`, 'info');
       return true;
+    },
+
+    get_room_transition: function() {
+      return {
+        type: roomTransitionRuntime.type,
+        duration: roomTransitionRuntime.duration
+      };
+    },
+
+    /**
+     * Come load_room, con tipo e durata espliciti per questa sola chiamata.
+     * transition_to_room(room, type?, durationMs?, playerX?, playerY?, playerDirection?)
+     */
+    transition_to_room: function(roomIdOrName, type, durationMs, playerX, playerY, playerDirection) {
+      const opt = {};
+      if (type !== undefined) opt.transition = type;
+      if (durationMs !== undefined) opt.duration = durationMs;
+      return GameAPI.load_room(roomIdOrName, playerX, playerY, playerDirection, opt);
     },
 
     // Oggetti
@@ -3875,6 +7928,7 @@
       if (obj) {
         obj.enabled = true;
         obj.visible = true;
+        syncLiveRoomEntitiesToProjectData();
       }
     },
 
@@ -3884,6 +7938,7 @@
       if (obj) {
         obj.enabled = false;
         obj.visible = false;
+        syncLiveRoomEntitiesToProjectData();
       }
     },
 
@@ -3896,6 +7951,7 @@
         return false;
       }
       hs.visible = true;
+      syncLiveRoomEntitiesToProjectData();
       log(`[Runtime] enableHotspot: "${hs.id}" active`, 'info');
       return true;
     },
@@ -3909,6 +7965,7 @@
         return false;
       }
       hs.visible = false;
+      syncLiveRoomEntitiesToProjectData();
       log(`[Runtime] disableHotspot: "${hs.id}" inactive`, 'info');
       return true;
     },
@@ -3944,10 +8001,12 @@
         return 0;
       }
       const inv = ensureInventoryState();
+      refreshInventoryItemImages();
       const current = Number(inv.contents.get(key) || 0);
       const next = current + q;
       inv.contents.set(key, next);
       log(`[Runtime] add_to_inventory: +${q} × "${key}" (totale: ${next})`, 'info');
+      syncInventoryStateToEditor();
       return next;
     },
 
@@ -3967,6 +8026,7 @@
         inv.contents.set(key, next);
       }
       log(`[Runtime] remove_from_inventory: -${q} × "${key}" (totale: ${next})`, 'info');
+      syncInventoryStateToEditor();
       return next;
     },
 
@@ -3989,7 +8049,43 @@
     clear_inventory: function() {
       const inv = ensureInventoryState();
       inv.contents.clear();
+      clearCarriedInventoryItem();
       log('[Runtime] clear_inventory: inventario svuotato', 'info');
+      syncInventoryStateToEditor();
+      return true;
+    },
+
+    get_carried_item: function() {
+      const inv = gameState.inventory;
+      if (!inv || !inv.carriedItem) return null;
+      return resolveUseWithItemId(inv.carriedItem.key) || null;
+    },
+
+    clear_carried_item: function() {
+      clearCarriedInventoryItem();
+      syncInventoryStateToEditor();
+    },
+
+    set_carried_item: function(itemId) {
+      const key = resolveInventoryContentKey(itemId);
+      if (!key || !GameAPI.has_item(key)) return false;
+      const def = resolveInventoryItemDef(itemId);
+      if (!def) return false;
+      const inv = ensureInventoryState();
+      inv.carriedItem = {
+        key,
+        def,
+        sourceSlotIndex: -1,
+        slotW: 48,
+        slotH: 48
+      };
+      inv.suppressPanelUntilDrop = true;
+      if (inv.displayMode === 'toggle' || inv.displayMode === 'popup') {
+        inv.visible = false;
+      }
+      updateInventoryCursorStyle();
+      log(`[Runtime] set_carried_item: "${def.name || key}" preso in mano`, 'info');
+      syncInventoryStateToEditor();
       return true;
     },
 
@@ -4096,69 +8192,127 @@
       const v = !!visible;
       obj.visible = v;
       obj.enabled = v;
+      syncLiveRoomEntitiesToProjectData();
       log(`[Runtime] set_object_visible: "${obj.id}" → ${v}`, 'info');
       return true;
     },
 
     // Character API
+    /**
+     * Spawna un personaggio. L'id runtime è SEMPRE uguale al name (stabile tra sessioni/script).
+     * @param {string} characterName
+     * @param {number} x
+     * @param {number} y
+     * @param {string} [direction='south']
+     * @param {string} [characterId] - ignorato se diverso dal name (mantenuto solo per compatibilità firma)
+     * @returns {string|null} id (= name)
+     */
     spawn_character: function(characterName, x, y, direction = 'south', characterId = null) {
       if (!characterName) {
         GameAPI.error('spawn_character: characterName is required');
         return null;
       }
 
-      const charDef = gameState.characterDefinitions.get(characterName);
-      if (!charDef) {
-        GameAPI.error(`spawn_character: character "${characterName}" not found in definitions`);
+      const name = String(characterName).trim();
+      if (!name) {
+        GameAPI.error('spawn_character: characterName is required');
         return null;
       }
 
-      const id = characterId || `char_${characterName}_${Date.now()}`;
-      const dir = direction || 'south';
-      
-      // Verifica che la direzione esista
-      if (!charDef.directions[dir]) {
-        log(`[Runtime] spawn_character: Direzione "${dir}" non disponibile per "${characterName}", uso "south"`, 'warning');
-        direction = 'south';
+      // id === name sempre (il 5° argomento non può creare id diversi)
+      const id = name;
+      if (characterId != null && String(characterId).trim() !== '' && String(characterId) !== id) {
+        log(`[Runtime] spawn_character: characterId "${characterId}" ignorato — id forzato a name "${id}"`, 'warning');
       }
 
-      // Leggi moveSpeed dalle spawnSettings se disponibile, altrimenti usa default
-      let moveSpeed = 100; // pixel per secondo (default)
+      const charDef = gameState.characterDefinitions.get(name);
+      if (!charDef) {
+        GameAPI.error(`spawn_character: character "${name}" not found in definitions`);
+        return null;
+      }
+
+      // Rimuovi istanze legacy con stesso name ma chiave Map diversa (es. char_Name_timestamp)
+      for (const [key, char] of [...gameState.characters.entries()]) {
+        if (char && char.name === name && key !== id) {
+          gameState.characters.delete(key);
+          log(`[Runtime] spawn_character: removed legacy instance key "${key}" for "${name}"`, 'info');
+        }
+      }
+
+      const dir = direction || 'south';
+      let resolvedDirection = dir;
+      if (!charDef.directions[resolvedDirection]) {
+        log(`[Runtime] spawn_character: Direzione "${resolvedDirection}" non disponibile per "${name}", uso "south"`, 'warning');
+        resolvedDirection = 'south';
+      }
+
+      let moveSpeed = 100;
       if (charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
         const speedValue = Number(charDef.spawnSettings.moveSpeed);
         if (!isNaN(speedValue) && speedValue > 0) {
           moveSpeed = speedValue;
-          log(`[Runtime] Character "${characterName}" usa moveSpeed dalle spawnSettings: ${moveSpeed} pixel/sec`, 'info');
-        } else {
-          log(`[Runtime] Character "${characterName}": moveSpeed non valido (${charDef.spawnSettings.moveSpeed}), uso default: 100`, 'warning');
         }
-      } else {
-        log(`[Runtime] Character "${characterName}": moveSpeed not found nelle spawnSettings, uso default: 100`, 'info');
+      }
+      const scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(charDef);
+
+      const spawnX = Number(x);
+      const spawnY = Number(y);
+      const posX = Number.isFinite(spawnX) ? spawnX : 0;
+      const posY = Number.isFinite(spawnY) ? spawnY : 0;
+
+      // Se esiste già, riusa e aggiorna posizione (niente duplicati)
+      if (gameState.characters.has(id)) {
+        const existing = gameState.characters.get(id);
+        existing.id = id;
+        existing.name = name;
+        existing.x = posX;
+        existing.y = posY;
+        existing.renderX = posX;
+        existing.renderY = posY;
+        existing.targetY = posY;
+        existing.velocityY = 0;
+        existing.direction = resolvedDirection;
+        existing.roomId = gameState.currentRoomId;
+        // Nuovo spawn: visibile; riuso: conserva visibility/opacity (es. nascosto in on_game_start)
+        if (existing.visible === undefined) existing.visible = true;
+        if (existing.opacity === undefined || !Number.isFinite(Number(existing.opacity))) {
+          existing.opacity = 1;
+        }
+        existing.isMoving = false;
+        existing.path = null;
+        existing.pathIndex = 0;
+        existing.moveSpeed = moveSpeed;
+        existing.scaleMoveSpeedWithDepth = scaleMoveSpeedWithDepth;
+        existing.playingAnimation = null;
+        applyPendingCharacterVisualState(existing);
+        log(`[Runtime] spawn_character: reused "${name}" (id=name) at (${posX}, ${posY})`, 'info');
+        return id;
       }
 
       const character = {
         id: id,
-        name: characterName,
-        x: Number(x) || 0,
-        y: Number(y) || 0,
-        // Posizioni frazionarie per movimento fluido (sub-pixel rendering)
-        renderX: Number(x) || 0,
-        renderY: Number(y) || 0,
-        direction: direction,
+        name: name,
+        x: posX,
+        y: posY,
+        renderX: posX,
+        renderY: posY,
+        direction: resolvedDirection,
         currentFrame: 0,
         frameTime: 0,
         visible: true,
+        opacity: 1,
         roomId: gameState.currentRoomId,
         isMoving: false,
         path: null,
-        moveSpeed: moveSpeed, // pixel per secondo
-        // Smoothing per movimento verticale più fluido
+        moveSpeed: moveSpeed,
+        scaleMoveSpeedWithDepth: scaleMoveSpeedWithDepth,
         velocityY: 0,
-        targetY: Number(y) || 0
+        targetY: posY
       };
 
+      applyPendingCharacterVisualState(character);
       gameState.characters.set(id, character);
-      log(`[Runtime] Character "${characterName}" spawnato a (${x}, ${y}) con direzione "${direction}"`, 'info');
+      log(`[Runtime] Character "${name}" spawnato a (${posX}, ${posY}) id="${id}" (id=name)`, 'info');
       return id;
     },
 
@@ -4202,11 +8356,21 @@
      * @returns {Promise} Promise che si risolve quando il movimento è completato (se waitForCompletion è true)
      */
     walk_character: function(characterIdOrName, x, y, waitForCompletion = true) {
-      // Prova prima a cercare per ID
+      // Risolvi character: id esatto → playerId se nome coincide → primo match nome in room
       let character = gameState.characters.get(characterIdOrName);
       let characterId = characterIdOrName;
-      
-      // Se not found per ID, cerca per nome (trova il primo character con quel nome nella room corrente)
+
+      if (!character) {
+        const playerId = gameState.variables.get('playerId');
+        if (playerId && gameState.characters.has(playerId)) {
+          const playerChar = gameState.characters.get(playerId);
+          if (playerChar && (playerChar.name === characterIdOrName || playerChar.id === characterIdOrName)) {
+            character = playerChar;
+            characterId = playerId;
+          }
+        }
+      }
+
       if (!character) {
         for (const [id, char] of gameState.characters.entries()) {
           if (char.name === characterIdOrName && char.roomId === gameState.currentRoomId) {
@@ -4235,19 +8399,32 @@
         return Promise.reject(new Error(`No walkable area defined for this room`));
       }
 
+      // Allinea x/y logiche a renderX/Y (evita pathfinding da posizione "fantasma")
+      if (typeof character.renderX === 'number' && Number.isFinite(character.renderX)) {
+        character.x = character.renderX;
+      }
+      if (typeof character.renderY === 'number' && Number.isFinite(character.renderY)) {
+        character.y = character.renderY;
+      }
+
       // Inizializza proprietà movimento se mancanti
       if (character.isMoving === undefined) character.isMoving = false;
       if (character.path === undefined) character.path = null;
       if (character.pathIndex === undefined) character.pathIndex = 0;
       if (character.moveSpeed === undefined) {
         // Prova a leggere dalle spawnSettings del character definition
-        const charDef = gameState.characterDefinitions.get(character.name);
-        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
-          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+        const charDefForSpeed = gameState.characterDefinitions.get(character.name);
+        if (charDefForSpeed && charDefForSpeed.spawnSettings && charDefForSpeed.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDefForSpeed.spawnSettings.moveSpeed);
           character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
         } else {
           character.moveSpeed = 100; // pixel per secondo (default)
         }
+      }
+      if (character.scaleMoveSpeedWithDepth === undefined) {
+        character.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+          gameState.characterDefinitions.get(character.name)
+        );
       }
 
       // Verifica che il character abbia un pivot (necessario per il pathfinding)
@@ -4257,9 +8434,10 @@
         return Promise.reject(new Error(`Character "${characterIdOrName}" non ha un pivot definito`));
       }
 
-      // Calcola la posizione del pivot del character
+      // Posizione pivot = coordinate logiche (piedi), già allineate a renderX/Y
       const characterPivotX = character.x;
       const characterPivotY = character.y;
+      log(`[Runtime] walk_character: "${character.name}" (${characterId}) from (${Math.round(characterPivotX)}, ${Math.round(characterPivotY)}) to (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)})`, 'info');
 
       // Verifica se il pivot del character è sulla walkable area
       if (!isPointInPolygon(walkableArea, characterPivotX, characterPivotY)) {
@@ -4401,6 +8579,63 @@
       log(`[Runtime] Character ${characterId} direzione cambiata a "${direction}"`, 'info');
     },
 
+    /**
+     * Mostra/nasconde un personaggio (non cliccabile se nascosto).
+     * @param {string} characterIdOrName
+     * @param {boolean} visible
+     * @returns {boolean}
+     */
+    set_character_visibility: function(characterIdOrName, visible) {
+      const v = !!visible;
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (found) {
+        found.character.visible = v;
+        log(`[Runtime] set_character_visibility: "${found.characterId}" → ${v}`, 'info');
+        return true;
+      }
+      // Not spawned yet (common in on_game_start before NPC auto-spawn) — remember and apply on spawn
+      if (characterDefinitionExists(characterIdOrName)) {
+        rememberPendingCharacterVisual(characterIdOrName, { visible: v });
+        log(
+          `[Runtime] set_character_visibility: "${characterIdOrName}" not spawned yet — queued (visible=${v})`,
+          'info'
+        );
+        return true;
+      }
+      GameAPI.error(`set_character_visibility: character "${characterIdOrName}" not found`);
+      return false;
+    },
+
+    /**
+     * Imposta l'opacità di disegno di un personaggio (0–1). A 0 non è cliccabile.
+     * @param {string} characterIdOrName
+     * @param {number} opacity
+     * @returns {boolean}
+     */
+    set_character_opacity: function(characterIdOrName, opacity) {
+      const clamped = clampCharacterOpacity(opacity);
+      if (clamped == null) {
+        GameAPI.error('set_character_opacity: opacity must be a number (0–1)');
+        return false;
+      }
+      const found = findCharacterInCurrentRoom(characterIdOrName);
+      if (found) {
+        found.character.opacity = clamped;
+        log(`[Runtime] set_character_opacity: "${found.characterId}" → ${clamped}`, 'info');
+        return true;
+      }
+      if (characterDefinitionExists(characterIdOrName)) {
+        rememberPendingCharacterVisual(characterIdOrName, { opacity: clamped });
+        log(
+          `[Runtime] set_character_opacity: "${characterIdOrName}" not spawned yet — queued (opacity=${clamped})`,
+          'info'
+        );
+        return true;
+      }
+      GameAPI.error(`set_character_opacity: character "${characterIdOrName}" not found`);
+      return false;
+    },
+
     animate_character: function(characterIdOrName, enabled = true) {
       const found = findCharacterInCurrentRoom(characterIdOrName);
       if (!found) {
@@ -4477,18 +8712,416 @@
 
     // UI
     showText: function(text) {
-      // Mostra testo come messaggio visibile (con coda sequenziale)
+      // Messaggio overlay: blocca i comandi in coda finché non viene chiuso (× o ~3s)
       const messageText = String(text);
-      queueCommand(async () => {
-        showGameMessage(messageText);
-        // Attendi che il messaggio sia mostrato (durata default 3000ms)
-        await new Promise(resolve => setTimeout(resolve, 3000));
+      return enqueueScriptCommand(async () => {
+        await showGameMessage(messageText, 3000);
       });
     },
 
     show_message: function(text) {
-      // Alias di showText per compatibilità con l'editor (con coda sequenziale)
-      GameAPI.showText(text);
+      return GameAPI.showText(text);
+    },
+
+    /**
+     * Mostra un balloon di dialogo sul personaggio indicato (ID o nome nella room corrente).
+     * Usa le impostazioni della prima GUI DialogBox del progetto. Il balloon segue il personaggio.
+     * Il giocatore chiude il dialogo con un click.
+     * In on_room_change / on_before_room_change non blocca load_room (il balloon resta in coda).
+     * Negli altri script aspetta la chiusura prima dei comandi successivi (anche senza await esplicito).
+     * @param {string} characterIdOrName - ID (da spawn_character) o nome del personaggio
+     * @param {string} text - Testo parlato
+     */
+    show_dialogue: function(characterIdOrName, text) {
+      if (text === undefined || text === null) {
+        GameAPI.error('show_dialogue: serve show_dialogue(personaggio, testo) — due argomenti');
+        return Promise.resolve();
+      }
+      return enqueueScriptCommand(async () => {
+        await showDialogueAndWait(characterIdOrName, text);
+      });
+    },
+
+    /** Alias roadmap: show_dialogue_text(testo, personaggio) */
+    show_dialogue_text: function(text, speaker) {
+      return GameAPI.show_dialogue(speaker, text);
+    },
+
+    /**
+     * Avvia un dialogo ramificato definito nel progetto (tab Dialogues).
+     * Esegue nodi line/choice/end; Promise risolta a fine dialogo o end_dialogue().
+     * In on_room_change / on_before_room_change non blocca load_room (il grafo resta in coda).
+     * Negli altri script aspetta la fine del dialogo prima dei comandi successivi.
+     * @param {string} dialogueIdOrName - id o name del dialogo
+     */
+    start_dialogue: function(dialogueIdOrName) {
+      return enqueueScriptCommand(async () => {
+        const def = resolveDialogue(dialogueIdOrName);
+        if (!def) {
+          GameAPI.error(`start_dialogue: dialogue "${dialogueIdOrName}" not found`);
+          return;
+        }
+        await runDialogueGraph(def);
+      });
+    },
+
+    /** Chiude immediatamente balloon e sessione grafo attiva */
+    end_dialogue: function() {
+      endAllDialogue();
+    },
+
+    /**
+     * Mostra un'immagine a tutto schermo (Resources: nome file, es. "cutscene.png").
+     * Di default aspetta un click del giocatore (Promise). Usa hide_image() per chiudere da script.
+     * @param {string} imageName - Nome in Resources / asset:… / URL
+     * @param {{ waitClick?: boolean, fit?: 'contain'|'cover' }} [options]
+     * @returns {Promise}
+     */
+    show_image: function(imageName, options) {
+      return enqueueScriptCommand(async () => {
+        await showFullscreenImage(imageName, options);
+      });
+    },
+
+    /** Nasconde l'overlay di show_image se presente. */
+    hide_image: function() {
+      dismissFullscreenImage('api');
+    },
+
+    /**
+     * Salva lo stato di gioco del player (non il progetto editor).
+     * Storage: localStorage keyed by project id + slot (1–10 or custom string).
+     * @param {number|string} [slot=1]
+     * @param {string} [label]
+     * @returns {{ ok: boolean, slot: string, savedAt: string, bytes: number }}
+     */
+    save_game: function(slot, label) {
+      try {
+        if (!gameState.projectData || !isGamePlayable()) {
+          GameAPI.error('save_game: game not ready');
+          return { ok: false, error: 'not_ready' };
+        }
+        const slotKey = normalizeGameSaveSlot(slot == null ? 1 : slot);
+        const payload = serializeGameStateForSave(label);
+        payload.slot = slotKey;
+        const written = writeGameSaveToStorage(slotKey, payload);
+        log(`[Runtime] save_game: slot "${slotKey}" (${written.bytes} bytes)`, 'success');
+        return { ok: true, slot: slotKey, savedAt: payload.savedAt, bytes: written.bytes, label: payload.label };
+      } catch (err) {
+        GameAPI.error('save_game: ' + (err && err.message ? err.message : err));
+        return { ok: false, error: String(err && err.message ? err.message : err) };
+      }
+    },
+
+    /**
+     * Carica uno slot di salvataggio (stanza, variabili, inventario, personaggi, oggetti/hotspot).
+     * Non riesegue on_room_change / on_game_start.
+     * @param {number|string} [slot=1]
+     * @returns {Promise<{ ok: boolean, slot?: string, error?: string }>}
+     */
+    load_game: function(slot) {
+      return queueCommand(async () => {
+        try {
+          if (!gameState.projectData) {
+            GameAPI.error('load_game: no project loaded');
+            return { ok: false, error: 'no_project' };
+          }
+          const slotKey = normalizeGameSaveSlot(slot == null ? 1 : slot);
+          const data = readGameSaveFromStorage(slotKey);
+          if (!data) {
+            GameAPI.error(`load_game: no save in slot "${slotKey}"`);
+            return { ok: false, error: 'not_found', slot: slotKey };
+          }
+          await restoreGameStateFromSave(data);
+          return { ok: true, slot: slotKey, savedAt: data.savedAt || null };
+        } catch (err) {
+          GameAPI.error('load_game: ' + (err && err.message ? err.message : err));
+          return { ok: false, error: String(err && err.message ? err.message : err) };
+        }
+      });
+    },
+
+    /**
+     * Elimina uno slot di salvataggio.
+     * @param {number|string} slot — obbligatorio (1–10 o id stringa)
+     */
+    delete_save: function(slot) {
+      try {
+        if (slot == null || slot === '') {
+          GameAPI.error('delete_save: slot is required');
+          return { ok: false, error: 'slot_required' };
+        }
+        const slotKey = normalizeGameSaveSlot(slot, { requireExplicit: true });
+        deleteGameSaveFromStorage(slotKey);
+        log(`[Runtime] delete_save: slot "${slotKey}"`, 'info');
+        return { ok: true, slot: slotKey };
+      } catch (err) {
+        GameAPI.error('delete_save: ' + (err && err.message ? err.message : err));
+        return { ok: false, error: String(err && err.message ? err.message : err) };
+      }
+    },
+
+    /**
+     * Metadata di uno slot, o lista di tutti gli slot del progetto corrente se slot omesso.
+     * @param {number|string} [slot]
+     */
+    get_save_info: function(slot) {
+      try {
+        if (slot == null || slot === '') {
+          return listGameSavesFromStorage();
+        }
+        const slotKey = normalizeGameSaveSlot(slot);
+        const data = readGameSaveFromStorage(slotKey);
+        if (!data) return null;
+        return {
+          slot: slotKey,
+          label: data.label || '',
+          savedAt: data.savedAt || null,
+          projectId: data.projectId || null,
+          projectName: data.projectName || null,
+          roomId: data.state && data.state.currentRoomId ? data.state.currentRoomId : null,
+          version: data.version || null
+        };
+      } catch (err) {
+        GameAPI.error('get_save_info: ' + (err && err.message ? err.message : err));
+        return null;
+      }
+    },
+
+    /**
+     * Mostra una GUI per id o nome (es. SaveLoad menu).
+     * @param {string} idOrName
+     * @returns {boolean}
+     */
+    show_gui: function(idOrName) {
+      const ok = setGuiVisible(idOrName, true);
+      if (!ok) GameAPI.error(`show_gui: GUI "${idOrName}" not found`);
+      return ok;
+    },
+
+    /**
+     * Nasconde una GUI per id o nome.
+     * @param {string} idOrName
+     * @returns {boolean}
+     */
+    hide_gui: function(idOrName) {
+      const ok = setGuiVisible(idOrName, false);
+      if (!ok) GameAPI.error(`hide_gui: GUI "${idOrName}" not found`);
+      return ok;
+    },
+
+    /**
+     * Riproduce musica di sottofondo in loop infinito (una traccia alla volta).
+     * Non si interrompe finché non viene chiamato stop_music() (o un nuovo play_music).
+     * @param {string} trackId - Nome file, asset id, o "asset:..."
+     * @param {boolean|string|number} [loop] - ignorato: la musica è sempre in loop
+     */
+    play_music: function(trackId, loop) {
+      if (!trackId || !String(trackId).trim()) {
+        GameAPI.error('play_music: trackId is required');
+        return Promise.resolve(null);
+      }
+      const loopOpt = { mode: 'infinite' };
+      const ref = String(trackId).trim();
+      // Ferma solo la traccia precedente (nuovo play_music), non i click/unlock
+      stopMusicPlayback();
+      return trackScriptSideEffect(playMusicFromRef(ref, {
+        volume: gameState.audio.musicVolume,
+        loopOpt
+      }).then(handle => {
+        if (!handle) return null;
+        const el = (handle.element && handle.element.nodeName === 'AUDIO')
+          ? handle.element
+          : (musicAudioEl || asAudioElementProxy(handle));
+        if (el && el.loop !== undefined) el.loop = true;
+        gameState.audio.music = {
+          handle,
+          element: el,
+          ref,
+          loopOpt
+        };
+        log(`[Runtime] play_music: "${ref}" (loop: infinite until stop_music)`, 'info');
+        return handle;
+      }));
+    },
+
+    /**
+     * Riproduce un effetto sonoro (può sovrapporsi ad altri SFX).
+     * @param {string} soundId - Nome file, asset id, o "asset:..."
+     * @param {boolean|string|number} [loop=false] - true/'loop' = loop fino a stop_sound; false/'once' = una volta; N = N ripetizioni
+     */
+    play_sound: function(soundId, loop) {
+      if (!soundId || !String(soundId).trim()) {
+        GameAPI.error('play_sound: soundId is required');
+        return Promise.resolve(null);
+      }
+      const loopOpt = parseAudioLoopOption(loop, false);
+      const ref = String(soundId).trim();
+      const trackKey = normalizeResourceFileKey(ref);
+
+      if (loopOpt.mode === 'infinite') {
+        stopSoundPlayback(trackKey);
+      }
+
+      return trackScriptSideEffect(playAudioFromRef(ref, {
+        volume: gameState.audio.soundVolume,
+        loopOpt
+      }).then(handle => {
+        if (!handle) return null;
+        if (loopOpt.mode === 'infinite') {
+          gameState.audio.sounds.set(trackKey, {
+            handle,
+            element: asAudioElementProxy(handle),
+            ref,
+            loopOpt
+          });
+        }
+        log(`[Runtime] play_sound: "${ref}" (loop: ${loopOpt.mode === 'count' ? loopOpt.count : loopOpt.mode})`, 'info');
+        return handle;
+      }));
+    },
+
+    /** Ferma la musica di sottofondo */
+    stop_music: function() {
+      stopMusicPlayback();
+      log('[Runtime] stop_music', 'info');
+    },
+
+    /**
+     * Ferma un effetto sonoro in loop (stesso id usato in play_sound).
+     * Senza argomenti ferma tutti i suoni in loop tracciati.
+     */
+    stop_sound: function(soundId) {
+      if (soundId == null || soundId === '') {
+        for (const key of [...gameState.audio.sounds.keys()]) {
+          stopSoundPlayback(key);
+        }
+        log('[Runtime] stop_sound: all looping sounds stopped', 'info');
+        return;
+      }
+      const trackKey = normalizeResourceFileKey(String(soundId).trim());
+      stopSoundPlayback(trackKey);
+      log(`[Runtime] stop_sound: "${soundId}"`, 'info');
+    },
+
+    /**
+     * Avvia o riavvia un'animazione di stanza posizionata nell'editor.
+     * @param {string} instanceIdOrName - ID o nome dell'istanza nella stanza corrente
+     * @param {boolean|string|number} [loop] - true/'loop' = loop; false/'once' = una volta; N = N cicli; omit = default animazione
+     * @param {boolean} [waitForCompletion] - Se true (o loop finito: once/count), attende la fine prima di proseguire lo script
+     * @returns {Promise<void>}
+     */
+    play_animation: function(instanceIdOrName, loop, waitForCompletion) {
+      if (!instanceIdOrName || !String(instanceIdOrName).trim()) {
+        GameAPI.error('play_animation: instanceIdOrName is required');
+        return Promise.resolve();
+      }
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`play_animation: instance "${instanceIdOrName}" not found in current room`);
+        return Promise.resolve();
+      }
+      const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+      if (!animDef) {
+        GameAPI.error(`play_animation: animation definition missing for "${instanceIdOrName}"`);
+        return Promise.resolve();
+      }
+      const loopOpt = parseAudioLoopOption(loop, inst.loopDefault);
+      inst.loopOpt = loopOpt;
+      inst.cyclesRemaining = loopOpt.mode === 'count' ? loopOpt.count : null;
+      inst.visible = true;
+      inst.playing = true;
+      inst.currentFrame = 0;
+      inst.frameTime = 0;
+      log(`[Runtime] play_animation: "${inst.name}" (loop: ${loopOpt.mode === 'count' ? loopOpt.count : loopOpt.mode})`, 'info');
+
+      const shouldWait = waitForCompletion === true ||
+        (waitForCompletion !== false && loopOpt.mode !== 'infinite');
+      if (shouldWait) {
+        return waitForRoomAnimationInstance(inst);
+      }
+      return Promise.resolve();
+    },
+
+    /**
+     * Ferma un'animazione di stanza. Senza argomenti ferma tutte le istanze della stanza corrente.
+     */
+    stop_animation: function(instanceIdOrName) {
+      const room = gameState.currentRoom;
+      if (!room || !Array.isArray(room.animationInstances)) return;
+
+      if (instanceIdOrName == null || instanceIdOrName === '') {
+        room.animationInstances.forEach(inst => {
+          inst.playing = false;
+          inst.currentFrame = 0;
+          inst.frameTime = 0;
+          inst.cyclesRemaining = null;
+        });
+        log('[Runtime] stop_animation: all room animations stopped', 'info');
+        return;
+      }
+
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`stop_animation: instance "${instanceIdOrName}" not found in current room`);
+        return;
+      }
+      inst.playing = false;
+      inst.currentFrame = 0;
+      inst.frameTime = 0;
+      inst.cyclesRemaining = null;
+      log(`[Runtime] stop_animation: "${inst.name}"`, 'info');
+    },
+
+    /**
+     * Mostra un'istanza di animazione di stanza (rendering riattivato).
+     * @param {string} instanceIdOrName - ID o nome dell'istanza nella stanza corrente
+     */
+    show_animation: function(instanceIdOrName) {
+      if (!instanceIdOrName || !String(instanceIdOrName).trim()) {
+        GameAPI.error('show_animation: instanceIdOrName is required');
+        return;
+      }
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`show_animation: instance "${instanceIdOrName}" not found in current room`);
+        return;
+      }
+      inst.visible = true;
+      log(`[Runtime] show_animation: "${inst.name}"`, 'info');
+    },
+
+    /**
+     * Nasconde un'istanza di animazione di stanza. Senza argomenti nasconde tutte le istanze della stanza.
+     * @param {string} [instanceIdOrName] - ID o nome dell'istanza; omit = tutte
+     */
+    hide_animation: function(instanceIdOrName) {
+      const room = gameState.currentRoom;
+      if (!room || !Array.isArray(room.animationInstances)) return;
+
+      if (instanceIdOrName == null || instanceIdOrName === '') {
+        room.animationInstances.forEach(inst => {
+          inst.visible = false;
+          inst.playing = false;
+          inst.currentFrame = 0;
+          inst.frameTime = 0;
+          inst.cyclesRemaining = null;
+        });
+        log('[Runtime] hide_animation: all room animations hidden', 'info');
+        return;
+      }
+
+      const inst = findRoomAnimationInstance(instanceIdOrName);
+      if (!inst) {
+        GameAPI.error(`hide_animation: instance "${instanceIdOrName}" not found in current room`);
+        return;
+      }
+      inst.visible = false;
+      inst.playing = false;
+      inst.currentFrame = 0;
+      inst.frameTime = 0;
+      inst.cyclesRemaining = null;
+      log(`[Runtime] hide_animation: "${inst.name}"`, 'info');
     },
 
     // Event System - Funzioni helper per registrare handler
@@ -4496,6 +9129,13 @@
       if (typeof handler === 'function') {
         eventHandlers.game_start.push(handler);
         log('Handler on_game_start registrato', 'info');
+      }
+    },
+
+    on_before_room_change: function(handler) {
+      if (typeof handler === 'function') {
+        eventHandlers.before_room_change.push(handler);
+        log('Handler on_before_room_change registrato', 'info');
       }
     },
 
@@ -4532,6 +9172,13 @@
         eventHandlers.gui_click.push(handler);
         log('Handler on_gui_click registrato', 'info');
       }
+    },
+
+    on_inventory_use_with: function(handler) {
+      if (typeof handler === 'function') {
+        eventHandlers.inventory_use_with.push(handler);
+        log('Handler on_inventory_use_with registrato', 'info');
+      }
     }
   };
 
@@ -4554,6 +9201,7 @@
       { name: 'GameAPI', value: api },
       { name: 'print', value: bindGameApiMethod(api, 'print') },
       { name: 'log', value: bindGameApiMethod(api, 'log') },
+      { name: 'wait', value: bindGameApiMethod(api, 'wait') },
       { name: 'getVariable', value: bindGameApiMethod(api, 'getVariable') },
       { name: 'setVariable', value: bindGameApiMethod(api, 'setVariable') },
       { name: 'get_var', value: bindGameApiMethod(api, 'getVar') },
@@ -4565,6 +9213,9 @@
       { name: 'get_room_objects', value: bindGameApiMethod(api, 'get_room_objects') },
       { name: 'set_room_background', value: bindGameApiMethod(api, 'set_room_background') },
       { name: 'load_room', value: bindGameApiMethod(api, 'load_room') },
+      { name: 'set_room_transition', value: bindGameApiMethod(api, 'set_room_transition') },
+      { name: 'get_room_transition', value: bindGameApiMethod(api, 'get_room_transition') },
+      { name: 'transition_to_room', value: bindGameApiMethod(api, 'transition_to_room') },
       { name: 'enableObject', value: bindGameApiMethod(api, 'enableObject') },
       { name: 'disableObject', value: bindGameApiMethod(api, 'disableObject') },
       { name: 'enableHotspot', value: bindGameApiMethod(api, 'enableHotspot') },
@@ -4575,6 +9226,9 @@
       { name: 'has_item', value: bindGameApiMethod(api, 'has_item') },
       { name: 'get_item_count', value: bindGameApiMethod(api, 'get_item_count') },
       { name: 'clear_inventory', value: bindGameApiMethod(api, 'clear_inventory') },
+      { name: 'get_carried_item', value: bindGameApiMethod(api, 'get_carried_item') },
+      { name: 'clear_carried_item', value: bindGameApiMethod(api, 'clear_carried_item') },
+      { name: 'set_carried_item', value: bindGameApiMethod(api, 'set_carried_item') },
       { name: 'spawn_object', value: bindGameApiMethod(api, 'spawn_object') },
       { name: 'despawn_object', value: bindGameApiMethod(api, 'despawn_object') },
       { name: 'rotate_object', value: bindGameApiMethod(api, 'rotate_object') },
@@ -4582,10 +9236,32 @@
       { name: 'set_object_visible', value: bindGameApiMethod(api, 'set_object_visible') },
       { name: 'showText', value: bindGameApiMethod(api, 'showText') },
       { name: 'show_message', value: bindGameApiMethod(api, 'show_message') },
+      { name: 'show_dialogue', value: bindGameApiMethod(api, 'show_dialogue') },
+      { name: 'show_dialogue_text', value: bindGameApiMethod(api, 'show_dialogue_text') },
+      { name: 'start_dialogue', value: bindGameApiMethod(api, 'start_dialogue') },
+      { name: 'end_dialogue', value: bindGameApiMethod(api, 'end_dialogue') },
+      { name: 'save_game', value: bindGameApiMethod(api, 'save_game') },
+      { name: 'load_game', value: bindGameApiMethod(api, 'load_game') },
+      { name: 'delete_save', value: bindGameApiMethod(api, 'delete_save') },
+      { name: 'get_save_info', value: bindGameApiMethod(api, 'get_save_info') },
+      { name: 'show_gui', value: bindGameApiMethod(api, 'show_gui') },
+      { name: 'hide_gui', value: bindGameApiMethod(api, 'hide_gui') },
+      { name: 'play_music', value: bindGameApiMethod(api, 'play_music') },
+      { name: 'play_sound', value: bindGameApiMethod(api, 'play_sound') },
+      { name: 'stop_music', value: bindGameApiMethod(api, 'stop_music') },
+      { name: 'stop_sound', value: bindGameApiMethod(api, 'stop_sound') },
+      { name: 'play_animation', value: bindGameApiMethod(api, 'play_animation') },
+      { name: 'stop_animation', value: bindGameApiMethod(api, 'stop_animation') },
+      { name: 'show_animation', value: bindGameApiMethod(api, 'show_animation') },
+      { name: 'hide_animation', value: bindGameApiMethod(api, 'hide_animation') },
+      { name: 'show_image', value: bindGameApiMethod(api, 'show_image') },
+      { name: 'hide_image', value: bindGameApiMethod(api, 'hide_image') },
       { name: 'spawn_character', value: bindGameApiMethod(api, 'spawn_character') },
       { name: 'move_character', value: bindGameApiMethod(api, 'move_character') },
       { name: 'walk_character', value: bindGameApiMethod(api, 'walk_character') },
       { name: 'set_character_direction', value: bindGameApiMethod(api, 'set_character_direction') },
+      { name: 'set_character_visibility', value: bindGameApiMethod(api, 'set_character_visibility') },
+      { name: 'set_character_opacity', value: bindGameApiMethod(api, 'set_character_opacity') },
       { name: 'animate_character', value: bindGameApiMethod(api, 'animate_character') },
       { name: 'play_character_animation', value: bindGameApiMethod(api, 'play_character_animation') }
     ];
@@ -4595,6 +9271,10 @@
     return function() {
       log(`[Runtime] compileScript: Chiamata a ${handlerName} ignorata durante compilazione (previene doppia esecuzione)`, 'warning');
     };
+  }
+
+  function eventHandlerParamName(handlerName) {
+    return `__am_evt_${handlerName}__`;
   }
 
   /**
@@ -4614,10 +9294,12 @@
     let handlerArgs = [];
 
     if (handlerMode === 'noop' || handlerMode === 'real') {
-      handlerNames = SUPPORTED_SCRIPT_HANDLERS.slice();
+      const sourceHandlers = SUPPORTED_SCRIPT_HANDLERS.slice();
       if (handlerMode === 'noop') {
-        handlerArgs = handlerNames.map(createNoOpHandler);
+        handlerNames = sourceHandlers.map(eventHandlerParamName);
+        handlerArgs = sourceHandlers.map(createNoOpHandler);
       } else {
+        handlerNames = sourceHandlers;
         const api = GameAPI;
         handlerArgs = handlerNames.map(h => bindGameApiMethod(api, h));
       }
@@ -4667,6 +9349,10 @@
       return api.play_character_animation(characterId, animationName, direction, false);
     };
 
+    window.play_animation = function(instanceIdOrName, loop, waitForCompletion) {
+      return api.play_animation(instanceIdOrName, loop, waitForCompletion);
+    };
+
     SUPPORTED_SCRIPT_HANDLERS.forEach(handlerName => {
       window[handlerName] = function(handler) {
         api[handlerName](handler);
@@ -4675,6 +9361,322 @@
   }
 
   exposeScriptGlobals();
+
+  // ============================================
+  // TRANSIZIONI TRA STANZE
+  // ============================================
+  function normalizeRoomTransitionType(value) {
+    if (value == null) return null;
+    const key = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (key === 'cut' || key === 'instant') return 'none';
+    if (key === 'fadeblack' || key === 'fadetoblack' || key === 'black') return 'fade_to_black';
+    if (key === 'fadewhite' || key === 'fadetowhite' || key === 'white') return 'fade_to_white';
+    if (ROOM_TRANSITION_TYPES.indexOf(key) >= 0) return key;
+    return null;
+  }
+
+  function normalizeRoomTransitionDuration(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.min(ROOM_TRANSITION_DURATION_MAX, Math.round(n));
+  }
+
+  function applyProjectRoomTransitionSettings(settings) {
+    const s = settings || {};
+    const type = normalizeRoomTransitionType(s.roomTransition);
+    roomTransitionRuntime.type = type || 'none';
+    const duration = normalizeRoomTransitionDuration(s.roomTransitionDuration);
+    roomTransitionRuntime.duration = duration == null ? ROOM_TRANSITION_DURATION_DEFAULT : duration;
+    cancelRoomTransitionVisual();
+  }
+
+  function parseLoadRoomCall(playerX, playerY, playerDirection, transitionOptions) {
+    if (playerX && typeof playerX === 'object') {
+      const opt = playerX;
+      return {
+        playerX: opt.x !== undefined ? opt.x : opt.playerX,
+        playerY: opt.y !== undefined ? opt.y : opt.playerY,
+        playerDirection: opt.direction !== undefined ? opt.direction : opt.playerDirection,
+        transition: opt.transition,
+        duration: opt.duration
+      };
+    }
+    const extra = (transitionOptions && typeof transitionOptions === 'object') ? transitionOptions : null;
+    return {
+      playerX: playerX,
+      playerY: playerY,
+      playerDirection: playerDirection,
+      transition: extra ? extra.transition : undefined,
+      duration: extra ? extra.duration : undefined
+    };
+  }
+
+  function resolveRoomTransitionEffect(transitionOverride, durationOverride) {
+    let type = roomTransitionRuntime.type;
+    if (transitionOverride !== undefined && transitionOverride !== null && String(transitionOverride).trim() !== '') {
+      const normalized = normalizeRoomTransitionType(transitionOverride);
+      if (!normalized) {
+        GameAPI.error(`Transizione non valida: usa ${ROOM_TRANSITION_TYPE_HINT}`);
+      } else {
+        type = normalized;
+      }
+    }
+    let duration = roomTransitionRuntime.duration;
+    if (durationOverride !== undefined && durationOverride !== null && String(durationOverride).trim() !== '') {
+      const normalizedDuration = normalizeRoomTransitionDuration(durationOverride);
+      if (normalizedDuration == null) {
+        GameAPI.error('Durata transizione non valida: serve un numero di millisecondi >= 0');
+      } else {
+        duration = normalizedDuration;
+      }
+    }
+    return { type: type, duration: duration };
+  }
+
+  function ensureSizedCanvas(current, width, height) {
+    if (current && current.width === width && current.height === height) return current;
+    const next = document.createElement('canvas');
+    next.width = width;
+    next.height = height;
+    return next;
+  }
+
+  function roomTransitionProgress() {
+    const dur = roomTransitionRuntime.effectDuration;
+    if (!(dur > 0)) return 1;
+    const raw = (performance.now() - roomTransitionRuntime.startedAt) / dur;
+    if (raw < 0) return 0;
+    if (raw > 1) return 1;
+    return raw;
+  }
+
+  function easeRoomTransition(t) {
+    const x = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return x * x * (3 - 2 * x);
+  }
+
+  function captureWorldFrame() {
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    const snap = document.createElement('canvas');
+    snap.width = w;
+    snap.height = h;
+    const sctx = snap.getContext('2d');
+    sctx.fillStyle = '#000';
+    sctx.fillRect(0, 0, w, h);
+    renderWorld(sctx);
+    return snap;
+  }
+
+  function beginRoomTransitionHold() {
+    roomTransitionSerial += 1;
+    const token = roomTransitionSerial;
+    const snap = captureWorldFrame();
+    roomTransitionRuntime.snapshot = snap;
+    roomTransitionRuntime.holdSnapshot = snap;
+    roomTransitionRuntime.active = false;
+    roomTransitionRuntime.onComplete = null;
+    if (!roomTransitionRuntime.inputLockHeld) {
+      acquireInputLock('room-transition');
+      roomTransitionRuntime.inputLockHeld = true;
+    }
+    return token;
+  }
+
+  function startRoomTransitionAnimation(type, duration) {
+    roomTransitionRuntime.holdSnapshot = null;
+    roomTransitionRuntime.effectType = type;
+    roomTransitionRuntime.effectDuration = duration;
+    roomTransitionRuntime.startedAt = performance.now();
+    roomTransitionRuntime.active = true;
+    log(`[Runtime] Transizione stanza "${type}" (${duration} ms)`, 'info');
+  }
+
+  function completeRoomTransition(expectedToken) {
+    if (expectedToken != null && expectedToken !== roomTransitionSerial) return;
+    const cb = roomTransitionRuntime.onComplete;
+    const held = roomTransitionRuntime.inputLockHeld;
+    roomTransitionRuntime.active = false;
+    roomTransitionRuntime.holdSnapshot = null;
+    roomTransitionRuntime.snapshot = null;
+    roomTransitionRuntime.onComplete = null;
+    roomTransitionRuntime.inputLockHeld = false;
+    if (held) releaseInputLock('room-transition');
+    if (typeof cb === 'function') cb();
+  }
+
+  function cancelRoomTransitionVisual() {
+    completeRoomTransition(roomTransitionSerial);
+  }
+
+  function waitRoomTransition(token) {
+    if (!roomTransitionRuntime.active || token !== roomTransitionSerial) {
+      return Promise.resolve();
+    }
+    return new Promise(resolve => {
+      roomTransitionRuntime.onComplete = resolve;
+    });
+  }
+
+  function armRoomTransitionCompletion(token) {
+    const step = () => {
+      if (token !== roomTransitionSerial) return;
+      if (!roomTransitionRuntime.active) return;
+      if (roomTransitionProgress() >= 1) {
+        completeRoomTransition(token);
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function tickRoomTransition() {
+    if (!roomTransitionRuntime.active) return;
+    if (roomTransitionProgress() >= 1) {
+      completeRoomTransition(roomTransitionSerial);
+    }
+  }
+
+  function ensureDissolveMask(progress) {
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    if (!dissolveNoise || dissolveNoiseW !== w || dissolveNoiseH !== h) {
+      dissolveNoise = new Uint8Array(w * h);
+      for (let i = 0; i < dissolveNoise.length; i++) {
+        dissolveNoise[i] = (Math.random() * 256) | 0;
+      }
+      dissolveNoiseW = w;
+      dissolveNoiseH = h;
+      dissolveMaskCanvas = null;
+    }
+    dissolveMaskCanvas = ensureSizedCanvas(dissolveMaskCanvas, w, h);
+    const mctx = dissolveMaskCanvas.getContext('2d');
+    const img = mctx.createImageData(w, h);
+    const data = img.data;
+    const threshold = progress * 256;
+    const noise = dissolveNoise;
+    for (let i = 0, p = 0; i < noise.length; i++, p += 4) {
+      data[p + 3] = noise[i] < threshold ? 255 : 0;
+    }
+    mctx.putImageData(img, 0, 0);
+    return dissolveMaskCanvas;
+  }
+
+  function renderWorld(targetCtx) {
+    if (!targetCtx) return;
+    if (targetCtx === ctx) {
+      renderWorldContents();
+      return;
+    }
+    const previous = ctx;
+    ctx = targetCtx;
+    try {
+      renderWorldContents();
+    } finally {
+      ctx = previous;
+    }
+  }
+
+  function drawTransitionOverlay(targetCtx, progress) {
+    const w = canvas.width;
+    const h = canvas.height;
+    if (!roomTransitionRuntime.snapshot || w <= 0 || h <= 0) return;
+    transitionBuffer = ensureSizedCanvas(transitionBuffer, w, h);
+    const bctx = transitionBuffer.getContext('2d');
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.globalAlpha = 1;
+    bctx.globalCompositeOperation = 'source-over';
+    bctx.clearRect(0, 0, w, h);
+
+    const type = roomTransitionRuntime.effectType;
+    if (type === 'fade') {
+      bctx.globalAlpha = 1 - progress;
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+    } else if (type === 'iris') {
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+      bctx.globalCompositeOperation = 'destination-out';
+      bctx.fillStyle = '#000';
+      bctx.beginPath();
+      const radius = (Math.hypot(w, h) / 2 + 2) * progress;
+      bctx.arc(w / 2, h / 2, Math.max(0, radius), 0, Math.PI * 2);
+      bctx.fill();
+    } else if (type === 'dissolve') {
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+      bctx.globalCompositeOperation = 'destination-out';
+      bctx.drawImage(ensureDissolveMask(progress), 0, 0);
+    } else {
+      bctx.globalAlpha = 1 - progress;
+      bctx.drawImage(roomTransitionRuntime.snapshot, 0, 0);
+    }
+
+    targetCtx.save();
+    targetCtx.globalAlpha = 1;
+    targetCtx.globalCompositeOperation = 'source-over';
+    targetCtx.drawImage(transitionBuffer, 0, 0);
+    targetCtx.restore();
+  }
+
+  function drawColorFadeTransition(color) {
+    const tr = roomTransitionRuntime;
+    const p = easeRoomTransition(roomTransitionProgress());
+    const w = canvas.width;
+    const h = canvas.height;
+    // Prima metà: stanza vecchia → colore. Seconda metà: colore → stanza nuova.
+    if (p < 0.5) {
+      const cover = p / 0.5;
+      if (tr.snapshot) ctx.drawImage(tr.snapshot, 0, 0);
+      ctx.save();
+      ctx.globalAlpha = cover;
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+      return;
+    }
+    const uncover = (p - 0.5) / 0.5;
+    renderWorld(ctx);
+    ctx.save();
+    ctx.globalAlpha = 1 - uncover;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  function drawWorldWithRoomTransition() {
+    const tr = roomTransitionRuntime;
+    if (tr.holdSnapshot && !tr.active) {
+      ctx.drawImage(tr.holdSnapshot, 0, 0);
+      return;
+    }
+    if (tr.active && tr.effectType === 'fade_to_black') {
+      drawColorFadeTransition('#000');
+      return;
+    }
+    if (tr.active && tr.effectType === 'fade_to_white') {
+      drawColorFadeTransition('#fff');
+      return;
+    }
+    if (tr.active && tr.effectType === 'slide' && tr.snapshot) {
+      const p = easeRoomTransition(roomTransitionProgress());
+      const w = canvas.width;
+      const h = canvas.height;
+      worldBuffer = ensureSizedCanvas(worldBuffer, Math.max(1, w), Math.max(1, h));
+      const bctx = worldBuffer.getContext('2d');
+      bctx.setTransform(1, 0, 0, 1, 0, 0);
+      bctx.globalAlpha = 1;
+      bctx.globalCompositeOperation = 'source-over';
+      bctx.fillStyle = '#000';
+      bctx.fillRect(0, 0, worldBuffer.width, worldBuffer.height);
+      renderWorld(bctx);
+      ctx.drawImage(tr.snapshot, Math.round(-p * w), 0);
+      ctx.drawImage(worldBuffer, Math.round((1 - p) * w), 0);
+      return;
+    }
+    renderWorld(ctx);
+    if (tr.active && tr.snapshot) {
+      drawTransitionOverlay(ctx, easeRoomTransition(roomTransitionProgress()));
+    }
+  }
 
   // ============================================
   // RENDERING
@@ -4694,10 +9696,17 @@
       return;
     }
 
-    // Clear canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    drawWorldWithRoomTransition();
+    renderOverlayHud();
+  }
+
+  function renderWorldContents() {
     // Renderizza room corrente
     if (gameState.currentRoom) {
       const room = gameState.currentRoom;
@@ -4711,9 +9720,23 @@
         }
       }
 
+      // Background-layer room animations
+      if (room.animationInstances && Array.isArray(room.animationInstances)) {
+        room.animationInstances
+          .filter(inst => (inst.layer || 'background') !== 'foreground')
+          .forEach(inst => drawRoomAnimationInstanceOnCanvas(ctx, inst));
+      }
+
       // Oggetti di scena (supporto scale/rotazione)
       if (room.objects && Array.isArray(room.objects)) {
         room.objects.forEach(obj => drawSceneObject(ctx, obj));
+      }
+
+      // Foreground-layer room animations
+      if (room.animationInstances && Array.isArray(room.animationInstances)) {
+        room.animationInstances
+          .filter(inst => (inst.layer || 'background') === 'foreground')
+          .forEach(inst => drawRoomAnimationInstanceOnCanvas(ctx, inst));
       }
 
       // Foregrounds - verifica che le immagini siano caricate e pronte
@@ -4735,6 +9758,11 @@
           return;
         }
 
+        const drawOpacity = getCharacterDrawOpacity(character);
+        if (drawOpacity <= 0) {
+          return;
+        }
+
         // Get character definition to check for pivot
         const charDef = gameState.characterDefinitions.get(character.name);
         
@@ -4744,6 +9772,9 @@
         
         const playingAnimName = character.playingAnimation ? character.playingAnimation.name : null;
         const frame = getCharacterFrame(character.name, character.direction, character.currentFrame, playingAnimName);
+
+        ctx.save();
+        ctx.globalAlpha = drawOpacity;
         
         if (frame) {
           try {
@@ -4791,11 +9822,24 @@
           // Nessun frame disponibile, renderizza un placeholder per non far scomparire il character
           renderCharacterPlaceholder(ctx, character, charDef, scale);
         }
+
+        ctx.restore();
       });
     }
+  }
+
+  function renderOverlayHud() {
+    renderDialogueBalloon(ctx);
+    renderDialogueChoices(ctx);
 
     // Renderizza GUI - verifica che le immagini siano caricate e pronte
     gameState.guis.forEach(gui => {
+      if (gui.type === 'DialogBox') {
+        return;
+      }
+      if (gui.visible === false) {
+        return;
+      }
       // Background GUI
       if (gui.background && gui.background.complete && gui.background.naturalWidth > 0) {
         try {
@@ -4805,45 +9849,57 @@
         }
       }
 
-      // Pulsanti GUI
+      // Pulsanti / save slots
       if (gui.buttons && Array.isArray(gui.buttons)) {
         gui.buttons.forEach(btn => {
-          if (btn.enabled) {
-            if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
-              try {
-                ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
-              } catch (error) {
-                log(`[Runtime] Error rendering pulsante ${btn.id}: ${error.message}`, 'warning');
-              }
-            } else {
-              // Fallback: disegna rettangolo se l'immagine non è disponibile
-              ctx.fillStyle = 'rgba(57, 255, 20, 0.3)';
-              ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
-              ctx.strokeStyle = '#39ff14';
-              ctx.lineWidth = 2;
-              ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+          if (!btn.enabled) return;
+          if (gui.type === 'SaveLoad' && btn.role === 'saveSlot') {
+            renderSaveLoadSlot(ctx, gui, btn);
+            return;
+          }
+          if (btn.backgroundImage && btn.backgroundImage.complete && btn.backgroundImage.naturalWidth > 0) {
+            try {
+              ctx.drawImage(btn.backgroundImage, btn.x, btn.y, btn.w, btn.h);
+            } catch (error) {
+              log(`[Runtime] Error rendering pulsante ${btn.id}: ${error.message}`, 'warning');
             }
+          } else {
+            ctx.fillStyle = 'rgba(57, 255, 20, 0.3)';
+            ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+            ctx.strokeStyle = '#39ff14';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+          }
 
-            // Testo pulsante
-            if (btn.text) {
-              ctx.fillStyle = '#fff';
-              ctx.font = '14px Arial';
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2);
-            }
+          if (btn.text) {
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2);
           }
         });
       }
     });
 
     renderInventory(ctx);
+    renderCursorActionHint(ctx);
   }
 
   // ============================================
   // GAME LOOP
   // ============================================
   function update(deltaTime) {
+    tickRoomTransition();
+    updateDialogueAppear(deltaTime);
+
+    if (gameState.currentRoom && Array.isArray(gameState.currentRoom.animationInstances)) {
+      gameState.currentRoom.animationInstances.forEach(inst => {
+        const animDef = gameState.roomAnimationDefinitions.get(inst.animationId);
+        if (animDef) updateRoomAnimationInstance(inst, animDef, deltaTime);
+      });
+    }
+
     // Aggiorna movimento e animazioni dei character
     gameState.characters.forEach(character => {
       // Inizializza renderX/renderY se non esistono (retrocompatibilità)
@@ -4900,13 +9956,18 @@
       }
       if (character.moveSpeed === undefined) {
         // Prova a leggere dalle spawnSettings del character definition
-        const charDef = gameState.characterDefinitions.get(character.name);
-        if (charDef && charDef.spawnSettings && charDef.spawnSettings.moveSpeed !== undefined) {
-          const speedValue = Number(charDef.spawnSettings.moveSpeed);
+        const charDefForSpeed = gameState.characterDefinitions.get(character.name);
+        if (charDefForSpeed && charDefForSpeed.spawnSettings && charDefForSpeed.spawnSettings.moveSpeed !== undefined) {
+          const speedValue = Number(charDefForSpeed.spawnSettings.moveSpeed);
           character.moveSpeed = (!isNaN(speedValue) && speedValue > 0) ? speedValue : 100;
         } else {
           character.moveSpeed = 100; // pixel per secondo (default)
         }
+      }
+      if (character.scaleMoveSpeedWithDepth === undefined) {
+        character.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+          gameState.characterDefinitions.get(character.name)
+        );
       }
 
       // ============================================
@@ -4968,8 +10029,10 @@
           character.direction = getDirectionFromVector(nextDx, nextDy);
         } else {
           // Muovi verso il target
-          // Calcola velocità in pixel per frame (moveSpeed è in pixel per secondo)
-          const speedPerFrame = (character.moveSpeed * deltaTime) / 1000;
+          // Velocità effettiva: base (px/s) × fattore profondità (rallenta verso background)
+          const roomForSpeed = gameState.currentRoom;
+          const effectiveSpeed = getEffectiveMoveSpeed(character, roomForSpeed);
+          const speedPerFrame = (effectiveSpeed * deltaTime) / 1000;
           
           // Limita la velocità per non superare il target
           const moveDistance = Math.min(speedPerFrame, distance);
@@ -5026,7 +10089,7 @@
         character.currentFrame = 1;
       }
 
-      // Aggiorna frame time
+      // Aggiorna frame time (FPS costanti: solo la velocità di spostamento scala con la profondità)
       character.frameTime += deltaTime;
       const frameDuration = 1000 / animationDirData.fps; // Durata di ogni frame in ms
 
@@ -5049,7 +10112,7 @@
     if (!gameState.initialized) return;
     if (!canvas || !ctx) return;
 
-    const deltaTime = currentTime - gameState.lastFrameTime;
+    const deltaTime = Math.min(Math.max(0, currentTime - gameState.lastFrameTime), 100);
     gameState.lastFrameTime = currentTime;
 
     update(deltaTime);
@@ -5083,6 +10146,8 @@
 
   function stopGameLoop() {
     gameState.isRunning = false;
+    cancelRoomTransitionVisual();
+    endAllDialogue();
     if (gameState.animationFrameId) {
       cancelAnimationFrame(gameState.animationFrameId);
       gameState.animationFrameId = null;
@@ -5125,6 +10190,8 @@
   let clickHandlerFunction = null; // Riferimento alla funzione per cleanup
   let inventoryPointerHandler = null;
   let inventoryLeaveHandler = null;
+  let inventoryCancelKeyHandler = null;
+  let inventoryCancelContextHandler = null;
   let clickHandledThisFrame = false; // Flag anti-double-fire per frame
   let lastClickTime = 0; // Timestamp ultimo click per debounce
   const CLICK_DEBOUNCE_MS = 50; // Debounce di 50ms tra click
@@ -5176,6 +10243,7 @@
     
     // Crea funzione handler con riferimento per cleanup
     clickHandlerFunction = function(e) {
+      unlockAudioSyncFromUserGesture();
       // ⚠️ PROTEZIONE 1: Blocca propagazione immediata per prevenire doppia esecuzione
       e.stopImmediatePropagation();
       
@@ -5204,9 +10272,9 @@
         return;
       }
 
-      // ⚠️ PROTEZIONE 4: Verifica che il runtime sia attivo
-      if (!gameState.isRunning) {
-        log('[Runtime] Click handler: Runtime non in esecuzione, ignoro click', 'info');
+      // ⚠️ PROTEZIONE 4: Verifica che il runtime sia attivo e boot completato
+      if (!isGamePlayable()) {
+        log('[Runtime] Click handler: Boot non completato o runtime non attivo, ignoro click', 'info');
         return;
       }
 
@@ -5241,20 +10309,56 @@
       canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
     }
     inventoryPointerHandler = function(e) {
-      if (!gameState.isRunning || !gameState.inventory || !gameState.inventory.enabled) return;
+      if (!isGamePlayable()) return;
       const coords = canvasCoordsFromClientEvent(e);
-      updateInventoryCarriedPointer(coords.x, coords.y);
-      updateInventoryVisibilityFromPointer(coords.x, coords.y, coords.inCanvas);
+      if (gameState.inventory && gameState.inventory.enabled) {
+        updateInventoryCarriedPointer(coords.x, coords.y);
+        updateInventoryVisibilityFromPointer(coords.x, coords.y, coords.inCanvas);
+      } else if (gameState.inventory) {
+        gameState.inventory.pointerX = coords.x;
+        gameState.inventory.pointerY = coords.y;
+      }
+      updateGameCursorAt(coords.x, coords.y);
     };
     inventoryLeaveHandler = function() {
       const inv = gameState.inventory;
-      if (!inv || !inv.enabled || inv.displayMode !== 'popup') return;
-      inv.visible = false;
+      if (inv && inv.enabled && inv.displayMode === 'popup') {
+        inv.visible = false;
+        inv.popupPanelEngaged = false;
+      }
+      if (canvas) {
+        applyCategoryCursorStyle('default') || (canvas.style.cursor = 'default');
+      }
+      setCursorHoverState(0, 0, 'default', '', false);
     };
     canvas.addEventListener('mousemove', inventoryPointerHandler, { passive: true });
     canvas.addEventListener('mouseleave', inventoryLeaveHandler, { passive: true });
 
+    if (inventoryCancelKeyHandler) {
+      window.removeEventListener('keydown', inventoryCancelKeyHandler);
+    }
+    inventoryCancelKeyHandler = function(e) {
+      if (!isGamePlayable() || !gameState.inventory || !gameState.inventory.carriedItem) return;
+      if (e.key === 'Escape') {
+        clearCarriedInventoryItem();
+        log('[Runtime] Inventario: oggetto rilasciato (Esc)', 'info');
+      }
+    };
+    window.addEventListener('keydown', inventoryCancelKeyHandler);
+
+    if (inventoryCancelContextHandler) {
+      canvas.removeEventListener('contextmenu', inventoryCancelContextHandler);
+    }
+    inventoryCancelContextHandler = function(e) {
+      if (!isGamePlayable() || !gameState.inventory || !gameState.inventory.carriedItem) return;
+      e.preventDefault();
+      clearCarriedInventoryItem();
+      log('[Runtime] Inventario: oggetto rilasciato (click destro)', 'info');
+    };
+    canvas.addEventListener('contextmenu', inventoryCancelContextHandler);
+
     canvas.style.cursor = 'pointer';
+    applyCategoryCursorStyle('default');
     clickListenerAttached = true;
     runtime.eventsBound = true; // ⚠️ Marca eventi come bindati
     log('[Runtime] setupInteraction: Listener click centralizzato registrato con successo (runtime.eventsBound=true)', 'success');
@@ -5280,10 +10384,19 @@
       canvas.removeEventListener('mouseleave', inventoryLeaveHandler);
       inventoryLeaveHandler = null;
     }
+    if (inventoryCancelKeyHandler) {
+      window.removeEventListener('keydown', inventoryCancelKeyHandler);
+      inventoryCancelKeyHandler = null;
+    }
+    if (canvas && inventoryCancelContextHandler) {
+      canvas.removeEventListener('contextmenu', inventoryCancelContextHandler);
+      inventoryCancelContextHandler = null;
+    }
     const inv = gameState.inventory;
     if (inv) {
       inv.carriedItem = null;
       inv.suppressPanelUntilDrop = false;
+      inv.popupPanelEngaged = false;
       updateInventoryCursorStyle();
     }
   }
@@ -5296,6 +10409,26 @@
   }
 
   async function handleClick(x, y) {
+    // Sblocca audio NEL gesto del click, prima di qualsiasi await (load_room → on_room_change → play_music)
+    unlockAudioContextFromGesture();
+    await unlockHtmlAudioFromGestureAsync();
+
+    if (!isGamePlayable()) {
+      log('[Runtime] handleClick: Boot non completato, click ignorato', 'info');
+      return;
+    }
+
+    if (activeDialogueSession && activeDialogueSession.choiceState) {
+      tryHandleDialogueChoiceClick(x, y);
+      return;
+    }
+
+    if (activeDialogue) {
+      log('[Runtime] handleClick: Dialogo chiuso (click)', 'info');
+      dismissActiveDialogue();
+      return;
+    }
+
     if (isInputLocked()) {
       log(`[Runtime] handleClick: Click ignorato (input bloccato durante comando await)`, 'info');
       return;
@@ -5312,9 +10445,18 @@
       return;
     }
 
-    if (handleInventorySlotClick(x, y)) {
+    if (await handleInventorySlotClick(x, y)) {
       return;
     }
+
+    // SaveLoad menu is modal while visible: handle before room interactions
+    if (await handleVisibleSaveLoadGuiClick(x, y)) {
+      return;
+    }
+
+    const carriedItemKey = gameState.inventory && gameState.inventory.carriedItem
+      ? gameState.inventory.carriedItem.key
+      : null;
 
     // ⚠️ NUOVA LOGICA: Usa find() invece di forEach per trovare UN SOLO hotspot
     // Questo garantisce che venga eseguito SOLO lo script dell'hotspot cliccato
@@ -5341,8 +10483,12 @@
       
       if (clickedHotspot) {
         log(`[Runtime] [DEBUG] handleClick: ✓ Hotspot rilevato: ${clickedHotspot.name} (ID: ${clickedHotspot.id})`, 'success');
-        log(`[Runtime] [DEBUG] handleClick: Esecuzione script per hotspot ${clickedHotspot.id}`, 'info');
-        await executeHotspotScript(clickedHotspot.id, clickedHotspot, x, y);
+        if (carriedItemKey) {
+          await dispatchInventoryUseWith(carriedItemKey, 'hotspot', clickedHotspot.id, x, y);
+        } else {
+          log(`[Runtime] [DEBUG] handleClick: Esecuzione script per hotspot ${clickedHotspot.id}`, 'info');
+          await executeHotspotScript(clickedHotspot.id, clickedHotspot, x, y);
+        }
         log(`[Runtime] [DEBUG] handleClick: ✓ Script completato per hotspot ${clickedHotspot.id}, uscita da handleClick`, 'success');
         return; // Hotspot ha priorità, esci subito
       }
@@ -5368,7 +10514,11 @@
 
         if (isInside) {
           log(`[Runtime] handleClick: ✓ Click su object: ${obj.name} (${obj.id})`, 'success');
-          await executeObjectClickScripts(obj.id, x, y);
+          if (carriedItemKey) {
+            await dispatchInventoryUseWith(carriedItemKey, 'object', obj.id, x, y);
+          } else {
+            await executeObjectClickScripts(obj.id, x, y);
+          }
           return;
         }
       }
@@ -5382,6 +10532,9 @@
     let clickedCharacter = null;
     for (const character of gameState.characters.values()) {
       if (!character.visible || character.roomId !== gameState.currentRoomId) {
+        continue;
+      }
+      if (getCharacterDrawOpacity(character) <= 0) {
         continue;
       }
 
@@ -5413,30 +10566,20 @@
         // Non ritornare, continua con il pathfinding
       } else {
         log(`[Runtime] handleClick: ✓ Click su character: ${clickedCharacter.name} (${clickedCharacter.id})`, 'success');
-        
-        // Esegui script del character se presente
-        const characterScripts = gameState.attachments.characterScripts || {};
-        if (typeof characterScripts === 'object' && characterScripts[clickedCharacter.id]) {
-          const scriptName = characterScripts[clickedCharacter.id];
-          if (gameState.scripts[scriptName]) {
-            await executeScriptHandler(gameState.scripts[scriptName], 'on_character_click', [clickedCharacter.id, x, y], scriptName);
-          }
-        }
-
-        // Esegui handler registrati tramite on_character_click(function() {...})
-        for (const handler of eventHandlers.character_click) {
-          try {
-            handler(clickedCharacter.id, x, y);
-          } catch (error) {
-            log(`Errore handler on_character_click: ${error.message}`, 'error');
-          }
+        if (carriedItemKey) {
+          await dispatchInventoryUseWith(carriedItemKey, 'character', clickedCharacter.id, x, y);
+        } else {
+          await executeCharacterClickScripts(clickedCharacter.id, x, y);
         }
         return;
       }
     }
 
-    // Controlla click su pulsanti GUI
+    // Controlla click su pulsanti GUI (disabilitato mentre un oggetto è in mano)
+    if (!carriedItemKey) {
     for (const gui of gameState.guis.values()) {
+      if (gui.visible === false) continue;
+      if (gui.type === 'SaveLoad') continue; // gestito da handleVisibleSaveLoadGuiClick
       if (gui.buttons && Array.isArray(gui.buttons)) {
         for (const btn of gui.buttons) {
           if (!btn.enabled) continue;
@@ -5444,17 +10587,14 @@
           if (x >= btn.x && x <= btn.x + btn.w &&
               y >= btn.y && y <= btn.y + btn.h) {
             log(`Click su pulsante GUI: ${btn.name}`, 'info');
-            // Esegui script del pulsante se presente
             const guiScripts = gameState.attachments.guiScripts || {};
             if (typeof guiScripts === 'object' && guiScripts[btn.id]) {
               const scriptName = guiScripts[btn.id];
               if (gameState.scripts[scriptName]) {
-                // ⚠️ Passa scriptName per garantire cache corretta
                 await executeScriptHandler(gameState.scripts[scriptName], 'on_gui_click', [btn.id, x, y], scriptName);
               }
             }
 
-            // Esegui handler registrati tramite on_gui_click(function() {...})
             for (const handler of eventHandlers.gui_click) {
               try {
                 handler(btn.id, x, y);
@@ -5466,6 +10606,7 @@
           }
         }
       }
+    }
     }
 
     // Oggetto in mano: click su punto vuoto (nessun target sopra) → rilascia
@@ -5494,6 +10635,11 @@
           } else {
             player.moveSpeed = 100; // pixel per secondo (default)
           }
+        }
+        if (player.scaleMoveSpeedWithDepth === undefined) {
+          player.scaleMoveSpeedWithDepth = resolveScaleMoveSpeedWithDepth(
+            gameState.characterDefinitions.get(player.name)
+          );
         }
         
         // Verifica che il player abbia un pivot (necessario per il pathfinding)
@@ -5623,17 +10769,22 @@
   const isInIframe = window.self !== window.top;
 
   function sendToEditor(message, priority = false) {
-    // Se siamo in un iframe, invia messaggio al parent
+    const targets = [];
     if (isInIframe) {
+      targets.push(window.parent);
+    }
+    if (window.opener && window.opener !== window.parent) {
+      targets.push(window.opener);
+    }
+    targets.forEach(target => {
       try {
-        window.parent.postMessage(message, '*');
+        target.postMessage(message, '*');
       } catch (e) {
-        // Ignora errori di comunicazione (sandbox restrictions)
         if (window.addRuntimeLog) {
-          window.addRuntimeLog(`Cannot send message to parent: ${e.message}`, 'warning');
+          window.addRuntimeLog(`Cannot send message to editor: ${e.message}`, 'warning');
         }
       }
-    }
+    });
   }
 
   function sendRuntimeReady() {
@@ -5651,9 +10802,7 @@
   }
 
   // Listener per messaggi dall'editor
-  window.addEventListener('message', function(event) {
-    // NOTA: In produzione, verificare event.origin per sicurezza
-    const message = event.data;
+  function handleEditorMessage(message) {
     if (!message || typeof message !== 'object') {
       return;
     }
@@ -5691,6 +10840,13 @@
         if (message.code && message.handlerName) {
           (async () => {
             try {
+              if (message.context) {
+                applyRuntimeContext(message.context);
+              }
+              const roomId = message.context && message.context.roomId
+                ? message.context.roomId
+                : gameState.currentRoomId;
+              await ensureCurrentRoomForScripts(roomId);
               const scriptName = message.scriptName || `run_script_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
               await executeScriptHandler(message.code, message.handlerName, message.handlerArgs || [], scriptName);
               sendScriptDone();
@@ -5709,24 +10865,23 @@
         break;
 
       case 'UPDATE_CONTEXT':
-        // Aggiorna contesto senza eseguire script
         if (message.context) {
-          if (message.context.roomId !== undefined) {
-            gameState.currentRoomId = message.context.roomId;
-          }
-          if (message.context.objectId !== undefined) {
-            gameState.objectId = message.context.objectId;
-          }
-          if (message.context.variables && typeof message.context.variables === 'object') {
-            Object.keys(message.context.variables).forEach(key => {
-              gameState.variables.set(key, message.context.variables[key]);
-            });
-          }
+          applyRuntimeContext(message.context);
+        }
+        break;
+
+      case 'SANDBOX_PING':
+        if (isInIframe) {
+          sendRuntimeReady();
         }
         break;
 
       case 'RESET':
         // Reset completo dello stato
+        endAllDialogue();
+        gameState.dialogues = new Map();
+        gameState.dialogueNameIndex = new Map();
+        gameState.dialogueConsumed = new Set();
         gameState.currentRoomId = null;
         gameState.currentRoom = null;
         gameState.objectId = null;
@@ -5742,10 +10897,14 @@
         
         // ⚠️ RESET CACHE SCRIPT: Pulisci la cache degli script compilati durante il reset
         gameState.compiledScripts.clear();
+        gameState.compiledScriptHashes.clear();
         invalidateResourceFileIndex();
+        stopAllAudioPlayback();
         
         // Reset AssetRegistry
         AssetRegistry.images.clear();
+        AssetRegistry.fonts.clear();
+        dialogFontLoadPromises.clear();
         AssetRegistry.isLoading = false;
         AssetRegistry.loadComplete = false;
         
@@ -5757,7 +10916,16 @@
         // Ignora messaggi sconosciuti
         break;
     }
+  }
+
+  window.addEventListener('message', function(event) {
+    handleEditorMessage(event.data);
   });
+
+  // Messaggi dall'editor via Electron IPC (finestra Play Test gestita dal main process)
+  if (window.amiantoNativeFs && typeof window.amiantoNativeFs.onRuntimeMessage === 'function') {
+    window.amiantoNativeFs.onRuntimeMessage((message) => handleEditorMessage(message));
+  }
 
   // Override log per inviare anche all'editor se in iframe
   const originalLogFunction = function(message, level = 'info') {
@@ -5858,23 +11026,14 @@
       log('[Runtime] Modalità iframe rilevata - playtest mode', 'info');
       
       function initIframeMode() {
-        // Invia RUNTIME_READY solo se non è già stato inviato
         if (!runtimeReadySent) {
-          log('[Runtime] Invio RUNTIME_READY all\'editor', 'info');
+          log('[Runtime] Sending RUNTIME_READY to editor', 'info');
           sendRuntimeReady();
           runtimeReadySent = true;
-          
-          // Re-invia dopo un breve delay come backup (solo una volta)
-          setTimeout(() => {
-            if (!runtimeReadySent) {
-              log('[Runtime] Re-invio RUNTIME_READY (backup)', 'info');
-              sendRuntimeReady();
-              runtimeReadySent = true;
-            }
-          }, 200);
-        } else {
-          log('[Runtime] RUNTIME_READY già inviato, skip', 'info');
         }
+        setTimeout(() => sendRuntimeReady(), 100);
+        setTimeout(() => sendRuntimeReady(), 400);
+        setTimeout(() => sendRuntimeReady(), 1000);
       }
 
       if (document.readyState === 'loading') {

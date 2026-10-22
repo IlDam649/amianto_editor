@@ -3,43 +3,35 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Amianto Editor - Login</title>
+  <title>Amianto Editor</title>
+  <link rel="icon" type="image/png" href="img/mnt.png">
+  <link rel="apple-touch-icon" href="img/mnt.png">
+  <!-- Vendor CSS: local first, CDN mirror (covers itch.io when node_modules is omitted) -->
+  <link rel="stylesheet" href="node_modules/normalize.css/normalize.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/normalize.css@8.0.1/normalize.css">
+  <link href="node_modules/bootstrap/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link href="CSS/main.css" rel="stylesheet">
-  <!-- CodeMirror (editor Lua) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/dracula.min.css">
+  <link href="CSS/dialogue-graph.css" rel="stylesheet">
+  <!-- CodeMirror (editor) -->
+  <link rel="stylesheet" href="node_modules/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css">
+  <link rel="stylesheet" href="node_modules/codemirror/theme/dracula.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/dracula.css">
   <!-- CodeMirror hints (autocomplete) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.css">
-  <!-- Override tema hints CodeMirror in verde acido -->
+  <link rel="stylesheet" href="node_modules/codemirror/addon/hint/show-hint.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.css">
+  <!-- Override tema hints CodeMirror in verde acido (dopo i CSS vendor) -->
   <link rel="stylesheet" href="CSS/codemirror-hints-override.css">
-  <!-- CodeMirror core + Lua mode -->
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.js"></script>
+  <!-- CodeMirror core + JS mode -->
+  <script src="node_modules/codemirror/lib/codemirror.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js'"></script>
+  <script src="node_modules/codemirror/mode/javascript/javascript.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.js'"></script>
+  <script src="node_modules/codemirror/addon/hint/show-hint.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.js'"></script>
   <!-- Jailed rimosso - ora usiamo solo iframe sandboxed -->
 </head>
 <body>
-  <!-- Login Header -->
-  <div id="loginHeader" class="header-container py-4" style="background-color: #111; position: relative; overflow: hidden;">
-    <!-- Background image spanning the header with bottom fade -->
-    <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
-    <div class="container-fluid d-flex align-items-center" style="position: relative; z-index: 1;">
-      <div class="flex-grow-1">
-        <img src="img/mnt.png" alt="Amianto Editor" class="logo-main">
-
-        <!-- Sottotitolo -->
-        <p style="color: #eee; font-size: 1rem; margin: 5px 0 0 0;">
-          Create your own point-and-click adventure directly in your browser
-        </p>
-      </div>
-    </div>
-  </div>
-
   <!-- Dashboard Header -->
-  <div id="dashboardHeader" class="header-container py-4" style="background-color: #111; position: relative; overflow: visible; z-index: 2000; display: none;">
+  <div id="dashboardHeader" class="header-container py-4" style="background-color: #111; position: relative; overflow: visible; z-index: 2000; display: block;">
     <!-- Background image spanning the header with bottom fade -->
     <div style="position:absolute; inset:0; background: url('img/header_bg.png') center bottom / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 65%, rgba(0,0,0,0) 100%); pointer-events:none; z-index:0;"></div>
     <div class="container-fluid d-flex align-items-center justify-content-between" style="position: relative; z-index: 1;">
@@ -52,135 +44,26 @@
         </div>
       </div>
 
-      <!-- User menu -->
+      <!-- Save project + settings -->
       <div class="d-flex flex-column align-items-end">
-        <div class="dropdown">
-          <button class="btn btn-outline-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
-            <i class="fas fa-user"></i> <span id="userDisplayName">User</span>
+        <div class="d-flex align-items-center gap-2">
+          <button class="btn btn-outline-light" type="button" onclick="openProjectSettings()" title="Project settings">
+            Project Settings
           </button>
-          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-            <li><a class="dropdown-item" href="#" onclick="showUserProfile()"><i class="fas fa-user-circle"></i> Profile</a></li>
-            <li><a class="dropdown-item" href="#" onclick="showUserProjects()"><i class="fas fa-folder"></i> My Projects</a></li>
-            <li><hr class="dropdown-divider"></li>
-            <li class="dropdown-submenu">
-              <a class="dropdown-item dropdown-toggle" href="#"><i class="fas fa-file"></i> File</a>
-              <ul class="dropdown-menu dropdown-menu-dark">
-                <li><a class="dropdown-item" href="#" onclick="createNewProject()">New Project</a></li>
-                <li><a class="dropdown-item" href="#" onclick="showProjectList()">Open</a></li>
-                <li><a class="dropdown-item" href="#" onclick="saveCurrentProject()">Save</a></li>
-                <li><a class="dropdown-item" href="#" onclick="exportProject()">Export</a></li>
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" href="#" onclick="openProjectSettings()">Project Settings</a></li>
-                <li><a class="dropdown-item" href="#" onclick="deleteCurrentProject()">Delete Project</a></li>
-              </ul>
-            </li>
-            <li><hr class="dropdown-divider"></li>
-            <li><a class="dropdown-item" href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
-          </ul>
+          <button class="btn btn-success" type="button" onclick="saveCurrentProject()">
+            Save Project
+          </button>
         </div>
-        <!-- Project size indicator -->
-        <div id="projectSizeIndicator" style="display: none; margin-top: 8px; font-size: 0.85rem; color: #aaa;">
-          <i class="fas fa-database"></i> <span id="projectSizeText">-</span>
+        <div id="projectSaveStatus" style="margin-top: 6px; font-size: 0.8rem; color: #888; min-height: 1.2em;" title="Project autosave status">
+          —
+        </div>
+        <div id="projectSizeIndicator" style="display: none; margin-top: 4px; font-size: 0.85rem; color: #aaa;">
+          Project size: <span id="projectSizeText">-</span>
         </div>
       </div>
     </div>
   </div>
 
-
-  <!-- Login Page -->
-  <div id="loginPage" class="container-fluid">
-    <div class="row justify-content-center align-items-center min-vh-100">
-      <div class="col-md-6 col-lg-4">
-        <div class="card bg-dark text-light border-secondary">
-          <div class="card-body p-5">
-            <div class="text-center mb-4">
-              <img src="img/mnt.png" alt="Amianto Editor" class="logo-auth">
-              <h2 class="mt-3">Welcome Back</h2>
-              <p class="text-muted">Sign in to your account</p>
-            </div>
-
-            <div id="loginAlert" class="alert alert-danger d-none" role="alert"></div>
-
-            <form id="loginForm">
-              <div class="mb-3">
-                <label for="loginUsername" class="form-label">Email</label>
-                <input type="email" class="form-control bg-secondary text-light border-secondary" id="loginUsername" required>
-              </div>
-
-              <div class="mb-3">
-                <label for="loginPassword" class="form-label">Password</label>
-                <input type="password" class="form-control bg-secondary text-light border-secondary" id="loginPassword" required>
-              </div>
-
-              <div class="mb-3 form-check">
-                <input type="checkbox" class="form-check-input" id="rememberMe">
-                <label class="form-check-label" for="rememberMe">Remember me</label>
-              </div>
-
-              <button type="submit" class="btn btn-success w-100 mb-3">
-                <i class="fas fa-sign-in-alt"></i> Sign In
-              </button>
-            </form>
-
-            <div class="text-center">
-              <button type="button" class="btn btn-outline-light" onclick="showRegistration()">
-                <i class="fas fa-user-plus"></i> Create Account
-              </button>
-            </div>
-
-            <div class="text-center mt-3">
-              <button type="button" class="btn btn-warning w-100" onclick="enterDemoMode()">
-                <i class="fas fa-flask"></i> DEMO MODE
-              </button>
-            </div>
-
-            <div class="text-center mt-3">
-              <small class="text-muted">
-                <a href="#" onclick="showForgotPassword()" class="text-decoration-none">Forgot password?</a>
-              </small>
-            </div>
-
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Registration Modal -->
-  <div class="modal fade" id="registerModal" tabindex="-1">
-    <div class="modal-dialog">
-      <div class="modal-content bg-dark text-light border-secondary">
-        <div class="modal-header">
-          <h5 class="modal-title">Create Account</h5>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body">
-          <div id="registerAlert" class="alert alert-danger d-none" role="alert"></div>
-          <form id="registerForm">
-
-            <div class="mb-3">
-              <label for="registerEmail" class="form-label">Email</label>
-              <input type="email" class="form-control bg-secondary text-light border-secondary" id="registerEmail" required>
-            </div>
-
-            <div class="mb-3">
-              <label for="registerPassword" class="form-label">Password</label>
-              <input type="password" class="form-control bg-secondary text-light border-secondary" id="registerPassword" required>
-            </div>
-
-            <div class="mb-3">
-              <label for="registerConfirmPassword" class="form-label">Confirm Password</label>
-              <input type="password" class="form-control bg-secondary text-light border-secondary" id="registerConfirmPassword" required>
-            </div>
-          </form>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-success" onclick="registerUser()">Create Account</button>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <!-- Project Selection Modal -->
   <div class="modal fade" id="projectSelectionModal" tabindex="-1" aria-labelledby="projectSelectionModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
@@ -188,7 +71,7 @@
       <div class="modal-content bg-dark text-light">
         <div class="modal-header border-secondary">
           <h5 class="modal-title" id="projectSelectionModalLabel">
-            <i class="fas fa-folder"></i> Your Projects
+            Your Projects
           </h5>
         </div>
         <div class="modal-body" id="projectSelectionModalBody">
@@ -204,21 +87,23 @@
     </div>
   </div>
 
-  <!-- Main Dashboard (hidden by default) -->
-  <div id="mainDashboard" style="display: none;">
+  <div id="mainDashboard">
     <!-- Menu inline -->
     <nav class="navbar navbar-expand-lg navbar-custom">
-      <div class="container-fluid d-flex justify-content-center">
+      <div class="container-fluid d-flex justify-content-center flex-wrap">
 
         <button class="section-btn active-btn" data-section="projects" aria-label="Manage projects" title="Manage projects (Ctrl+0)">Projects</button>
-        <button class="section-btn" data-section="resources" aria-label="Game resources library" title="Central image library on Supabase (Ctrl+1)" disabled>Resources</button>
+        <button class="section-btn" data-section="resources" aria-label="Game resources library" title="Local image library (Ctrl+1)" disabled>Resources</button>
         <button class="section-btn" data-section="rooms" aria-label="Manage game rooms" title="Manage game rooms (Ctrl+2)" disabled>Rooms</button>
         <button class="section-btn" data-section="inventory" aria-label="Manage inventory" title="Manage inventory and items (Ctrl+3)">Inventory</button>
         <button class="section-btn" data-section="characters" aria-label="Manage game characters" title="Manage game characters (Ctrl+4)">Characters</button>
-        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+5)">GUI</button>
-        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts (Ctrl+6)">Scripts</button>
-        <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+7)">Docs</button>
-        <button class="section-btn" data-section="play" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+8)">PLAY</button>
+        <button class="section-btn" data-section="animations" aria-label="Manage room animations" title="Manage background/foreground animations (Ctrl+5)">Animations</button>
+        <button class="section-btn" data-section="gui" aria-label="Design game GUI" title="Design game GUI (Ctrl+6)">GUI</button>
+        <button class="section-btn" data-section="cursors" aria-label="Manage game cursors" title="Manage cursor categories and click points (Ctrl+7)" disabled>Cursors</button>
+        <button class="section-btn" data-section="scripts" aria-label="Write and manage game scripts" title="Write and manage game scripts">Scripts</button>
+        <button class="section-btn" data-section="dialogues" aria-label="Manage branching dialogues" title="Branching dialogues (form and visual editor)" disabled>Dialogues</button>
+        <button class="section-btn" data-section="docs" aria-label="Editor and scripting documentation" title="Documentation (Ctrl+8)">Docs</button>
+        <button type="button" class="section-btn playtest-btn" id="nav-playtest-btn" aria-label="Start game in test mode" title="Start game in test mode (Ctrl+9)">PLAY</button>
       </div>
     </nav>
 
@@ -252,63 +137,117 @@
         <!-- Documentation panel (Docs tab) -->
         <div id="docsMainPanel" class="docs-main-panel" style="display: none;">
           <div class="docs-main-header">
-            <h4 class="docs-main-title"><i class="fas fa-book"></i> Amianto Editor — Documentation</h4>
+            <h4 class="docs-main-title">Amianto Editor — Documentation</h4>
           </div>
           <div id="docs-main-content" class="docs-main-content" tabindex="0"></div>
+        </div>
+
+        <!-- Form-mode placeholder (Dialogues tab) -->
+        <div id="dialogueFormMainPanel" class="dlg-form-main" style="display: none;" aria-label="Dialogue form editor">
+          <div class="dlg-form-main-inner text-muted text-center">
+            <h4 class="text-light mb-2">Dialogue form editor</h4>
+            <p class="mb-1">Edit nodes in the sidebar, or switch to <strong class="text-light">Visual</strong> for the node graph.</p>
+            <small>Same <code>project.dialogues</code> data — Form and Visual stay in sync.</small>
+          </div>
+        </div>
+
+        <!-- Visual Dialogue Graph Editor (Dialogues tab, Visual mode) -->
+        <div id="dialogueGraphMainPanel" class="dlg-graph-main" style="display: none;" aria-label="Visual dialogue editor">
+          <div class="dlg-graph-toolbar">
+            <span class="dlg-title" id="dlg-graph-title">(no dialogue)</span>
+            <span class="dlg-dirty" id="dlg-graph-dirty" style="display:none;">Unsaved</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Add nodes">
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-line" title="Add Line node">+ Line</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-choice" title="Add Choice node">+ Choice</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-jump" title="Add Jump node">+ Jump</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-action" title="Add Action node">+ Action</button>
+              <button type="button" class="btn btn-outline-info" id="dlg-btn-add-end" title="Add End node">+ End</button>
+            </div>
+            <div class="btn-group btn-group-sm ms-1" role="group">
+              <button type="button" class="btn btn-outline-light" id="dlg-btn-fit" title="Fit graph to view">Fit</button>
+              <button type="button" class="btn btn-outline-light" id="dlg-btn-center" title="Center graph">Center</button>
+              <button type="button" class="btn btn-outline-warning" id="dlg-btn-validate" title="Validate dialogue graph">Validate</button>
+              <button type="button" class="btn btn-outline-success" id="dlg-btn-preview" title="Preview in Play Test via start_dialogue">Preview</button>
+            </div>
+            <small class="text-muted ms-auto">Wheel zoom · Middle/Space drag pan · Right-click add · Del delete · Ctrl+Z undo</small>
+          </div>
+          <div class="dlg-graph-body">
+            <div class="dlg-graph-canvas-wrap" id="dlg-graph-canvas-wrap">
+              <div class="dlg-empty-hint" id="dlg-graph-empty">No nodes yet. Use the toolbar or right-click to add Line, Choice, Jump, Action, or End.</div>
+              <div class="dlg-graph-world" id="dlg-graph-world">
+                <svg class="dlg-graph-edges" id="dlg-graph-edges" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div class="dlg-graph-nodes" id="dlg-graph-nodes"></div>
+              </div>
+            </div>
+            <aside class="dlg-graph-inspector" id="dlg-graph-inspector">
+              <h6>Inspector</h6>
+              <p class="text-muted">Select a node.</p>
+            </aside>
+          </div>
+          <div class="dlg-graph-status" id="dlg-graph-status"></div>
+        </div>
+        <div id="dlg-graph-ctx" class="dlg-ctx-menu" role="menu">
+          <button type="button" data-add-type="line">Add Line</button>
+          <button type="button" data-add-type="choice">Add Choice</button>
+          <button type="button" data-add-type="jump">Add Jump</button>
+          <button type="button" data-add-type="action">Add Action</button>
+          <button type="button" data-add-type="end">Add End</button>
         </div>
 
         <!-- Resources panel (Resources tab — occupa lo spazio del canvas) -->
         <div id="resourcesMainPanel" class="resources-main-panel" style="display: none;">
           <div class="resources-main-header">
-            <h4 class="resources-main-title"><i class="fas fa-folder-open"></i> Resource library</h4>
+            <h4 class="resources-main-title">Resource library</h4>
             <ul class="nav nav-tabs resources-subtabs" id="resources-subtabs" role="tablist">
               <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="resources-tab-images" data-resource-tab="images" type="button" role="tab" aria-selected="true">
-                  <i class="fas fa-image"></i> Images
+                  Images
                 </button>
               </li>
               <li class="nav-item" role="presentation">
                 <button class="nav-link" id="resources-tab-sounds" data-resource-tab="sounds" type="button" role="tab" aria-selected="false">
-                  <i class="fas fa-music"></i> Sounds
+                  Sounds
                 </button>
               </li>
             </ul>
           </div>
-          <div id="resources-images-pane" class="resources-pane" role="tabpanel">
-            <div class="alert alert-info py-2 mb-2" role="alert">
-              <small><strong>Centralized library</strong> — import all game images here (Supabase). Other editors open the picker from this folder.</small>
+          <div id="resources-scroll" class="resources-scroll" tabindex="0">
+            <div id="resources-images-pane" class="resources-pane" role="tabpanel">
+              <div class="alert alert-info py-2 mb-2" role="alert">
+                <small><strong>Centralized library</strong> — import all game images here. Other editors open the picker from this folder.</small>
+              </div>
+              <div class="d-flex flex-wrap gap-1 mb-2">
+                <button class="btn btn-success btn-sm" id="btn-resources-import" type="button">Import</button>
+                <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button">Refresh</button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button">Delete</button>
+              </div>
+              <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Search images...">
+              </div>
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <small class="text-muted" id="resources-status">Loading...</small>
+                <small class="text-muted" id="resources-count"></small>
+              </div>
+              <div id="resources-grid" class="resources-grid resources-grid-main"></div>
             </div>
-            <div class="d-flex flex-wrap gap-1 mb-2">
-              <button class="btn btn-success btn-sm" id="btn-resources-import" type="button"><i class="fas fa-file-import"></i> Import</button>
-              <button class="btn btn-outline-light btn-sm" id="btn-resources-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
-              <button class="btn btn-outline-danger btn-sm" id="btn-resources-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
+            <div id="resources-sounds-pane" class="resources-pane" role="tabpanel" style="display: none;">
+              <div class="alert alert-info py-2 mb-2" role="alert">
+                <small><strong>Audio</strong> — import music and sound effects (local <code>audio/</code> folder).</small>
+              </div>
+              <div class="d-flex flex-wrap gap-1 mb-2">
+                <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button">Import</button>
+                <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button">Refresh</button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button">Delete</button>
+              </div>
+              <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Search sounds...">
+              </div>
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <small class="text-muted" id="sounds-status">Loading...</small>
+                <small class="text-muted" id="sounds-count"></small>
+              </div>
+              <div id="sounds-grid" class="resources-grid resources-grid-main sounds-grid"></div>
             </div>
-            <div class="mb-2">
-              <input type="text" class="form-control form-control-sm" id="resources-search" placeholder="Search images...">
-            </div>
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <small class="text-muted" id="resources-status">Loading...</small>
-              <small class="text-muted" id="resources-count"></small>
-            </div>
-            <div id="resources-grid" class="resources-grid resources-grid-main"></div>
-          </div>
-          <div id="resources-sounds-pane" class="resources-pane" role="tabpanel" style="display: none;">
-            <div class="alert alert-info py-2 mb-2" role="alert">
-              <small><strong>Audio</strong> — import music and sound effects (folder <code>audio/</code> on Supabase).</small>
-            </div>
-            <div class="d-flex flex-wrap gap-1 mb-2">
-              <button class="btn btn-success btn-sm" id="btn-sounds-import" type="button"><i class="fas fa-file-import"></i> Import</button>
-              <button class="btn btn-outline-light btn-sm" id="btn-sounds-refresh" type="button"><i class="fas fa-sync-alt"></i> Refresh</button>
-              <button class="btn btn-outline-danger btn-sm" id="btn-sounds-delete" type="button"><i class="fas fa-trash"></i> Delete</button>
-            </div>
-            <div class="mb-2">
-              <input type="text" class="form-control form-control-sm" id="sounds-search" placeholder="Search sounds...">
-            </div>
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <small class="text-muted" id="sounds-status">Loading...</small>
-              <small class="text-muted" id="sounds-count"></small>
-            </div>
-            <div id="sounds-grid" class="resources-grid resources-grid-main sounds-grid"></div>
           </div>
         </div>
 
@@ -325,11 +264,11 @@
         <div class="console-logs-wrapper" style="position: relative;">
           <!-- Toggle button per nascondere/mostrare le console log -->
           <button id="console-log-toggle" class="btn btn-sm console-log-toggle-btn" title="Hide/Show console logs">
-            <i class="fas fa-eye" id="console-log-toggle-icon"></i>
+            <span id="console-log-toggle-icon">Hide</span>
           </button>
           <!-- Resize handle per ridimensionare verticalmente le console -->
           <div id="console-resize-handle" class="console-resize-handle" title="Drag to resize consoles">
-            <i class="fas fa-grip-lines"></i>
+            <span class="console-resize-label">Resize</span>
           </div>
           <div id="logs-container" class="mt-3" style="display: flex; gap: 15px; flex-shrink: 0;">
           <!-- Script Log Panel -->
@@ -337,7 +276,7 @@
             <div class="d-flex justify-content-between align-items-center mb-1">
               <label class="form-label text-light mb-0">Script Log (print, warning, error):</label>
               <button class="btn btn-outline-warning btn-sm" onclick="clearScriptConsole()" title="Clear Script Log">
-                <i class="fas fa-trash"></i> Clear
+                Clear
               </button>
             </div>
             <div
@@ -355,7 +294,7 @@
             <div class="d-flex justify-content-between align-items-center mb-1">
               <label class="form-label text-light mb-0">Engine Log:</label>
               <button class="btn btn-outline-warning btn-sm" onclick="clearDebugConsole()" title="Clear Engine Log">
-                <i class="fas fa-trash"></i> Clear
+                Clear
               </button>
             </div>
             <div
@@ -380,18 +319,22 @@
             <div class="mb-3">
               <div class="alert alert-warning" role="alert">
                 <small>
-                  <strong>⚠️ Select or create a project to continue.</strong> You cannot access other tabs until a project is open.
+                  <strong>Warning: Select or create a project to continue.</strong> You cannot access other tabs until a project is open.
                 </small>
               </div>
             </div>
             
             <div class="mb-3">
               <button class="btn btn-success btn-sm w-100 mb-2" id="btn-create-project-in-tab">
-                <i class="fas fa-plus"></i> Create New Project
+                Create New Project
               </button>
-              <button class="btn btn-info btn-sm w-100 mb-2" id="btn-refresh-projects">
-                <i class="fas fa-sync-alt"></i> Refresh List
+              <button class="btn btn-info btn-sm w-100 mb-2" id="btn-load-project">
+                Load Project
               </button>
+              <button class="btn btn-outline-success btn-sm w-100 mb-2" id="btn-export-standalone" type="button" onclick="(function(btn){ if (typeof window.exportStandaloneGame !== 'function') { if (window.showConfirmDialog) { window.showConfirmDialog({ title: 'Export', message: 'Export not ready — restart the app (npm start)', okLabel: 'OK', cancelLabel: 'Close' }); } else { console.warn('Export not ready — restart the app'); } return; } if (btn.dataset.busy === '1') return; btn.dataset.busy = '1'; btn.disabled = true; var done = function(){ btn.dataset.busy = '0'; btn.disabled = false; }; try { Promise.resolve(window.exportStandaloneGame()).then(done, function(err){ console.error('[ExportGame]', err); done(); }); } catch (err) { console.error('[ExportGame]', err); done(); } })(this)" title="Export a single HTML file that plays the game without the editor">
+                Export Game (HTML)
+              </button>
+              <input type="file" id="project-file-input" accept=".amnt,.json,application/json" hidden>
             </div>
             
             <div class="mb-3">
@@ -419,15 +362,15 @@
           <div class="section-content">
             <div class="resources-sidebar-subtabs btn-group btn-group-sm w-100 mb-2" role="group">
               <button type="button" class="btn btn-outline-success active" data-resource-tab="images" id="resources-sidebar-tab-images">
-                <i class="fas fa-image"></i> Images
+                Images
               </button>
               <button type="button" class="btn btn-outline-success" data-resource-tab="sounds" id="resources-sidebar-tab-sounds">
-                <i class="fas fa-music"></i> Sounds
+                Sounds
               </button>
             </div>
             <div id="resources-inspector" class="resources-inspector">
               <div id="resources-inspector-empty" class="resources-inspector-empty">
-                <i class="fas fa-image" id="resources-inspector-empty-icon" aria-hidden="true"></i>
+                <span id="resources-inspector-empty-icon" class="resources-inspector-empty-label">Image</span>
                 <p class="text-muted small mb-0" id="resources-inspector-empty-text">Select a resource in the grid to preview it here.</p>
               </div>
               <div id="resources-inspector-image" class="resources-inspector-panel" hidden>
@@ -449,7 +392,7 @@
               <div id="resources-inspector-sound" class="resources-inspector-panel" hidden>
                 <h6 class="text-light mb-2">Audio preview</h6>
                 <div class="resources-inspector-sound-icon" aria-hidden="true">
-                  <i class="fas fa-volume-up"></i>
+                  Audio
                 </div>
                 <dl class="resources-inspector-meta small mb-2">
                   <dt>Name</dt>
@@ -461,7 +404,7 @@
                 </dl>
                 <audio id="resources-inspector-audio" class="resources-inspector-audio w-100" controls preload="metadata"></audio>
                 <button type="button" class="btn btn-outline-success btn-sm w-100 mt-2" id="resources-inspector-play-btn">
-                  <i class="fas fa-play"></i> Play
+                  Play
                 </button>
               </div>
             </div>
@@ -489,7 +432,7 @@
           <div class="input-group input-group-sm">
             <input type="text" class="form-control" id="room-id-display" readonly style="background-color: #2a2a2a; color: #39ff14; font-family: monospace; font-size: 0.85rem; cursor: text;" value="">
             <button class="btn btn-outline-secondary" type="button" onclick="copyRoomId()" title="Copy Room ID">
-              <i class="fas fa-copy"></i>
+              Copy
             </button>
           </div>
         </div>
@@ -502,13 +445,33 @@
       <!-- Lista dei foreground layers -->
       <div id="foreground-list-container" class="mt-2"></div>
 
+      <!-- Room Animations Placement -->
+      <div class="mt-4">
+        <h5 style="color: #39ff14; margin-bottom: 15px;">Room Animations</h5>
+        <div class="mb-3">
+          <label class="form-label text-light">Animation to place:</label>
+          <select class="form-select form-select-sm mb-2" id="room-animation-picker"></select>
+          <button class="btn btn-info btn-sm w-100 mb-2" onclick="addRoomAnimationInstance()">
+            Add Animation to Room
+          </button>
+        </div>
+        <div class="alert alert-info" role="alert">
+          <small>
+            <strong>Tip:</strong> Select an animation (or deselect the overlapping scene object) then drag it on the canvas. Click <em>Selected</em> again to deselect. Create animations in the <strong>Animations</strong> tab first.
+          </small>
+        </div>
+        <div id="room-animations-list" class="list-group">
+          <!-- Room animation instances -->
+        </div>
+      </div>
+
       <!-- Scene Objects Section -->
       <div class="mt-4">
         <h5 style="color: #39ff14; margin-bottom: 15px;">Scene Objects</h5>
         
         <div class="mb-3">
           <button class="btn btn-info btn-sm w-100 mb-2" onclick="addSceneObject()">
-            <i class="fas fa-plus"></i> Add Scene Object
+            Add Scene Object
           </button>
         </div>
         
@@ -519,7 +482,7 @@
         
         <div class="alert alert-info" role="alert">
           <small>
-            <strong>💡 Tip:</strong> Click and drag objects directly on the canvas to move them. Use Ctrl+Click to pan the view instead.
+            <strong>Tip:</strong> Click <em>Select</em> on an item to edit/drag it (locks the other type). Click <em>Selected</em> again to deselect. Ctrl+Click pans the view.
           </small>
         </div>
         
@@ -569,7 +532,7 @@
         <h5 style="color: #39ff14; margin-bottom: 15px;">Character Scaling</h5>
         <div class="alert alert-info" role="alert">
           <small>
-            <strong>💡 Tip:</strong> Draw two horizontal lines on the canvas to define scaling planes. Drag the lines to move them. The top line (background) and bottom line (foreground) set character scale based on Y position.
+            <strong>Tip:</strong> Draw two horizontal lines on the canvas to define scaling planes. Drag the lines to move them. The top line (background) and bottom line (foreground) set character scale based on Y position.
           </small>
         </div>
         <div class="mb-3">
@@ -633,7 +596,7 @@
                 <label class="form-label text-light mb-1">Toggle icon</label>
                 <div class="input-group input-group-sm mb-2">
                   <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-browse">
-                    <i class="fas fa-folder-open"></i> Browse Resources
+                    Browse Resources
                   </button>
                   <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-toggle-icon-clear">Remove</button>
                 </div>
@@ -680,13 +643,14 @@
               </div>
               <div class="mb-2">
                 <label class="form-label text-light mb-1">Script name</label>
-                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="red_key">
+                <input type="text" class="form-control form-control-sm" id="inventory-item-script-name" placeholder="Inventory:brass_key">
               </div>
+              <small class="text-muted d-block mb-2">Item script: <code>on_use_with(targetType, targetId, x, y)</code> — create in <strong>Scripts</strong> → Scope <strong>Inventory</strong> → Event <strong>onUseWith</strong>. Return <code>true</code> on success.</small>
               <div class="mb-2">
                 <label class="form-label text-light mb-1">Item image</label>
                 <div class="input-group input-group-sm">
                   <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-browse-image">
-                    <i class="fas fa-folder-open"></i> Browse Resources
+                    Browse Resources
                   </button>
                   <button class="btn btn-outline-light btn-sm" type="button" id="btn-inventory-item-clear-image">Remove</button>
                 </div>
@@ -695,7 +659,7 @@
               </div>
               <div class="btn-group w-100 mb-2" role="group">
                 <button class="btn btn-success btn-sm" id="btn-inventory-item-create" type="button">
-                  <i class="fas fa-plus"></i> Create item
+                  Create item
                 </button>
                 <button class="btn btn-outline-light btn-sm" id="btn-inventory-item-update" type="button" disabled>
                   Save changes
@@ -715,7 +679,7 @@
           <div class="section-content">
             <div class="mb-3">
               <button class="btn btn-success btn-sm w-100 mb-2" onclick="addCharacter()">
-                <i class="fas fa-plus"></i> Add Character
+                Add Character
               </button>
             </div>
             
@@ -765,7 +729,7 @@
             <div class="mb-3" id="frame-upload-container">
               <label class="form-label text-light">Animation frames for selected direction:</label>
               <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-character-frames-browse">
-                <i class="fas fa-folder-open"></i> Browse Resources (frames)
+                Browse Resources (frames)
               </button>
               <small class="text-muted d-block mt-1">You can select multiple images from the Resources window; frame order follows numbers in the file name.</small>
             </div>
@@ -841,18 +805,18 @@
                 </div>
               </div>
 
-              <div id="character-spawn-room-container" style="display: none;">
-                <label class="form-label text-light">Room:</label>
+              <div id="character-spawn-room-container">
+                <label class="form-label text-light">Starting Room:</label>
                 <select class="form-select form-select-sm mb-2" id="character-spawn-room"></select>
               </div>
 
-              <div id="character-spawn-position-container" style="display: none;">
+              <div id="character-spawn-position-container">
                 <label class="form-label text-light">Position (x, y):</label>
                 <input type="text" class="form-control form-control-sm mb-2" id="character-spawn-position" placeholder="0, 0">
                   <small class="text-muted">Right-click on canvas to copy position</small>
                 </div>
 
-              <div id="character-spawn-direction-container" style="display: none;">
+              <div id="character-spawn-direction-container">
                 <label class="form-label text-light">Initial direction:</label>
                 <select class="form-select form-select-sm" id="character-spawn-direction">
                   <option value="south">South</option>
@@ -866,15 +830,97 @@
                 </select>
               </div>
 
-              <div id="character-spawn-speed-container" style="display: none;">
+              <div id="character-spawn-speed-container">
                 <label class="form-label text-light">Movement speed (pixel/second):</label>
                 <input type="number" class="form-control form-control-sm" id="character-spawn-speed" value="100" min="1" max="1000" step="1">
-                <small class="text-muted">Character movement speed in pixels per second</small>
+                <small class="text-muted">Base speed at the foreground (max scale) line. Used as-is if depth scaling is off.</small>
+                <div class="form-check mt-2">
+                  <input class="form-check-input" type="checkbox" id="character-spawn-scale-speed" checked>
+                  <label class="form-check-label text-light" for="character-spawn-scale-speed">
+                    Scale speed with depth
+                  </label>
+                </div>
+                <small class="text-muted">When enabled, speed decreases toward the background (min scale) line, matching character size.</small>
+              </div>
+
+              <div class="mt-3 pt-2" style="border-top:1px solid #333;" id="character-portraits-panel">
+                <label class="form-label text-light mb-1">Dialogue portraits (mood → image)</label>
+                <div id="character-portraits-list" class="mb-2"></div>
+                <div class="d-flex gap-1 mb-1">
+                  <input type="text" class="form-control form-control-sm" id="character-portrait-mood" placeholder="mood (e.g. happy, default)" />
+                  <button type="button" class="btn btn-outline-success btn-sm" id="character-portrait-add-btn" title="Pick image for mood">+ Image</button>
+                </div>
+                <small class="text-muted">Used by dialogue Line nodes when mood matches (or <code>default</code>). Line can also override with its own portrait.</small>
               </div>
             </div>
             
             <div id="characters-list" class="list-group">
               <!-- Characters will be dynamically added here -->
+            </div>
+          </div>
+        </div>
+
+        <div id="animations" class="section">
+          <h3>Animations</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <button class="btn btn-success btn-sm w-100 mb-2" onclick="addRoomAnimation()">
+                Add Animation
+              </button>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Select animation:</label>
+              <select class="form-select form-select-sm" id="room-animation-selector" onchange="onRoomAnimationSelect()"></select>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Default layer:</label>
+              <select class="form-select form-select-sm" id="room-animation-layer">
+                <option value="background">Background (behind scene objects)</option>
+                <option value="foreground">Foreground (in front of scene objects)</option>
+              </select>
+              <small class="text-muted d-block mt-1">Used as default when placing this animation in a room.</small>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Animation frames:</label>
+              <button type="button" class="btn btn-outline-light btn-sm w-100" id="btn-room-animation-frames-browse">
+                Browse Resources (frames)
+              </button>
+              <small class="text-muted d-block mt-1">Select multiple images from Resources; frame order follows numbers in the file name.</small>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">FPS:</label>
+              <div class="input-group input-group-sm">
+                <input type="number" class="form-control form-control-sm bg-secondary text-light border-secondary" id="room-animation-fps" value="8" min="1" max="60">
+                <button class="btn btn-outline-light btn-sm" onclick="updateRoomAnimationFPS()">Update</button>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="room-animation-loop" checked>
+                <label class="form-check-label text-light" for="room-animation-loop">Loop by default</label>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-outline-light btn-sm" onclick="startRoomAnimationPreview()">Start Preview</button>
+                <button class="btn btn-outline-warning btn-sm" onclick="stopRoomAnimationPreview()">Stop Preview</button>
+                <button class="btn btn-outline-info btn-sm" onclick="clearRoomAnimationFrames()">Clear Frames</button>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <h6 class="text-light">Animation Frames:</h6>
+              <div id="room-animation-frames-preview" class="frames-container"></div>
+            </div>
+
+            <div id="room-animations-catalog-list" class="list-group">
+              <!-- Animation definitions -->
             </div>
           </div>
         </div>
@@ -899,6 +945,7 @@
               <div class="btn-group w-100" role="group">
                 <button class="btn btn-success btn-sm" id="btn-add-gui-bg">Add GUI Background</button>
                 <button class="btn btn-primary btn-sm" id="btn-new-gui-button">Draw Button</button>
+                <button class="btn btn-info btn-sm" id="btn-new-gui-save-slot" style="display:none;">Draw Save Slot</button>
                 <button class="btn btn-outline-danger btn-sm" id="btn-delete-gui-button">Delete Selected</button>
               </div>
             </div>
@@ -913,6 +960,7 @@
                   <option value="MainInterface">MainInterface</option>
                   <option value="DialogBox">DialogBox</option>
                   <option value="Menu">Menu</option>
+                  <option value="SaveLoad">SaveLoad</option>
                   <option value="VerbGUI">VerbGUI</option>
                   <option value="VerbCoin">VerbCoin</option>
                   <option value="OverlayCustom">OverlayCustom</option>
@@ -923,68 +971,90 @@
 
             <div class="mb-3">
               <div class="alert alert-info" role="alert">
-                <small>
+                <small id="gui-draw-hint">
                   Draw buttons as rectangles on the canvas (GUI overlay). Click to select, drag to move. Use Delete Selected to remove.
                 </small>
               </div>
             </div>
 
             <div class="mb-3">
-              <h6 class="text-light">Buttons list</h6>
+              <h6 class="text-light" id="gui-buttons-list-heading">Buttons list</h6>
               <div id="gui-buttons-list" class="list-group"></div>
             </div>
+          </div>
+        </div>
 
-            <!-- Cursor Manager -->
-            <div class="mt-4">
-              <h5 style="color: #39ff14; margin-bottom: 15px;">Contextual Cursors</h5>
-              
-              <div class="mb-3">
-                <div class="btn-group w-100 mb-2" role="group">
-                  <button class="btn btn-success btn-sm" onclick="createCursor()">New Cursor</button>
-                  <button class="btn btn-outline-light btn-sm" onclick="editCursor()">Edit Selected</button>
-                  <button class="btn btn-outline-danger btn-sm" onclick="deleteCursor()">Delete Selected</button>
-                </div>
+        <div id="cursors" class="section">
+          <h3>Cursors</h3>
+          <div class="section-content">
+            <div class="mb-3">
+              <div class="btn-group w-100 mb-2" role="group">
+                <button class="btn btn-success btn-sm" onclick="createCursor()">New Cursor</button>
+                <button class="btn btn-outline-danger btn-sm" onclick="deleteCursor()">Delete Selected</button>
               </div>
+            </div>
 
-              <div class="mb-3">
-                <label class="form-label text-light">Target Type:</label>
-                <select class="form-select form-select-sm" id="cursor-target-type" onchange="updateCursorTargets()">
-                  <option value="hotspot">Hotspot</option>
-                  <option value="character">Character</option>
-                  <option value="scene-object">Scene Object</option>
-                </select>
-              </div>
+            <div class="mb-3">
+              <label class="form-label text-light">Category:</label>
+              <select class="form-select form-select-sm" id="cursor-category" onchange="onCursorCategoryChange()">
+                <option value="default">default — normal pointer</option>
+                <option value="look">look — examine</option>
+                <option value="use">use — interact</option>
+                <option value="talk">talk — speak</option>
+                <option value="grab">grab — take / hold</option>
+                <option value="exit">exit — leave room</option>
+                <option value="walk">walk — move</option>
+                <option value="wait">wait — busy</option>
+                <option value="inactive">inactive — not interactive</option>
+              </select>
+              <small class="text-muted d-block mt-1">One cursor per category (not per object or hotspot). Changing the dropdown updates the selected cursor.</small>
+            </div>
 
-              <div class="mb-3">
-                <label class="form-label text-light">Target Object:</label>
-                <select class="form-select form-select-sm" id="cursor-target-selector">
-                  <option value="">Select target...</option>
-                </select>
-              </div>
-
-              <div class="mb-3">
-                <label class="form-label text-light">Cursor Image:</label>
-                <button class="btn btn-outline-light btn-sm w-100" type="button" id="btn-cursor-browse-image">
-                  <i class="fas fa-folder-open"></i> Browse Resources
+            <div class="mb-3">
+              <label class="form-label text-light">Cursor Image:</label>
+              <div class="btn-group w-100" role="group">
+                <button class="btn btn-outline-light btn-sm" type="button" id="btn-cursor-browse-image">
+                  Browse Resources
+                </button>
+                <button class="btn btn-outline-warning btn-sm" type="button" id="btn-cursor-clear-image" onclick="clearCursorImage()">
+                  Clear
                 </button>
               </div>
+            </div>
 
-              <div class="mb-3">
-                <label class="form-label text-light">Action Text (optional):</label>
-                <input type="text" class="form-control form-control-sm" id="cursor-action-text" placeholder="e.g., 'Look at', 'Talk to', 'Use'">
+            <div class="mb-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="show-cursor-action-text" onchange="onShowCursorActionTextChange()">
+                <label class="form-check-label text-light" for="show-cursor-action-text">
+                  Show action text on hover
+                </label>
               </div>
+              <small class="text-muted d-block mt-1">Off by default. When enabled, shows the Action Text below next to the cursor in Play Test / exported game (only if a text is set for that category).</small>
+            </div>
 
-              <div class="alert alert-info" role="alert">
-                <small>
-                  <strong>💡 Tip:</strong> Cursors will automatically change when hovering over the specified target. Upload a cursor image (recommended 32x32px) and optionally add action text. Scripts can be attached from the Scripts tab.
-                </small>
+            <div class="mb-3">
+              <label class="form-label text-light">Action Text (optional):</label>
+              <input type="text" class="form-control form-control-sm" id="cursor-action-text" placeholder="e.g., 'Look at', 'Talk to', 'Use'" onchange="updateSelectedCursorMeta()">
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-light">Click point (pivot):</label>
+              <div class="d-flex gap-2 align-items-center">
+                <span class="text-muted small" id="cursor-pivot-label">—</span>
               </div>
+              <small class="text-muted d-block mt-1">Click on the canvas preview to set the hotspot (click point).</small>
+            </div>
 
-              <div class="mb-3">
-                <h6 class="text-light">Active Cursors:</h6>
-                <div id="cursors-list" class="list-group">
-                  <!-- Cursors will be dynamically added here -->
-                </div>
+            <div class="alert alert-info" role="alert">
+              <small>
+                Define a cursor image for each interaction category. The pivot marks where clicks register relative to the image (like the character foot pivot). Recommended size: 32×32px.
+              </small>
+            </div>
+
+            <div class="mb-3">
+              <h6 class="text-light">Defined Cursors:</h6>
+              <div id="cursors-list" class="list-group">
+                <!-- Cursors will be dynamically added here -->
               </div>
             </div>
           </div>
@@ -1012,6 +1082,7 @@
                     <option value="Room">Room</option>
                     <option value="Object">Object</option>
                     <option value="Character">Character</option>
+                    <option value="Inventory">Inventory</option>
                     <option value="Hotspot">Hotspot</option>
                     <option value="GUI">GUI</option>
                   </select>
@@ -1061,6 +1132,77 @@
             <div class="alert alert-info mt-3" role="alert">
               <small>
                 <strong>Tip:</strong> Single editor with Ctrl+S to save. Autocomplete: Ctrl+Space (game API).
+                Branching conversations live in the <strong>Dialogues</strong> tab (<code>start_dialogue</code>).
+              </small>
+            </div>
+          </div>
+        </div>
+
+        <div id="dialogues" class="section">
+          <h3>Dialogues</h3>
+          <div class="section-content">
+            <!-- Branching Dialogues (form + visual graph editor) -->
+            <div class="mt-1 p-2" style="background:#1b1b1b;border:1px solid #333;border-radius:8px;">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="m-0" style="color:#eee">Project dialogues</h6>
+                <button type="button" class="btn btn-outline-success btn-sm" onclick="addProjectDialogue()">+ Add Dialogue</button>
+              </div>
+              <div class="mb-2">
+                <input type="search" id="dialogue-search" class="form-control form-control-sm" placeholder="Search dialogues…" oninput="onDialogueSearchInput()" />
+              </div>
+              <div id="dialogue-sidebar-list" class="dlg-sidebar-list"></div>
+              <div class="row g-2 mb-2">
+                <div class="col-8">
+                  <label class="form-label text-light mb-1">Active dialogue</label>
+                  <select id="dialogue-select" class="form-select form-select-sm" onchange="onDialogueSelectChange()"></select>
+                </div>
+                <div class="col-4 d-flex align-items-end gap-1 flex-wrap">
+                  <button type="button" class="btn btn-outline-light btn-sm" onclick="renameProjectDialogue()" title="Rename">Rename</button>
+                  <button type="button" class="btn btn-outline-light btn-sm" onclick="duplicateProjectDialogue()" title="Duplicate dialogue">Dup</button>
+                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteProjectDialogue()" title="Delete">Del</button>
+                </div>
+              </div>
+              <div class="d-flex justify-content-between align-items-center mb-2 dlg-mode-toggle">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Dialogue editor mode">
+                  <button type="button" class="btn btn-outline-light active" data-dlg-mode="form" onclick="setDialogueEditorMode('form')">Form</button>
+                  <button type="button" class="btn btn-outline-light" data-dlg-mode="visual" onclick="setDialogueEditorMode('visual')">Visual</button>
+                </div>
+                <button type="button" class="btn btn-outline-warning btn-sm" onclick="validateActiveDialogue()" title="Validate dialogue">Validate</button>
+              </div>
+              <div id="dialogue-visual-hint" class="text-muted mb-2" style="display:none;">
+                <small>Visual mode opens the node canvas in the main panel. Same data as Form — no separate copy.</small>
+              </div>
+              <div id="dialogue-editor-body" class="text-light" style="display:none;">
+                <div id="dialogue-form-mode">
+                  <div class="mb-2">
+                    <label class="form-label text-light mb-1">Start node ID</label>
+                    <input type="text" id="dialogue-start-node" class="form-control form-control-sm" onchange="onDialogueStartNodeChange()" />
+                  </div>
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <strong style="color:#ccc;font-size:0.9em;">Nodes</strong>
+                    <div class="btn-group btn-group-sm flex-wrap">
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('line')">+ Line</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('choice')">+ Choice</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('jump')">+ Jump</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('action')">+ Action</button>
+                      <button type="button" class="btn btn-outline-info" onclick="addDialogueNode('end')">+ End</button>
+                    </div>
+                  </div>
+                  <div id="dialogue-nodes-list" style="max-height:50vh;overflow:auto;"></div>
+                  <small class="text-muted d-block mt-2">
+                    Call with <code>start_dialogue("name_or_id")</code>. Types: <code>line</code>, <code>choice</code>, <code>jump</code>, <code>action</code>, <code>end</code>.
+                    Choices support <em>Once only</em>, condition JSON (<code>has_item</code> / <code>var</code> / <code>and</code> / <code>or</code> / <code>not</code>), and actions JSON.
+                  </small>
+                </div>
+              </div>
+              <div id="dialogue-editor-empty" class="text-muted text-center py-2">
+                <small>No dialogues yet. Click "+ Add Dialogue" to create a branching conversation.</small>
+              </div>
+            </div>
+
+            <div class="alert alert-info mt-3" role="alert">
+              <small>
+                <strong>Tip:</strong> Form and Visual edit the same dialogue. Preview runs Play Test via <code>start_dialogue</code>.
               </small>
             </div>
           </div>
@@ -1079,94 +1221,19 @@
               <a class="nav-link docs-toc-link" href="#doc-events">Events</a>
               <a class="nav-link docs-toc-link" href="#doc-api">Game API</a>
               <a class="nav-link docs-toc-link" href="#doc-examples">Examples</a>
+              <a class="nav-link docs-toc-link" href="#doc-projects">Projects &amp; saving</a>
               <a class="nav-link docs-toc-link" href="#doc-playtest">Play test</a>
               <a class="nav-link docs-toc-link" href="#doc-tips">Tips</a>
             </nav>
           </div>
         </div>
 
-        <div id="play" class="section">
-          <h3>Play Test</h3>
-          <div class="section-content">
-            <div class="mb-3">
-              <div class="alert alert-info" role="alert">
-                <strong>Test Mode:</strong> Here you can test your game in real time while developing it.
-              </div>
-            </div>
-            
-            <div class="mb-3">
-              <div class="btn-group w-100" role="group">
-                <button class="btn btn-success btn-sm" onclick="startPlayTest()">
-                  <i class="fas fa-play"></i> Start Test
-                </button>
-                <button class="btn btn-warning btn-sm" onclick="pausePlayTest()">
-                  <i class="fas fa-pause"></i> Pause
-                </button>
-                <button class="btn btn-danger btn-sm" onclick="stopPlayTest()">
-                  <i class="fas fa-stop"></i> Stop
-                </button>
-              </div>
-            </div>
-
-            <div class="mb-3">
-              <button class="btn btn-info btn-sm w-100" onclick="testGameStart()" title="Run on_game_start scripts without opening the runtime">
-                <i class="fas fa-rocket"></i> Test Game Start
-              </button>
-            </div>
-            
-            <div class="mb-3">
-              <label class="form-label text-light">Game status:</label>
-              <div class="form-control form-control-sm bg-dark text-light" id="game-status" readonly>
-                Ready for testing
-              </div>
-            </div>
-            
-
-            <div class="mb-3">
-              <h6 class="text-light">Test controls:</h6>
-              <div class="row">
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testRoomChange()">Test Room Change</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testObjectInteraction()">Test Interaction</button>
-                </div>
-                <div class="col-6">
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterInteraction()">Test Character Click</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testCharacterDialog()">Test Dialogs</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="testHotspotInteraction()">Test Hotspot</button>
-                  <button class="btn btn-outline-light btn-sm w-100 mb-1" onclick="clearDebugConsole()">Clear Console</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </div>
   </div> <!-- Close mainDashboard -->
 
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
-
-  <!-- Supabase SDK -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
-
-  <script src="JS/device-detector.js"></script>
-  <script src="JS/firebase-config.js"></script>
-  <script src="JS/firebase-verify.js"></script>
-  <script src="JS/firebase-usage.js"></script>
-  <!-- Supabase Config (opzionale, crea supabase-config.js basandoti su supabase-config-template.js) -->
-  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found. Set SUPABASE_URL and SUPABASE_ANON_KEY in supabase.js or create supabase-config.js')"></script>
-  <script src="JS/supabase.js"></script>
-  <script src="JS/resources.js"></script>
-  <script src="JS/docs-panel.js"></script>
-  <script src="JS/main.js"></script>
-
-  <!-- Resource picker modal (usato da tutti i Browse) -->
+  <!-- Resource picker modal (usato da tutti i Browse) — prima degli script -->
   <div class="modal fade" id="resourcePickerModal" tabindex="-1" aria-labelledby="resourcePickerModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content bg-dark text-light border-secondary">
@@ -1178,7 +1245,7 @@
           <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
             <input type="text" class="form-control form-control-sm flex-grow-1" id="resource-picker-search" placeholder="Search...">
             <button type="button" class="btn btn-success btn-sm" id="resource-picker-upload-btn">
-              <i class="fas fa-file-import"></i> Import
+              Import
             </button>
           </div>
           <small class="text-muted d-block mb-1" id="resource-picker-hint" style="display: none;"></small>
@@ -1196,6 +1263,22 @@
       </div>
     </div>
   </div>
+
+  <script src="node_modules/sortablejs/Sortable.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js'"></script>
+  <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js'"></script>
+  <script src="JS/app-mode.js"></script>
+  <script src="JS/editor-dialogs.js"></script>
+  <script src="JS/amnt-format.js"></script>
+  <script src="JS/export-standalone.js"></script>
+  <script src="JS/local-storage.js"></script>
+  <script src="JS/lib/game-save-format.js"></script>
+  <script src="JS/lib/dialogue-logic.js"></script>
+  <script src="JS/lib/dialogue-validate.js"></script>
+  <script src="JS/device-detector.js"></script>
+  <script src="JS/resources.js"></script>
+  <script src="JS/docs-panel.js"></script>
+  <script src="JS/dialogue-graph-editor.js"></script>
+  <script src="JS/main.js"></script>
 </body>
 </html>
 

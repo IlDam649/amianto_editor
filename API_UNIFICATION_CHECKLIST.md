@@ -2,9 +2,7 @@
 
 **Obiettivo:** una sola superficie API usabile da Play Test (`main.js` → iframe `runtime.js`), `runtime.html` standalone e documentazione (`README.md` / esempi script).
 
-**Stato (maggio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Gli script usano `getScriptApiBindings()` + `buildScriptExecutor()`; gli handler eseguono in `with (scriptScope)` via `buildHandlerExecutionScope()` / `runHandlerWithExecutionScope()`. `sandboxApi` e `gameInventory` editor sono stati rimossi da `main.js`.
-
-**Residuo:** test manuali Fase E (incluso Script 4b `play_character_animation`); sync inventario in `UPDATE_CONTEXT`.
+**Stato (luglio 2026):** Fasi **A**, **B**, **C** e pulizia **D** (parziale) completate in `runtime.js`. Editor **offline**; script sandbox in `runtime-sandbox.html` (iframe) o `runtime.html` (Play Test window). Residuo: test manuali Fase E (checklist sotto).
 
 ---
 
@@ -13,11 +11,10 @@
 ```mermaid
 flowchart TB
   subgraph editor [main.js - Editor]
-    CM[CodeMirror hints]
+    CM[CodeMirror GAME_API_COMPLETIONS]
     SER[serializeProject]
     PT[Play Test - executeScriptInSandbox]
-    DEAD[sandboxApi - NON USATO]
-    GEDIT[window.Game _gameState - solo editor UI]
+    GEDIT[window.Game - tab Variables UI]
   end
 
   subgraph iframe [runtime.js - Iframe sandbox]
@@ -29,9 +26,8 @@ flowchart TB
 
   PT -->|postMessage RUN_SCRIPT| ESH
   ESH --> CS
-  CM -.->|documenta API non tutte in runtime| GA
-  DEAD -.->|duplicato logico| GA
-  GEDIT -.->|non sincronizzato| GS
+  CM -.->|allineato a getScriptApiBindings| GA
+  GEDIT -.->|variabili UI; runtime ha gameState.variables| GS
 ```
 
 **Target:**
@@ -59,36 +55,43 @@ Legenda azione:
 - **Rimuovere** → eliminare duplicato morto in `main.js` dopo migrazione
 - **Tenere editor** → resta solo per editing canvas, non per Play Test
 
-| API | main.js `sandboxApi` | runtime `GameAPI` | `window.*` runtime | In `compileScript` | Azione |
-|-----|---------------------|-------------------|--------------------|--------------------|--------|
-| `print` | ✅ | ✅ | ✅ | ✅ | Alias OK |
-| `show_message` | ✅ (notification) | ✅ (`showText`) | ✅ | ✅ | Tenere runtime; editor può restare notification in UI |
-| `move_object` | ✅ (editor canvas) | ✅ | ✅ | ❌ | **Portare** in bindings; già su GameAPI |
-| `on_game_start` … `on_gui_click` | ✅ (editor handlers) | ✅ | parziale | ✅ (no-op compile) | Tenere runtime |
-| `add_to_inventory` | ✅ | ❌ | ❌ | ❌ | **Portare** + `gameState.inventory` Map |
-| `remove_from_inventory` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `has_item` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `get_item_count` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `clear_inventory` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `load_room` | ✅ (`selectRoom`) | ✅ | ✅ | ✅ | OK |
-| `get_current_room` | ✅ | ✅ come `getCurrentRoom` | ❌ | ✅ come `getCurrentRoom` | **Alias** `get_current_room` |
-| `get_room_objects` | ✅ | ❌ | ❌ | ❌ | **Portare** (leggere `gameState.currentRoom.objects`) |
-| `set_room_background` | ✅ | ❌ | ❌ | ❌ | **Portare** (AssetRegistry + room) |
-| `spawn_object` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `despawn_object` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `rotate_object` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `scale_object` | ✅ | ❌ | ❌ | ❌ | **Portare** |
-| `set_object_visible` | ✅ | ❌ (`enableObject`/`disableObject`) | ❌ | ❌ | **Portare** o alias da enable/disable |
-| `get_var` / `set_var` / `has_var` / `toggle_var` | ✅ → `window.Game` editor | ❌ | ❌ | ❌ | **Alias** su `getVariable`/`setVariable` + `Game.*` |
-| `Game.getVar` … | ✅ editor `_gameState` | ❌ | `Game`=GameAPI senza getVar | ❌ | **Estendere GameAPI** o oggetto `Game` dedicato |
-| `spawn_character` | ❌ (solo hints) | ✅ | ✅ | ❌ | **Bindings** + già globale |
-| `move_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
-| `walk_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
-| `set_character_direction` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
-| `animate_character` | ❌ | ✅ | ✅ | ❌ | **Bindings** |
-| `play_character_animation` | ❌ (hints ✅) | ✅ | ✅ | ❌ | **Implementato** — `GameAPI.play_character_animation`; coda comandi su `window` come `walk_character` |
-| `enableObject` / `disableObject` | ❌ | ✅ | ❌ | ✅ | Documentare o unificare con `set_object_visible` |
-| `enableHotspot` / `disableHotspot` | ❌ | ✅ | ❌ | ✅ | Campo `visible` hotspot; checkbox editor **Is active?** |
+| API | `GameAPI` | `getScriptApiBindings()` | `buildHandlerExecutionScope()` | Note |
+|-----|-----------|------------------------|--------------------------------|------|
+| `print`, `show_message` / `showText` | ✅ | ✅ | ✅ | |
+| `move_object`, oggetti spawn/rotate/scale/visible | ✅ | ✅ | ✅ | |
+| `enableObject` / `disableObject`, hotspot enable/disable | ✅ | ✅ | ✅ | |
+| Inventario + `get/set/clear_carried_item` | ✅ | ✅ | ✅ | `gameState.inventory` |
+| `load_room`, `get_current_room`, `get_room_objects`, `set_room_background` | ✅ | ✅ | ✅ | |
+| `get_var` / `set_var` / `has_var` / `toggle_var`, `Game.getVar` | ✅ | ✅ | ✅ | `Game` = `GameAPI` |
+| Personaggi (spawn, walk, `play_character_animation`, …) | ✅ | ✅ | ✅ | |
+| Animazioni stanza (`play_animation`, `stop_animation`) | ✅ | ✅ | ✅ | |
+| Audio (`play_music`, `play_sound`, …) | ✅ | ✅ | ✅ | |
+| Dialoghi (`show_dialogue`, `end_dialogue`, `start_dialogue`, …) | ✅ | ✅ | ✅ | line/choice/jump/action/end + conditions/once |
+| Save gioco (`save_game`, `load_game`, `delete_save`, `get_save_info`) | ✅ | ✅ | ✅ | localStorage; validate/migrate; dialogueConsumed |
+| Handler `on_*` (8 eventi) | ✅ | compile + scope | ✅ | `SUPPORTED_SCRIPT_HANDLERS` |
+| `sandboxApi` in `main.js` | — | — | — | **Rimosso** (Fase D) |
+
+---
+
+## Dialoghi — runtime (maggio 2026)
+
+- [x] `GameAPI.show_dialogue(characterIdOrName, text)` — coda comandi, balloon segue personaggio
+- [x] `show_dialogue_text(text, speaker)` — alias roadmap
+- [x] `end_dialogue()` — chiude balloon e abortisce sessione grafo
+- [x] `start_dialogue(idOrName)` — grafo `project.dialogues` (line/choice/jump/action/end + conditions/once); playtest + export
+- [x] Rendering da prima GUI `DialogBox` (colori, `balloon` asset, `appear`)
+- [x] `getScriptApiBindings()` + `GAME_API_COMPLETIONS` in `main.js`
+- [ ] Editor nodi visuale, condizioni, mood/relazioni — backlog
+
+**Setup progetto:** tab GUI → tipo **DialogBox** → colori / immagine balloon.
+
+**Esempio:**
+
+```javascript
+function on_character_click(character_id) {
+  show_dialogue(character_id, "Buongiorno!");
+}
+```
 
 ---
 
@@ -119,67 +122,56 @@ async function on_object_click(objectId, x, y) {
 
 ---
 
+## Animazioni stanza (background / foreground) — editor ↔ runtime
+
+### Editor (`index.html` + `main.js`)
+- Tab **Animations** (`Ctrl+5`): catalogo globale `roomAnimationsCatalog` — nome, frame, FPS, layer (`background` | `foreground`), loop default, preview canvas.
+- Tab **Rooms → Room Animations**: istanze per stanza (`animationInstances[]`) — `animationId`, `name`, `x`, `y`, `layer`, `visible`, `autoPlay`.
+- Primo frame trascinabile sul canvas (come scene objects).
+- Serializzazione: `project.roomAnimations[]` + `rooms[].animationInstances[]` in `serializeProject()`.
+
+### Runtime (`runtime.js`)
+- Caricamento: `loadRoomAnimationDefinitions(projectData.roomAnimations)` → `gameState.roomAnimationDefinitions`.
+- `changeRoom`: costruisce `currentRoom.animationInstances` con stato playback (`currentFrame`, `frameTime`, `playing`).
+- Render: layer background dopo sfondo, layer foreground dopo scene objects.
+- Game loop: `updateRoomAnimationInstance()` (stessa logica loop di `parseAudioLoopOption`).
+- Script: `play_animation(instanceIdOrName, loop?)`, `stop_animation(instanceIdOrName?)`.
+
+### Esempio script (Fase E)
+
+```javascript
+function on_room_change(oldRoom, newRoom) {
+  play_animation("waterfall_main", true);
+}
+
+function on_hotspot_click(hotspotId) {
+  play_animation("torch_flicker", false);
+}
+```
+
+- [ ] Animazione visibile in play test (autoPlay o `play_animation`)
+- [ ] Layer background dietro oggetti; layer foreground davanti
+- [ ] `stop_animation()` ferma il ciclo frame
+
+---
+
 ## File per file
 
 ### 1. `JS/runtime.js` (priorità massima)
 
-#### 1.1 Stato — aggiungere a `gameState` (~riga 20)
+#### 1.1–1.5 Stato runtime ✅
 
-- [ ] `inventory: new Map()` — `itemId → count` (runtime gameplay, non definizioni oggetti UI)
-- [ ] Opzionale: `inventoryItems: Map()` — definizioni da `projectData.inventory` (nome → metadata/icona) al load
-- [ ] In `initRuntime` / load progetto: **non** confondere `projectData.inventory` (lista definizioni da editor) con stato runtime
+- [x] `gameState.inventory` — contenuti slot + `carriedItem` (definizioni da `projectData.inventory` al load)
+- [x] Modulo inventario su `GameAPI` + use-with (`on_use_with`, `on_inventory_use_with`)
+- [x] Oggetti dinamici: spawn/despawn/rotate/scale/visible su `currentRoom.objects`
+- [x] `get_room_objects`, `set_room_background`
+- [x] Alias variabili: `get_var`, `Game.getVar`, validazione da `projectData.variables` dove disponibile
 
-#### 1.2 Modulo inventario (nuova sezione, dopo GameAPI o prima)
+#### 1.6 `exposeScriptGlobals()` ✅
 
-Portare logica da `main.js` `sandboxApi` 7237–7273 + `persistInventory` 5979–5999, adattata:
+- [x] Loop su `getScriptApiBindings()`; chiamata dopo init/reset
 
-| Funzione sorgente (`main.js`) | Implementazione runtime |
-|------------------------------|-------------------------|
-| `add_to_inventory` | `gameState.inventory.set`, risolvere itemId da nome se necessario |
-| `remove_from_inventory` | come sopra |
-| `has_item` / `get_item_count` / `clear_inventory` | lettura Map |
-| `persistInventory` | `localStorage` chiave `amiantoRuntimeInventory_${projectId}` o incluso in save-game futuro |
-
-- [ ] Aggiungere metodi su `GameAPI`
-- [ ] Non usare `showNotification` — usare `log()` / `showGameMessage` opzionale
-
-#### 1.3 Modulo oggetti stanza
-
-Portare da `main.js` 7365–7477, target `gameState.currentRoom.objects[]` (struttura già usata da rendering/hit test):
-
-| Funzione | Note implementazione runtime |
-|----------|------------------------------|
-| `spawn_object` | `uid()`, push in `currentRoom.objects`, caricare img via `AssetRegistry` o URL |
-| `despawn_object` | filter by id |
-| `rotate_object` | campo `rotation` (gradi) — allineare a schema oggetto runtime |
-| `scale_object` | `scaleX` / `scaleY` |
-| `set_object_visible` | `visible` + `enabled` |
-
-- [ ] Verificare campi oggetto in load room (~loader oggetti) per coerenza nomi
-
-#### 1.4 Stanze — API mancanti
-
-| Funzione | Sorgente `main.js` | Runtime |
-|----------|-------------------|---------|
-| `get_room_objects` | 7300–7313 | Mappare `gameState.currentRoom.objects` |
-| `set_room_background` | 7315–7361 | Impostare `room.background` + `AssetRegistry` |
-
-#### 1.5 Variabili — alias `Game`
-
-Da `main.js` `window.Game` 6953–7022 (validazione tipi da `gameVariableDefinitions`):
-
-- [ ] Aggiungere su `GameAPI`: `getVar`, `setVar`, `hasVar`, `toggleVar` (delegano a `gameState.variables`)
-- [ ] Opzionale: caricare definizioni variabili da `projectData.variables` per validazione tipo come in editor
-- [ ] Esporre alias globali: `get_var`, `set_var`, `has_var`, `toggle_var`
-- [ ] **Non** sostituire `window.Game = GameAPI` ciecamente se servono metodi extra — usare `Object.assign(GameAPI, { getVar, setVar, ... })`
-
-#### 1.6 `exposeScriptGlobals()` (nuova funzione, dopo definizione `GameAPI` ~3400)
-
-- [ ] Iterare `SCRIPT_API_BINDINGS` e assegnare `window[name] = binding.fn`
-- [ ] Chiamare dopo `initRuntime` e dopo `RESET` message handler
-- [ ] Eliminare duplicazioni manuali sparse (3411–3468) sostituite da loop
-
-#### 1.7 Refactor `compileScript` (~1593–1861)
+#### 1.7 Refactor `compileScript` ✅
 
 **Problema:** gli handler sono closure sullo scope del `new Function`; le API devono essere **parametri** della funzione di compilazione, non solo globali (le globali aiutano ma non bastano in strict mode futuro / CSP).
 
@@ -217,19 +209,18 @@ function buildScriptFunction(scriptBody, options) {
 }
 ```
 
-Checklist:
+Checklist (completata — vedi `getScriptApiBindings()` / `buildScriptExecutor()`):
 
-- [ ] Creare `SCRIPT_API_BINDINGS` (unica fonte verità)
-- [ ] Refactor `compileScript` per usare `buildScriptFunction(processedContent, { useNoOpHandlers: true })`
-- [ ] Refactor `executeScript` (~1952) con stesso builder, `useNoOpHandlers: false`
-- [ ] Mantenere preprocessing async sugli handler (`supportedHandlers` ~1612)
-- [ ] Mantenere estrazione handler in `handlerContainer` (~1741–1746)
+- [x] Fonte unica binding
+- [x] `compileScript` / `executeScript` refactor
+- [x] Preprocessing async handler + `handlerContainer`
 
 #### 1.8 Handler wrapper — scope API in esecuzione ✅ (Fase C)
 
 - [x] `buildHandlerExecutionScope()` — API da `getScriptApiBindings()` + getter/setter variabili (ricostruito a ogni invocazione)
 - [x] `runHandlerWithExecutionScope()` — `with (scriptScope)` senza `handlerFunc.toString()`
-- [ ] Test manuale: handler con `await walk_character(...)` + `add_to_inventory(...)` nello stesso script
+- [x] `applyRuntimeContext()` — variabili, stanza, inventario (`UPDATE_CONTEXT` + `RUN_SCRIPT`)
+- [x] `INVENTORY_STATE` → editor; `serializeInventoryRuntimeSnapshot` / `applyInventoryRuntimeSnapshot`
 
 #### 1.9 `executeScriptHandler` / `RUN_SCRIPT`
 
@@ -240,7 +231,7 @@ Checklist:
 #### 1.10 Reset e load
 
 - [x] `RESET`: clear `gameState.inventory`, `compiledScripts`
-- [ ] `initRuntime`: opzionale reset inventario da save slot futuro
+- [x] `load_game` / `save_game` — stato partita in localStorage (inclusi inventory + dialogueConsumed); non via initRuntime slot
 
 ---
 
@@ -263,20 +254,20 @@ Checklist:
 
 #### 2.3 `window.Game` editor (~6953–7022)
 
-- [ ] **Tenere** per tab Variables UI in editor
-- [ ] Play Test: sincronizzare variabili editor → runtime via `UPDATE_CONTEXT` (~9002) **prima** di ogni script
-- [ ] Dopo handler runtime: sync runtime → editor se si modifica stato in gioco (opzionale, fase 2)
+- [x] **Tenere** per tab Variables UI in editor
+- [x] Play Test: variabili + inventario in `UPDATE_CONTEXT` / `RUN_SCRIPT` context (`buildSandboxContext`)
+- [x] Runtime → editor: messaggio `INVENTORY_STATE` dopo mutazioni inventario (iframe + finestra PLAY via `window.opener`)
 
 #### 2.4 Play Test — `executeScriptInSandbox` (~8954–9000)
 
-- [ ] Inviare `scriptName` stabile (chiave `jsScripts`) nel postMessage, non solo hash temporaneo
-- [ ] Includere in `UPDATE_CONTEXT`: snapshot variabili **e** inventario runtime (dopo implementazione)
+- [x] `scriptName` stabile nel postMessage
+- [x] `UPDATE_CONTEXT` include snapshot inventario (`contents`, `carriedItemKey`)
+- [x] Finestra PLAY: `PLAYTEST_RUNTIME_READY` + push contesto; reload mantiene inventario editor
 - [x] `on_room_change` allineato in editor e runtime (non più `on_room_enter`)
 
-#### 2.5 CodeMirror hints (~6040–6047)
+#### 2.5 CodeMirror hints (~7100)
 
-- [ ] Aggiornare `GAME_API_COMPLETIONS` solo dopo che le API esistono in `SCRIPT_API_BINDINGS`
-- [ ] Opzionale: generare lista da documentazione conmotion
+- [x] `GAME_API_COMPLETIONS` allineato a `getScriptApiBindings()` + 8 handler + `play_animation` / `stop_animation` + alias `Game.*` / `GameAPI.*`
 
 #### 2.6 Serializzazione progetto (~11881)
 
@@ -285,10 +276,11 @@ Checklist:
 
 ---
 
-### 3. `index.html` / `runtime.html`
+### 3. `index.html` / `runtime.html` / `runtime-sandbox.html`
 
-- [ ] Nessun cambio obbligatorio per unificazione API
-- [ ] Verificare che Play Test iframe carichi solo `runtime.js` (già sandbox)
+- [x] Play Test finestra: `runtime.html` + `JS/runtime.js`
+- [x] Sandbox editor: `runtime-sandbox.html` (minimo) + `postMessage` `RUNTIME_READY` / `SANDBOX_PING`
+- [x] Stesse API script in iframe e standalone (`getScriptApiBindings`)
 
 ---
 
@@ -296,9 +288,10 @@ Checklist:
 
 | File | Azione |
 |------|--------|
-| `README.md` | [ ] Allineare elenco 24+ API con `SCRIPT_API_BINDINGS` |
-| `ROADMAP.md` | [ ] Segnare gap API editor/runtime; aggiornare Fase 1.5 |
-| `# 🎮 Funzioni da Implementare - Amianto editor.md` | [ ] Nota: backlog futuro, non stato attuale |
+| `README.md` | [x] Allineato luglio 2026 (offline, `.amnt`, Electron, API) |
+| `ROADMAP.md` | [x] Architettura offline, export desktop editor, stato runtime |
+| `JS/docs-panel.js` | [x] Guida in-app: tab Animations, room animations API, runtime-sandbox |
+| `# 🎮 Funzioni da Implementare - Amianto editor.md` | [x] Legenda backlog vs ✅ runtime |
 
 ---
 
@@ -309,7 +302,7 @@ Checklist:
 1. [x] Definire `getScriptApiBindings()` in `runtime.js` (fonte unica binding)
 2. [x] Implementare `buildScriptExecutor()` + refactor `compileScript` / `executeScript`
 3. [x] Implementare `exposeScriptGlobals()`
-4. [ ] Smoke `add_to_inventory` — previsto dopo Fase B.1 (API non ancora nel runtime)
+4. [x] Smoke `add_to_inventory` — API in `getScriptApiBindings()` (verificare in Fase E)
 
 ### Fase B — Port API mancanti ✅ (maggio 2026)
 
@@ -469,6 +462,25 @@ async function on_hotspot_click(hotspotId) {
 - [ ] Ciclo `wave` visibile; posa idle walking dopo
 - [ ] Con `await`, `show_message` solo a fine animazione
 
+### Script 4c — Animazione stanza
+
+Prerequisito: in editor, tab **Animations** → animazione con frame; tab **Rooms** → istanza posizionata (nome es. `waterfall_main`).
+
+```javascript
+function on_game_start() {
+  play_animation("waterfall_main", true);
+}
+
+function on_hotspot_click(hotspotId) {
+  if (hotspotId === "toggle_water") {
+    stop_animation("waterfall_main");
+  }
+}
+```
+
+- [ ] Ciclo frame visibile in play test
+- [ ] `stop_animation` ferma l'animazione
+
 ### Script 5 — Stanza
 
 ```javascript
@@ -503,8 +515,9 @@ function on_hotspot_click() {
 | `executeScriptHandler` | runtime.js | 2041–2087 |
 | `GameAPI` | runtime.js | 2834–3400 |
 | Esposizione globale parziale | runtime.js | 3402–3468 |
-| `sandboxApi` (dead) | main.js | 7133–7499 |
-| `gameInventory` editor | main.js | 5969–6000 |
+| `sandboxApi` | main.js | **rimosso** |
+| `gameInventory` editor | main.js | **rimosso** |
+| `getScriptApiBindings` | runtime.js | ~5341 |
 | `window.Game` editor | main.js | 6953–7022 |
 | Play Test postMessage | main.js | 8954–9070 |
 | CodeMirror API list | main.js | 6040–6047 |

@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Amianto Runtime - Game Player</title>
+  <title>Amianto Play Test</title>
+  <link rel="icon" type="image/png" href="img/mnt.png">
+  <link rel="apple-touch-icon" href="img/mnt.png">
   <style>
     * {
       margin: 0;
@@ -120,6 +122,34 @@
       border-radius: 4px;
     }
 
+    #runtime-log-hint {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 999;
+      background: rgba(26, 26, 26, 0.92);
+      border: 1px solid #39ff14;
+      color: #39ff14;
+      padding: 6px 16px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 12px;
+      border-radius: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      user-select: none;
+    }
+
+    #runtime-log-hint:hover {
+      background: #39ff14;
+      color: #000;
+    }
+
+    #runtime-log.runtime-log-hidden {
+      display: none;
+    }
+
     .log-entry {
       margin: 2px 0;
       padding: 2px 0;
@@ -150,7 +180,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0, 0, 0, 0.9);
+      background: #000;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -173,34 +203,21 @@
       font-size: 14px;
     }
 
-    #file-input-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 1500;
-      display: flex;
-      gap: 10px;
-      flex-direction: column;
+    #loading-logo {
+      max-width: 160px;
+      height: auto;
+      opacity: 0.95;
+      filter: drop-shadow(0 0 24px rgba(57, 255, 20, 0.25));
     }
 
-    #file-input-container button {
-      background: #2a2a2a;
-      border: 1px solid #39ff14;
-      color: #39ff14;
-      padding: 8px 16px;
-      cursor: pointer;
-      font-size: 12px;
-      border-radius: 4px;
-      transition: all 0.2s;
+    #loading-overlay.playtest-loading {
+      background: #000;
     }
 
-    #file-input-container button:hover {
-      background: #39ff14;
-      color: #000;
-    }
-
-    #file-input {
-      display: none;
+    #loading-overlay.playtest-loading h2 {
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
     }
 
     /* Notifiche messaggi */
@@ -276,14 +293,9 @@
 </head>
 <body>
   <div id="loading-overlay">
-    <h2>Loading Runtime...</h2>
+    <img id="loading-logo" src="img/mnt.png" alt="Amianto" hidden>
+    <h2 id="loading-title">Loading Runtime...</h2>
     <p id="loading-message">Initializing...</p>
-  </div>
-
-  <div id="file-input-container">
-    <button onclick="document.getElementById('file-input').click()">Load Project JSON</button>
-    <button onclick="loadLastSavedProject()">Load Last Save</button>
-    <input type="file" id="file-input" accept=".json" />
   </div>
 
   <div id="game-container">
@@ -292,47 +304,31 @@
     </div>
   </div>
 
-  <div id="runtime-log">
+  <button id="runtime-log-hint" type="button" onclick="toggleRuntimeLog()" title="Apri il log di runtime">
+    Mostra log
+  </button>
+
+  <div id="runtime-log" class="runtime-log-hidden">
     <div id="runtime-log-header">
       <h4>Runtime Log</h4>
       <div id="runtime-log-controls">
         <button onclick="clearRuntimeLog()">Clear</button>
-        <button onclick="toggleRuntimeLog()">Hide</button>
+        <button id="runtime-log-toggle-btn" onclick="toggleRuntimeLog()">Hide</button>
       </div>
     </div>
     <div id="runtime-log-content"></div>
   </div>
 
-  <!-- Supabase SDK per caricare assets -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
-  <script src="JS/supabase-config.js" onerror="console.warn('supabase-config.js not found')"></script>
-  <script src="JS/supabase.js"></script>
-  <script src="JS/runtime.js"></script>
+  <script src="JS/app-mode.js"></script>
+  <script src="JS/local-storage.js"></script>
+  <script src="JS/lib/game-save-format.js"></script>
+  <script src="JS/lib/dialogue-logic.js"></script>
   <script>
-    // Gestione caricamento file
-    document.getElementById('file-input').addEventListener('change', function(e) {
-      const file = e.target.files[0];
-      if (!file) return;
-      
-      const reader = new FileReader();
-      reader.onload = function(event) {
-        try {
-          const projectData = JSON.parse(event.target.result);
-          if (window.initRuntime) {
-            window.initRuntime(projectData);
-          } else {
-            console.error('Runtime not initialized yet');
-            addRuntimeLog('Error: Runtime not initialized yet', 'error');
-          }
-        } catch (error) {
-          console.error('Error loading project:', error);
-          addRuntimeLog('Error loading project: ' + error.message, 'error');
-        }
-      };
-      reader.readAsText(file);
-    });
-
-    // Carica ultimo salvataggio da localStorage
+    // Cache-bust runtime.js (la finestra PLAY restava altrimenti sul JS vecchio)
+    document.write('<script src="JS/runtime.js?v=' + Date.now() + '"><\/script>');
+  </script>
+  <script>
+    // Carica ultimo salvataggio da localStorage (play test dall'editor)
     function loadLastSavedProject() {
       try {
         const jsonString = localStorage.getItem('amiantoLastSavedProjectJson');
@@ -355,7 +351,7 @@
           }
         } else {
           addRuntimeLog('No saved project found in localStorage', 'warning');
-          addRuntimeLog('Use the "Load Project JSON" button to load a project', 'info');
+          addRuntimeLog('Start play test from the editor (Ctrl+9)', 'info');
         }
       } catch (error) {
         console.error('Error loading last save:', error);
@@ -390,14 +386,30 @@
       }
     }
 
-    let logVisible = true;
-    function toggleRuntimeLog() {
-      logVisible = !logVisible;
+    let logVisible = false;
+
+    function applyRuntimeLogVisibility(visible) {
+      logVisible = visible;
       const log = document.getElementById('runtime-log');
+      const hint = document.getElementById('runtime-log-hint');
+      const toggleBtn = document.getElementById('runtime-log-toggle-btn');
       if (log) {
-        log.style.display = logVisible ? 'flex' : 'none';
+        log.classList.toggle('runtime-log-hidden', !visible);
+        log.style.display = visible ? 'flex' : 'none';
+      }
+      if (hint) {
+        hint.style.display = visible ? 'none' : 'block';
+      }
+      if (toggleBtn) {
+        toggleBtn.textContent = visible ? 'Hide' : 'Show';
       }
     }
+
+    function toggleRuntimeLog() {
+      applyRuntimeLogVisibility(!logVisible);
+    }
+
+    applyRuntimeLogVisibility(false);
 
     function escapeHtml(text) {
       const div = document.createElement('div');
@@ -449,6 +461,11 @@
 
     // Ascolta messaggi dall'editor per caricare progetti
     window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'RELOAD_PLAYTEST_PROJECT') {
+        addRuntimeLog('Reload playtest da editor (script aggiornati)...', 'info');
+        loadLastSavedProject();
+        return;
+      }
       // Accetta messaggi da qualsiasi origine (in sviluppo locale)
       if (event.data && event.data.type === 'LOAD_PROJECT' && event.data.projectData) {
         addRuntimeLog('Received project from editor (postMessage)', 'info');
@@ -499,11 +516,11 @@
           addRuntimeLog('Trying to load from OPFS...', 'info');
           loadProjectFromOPFS().catch((error) => {
             addRuntimeLog('OPFS failed: ' + error.message, 'warning');
-            addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
+            addRuntimeLog('No project found. Start play test from the editor (Ctrl+9).', 'info');
           });
         } else {
           addRuntimeLog('OPFS not available', 'info');
-          addRuntimeLog('No project found. Use "Load Project JSON" to load a project.', 'info');
+          addRuntimeLog('No project found. Start play test from the editor (Ctrl+9).', 'info');
         }
       }, 200); // Delay aumentato per assicurarsi che runtime.js sia caricato
     });

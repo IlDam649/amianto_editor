@@ -1,0 +1,98 @@
+{
+  "name": "amianto-editor",
+  "version": "1.0.0",
+  "description": "Amianto Editor — editor offline per avventure point-and-click",
+  "main": "electron/main.js",
+  "author": "Amianto",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node tests/run-smoke.js",
+    "export-game": "node electron/export-cli.js",
+    "dist": "electron-builder --win --linux",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.amianto.editor",
+    "productName": "Amianto Editor",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!node_modules/.cache/**",
+      "!.git/**",
+      "!tmp-*.js",
+      "!_test_*",
+      "!*.md",
+      "!API_UNIFICATION_CHECKLIST.md",
+      "!ROADMAP.md",
+      "!# *",
+      "!agent-transcripts/**",
+      "!tests/**"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "img/mnt.png"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "icon": "img/mnt.png",
+      "maintainer": "Amianto",
+      "synopsis": "Editor offline per avventure point-and-click",
+      "description": "Amianto Editor — editor offline per avventure point-and-click",
+      "desktop": {
+        "entry": {
+          "Name": "Amianto Editor",
+          "Comment": "Editor offline per avventure point-and-click",
+          "Categories": "Development;Graphics;"
+        }
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "it",
+        "en"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "bootstrap": "^5.3.8",
+    "codemirror": "^5.65.16",
+    "normalize.css": "^8.0.1",
+    "sortablejs": "^1.15.2"
+  }
+}

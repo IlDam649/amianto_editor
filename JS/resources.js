@@ -42,40 +42,8 @@
     return deps.getProjectId ? deps.getProjectId() : null;
   }
 
-  async function mergeFirestoreMetadata(projectId, storageEntries, assetType = 'resource') {
-    if (!window.firebaseDB || !window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      return storageEntries;
-    }
-    try {
-      const userId = window.firebaseAuth.currentUser.uid;
-      const snap = await window.firebaseDB
-        .collection('users').doc(userId)
-        .collection('projects').doc(projectId)
-        .collection('assets')
-        .where('type', '==', assetType)
-        .get();
-
-      const metaById = new Map();
-      snap.forEach(doc => {
-        const d = doc.data();
-        const id = d.assetId || doc.id;
-        metaById.set(id, d);
-      });
-
-      return storageEntries.map(entry => {
-        const meta = metaById.get(entry.assetId);
-        if (!meta) return entry;
-        return {
-          ...entry,
-          displayName: meta.name || entry.name,
-          publicUrl: meta.publicUrl || entry.publicUrl,
-          firestoreId: meta.assetId || entry.assetId
-        };
-      });
-    } catch (err) {
-      console.warn('[Resources] Could not load Firestore metadata:', err);
-      return storageEntries;
-    }
+  async function mergeFirestoreMetadata(projectId, storageEntries) {
+    return storageEntries;
   }
 
   async function loadResources() {
@@ -91,17 +59,17 @@
       return [];
     }
 
-    if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-      if (status) status.textContent = 'Supabase Storage is not configured.';
+    if (!window.assetStorage || !window.assetStorage.isAvailable()) {
+      if (status) status.textContent = 'Local storage is not available.';
       return [];
     }
 
     state.loading = true;
-    if (status) status.textContent = 'Loading images from Supabase...';
+    if (status) status.textContent = 'Loading images...';
     if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
 
     try {
-      let entries = await window.supabaseStorage.listProjectResources(projectId);
+      let entries = await window.assetStorage.listProjectResources(projectId);
       entries = await mergeFirestoreMetadata(projectId, entries);
       entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
       state.entries = entries;
@@ -172,7 +140,7 @@
     if (!els.empty) return;
     const isSound = tab === 'sounds';
     if (els.emptyIcon) {
-      els.emptyIcon.className = isSound ? 'fas fa-music' : 'fas fa-image';
+      els.emptyIcon.textContent = isSound ? 'Sound' : 'Image';
     }
     if (els.emptyText) {
       els.emptyText.textContent = isSound
@@ -223,8 +191,24 @@
     if (els.soundSize) els.soundSize.textContent = formatBytes(entry.size);
     if (els.soundId) els.soundId.textContent = entry.assetId || '—';
     if (els.audio && entry.publicUrl) {
-      els.audio.src = entry.publicUrl;
-      els.audio.load();
+      const name = entry.name || entry.fileName || '';
+      const setSrc = (url) => {
+        els.audio.src = url;
+        els.audio.load();
+      };
+      setSrc(entry.publicUrl);
+      // Se il blob ha MIME generico, riassegna audio/ogg per i file OGG
+      if (/\.(ogg|oga|opus)$/i.test(name) && entry.publicUrl.startsWith('blob:')) {
+        fetch(entry.publicUrl)
+          .then((res) => res.blob())
+          .then((blob) => {
+            const t = String(blob.type || '').toLowerCase();
+            if (!t || t === 'application/octet-stream' || t === 'application/ogg') {
+              setSrc(URL.createObjectURL(new Blob([blob], { type: 'audio/ogg' })));
+            }
+          })
+          .catch(() => {});
+      }
     }
   }
 
@@ -246,8 +230,8 @@
 
     const imagesPane = document.getElementById('resources-images-pane');
     const soundsPane = document.getElementById('resources-sounds-pane');
-    if (imagesPane) imagesPane.style.display = tab === 'images' ? 'flex' : 'none';
-    if (soundsPane) soundsPane.style.display = tab === 'sounds' ? 'flex' : 'none';
+    if (imagesPane) imagesPane.style.display = tab === 'images' ? 'block' : 'none';
+    if (soundsPane) soundsPane.style.display = tab === 'sounds' ? 'block' : 'none';
 
     document.querySelectorAll('[data-resource-tab]').forEach(btn => {
       const isActive = btn.getAttribute('data-resource-tab') === tab;
@@ -281,17 +265,17 @@
       return [];
     }
 
-    if (!window.supabaseStorage?.listProjectAudio) {
-      if (status) status.textContent = 'Supabase Storage is not configured.';
+    if (!window.assetStorage?.listProjectAudio) {
+      if (status) status.textContent = 'Local storage is not configured.';
       return [];
     }
 
     soundState.loading = true;
-    if (status) status.textContent = 'Loading audio from Supabase...';
+    if (status) status.textContent = 'Loading audio...';
     if (grid) grid.innerHTML = '<div class="resources-empty"><div class="spinner-border spinner-border-sm text-success"></div> Loading...</div>';
 
     try {
-      let entries = await window.supabaseStorage.listProjectAudio(projectId);
+      let entries = await window.assetStorage.listProjectAudio(projectId);
       entries = await mergeFirestoreMetadata(projectId, entries, 'audio');
       entries.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
       soundState.entries = entries;
@@ -334,11 +318,55 @@
   function playSoundPreview(entry) {
     if (!entry?.publicUrl) return;
     stopSoundPreview();
-    const audio = new Audio(entry.publicUrl);
-    soundState.previewAudio = audio;
-    audio.play().catch(() => {
-      deps.showNotification('Could not play audio file', 'warning');
-    });
+
+    const playBuffer = async (arrayBuffer) => {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error('No AudioContext');
+      const ctx = new AC();
+      if (ctx.state === 'suspended') await ctx.resume();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      soundState.previewAudio = {
+        pause: () => {
+          try { source.stop(0); } catch (_) {}
+          try { ctx.close(); } catch (_) {}
+        },
+        _ctx: ctx,
+        _source: source
+      };
+      source.addEventListener('ended', () => {
+        try { ctx.close(); } catch (_) {}
+        if (soundState.previewAudio && soundState.previewAudio._source === source) {
+          soundState.previewAudio = null;
+        }
+      });
+    };
+
+    (async () => {
+      try {
+        const res = await fetch(entry.publicUrl);
+        const arrayBuffer = await res.arrayBuffer();
+        await playBuffer(arrayBuffer);
+      } catch (err) {
+        // Fallback HTMLAudio con MIME forzato
+        try {
+          const res = await fetch(entry.publicUrl);
+          const blob = await res.blob();
+          const name = entry.name || entry.fileName || '';
+          const mime = /\.(ogg|oga|opus)$/i.test(name) ? 'audio/ogg'
+            : (/\.mp3$/i.test(name) ? 'audio/mpeg' : (blob.type || 'audio/ogg'));
+          const url = URL.createObjectURL(new Blob([blob], { type: mime }));
+          const audio = new Audio(url);
+          soundState.previewAudio = audio;
+          await audio.play();
+        } catch (_) {
+          deps.showNotification('Could not play audio file (unsupported codec?)', 'warning');
+        }
+      }
+    })();
   }
 
   function renderSoundsGrid(entries) {
@@ -363,7 +391,7 @@
 
       const thumb = document.createElement('div');
       thumb.className = 'resource-thumb';
-      thumb.innerHTML = '<i class="fas fa-volume-up" aria-hidden="true"></i>';
+      thumb.innerHTML = 'Audio';
 
       const meta = document.createElement('div');
       meta.className = 'resource-meta';
@@ -375,7 +403,7 @@
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.className = 'btn btn-outline-success btn-sm resource-play-btn w-100';
-      playBtn.innerHTML = '<i class="fas fa-play"></i> Play';
+      playBtn.innerHTML = 'Play';
       playBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         playSoundPreview(entry);
@@ -557,12 +585,13 @@
 
   function toResourcePayload(entry) {
     const projectId = getProjectId();
+    const originalName = entry.displayName || entry.name || entry.fileName;
     return {
       assetId: entry.assetId,
-      fileName: entry.name,
+      fileName: originalName,
       publicUrl: entry.publicUrl,
       storagePath: entry.storagePath,
-      displayName: entry.displayName || entry.name,
+      displayName: originalName,
       projectId,
       type: 'resource',
       subfolder: null
@@ -593,11 +622,12 @@
       await loadResources();
       const entry = state.entries.find(e => e.assetId === finalId) || {
         assetId: finalId,
-        name: fileName,
-        displayName: file.name,
+        name: file.name || fileName,
+        fileName: fileName || file.name,
+        displayName: file.name || fileName,
         publicUrl: downloadURL,
         storagePath: null,
-        relativePath: 'resources/' + fileName
+        relativePath: 'resources/' + (file.name || fileName)
       };
 
       deps.showNotification('Image imported to Resources', 'success');
@@ -619,15 +649,22 @@
       return;
     }
 
-    if (!confirm(`Delete ${state.selectedIds.size} image(s) from Resources?`)) return;
+    const okImages = typeof window.showConfirmDialog === 'function'
+      ? await window.showConfirmDialog({
+          title: 'Delete Resources',
+          message: `Delete ${state.selectedIds.size} image(s) from Resources?`,
+          danger: true
+        })
+      : confirm(`Delete ${state.selectedIds.size} image(s) from Resources?`);
+    if (!okImages) return;
 
     let deleted = 0;
     for (const assetId of state.selectedIds) {
       const entry = state.entries.find(e => e.assetId === assetId);
       if (!entry) continue;
 
-      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
-        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      if (entry.storagePath && window.assetStorage.deleteFileByPath) {
+        await window.assetStorage.deleteFileByPath(entry.storagePath);
       }
 
       if (deps.deleteFirestoreAsset) {
@@ -660,7 +697,7 @@
   function triggerAudioFileInput(multiple, onFiles) {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'audio/*,.mp3,.ogg,.wav,.m4a,.aac,.flac,.webm';
+    input.accept = 'audio/*,.mp3,.ogg,.oga,.opus,.wav,.m4a,.aac,.flac,.webm';
     input.multiple = !!multiple;
     input.onchange = () => {
       const files = Array.from(input.files || []);
@@ -709,15 +746,22 @@
       return;
     }
 
-    if (!confirm(`Delete ${soundState.selectedIds.size} audio file(s)?`)) return;
+    const okSounds = typeof window.showConfirmDialog === 'function'
+      ? await window.showConfirmDialog({
+          title: 'Delete Audio',
+          message: `Delete ${soundState.selectedIds.size} audio file(s)?`,
+          danger: true
+        })
+      : confirm(`Delete ${soundState.selectedIds.size} audio file(s)?`);
+    if (!okSounds) return;
 
     let deleted = 0;
     for (const assetId of soundState.selectedIds) {
       const entry = soundState.entries.find(e => e.assetId === assetId);
       if (!entry) continue;
 
-      if (entry.storagePath && window.supabaseStorage.deleteFileByPath) {
-        await window.supabaseStorage.deleteFileByPath(entry.storagePath);
+      if (entry.storagePath && window.assetStorage.deleteFileByPath) {
+        await window.assetStorage.deleteFileByPath(entry.storagePath);
       }
 
       if (deps.deleteFirestoreAsset) {
@@ -858,9 +902,9 @@
   }
 
   async function loadResourcesForPicker() {
-    if (!window.supabaseStorage?.listProjectResources) return [];
+    if (!window.assetStorage?.listProjectResources) return [];
     const projectId = getProjectId();
-    let entries = await window.supabaseStorage.listProjectResources(projectId);
+    let entries = await window.assetStorage.listProjectResources(projectId);
     return mergeFirestoreMetadata(projectId, entries);
   }
 
@@ -939,16 +983,18 @@
     const inspectorPlayBtn = document.getElementById('resources-inspector-play-btn');
     if (inspectorPlayBtn) {
       inspectorPlayBtn.addEventListener('click', () => {
+        const assetId = soundState.selectedIds.values().next().value;
+        const entry = soundState.entries.find(e => e.assetId === assetId);
+        if (entry) {
+          playSoundPreview(entry);
+          return;
+        }
         const els = getInspectorEls();
         if (els.audio?.src) {
           els.audio.play().catch(() => {
             deps.showNotification('Could not play audio file', 'warning');
           });
-          return;
         }
-        const assetId = soundState.selectedIds.values().next().value;
-        const entry = soundState.entries.find(e => e.assetId === assetId);
-        if (entry) playSoundPreview(entry);
       });
     }
 
@@ -974,23 +1020,29 @@
 
   /** Snapshot per Play Test / runtime (nomi file → assetId + publicUrl). */
   function getResourcesCatalog() {
-    return state.entries.map(entry => ({
-      assetId: entry.assetId,
-      name: entry.name || '',
-      displayName: entry.displayName || entry.name || '',
-      fileName: entry.fileName || entry.name || '',
-      publicUrl: entry.publicUrl || null
-    }));
+    return state.entries.map(entry => {
+      const originalName = entry.displayName || entry.name || entry.fileName || '';
+      return {
+        assetId: entry.assetId,
+        name: originalName,
+        displayName: originalName,
+        fileName: originalName,
+        publicUrl: entry.publicUrl || null
+      };
+    });
   }
 
   /** Solo metadati (senza publicUrl) per Firestore — URL da Supabase/Firestore assets a runtime. */
   function getResourcesCatalogSlim() {
-    return state.entries.map(entry => ({
-      assetId: entry.assetId,
-      name: entry.name || '',
-      displayName: entry.displayName || entry.name || '',
-      fileName: entry.fileName || entry.name || ''
-    }));
+    return state.entries.map(entry => {
+      const originalName = entry.displayName || entry.name || entry.fileName || '';
+      return {
+        assetId: entry.assetId,
+        name: originalName,
+        displayName: originalName,
+        fileName: originalName
+      };
+    });
   }
 
   window.amiantoResources = {
@@ -1004,12 +1056,23 @@
     uploadSound: uploadSoundFile,
     loadImageFromResource: async function (resource) {
       if (!resource || !resource.publicUrl) return null;
+      const url = resource.publicUrl;
+      const skipCors = url.startsWith('data:') || url.startsWith('blob:');
       return new Promise((resolve, reject) => {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
+        if (!skipCors) img.crossOrigin = 'anonymous';
         img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Could not load image'));
-        img.src = resource.publicUrl;
+        img.onerror = () => {
+          if (!skipCors) {
+            const retry = new Image();
+            retry.onload = () => resolve(retry);
+            retry.onerror = () => reject(new Error('Could not load image'));
+            retry.src = url;
+            return;
+          }
+          reject(new Error('Could not load image'));
+        };
+        img.src = url;
       });
     },
     registerImageAsset: function (img, resource) {

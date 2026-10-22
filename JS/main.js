@@ -1,12 +1,12 @@
-// main.js
+﻿// main.js
 
 /* ============================
-   APP STATE - UNICA FONTE DI VERITÀ
+   APP STATE - UNICA FONTE DI VERITÃ€
    ============================ */
 
 /**
  * Stato globale dell'applicazione
- * Questa è l'UNICA fonte di verità per:
+ * Questa Ã¨ l'UNICA fonte di veritÃ  per:
  * - utente loggato
  * - lista progetti
  * - stato di caricamento
@@ -22,7 +22,7 @@ const AppState = {
 
 /**
  * Aggiorna lo stato dell'app e notifica eventuali listener
- * @param {Object} updates - Oggetto con le proprietà da aggiornare
+ * @param {Object} updates - Oggetto con le proprietÃ  da aggiornare
  */
 function updateAppState(updates) {
   Object.assign(AppState, updates);
@@ -45,14 +45,92 @@ function updateAppState(updates) {
   }
 }
 
+function normalizeProject(project, index = null) {
+  if (!project || typeof project !== 'object') {
+    return {
+      settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
+      updatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      source: 'unknown'
+    };
+  }
+
+  const settings = project.settings
+    ? { ...project.settings }
+    : { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` };
+  const stableId = project.id || settings.id || normalizeProjectIdFromName(settings.name);
+  if (stableId) settings.id = stableId;
+
+  return {
+    settings,
+    updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
+    createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+    source: project.source || 'unknown',
+    id: stableId || null,
+    filePath: project.filePath || null
+  };
+}
+
+function normalizeProjectIdFromName(name) {
+  if (!name) return null;
+  return String(name).replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+}
+
+function loadProjectsFromCache(username) {
+  if (!username) {
+    console.warn('[Cache] Username non disponibile per caricamento cache');
+    return [];
+  }
+
+  try {
+    const cacheKey = `amiantoProjects_${username}`;
+    const cachedData = localStorage.getItem(cacheKey);
+    if (!cachedData) return [];
+
+    const projects = JSON.parse(cachedData);
+    if (!Array.isArray(projects)) {
+      console.error('[Cache] Dati cache non sono un array:', typeof projects);
+      return [];
+    }
+
+    return projects.map((p, i) => normalizeProject(p, i));
+  } catch (error) {
+    console.error('[Cache] Errore parsing cache:', error);
+    return [];
+  }
+}
+
+function saveProjectsToCache(username, projects) {
+  if (!username) {
+    console.warn('[Cache] Username non disponibile per salvataggio cache');
+    return;
+  }
+  if (!Array.isArray(projects)) {
+    console.error('[Cache] Tentativo di salvare dati non-array in cache');
+    return;
+  }
+
+  try {
+    localStorage.setItem(`amiantoProjects_${username}`, JSON.stringify(projects));
+  } catch (error) {
+    console.error('[Cache] Errore salvataggio cache:', error);
+  }
+}
+
+function getLocalUser() {
+  if (typeof window.getAmiantoLocalUser === 'function') {
+    return window.getAmiantoLocalUser();
+  }
+  return { username: 'Local', email: '', uid: 'local' };
+}
+
 /**
  * Bootstrap globale dell'applicazione
  * 
- * Responsabilità:
- * - attendere autenticazione Firebase
- * - caricare SEMPRE i progetti da Firestore (non dalla cache)
+ * ResponsabilitÃ :
+ * - inizializzare l'utente locale
+ * - caricare i progetti da cache locale (localStorage)
  * - popolare AppState.projects
- * - aggiornare localStorage solo come cache secondaria
  * - impostare AppState.initialized = true
  * 
  * La UI NON deve essere utilizzabile prima che bootstrapApp sia completata.
@@ -61,128 +139,47 @@ function updateAppState(updates) {
  */
 async function bootstrapApp() {
   console.log('========================================');
-  console.log('🚀 BOOTSTRAP START');
+  console.log('ðŸš€ BOOTSTRAP START');
   console.log('========================================');
-  
+
   updateAppState({ loading: true, error: null });
-  
-  // Mostra loading overlay visivamente
-  showLoadingOverlay('Loading application...');
-  
+  if (typeof window.showLoadingOverlay === 'function') {
+    window.showLoadingOverlay('Loading application...');
+  }
+
   try {
-    // STEP 1: Attendi che Firebase sia disponibile
-    console.log('[BOOTSTRAP] Attesa Firebase...');
-    
-    let firebaseReady = false;
-    let attempts = 0;
-    const maxAttempts = 50; // 5 secondi max
-    
-    while (!firebaseReady && attempts < maxAttempts) {
-      if (window.firebaseAuth && window.firebaseDB) {
-        firebaseReady = true;
-        break;
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      attempts++;
-    }
-    
-    if (!firebaseReady) {
-      throw new Error('Firebase non disponibile dopo 5 secondi');
-    }
-    
-    console.log('[BOOTSTRAP] ✅ Firebase disponibile');
-    
-    // STEP 2: Attendi autenticazione utente
-    console.log('[BOOTSTRAP] Attesa autenticazione...');
-    
-    const currentUser = window.firebaseAuth.currentUser;
-    
-    if (!currentUser) {
-      console.log('[BOOTSTRAP] ⚠️ Nessun utente autenticato - app in modalità login');
-      updateAppState({ 
-        loading: false, 
-        initialized: true,
-        user: null,
-        projects: []
-      });
-      console.log('========================================');
-      console.log('✅ BOOTSTRAP COMPLETE (no user)');
-      console.log('========================================');
-      return;
-    }
-    
-    // STEP 3: Mappa utente
-    const mappedUser = {
-      username: (currentUser.email || '').split('@')[0] || (currentUser.uid ? `user_${currentUser.uid.substring(0, 6)}` : 'User'),
-      email: currentUser.email || '',
-      uid: currentUser.uid
-    };
-    
+    const mappedUser = getLocalUser();
     updateAppState({ user: mappedUser });
-    console.log('[BOOTSTRAP] ✅ USER AUTHENTICATED:', mappedUser.username);
-    
-    // STEP 4: Carica progetti SEMPRE da Firestore (non dalla cache)
-    console.log('[BOOTSTRAP] Caricamento progetti da Firestore...');
-    
-    let projects = [];
-    
-    try {
-      // Usa loadProjectsDirectlyFromFirestore per ottenere dati sempre aggiornati
-      projects = await loadProjectsDirectlyFromFirestore(currentUser.uid);
-      console.log(`[BOOTSTRAP] ✅ PROJECTS LOADED: ${projects.length}`);
-      
-      // Aggiorna localStorage solo come cache secondaria
-      if (mappedUser.username) {
-        saveProjectsToCache(mappedUser.username, projects);
-        console.log('[BOOTSTRAP] Cache localStorage aggiornata');
-      }
-    } catch (error) {
-      console.error('[BOOTSTRAP] ❌ Errore caricamento progetti:', error);
-      
-      // In caso di errore, prova a caricare dalla cache come fallback
-      if (mappedUser.username) {
-        console.log('[BOOTSTRAP] Fallback a cache localStorage...');
-        projects = loadProjectsFromCache(mappedUser.username);
-        console.log(`[BOOTSTRAP] Progetti da cache: ${projects.length}`);
-      }
-      
-      // Se anche la cache è vuota, continua comunque (utente nuovo)
-      updateAppState({ error: error.message || 'Error loading projects' });
-    }
-    
-    // STEP 5: Popola AppState
-    updateAppState({ 
-      projects: projects,
+    const projects = loadProjectsFromCache(mappedUser.username);
+    updateAppState({
+      projects,
       loading: false,
       initialized: true
     });
-    
-    console.log('========================================');
-    console.log('✅ BOOTSTRAP COMPLETE');
-    console.log(`   User: ${mappedUser.username}`);
-    console.log(`   Projects: ${projects.length}`);
-    console.log('========================================');
-    
+    console.log(`[BOOTSTRAP] âœ… ${projects.length} progetti locali`);
   } catch (error) {
-    console.error('[BOOTSTRAP] ❌ Errore critico:', error);
-    updateAppState({ 
+    console.error('[BOOTSTRAP] âŒ Errore:', error);
+    updateAppState({
       loading: false,
-      initialized: true, // Inizializzato anche in caso di errore per permettere login
+      initialized: true,
       error: error.message || 'Error during bootstrap'
     });
-    
-    console.log('========================================');
-    console.log('⚠️ BOOTSTRAP COMPLETE (con errori)');
-    console.log('========================================');
   }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
 
+  // Dialoghi Electron-safe (JS/editor-dialogs.js) — disponibili subito per tutti i pulsanti
+  const showInputPrompt = (opts) => window.showInputPrompt(opts);
+  const showConfirmDialog = (opts) => window.showConfirmDialog(opts);
+  const showChoicePrompt = (opts) => window.showChoicePrompt(opts);
+  const showVariableFormDialog = (opts) => window.showVariableFormDialog(opts);
+
   /* ============================
      PART 1 - Sistema Tabs Avanzato
      ============================ */
-  const sectionButtons = document.querySelectorAll(".section-btn");
+  const sectionButtons = document.querySelectorAll(".section-btn[data-section]");
+  const playtestBtn = document.getElementById('nav-playtest-btn');
   const sections = document.querySelectorAll(".section");
   
   // Stato globale per le tabs
@@ -192,11 +189,22 @@ document.addEventListener("DOMContentLoaded", () => {
     notifications: new Map()
   };
 
+  function launchPlaytest() {
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('Please select or create a project first', 'warning');
+      return;
+    }
+    if (typeof window.startPlayTest === 'function') {
+      window.startPlayTest();
+    }
+  }
+
   // Funzione migliorata per mostrare una sezione
   function showSectionById(id, addToHistory = true) {
     if (!id || tabState.currentTab === id) return;
     
-    // Blocca cambio tab se non c'è progetto aperto (tranne Projects e Docs)
+    // Blocca cambio tab se non c'Ã¨ progetto aperto (tranne Projects e Docs)
     if (id !== 'projects' && id !== 'docs') {
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (!activeProjectName) {
@@ -218,7 +226,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     
-    // Blocca cambio se il bottone è disabilitato
+    // Blocca cambio se il bottone Ã¨ disabilitato
     if (targetButton.disabled) {
       return;
     }
@@ -332,7 +340,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Improved initialization
   function initializeTabs() {
-    // Controlla se c'è un progetto aperto e abilita/disabilita tab di conseguenza
+    // Controlla se c'Ã¨ un progetto aperto e abilita/disabilita tab di conseguenza
     const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
     enableOtherTabs(!!activeProjectName);
     
@@ -356,9 +364,30 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.addEventListener("keydown", handleKeyboardNavigation);
     });
 
+    if (playtestBtn) {
+      playtestBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (playtestBtn.disabled) return;
+        launchPlaytest();
+      });
+    }
+
     // Support for keyboard shortcuts (Ctrl + number)
     document.addEventListener('keydown', (e) => {
-      if (e.ctrlKey && e.key >= '1' && e.key <= '9') {
+      if (!e.ctrlKey) return;
+      if (e.key === '9') {
+        e.preventDefault();
+        if (playtestBtn && !playtestBtn.disabled) {
+          launchPlaytest();
+        }
+        return;
+      }
+      if (e.key === '8') {
+        e.preventDefault();
+        showSectionById('docs');
+        return;
+      }
+      if (e.key >= '1' && e.key <= '9') {
         const index = parseInt(e.key) - 1;
         if (index < sectionButtons.length) {
           e.preventDefault();
@@ -390,20 +419,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Event listeners per pulsanti nella tab Projects
-  // Usa un listener che si attiva dopo che il DOM è caricato e le funzioni sono disponibili
+  // Usa un listener che si attiva dopo che il DOM Ã¨ caricato e le funzioni sono disponibili
   setTimeout(() => {
     // Pulsante Create Project
     const btnCreateProject = document.getElementById('btn-create-project-in-tab');
     if (btnCreateProject && !btnCreateProject.hasAttribute('data-listener-attached')) {
       btnCreateProject.setAttribute('data-listener-attached', 'true');
       btnCreateProject.addEventListener('click', async () => {
-        const projectName = prompt('Enter project name:');
-        if (!projectName || !projectName.trim()) return;
-        
         try {
-          await window.createNewProject(projectName.trim(), true);
-          // Ricarica la lista progetti
-          await loadAndRenderProjectsTab();
+          const created = await window.createNewProject(null, true);
+          if (created && created.ok) {
+            await loadAndRenderProjectsTab();
+          }
         } catch (error) {
           console.error('[ProjectsTab] Errore creazione progetto:', error);
           showNotification('Error creating project', 'error');
@@ -411,25 +438,26 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
     
-    // Pulsante Refresh
-    const btnRefreshProjects = document.getElementById('btn-refresh-projects');
-    if (btnRefreshProjects && !btnRefreshProjects.hasAttribute('data-listener-attached')) {
-      btnRefreshProjects.setAttribute('data-listener-attached', 'true');
-      btnRefreshProjects.addEventListener('click', async () => {
-        btnRefreshProjects.disabled = true;
-        btnRefreshProjects.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+    // Pulsante Load Project
+    const btnLoadProject = document.getElementById('btn-load-project');
+    if (btnLoadProject && !btnLoadProject.hasAttribute('data-listener-attached')) {
+      btnLoadProject.setAttribute('data-listener-attached', 'true');
+      btnLoadProject.addEventListener('click', async () => {
+        btnLoadProject.disabled = true;
         try {
-          await loadAndRenderProjectsTab();
-          showNotification('Projects list refreshed', 'success');
+          await window.loadProjectFromFile();
         } catch (error) {
-          console.error('[ProjectsTab] Errore refresh progetti:', error);
-          showNotification('Error refreshing projects', 'error');
+          if (error && error.name !== 'AbortError') {
+            console.error('[ProjectsTab] Errore caricamento progetto:', error);
+            showNotification('Error loading project', 'error');
+          }
         } finally {
-          btnRefreshProjects.disabled = false;
-          btnRefreshProjects.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh List';
+          btnLoadProject.disabled = false;
         }
       });
     }
+
+    // Export Game: bound via onclick on #btn-export-standalone (avoids double-fire / missed setTimeout)
   }, 1000);
 
   // Expose global functions for external use
@@ -441,7 +469,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // Safe stub to avoid early ReferenceError when tabs fire before full initialization
-  let updateCursorTargets = function() {};
+  let updateCursorTargets = function() {}; // legacy no-op (cursors are per-category now)
   window.updateCursorTargets = updateCursorTargets;
 
 
@@ -459,18 +487,24 @@ document.addEventListener("DOMContentLoaded", () => {
   // Rooms state: each room keeps its own layers and walkable
   let rooms = new Map();
   let currentRoomId = null;
+  /** Incrementato a ogni cambio progetto: ignora callback async del caricamento precedente. */
+  let projectLoadGeneration = 0;
   // convenient references to current room data
   let background = null;
   let foregrounds = [];
   let sceneObjects = [];
+  let animationInstances = [];
   let selectedForegroundId = null;
   let selectedSceneObjectId = null;
+  let selectedAnimationInstanceId = null;
   // GUI overlay: background image and button rectangles
   let guiBackground = null;
   let guiButtons = []; // { id, name, x, y, w, h, backgroundImage: Image|null, text: string }
   let selectedGuiButtonId = null;
   let isDrawingGuiButton = false;
   let guiDrawStart = null;
+  /** @type {'button'|'saveSlot'} */
+  let guiDrawMode = 'button';
   let isDraggingGuiButton = false;
   let draggedGuiButton = null;
   let guiButtonDragOffset = { x: 0, y: 0 };
@@ -517,6 +551,8 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedHotspotVertexIndex = -1;
     isDraggingObject = false;
     draggedObject = null;
+    isDraggingAnimationInstance = false;
+    draggedAnimationInstance = null;
     isDraggingScalingLine = false;
     draggedScalingLineType = null;
   }
@@ -531,8 +567,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const imageAssetMap = new Map();
   window.amiantoImageAssetMap = imageAssetMap;
   
-  // Contextual cursors management
-  let contextualCursors = []; // Array of cursor objects: { id, targetType, targetId, cursorImage, actionText, scriptName }
+  // Category cursors: one definition per interaction category
+  // { id, category, cursorImage, actionText, scriptName, pivotX, pivotY }
+  const CURSOR_CATEGORIES = ['default', 'look', 'use', 'talk', 'grab', 'exit', 'walk', 'wait', 'inactive'];
+  const CURSOR_CATEGORY_LABELS = {
+    default: 'default — normal pointer',
+    look: 'look — examine',
+    use: 'use — interact',
+    talk: 'talk — speak',
+    grab: 'grab — take / hold',
+    exit: 'exit — leave room',
+    walk: 'walk — move',
+    wait: 'wait — busy',
+    inactive: 'inactive — not interactive'
+  };
+  let contextualCursors = [];
   let selectedCursorId = null;
   let resizeHandle = null; // 'nw', 'ne', 'sw', 'se'
   // Walkable area polygon and visibility
@@ -566,6 +615,17 @@ document.addEventListener("DOMContentLoaded", () => {
   let isDraggingObject = false;
   let draggedObject = null;
   let dragOffset = { x: 0, y: 0 };
+
+  // Room animation catalog and editor preview
+  const roomAnimationsCatalog = new Map(); // animId -> { id, name, fps, loop, layer, frames: [{ img, name, orderIndex }] }
+  let selectedRoomAnimationId = null;
+  let roomAnimationPreviewTimer = null;
+  let roomAnimationPreviewIndex = 0;
+
+  // Room animation instance drag state
+  let isDraggingAnimationInstance = false;
+  let draggedAnimationInstance = null;
+  let animationInstanceDragOffset = { x: 0, y: 0 };
   
   // Character pivot management
 
@@ -653,12 +713,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // ensure at least one room exists
     if (!currentRoomId) {
       const rid = uid('room');
-      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+      rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       currentRoomId = rid;
       bindRoomRefs();
       refreshRoomsSelector();
     }
-    requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+    requestAnimationFrame(() => alignEditorViewTopLeft());
   }
 
   // ===== Character scaling controls & UI =====
@@ -672,6 +732,45 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       // Silently fail if elements don't exist yet (e.g., during initial load)
       console.debug('[Scaling] UI elements not available yet:', error);
+    }
+  }
+
+  function isStaleProjectLoad(loadGen) {
+    return loadGen !== projectLoadGeneration;
+  }
+
+  /** Azzera stato canvas stanza (walkable, hotspot, layer) prima di caricare un altro progetto. */
+  function resetEditorRoomGlobals() {
+    background = null;
+    foregrounds = [];
+    sceneObjects = [];
+    selectedForegroundId = null;
+    selectedSceneObjectId = null;
+    walkableArea = [];
+    hotspots = [];
+    activeHotspotId = null;
+    selectedWalkableVertexIndex = -1;
+    selectedHotspotVertexIndex = -1;
+    draggedWalkableVertexIndex = -1;
+    draggedHotspotVertexIndex = -1;
+    scalingForegroundY = null;
+    scalingBackgroundY = null;
+    isDrawingWalkable = false;
+    isDrawingHotspot = false;
+    disableRoomCanvasEditing();
+  }
+
+  async function refreshResourcesForActiveProject() {
+    if (!window.amiantoResources) return;
+    try {
+      if (typeof window.amiantoResources.refresh === 'function') {
+        await window.amiantoResources.refresh();
+      }
+      if (typeof window.amiantoResources.refreshSounds === 'function') {
+        await window.amiantoResources.refreshSounds();
+      }
+    } catch (err) {
+      console.warn('[Project] Resources refresh failed:', err);
     }
   }
 
@@ -692,32 +791,26 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       
-      background = r.background;
+      background = r.background || null;
+      foregrounds = Array.isArray(r.foregrounds) ? r.foregrounds : [];
     
-    // IMPORTANTE: Non sovrascrivere foregrounds se sono già caricati e la room ha foregrounds
-    // Questo previene la perdita di foreground durante il reload
-    if (Array.isArray(r.foregrounds) && r.foregrounds.length > 0) {
-      foregrounds = r.foregrounds;
-      console.log(`[bindRoomRefs] ✓ Foreground ripristinati da room: ${foregrounds.length} layer`);
-    } else if (!Array.isArray(foregrounds) || foregrounds.length === 0) {
-      // Solo se non ci sono foreground nello stato globale, inizializza array vuoto
-      foregrounds = [];
-      console.log(`[bindRoomRefs] Nessun foreground nella room, inizializzato array vuoto`);
-    } else {
-      // Mantieni i foreground esistenti se la room non ne ha
-      console.log(`[bindRoomRefs] Mantenuti foreground esistenti nello stato globale: ${foregrounds.length} layer`);
+    sceneObjects = Array.isArray(r.sceneObjects) ? r.sceneObjects : [];
+    animationInstances = Array.isArray(r.animationInstances) ? r.animationInstances : [];
+    // Keep selection only if still valid; do not auto-select (toggle must allow empty selection)
+    if (selectedForegroundId && !foregrounds.some(f => f.id === selectedForegroundId)) {
+      selectedForegroundId = null;
     }
-    
-    sceneObjects = r.sceneObjects;
-    selectedForegroundId = foregrounds && foregrounds.length ? foregrounds[0].id : null;
-    selectedSceneObjectId = sceneObjects && sceneObjects.length ? sceneObjects[0].id : null;
-    walkableArea = r.walkableArea;
-    // initialize hotspots container if missing for backward compatibility
+    if (selectedSceneObjectId && !sceneObjects.some(o => o.id === selectedSceneObjectId)) {
+      selectedSceneObjectId = null;
+    }
+    if (selectedAnimationInstanceId && !animationInstances.some(i => i.id === selectedAnimationInstanceId)) {
+      selectedAnimationInstanceId = null;
+    }
+    walkableArea = Array.isArray(r.walkableArea) ? r.walkableArea : [];
     if (!Array.isArray(r.hotspots)) r.hotspots = [];
     hotspots = r.hotspots;
-    // auto select first hotspot if none or if previous selection non valido
-    if (!activeHotspotId || !hotspots.some(h => h.id === activeHotspotId)) {
-      activeHotspotId = hotspots.length > 0 ? hotspots[0].id : null;
+    if (activeHotspotId && !hotspots.some(h => h.id === activeHotspotId)) {
+      activeHotspotId = null;
     }
     // Load character scaling data
     try {
@@ -761,7 +854,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Update displays
     document.getElementById('zoomLevel').textContent = Math.round(editorState.zoom * 100) + '%';
-    document.getElementById('viewportSize').textContent = `${gameViewport.width}×${gameViewport.height}`;
+    document.getElementById('viewportSize').textContent = `${gameViewport.width}Ã—${gameViewport.height}`;
   }
 
   // Draw image at original size with offset
@@ -771,13 +864,13 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     
-    // Controlla se l'immagine è completamente caricata
-    // Usa naturalWidth/naturalHeight per maggiore affidabilità
+    // Controlla se l'immagine Ã¨ completamente caricata
+    // Usa naturalWidth/naturalHeight per maggiore affidabilitÃ 
     const width = img.naturalWidth || img.width;
     const height = img.naturalHeight || img.height;
     
     if (!width || !height) {
-      // Se l'immagine non è ancora caricata, aspetta e ridisegna
+      // Se l'immagine non Ã¨ ancora caricata, aspetta e ridisegna
       if (!img.complete) {
         console.warn('[drawImageAtOriginalSize] Image not fully loaded yet, waiting...', {
           complete: img.complete,
@@ -787,13 +880,13 @@ document.addEventListener("DOMContentLoaded", () => {
           height: img.height
         });
         
-        // Se non c'è già un handler onload, aggiungilo per ridisegnare quando l'immagine è pronta
+        // Se non c'Ã¨ giÃ  un handler onload, aggiungilo per ridisegnare quando l'immagine Ã¨ pronta
         if (!img._onloadHandlerAdded) {
           img._onloadHandlerAdded = true;
           const originalOnload = img.onload;
           img.onload = () => {
             if (originalOnload) originalOnload.call(img);
-            // Ridisegna quando l'immagine è caricata
+            // Ridisegna quando l'immagine Ã¨ caricata
             setTimeout(() => redraw(), 10);
           };
         }
@@ -888,7 +981,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return `${px}, ${py}`;
   }
 
-  /** Visibilità/interattività a runtime (playtest); in editor si disegna sempre. */
+  /** VisibilitÃ /interattivitÃ  a runtime (playtest); in editor si disegna sempre. */
   function isSceneObjectRuntimeVisible(obj) {
     return obj && obj.visible !== false;
   }
@@ -926,6 +1019,102 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     return null;
+  }
+
+  function getRoomAnimationDef(animationId) {
+    if (!animationId) return null;
+    return roomAnimationsCatalog.get(animationId) || null;
+  }
+
+  function getRoomAnimationFirstFrameImg(animDefOrId) {
+    const animDef = typeof animDefOrId === 'string' ? getRoomAnimationDef(animDefOrId) : animDefOrId;
+    if (!animDef || !Array.isArray(animDef.frames) || !animDef.frames.length) return null;
+    const frame = animDef.frames[0];
+    return frame && frame.img ? frame.img : null;
+  }
+
+  function getImageDrawSize(img) {
+    if (!img) return { w: 0, h: 0 };
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    return { w, h };
+  }
+
+  function findAnimationInListAtPoint(list, worldX, worldY) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const inst = list[i];
+      if (!inst || inst.visible === false) continue;
+      const img = getRoomAnimationFirstFrameImg(inst.animationId);
+      if (!img) continue;
+      const { w, h } = getImageDrawSize(img);
+      if (!w || !h) continue;
+      const ix = inst.x || 0;
+      const iy = inst.y || 0;
+      if (worldX >= ix && worldX <= ix + w && worldY >= iy && worldY <= iy + h) {
+        return inst;
+      }
+    }
+    return null;
+  }
+
+  function getAnimationInstanceAtPoint(worldX, worldY) {
+    const fgInstances = animationInstances.filter(i => (i.layer || 'background') === 'foreground');
+    const bgInstances = animationInstances.filter(i => (i.layer || 'background') !== 'foreground');
+    return findAnimationInListAtPoint(fgInstances, worldX, worldY)
+      || findAnimationInListAtPoint(bgInstances, worldX, worldY);
+  }
+
+  /** Hit-test in draw order: foreground anims → scene objects → background anims */
+  function getTopRoomDraggableAtPoint(worldX, worldY) {
+    const fgInstances = animationInstances.filter(i => (i.layer || 'background') === 'foreground');
+    const fgAnim = findAnimationInListAtPoint(fgInstances, worldX, worldY);
+    if (fgAnim) return { type: 'animation', target: fgAnim };
+    const obj = getObjectAtPoint(worldX, worldY);
+    if (obj) return { type: 'object', target: obj };
+    const bgInstances = animationInstances.filter(i => (i.layer || 'background') !== 'foreground');
+    const bgAnim = findAnimationInListAtPoint(bgInstances, worldX, worldY);
+    if (bgAnim) return { type: 'animation', target: bgAnim };
+    return null;
+  }
+
+  function drawRoomAnimationInstance(inst, frameIndex) {
+    if (!inst || inst.visible === false) return;
+    const animDef = getRoomAnimationDef(inst.animationId);
+    if (!animDef || !animDef.frames || !animDef.frames.length) return;
+    const idx = Math.max(0, Math.min(frameIndex, animDef.frames.length - 1));
+    const frame = animDef.frames[idx];
+    const img = frame && frame.img ? frame.img : null;
+    if (!img) return;
+    const { w, h } = getImageDrawSize(img);
+    if (!w || !h) return;
+    const ix = inst.x || 0;
+    const iy = inst.y || 0;
+    ctx.drawImage(img, ix, iy, w, h);
+    if (inst.id === selectedAnimationInstanceId) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(ix, iy, w, h);
+      ctx.restore();
+    }
+    if (isDraggingAnimationInstance && draggedAnimationInstance && draggedAnimationInstance.id === inst.id) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(ix, iy, w, h);
+      ctx.restore();
+    }
+  }
+
+  function updateAnimationInstanceUI(inst) {
+    const listItem = document.querySelector(`[data-animation-instance-id="${inst.id}"]`);
+    if (!listItem) return;
+    const positionInfo = listItem.querySelector('.animation-instance-position');
+    if (positionInfo) {
+      positionInfo.textContent = `Position: ${Math.round(inst.x)}, ${Math.round(inst.y)}`;
+    }
   }
 
   // Update scene object UI position info
@@ -1112,6 +1301,160 @@ document.addEventListener("DOMContentLoaded", () => {
       return; // skip rooms rendering
     }
 
+    if (activeTab === 'cursors') {
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cursor = selectedCursorId
+        ? contextualCursors.find(c => c.id === selectedCursorId)
+        : null;
+      const cursorImg = cursor && cursor.cursorImage ? cursor.cursorImage : null;
+
+      if (!cursor) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Select or create a cursor category to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      if (!cursorImg || !cursorImg.complete || cursorImg.naturalWidth <= 0) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(cursorImg ? 'Loading cursor image...' : 'Browse Resources to set a cursor image', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      // Draw cursor image at (0,0) like character frames
+      const dx = 0;
+      const dy = 0;
+      ctx.drawImage(cursorImg, Math.round(dx), Math.round(dy));
+
+      // Ensure pivot defaults (click point) — top-left is CSS cursor default
+      if (cursor.pivotX === undefined || cursor.pivotY === undefined) {
+        cursor.pivotX = 0;
+        cursor.pivotY = 0;
+      }
+
+      const pivotX = dx + cursor.pivotX;
+      const pivotY = dy + cursor.pivotY;
+      const pivotRadius = 8 / editorState.zoom;
+      const crosshairSize = 12 / editorState.zoom;
+      const pivotLineWidth = Math.max(1, 2 / editorState.zoom);
+      const crosshairLineWidth = Math.max(0.5, 1.5 / editorState.zoom);
+
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+      ctx.beginPath();
+      ctx.arc(Math.round(pivotX), Math.round(pivotY), pivotRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = pivotLineWidth;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.lineWidth = crosshairLineWidth;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(pivotX - crosshairSize), Math.round(pivotY));
+      ctx.lineTo(Math.round(pivotX + crosshairSize), Math.round(pivotY));
+      ctx.moveTo(Math.round(pivotX), Math.round(pivotY - crosshairSize));
+      ctx.lineTo(Math.round(pivotX), Math.round(pivotY + crosshairSize));
+      ctx.stroke();
+
+      // Overlay info
+      ctx.save();
+      ctx.resetTransform();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(10, 10, 280, 65);
+      ctx.fillStyle = '#39ff14';
+      ctx.font = '12px monospace';
+      ctx.fillText(`Category: ${cursor.category}`, 15, 28);
+      ctx.fillText(`Size: ${cursorImg.naturalWidth}×${cursorImg.naturalHeight}`, 15, 45);
+      ctx.fillText(`Click point: (${cursor.pivotX}, ${cursor.pivotY})`, 15, 62);
+      ctx.restore();
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
+    }
+
+    if (activeTab === 'animations') {
+      const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+
+      if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
+        canvas.width = gameViewport.width;
+        canvas.height = gameViewport.height;
+      }
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (!animDef || !animDef.frames || !animDef.frames.length) {
+        ctx.save();
+        ctx.resetTransform();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(gameViewport.width / 2 - 180, gameViewport.height / 2 - 20, 360, 40);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(animDef ? 'No frames loaded for this animation' : 'Select an animation to preview', gameViewport.width / 2, gameViewport.height / 2);
+        ctx.restore();
+        return;
+      }
+
+      const frameIndex = roomAnimationPreviewIndex % animDef.frames.length;
+      const frame = animDef.frames[frameIndex];
+      const frameImg = frame && frame.img ? frame.img : null;
+
+      const { x: centerOffsetX, y: centerOffsetY } = getCanvasCenterOffset();
+      ctx.save();
+      ctx.translate(centerOffsetX + editorState.panX, centerOffsetY + editorState.panY);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      if (frameImg && frameImg.complete && frameImg.naturalWidth > 0) {
+        ctx.drawImage(frameImg, 0, 0);
+        if (roomAnimationPreviewTimer) {
+          ctx.save();
+          ctx.resetTransform();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(10, 10, 280, 65);
+          ctx.fillStyle = '#39ff14';
+          ctx.font = '12px monospace';
+          ctx.fillText(`Animation: ${animDef.name}`, 15, 28);
+          ctx.fillText(`Frame: ${frameIndex + 1}/${animDef.frames.length}`, 15, 45);
+          ctx.fillText(`FPS: ${animDef.fps || 8} | Layer: ${animDef.layer || 'background'}`, 15, 62);
+          ctx.restore();
+        }
+      }
+
+      ctx.strokeStyle = '#39ff14';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, gameViewport.width, gameViewport.height);
+      ctx.restore();
+      return;
+    }
+
     if (activeTab === 'inventory') {
       if (canvas.width !== gameViewport.width || canvas.height !== gameViewport.height) {
         canvas.width = gameViewport.width;
@@ -1196,7 +1539,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Default (Rooms tab): draw scene
     // Draw background scaled to viewport size (always matches the green rectangle)
-    // L'origine (0,0) è ora nell'angolo in alto a sinistra del contenuto centrato
+    // L'origine (0,0) Ã¨ ora nell'angolo in alto a sinistra del contenuto centrato
     if (background) {
       // Draw background scaled to viewport dimensions
       ctx.drawImage(background, 0, 0, gameViewport.width, gameViewport.height);
@@ -1205,6 +1548,11 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.fillStyle = "#111";
       ctx.fillRect(0, 0, gameViewport.width, gameViewport.height);
     }
+
+    // Background-layer room animations (after background, before scene objects)
+    animationInstances
+      .filter(inst => (inst.layer || 'background') !== 'foreground')
+      .forEach(inst => drawRoomAnimationInstance(inst, 0));
 
     // Draw scene objects at their positions (sempre in editor; attenuati se off a runtime)
     for (let obj of sceneObjects) {
@@ -1237,18 +1585,26 @@ document.addEventListener("DOMContentLoaded", () => {
           ctx.restore();
         }
 
-        // Draw selection outline if this is the dragged object
-        // Only draw outline if no hotspot is selected (scene objects are locked)
-        if (!activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id) {
+        // Draw selection / drag outline for scene objects
+        const isObjSelected = !activeHotspotId && obj.id === selectedSceneObjectId;
+        const isObjDragging = !activeHotspotId && isDraggingObject && draggedObject && draggedObject.id === obj.id;
+        if (isObjSelected || isObjDragging) {
           ctx.save();
-          ctx.strokeStyle = runtimeVisible ? 'rgba(57,255,20,0.8)' : 'rgba(160,160,160,0.9)';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([5, 5]);
+          ctx.strokeStyle = runtimeVisible
+            ? (isObjDragging ? 'rgba(57,255,20,0.8)' : 'rgba(57,255,20,0.9)')
+            : 'rgba(160,160,160,0.9)';
+          ctx.lineWidth = isObjDragging ? 3 : 2;
+          ctx.setLineDash(isObjDragging ? [5, 5] : [4, 4]);
           ctx.strokeRect(objX, objY, obj.img.width, obj.img.height);
           ctx.restore();
         }
       }
     }
+
+    // Foreground-layer room animations (after scene objects, before foreground layers)
+    animationInstances
+      .filter(inst => (inst.layer || 'background') === 'foreground')
+      .forEach(inst => drawRoomAnimationInstance(inst, 0));
 
     // Draw foregrounds - after scene objects, before GUI
     // Support same transforms as scene objects: x, y, rotationRad, scaleX, scaleY, visible
@@ -1317,24 +1673,30 @@ document.addEventListener("DOMContentLoaded", () => {
           
           ctx.drawImage(btn.backgroundImage, drawX, drawY, drawW, drawH);
         } else {
-          // Default button appearance
-          ctx.strokeStyle = 'rgba(0, 200, 255, 0.9)';
-          ctx.fillStyle = 'rgba(0, 200, 255, 0.12)';
+          // Default button appearance (save slots: inventory-like purple)
+          const isSlot = btn.role === 'saveSlot';
+          ctx.strokeStyle = isSlot ? 'rgba(180, 100, 255, 0.95)' : 'rgba(0, 200, 255, 0.9)';
+          ctx.fillStyle = isSlot ? 'rgba(180, 100, 255, 0.18)' : 'rgba(0, 200, 255, 0.12)';
           ctx.lineWidth = 2;
+          ctx.setLineDash(isSlot ? [5, 4] : []);
           ctx.beginPath();
           ctx.rect(btn.x, btn.y, btn.w, btn.h);
           ctx.fill();
           ctx.stroke();
+          ctx.setLineDash([]);
         }
         
         // Draw button text if available
-        if (btn.text && btn.text.trim() !== '') {
+        const labelText = (btn.text && btn.text.trim() !== '')
+          ? btn.text
+          : (btn.role === 'saveSlot' ? (btn.name || `Slot ${btn.slotKey || ''}`) : '');
+        if (labelText) {
           ctx.save();
           ctx.fillStyle = '#ffffff';
           ctx.font = 'bold 14px Arial';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(btn.text, btn.x + btn.w/2, btn.y + btn.h/2);
+          ctx.fillText(labelText, btn.x + btn.w/2, btn.y + btn.h/2);
           ctx.restore();
         }
         
@@ -1573,6 +1935,21 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (e.button === 0 && !e.ctrlKey && !isDrawingWalkable && !isDrawingGuiButton && !isDrawingInventorySlot) { // Left click without Ctrl
         // Check for character pivot interaction (only in characters tab)
         const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+        if (activeTab === 'cursors') {
+          const cursor = selectedCursorId
+            ? contextualCursors.find(c => c.id === selectedCursorId)
+            : null;
+          if (cursor && cursor.cursorImage && cursor.cursorImage.complete && cursor.cursorImage.naturalWidth > 0) {
+            const worldPos = screenToWorld(e.clientX, e.clientY);
+            e.preventDefault();
+            e.stopPropagation();
+            cursor.pivotX = Math.round(worldPos.x);
+            cursor.pivotY = Math.round(worldPos.y);
+            updateCursorPivotLabel(cursor);
+            redraw();
+            return;
+          }
+        }
         if (activeTab === 'characters') {
           const sel = document.getElementById('character-selector');
           const who = sel ? sel.value : '';
@@ -1715,26 +2092,73 @@ document.addEventListener("DOMContentLoaded", () => {
             return; // Exit early to prevent other handlers
           }
         }
-        // Check if clicking on a scene object (rooms tab only)
+        // Check if clicking on a scene object or room animation (rooms tab only)
         if (activeTab === 'rooms') {
           const worldPos = screenToWorld(e.clientX, e.clientY);
-          const clickedObject = getObjectAtPoint(worldPos.x, worldPos.y);
-          
-          if (clickedObject) {
-            // Lock scene objects if a hotspot is selected
-            if (activeHotspotId) {
-              return;
+          // Lock scene objects / animations if a hotspot is selected
+          if (activeHotspotId) {
+            return;
+          }
+
+          // Selection locks the other type so overlapping items don't steal the drag
+          const animLocked = !!selectedSceneObjectId;
+          const objectLocked = !!selectedAnimationInstanceId;
+
+          let hit = null;
+          if (objectLocked && !animLocked) {
+            const animHit = getAnimationInstanceAtPoint(worldPos.x, worldPos.y);
+            if (animHit) hit = { type: 'animation', target: animHit };
+          } else if (animLocked && !objectLocked) {
+            const objHit = getObjectAtPoint(worldPos.x, worldPos.y);
+            if (objHit) hit = { type: 'object', target: objHit };
+          } else {
+            hit = getTopRoomDraggableAtPoint(worldPos.x, worldPos.y);
+          }
+
+          // Prefer the currently selected item when the click is on it
+          if (selectedAnimationInstanceId && !animLocked) {
+            const selectedAnim = animationInstances.find(i => i.id === selectedAnimationInstanceId);
+            if (selectedAnim && findAnimationInListAtPoint([selectedAnim], worldPos.x, worldPos.y)) {
+              hit = { type: 'animation', target: selectedAnim };
             }
+          } else if (selectedSceneObjectId && !objectLocked) {
+            const selectedObj = sceneObjects.find(o => o.id === selectedSceneObjectId);
+            if (selectedObj && selectedObj.img) {
+              const ox = selectedObj.x || 0;
+              const oy = selectedObj.y || 0;
+              const { w, h } = getImageDrawSize(selectedObj.img);
+              if (w && h && worldPos.x >= ox && worldPos.x <= ox + w && worldPos.y >= oy && worldPos.y <= oy + h) {
+                hit = { type: 'object', target: selectedObj };
+              }
+            }
+          }
+
+          if (hit && hit.type === 'object') {
+            const clickedObject = hit.target;
             e.preventDefault();
             isDraggingObject = true;
             draggedObject = clickedObject;
-            
-            // Calculate offset from object center
+            selectedSceneObjectId = clickedObject.id;
+            selectedAnimationInstanceId = null;
             const objX = (clickedObject.x || 0);
             const objY = (clickedObject.y || 0);
             dragOffset.x = worldPos.x - objX;
             dragOffset.y = worldPos.y - objY;
-            
+            refreshSceneObjectsListUI();
+            refreshRoomAnimationInstancesListUI();
+            canvas.style.cursor = 'grabbing';
+            redraw();
+          } else if (hit && hit.type === 'animation') {
+            const clickedAnim = hit.target;
+            e.preventDefault();
+            isDraggingAnimationInstance = true;
+            draggedAnimationInstance = clickedAnim;
+            selectedAnimationInstanceId = clickedAnim.id;
+            selectedSceneObjectId = null;
+            animationInstanceDragOffset.x = worldPos.x - (clickedAnim.x || 0);
+            animationInstanceDragOffset.y = worldPos.y - (clickedAnim.y || 0);
+            refreshSceneObjectsListUI();
+            refreshRoomAnimationInstancesListUI();
             canvas.style.cursor = 'grabbing';
             redraw();
           }
@@ -1743,15 +2167,13 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     canvas.addEventListener('mousemove', function(e) {
-      // Check for contextual cursor changes
-      checkContextualCursor(e);
-      
-      // Check for scaling line cursor changes (before hotspot to have priority)
-      const scalingCursorSet = updateScalingCursor(e);
-      
-      // Check for hotspot vertex editing cursor changes (only if scaling didn't set cursor)
-      if (!scalingCursorSet) {
-        updateHotspotCursor(e);
+      // Don't override cursor / hit hints while dragging room items
+      if (!isDraggingObject && !isDraggingAnimationInstance && !isDraggingScalingLine && !editorState.isPanning) {
+        checkContextualCursor(e);
+        const scalingCursorSet = updateScalingCursor(e);
+        if (!scalingCursorSet) {
+          updateHotspotCursor(e);
+        }
       }
       
       if (editorState.isPanning) {
@@ -1829,6 +2251,29 @@ document.addEventListener("DOMContentLoaded", () => {
         // Update UI position info
         updateSceneObjectUI(draggedObject);
         
+        canvas.style.cursor = 'grabbing';
+        redraw();
+      } else if (isDraggingAnimationInstance && draggedAnimationInstance) {
+        if (!isRoomCanvasActive()) {
+          isDraggingAnimationInstance = false;
+          draggedAnimationInstance = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
+        if (activeHotspotId) {
+          isDraggingAnimationInstance = false;
+          draggedAnimationInstance = null;
+          canvas.style.cursor = 'default';
+          return;
+        }
+        e.preventDefault();
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        draggedAnimationInstance.x = Math.round(worldPos.x - animationInstanceDragOffset.x);
+        draggedAnimationInstance.y = Math.round(worldPos.y - animationInstanceDragOffset.y);
+        const r = rooms.get(currentRoomId);
+        if (r) r.animationInstances = animationInstances;
+        updateAnimationInstanceUI(draggedAnimationInstance);
+        canvas.style.cursor = 'grabbing';
         redraw();
       } else if (isDraggingGuiButton && draggedGuiButton) {
         e.preventDefault();
@@ -1991,6 +2436,11 @@ document.addEventListener("DOMContentLoaded", () => {
         draggedObject = null;
         canvas.style.cursor = 'default';
         redraw();
+      } else if (isDraggingAnimationInstance) {
+        isDraggingAnimationInstance = false;
+        draggedAnimationInstance = null;
+        canvas.style.cursor = 'default';
+        redraw();
       } else if (isDraggingGuiButton) {
         isDraggingGuiButton = false;
         draggedGuiButton = null;
@@ -2041,18 +2491,50 @@ document.addEventListener("DOMContentLoaded", () => {
         const y0 = Math.min(guiDrawStart.y, worldPos.y);
         const w = Math.abs(worldPos.x - guiDrawStart.x);
         const h = Math.abs(worldPos.y - guiDrawStart.y);
-        // finalize button
-        let btn = guiButtons.pop();
-        const name = `Button ${guiButtons.length + 1}`;
-        btn = { id: uid('gui'), name, x: Math.round(x0), y: Math.round(y0), w: Math.round(w), h: Math.round(h), backgroundImage: null, text: '' };
+        guiButtons.pop();
+        const asSaveSlot = guiDrawMode === 'saveSlot';
+        let btn;
+        if (asSaveSlot) {
+          const slotKey = nextSaveSlotKey(guiButtons);
+          btn = {
+            id: uid('gui'),
+            name: `Slot ${slotKey}`,
+            x: Math.round(x0),
+            y: Math.round(y0),
+            w: Math.round(w),
+            h: Math.round(h),
+            backgroundImage: null,
+            text: '',
+            role: 'saveSlot',
+            slotKey
+          };
+        } else {
+          btn = {
+            id: uid('gui'),
+            name: `Button ${guiButtons.length + 1}`,
+            x: Math.round(x0),
+            y: Math.round(y0),
+            w: Math.round(w),
+            h: Math.round(h),
+            backgroundImage: null,
+            text: '',
+            role: 'button'
+          };
+        }
         guiButtons.push(btn);
         selectedGuiButtonId = btn.id;
         isDrawingGuiButton = false;
         guiDrawStart = null;
+        guiDrawMode = 'button';
         refreshGuiButtonsList();
         if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
         saveCurrentGUI();
-        showNotification(`GUI button created (${btn.w}×${btn.h})`, 'success');
+        showNotification(
+          asSaveSlot
+            ? `Save slot ${btn.slotKey} created (${btn.w}×${btn.h})`
+            : `GUI button created (${btn.w}×${btn.h})`,
+          'success'
+        );
         redraw();
       }
     });
@@ -2064,6 +2546,11 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (isDraggingObject) {
         isDraggingObject = false;
         draggedObject = null;
+        canvas.style.cursor = 'default';
+        redraw();
+      } else if (isDraggingAnimationInstance) {
+        isDraggingAnimationInstance = false;
+        draggedAnimationInstance = null;
         canvas.style.cursor = 'default';
         redraw();
       }
@@ -2116,8 +2603,24 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener('click', (e) => {
     const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
     
-    // Handle character pivot movement first (in characters tab)
-    // Works like polygon points - always moves pivot on click
+    // Handle character / cursor pivot movement first
+    if (activeTab === 'cursors' && !e.ctrlKey) {
+      const cursor = selectedCursorId
+        ? contextualCursors.find(c => c.id === selectedCursorId)
+        : null;
+      if (cursor && cursor.cursorImage && cursor.cursorImage.complete && cursor.cursorImage.naturalWidth > 0) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        e.preventDefault();
+        e.stopPropagation();
+        cursor.pivotX = Math.round(worldPos.x);
+        cursor.pivotY = Math.round(worldPos.y);
+        updateCursorPivotLabel(cursor);
+        redraw();
+        showNotification(`Click point moved to (${cursor.pivotX}, ${cursor.pivotY})`, 'info');
+        return;
+      }
+    }
+
     if (activeTab === 'characters' && !e.ctrlKey) {
       const sel = document.getElementById('character-selector');
       const who = sel ? sel.value : '';
@@ -2200,17 +2703,17 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // ⚠️ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
-    // sul canvas dell'EDITOR, causando doppia esecuzione perché:
+    // âš ï¸ CAUSA RADICE DEL BUG: Questo blocco gestiva i click durante il playtest
+    // sul canvas dell'EDITOR, causando doppia esecuzione perchÃ©:
     // 1. Il listener in main.js gestiva i click sul canvas dell'editor
     // 2. Il listener in runtime.js gestiva i click sul canvas del runtime (finestra separata)
-    // 3. Quando il playtest è attivo, il runtime dovrebbe essere l'unico a gestire i click
+    // 3. Quando il playtest Ã¨ attivo, il runtime dovrebbe essere l'unico a gestire i click
     // 
     // SOLUZIONE: Rimuoviamo completamente la gestione playtest dal listener dell'editor.
-    // Il runtime nella finestra separata gestirà TUTTI i click durante il playtest.
+    // Il runtime nella finestra separata gestirÃ  TUTTI i click durante il playtest.
     // L'editor gestisce solo click per editing (walkable, hotspot drawing, GUI selection).
     //
-    // NOTA: executeScriptHandler() è vuoto (non esegue nulla), quindi non causava
+    // NOTA: executeScriptHandler() Ã¨ vuoto (non esegue nulla), quindi non causava
     // doppia esecuzione di script, ma triggerObjectClick() e triggerHotspotClick()
     // potevano comunque causare effetti collaterali indesiderati.
     //
@@ -2293,7 +2796,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Click per selezionare un vertice walkable quando non stiamo disegnando
   canvas.addEventListener('click', (e) => {
     if (!isRoomCanvasActive()) return;
-    if (isDrawingWalkable) return; // già gestito sopra
+    if (isDrawingWalkable) return; // giÃ  gestito sopra
     if (isDraggingWalkableVertex) return;
     // evita conflitti con hotspot: se stai disegnando hotspot non selezionare walkable
     if (isDrawingHotspot) return;
@@ -2431,6 +2934,49 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const name = document.createElement('div');
       name.innerHTML = `<strong>${hs.name || 'Hotspot'}</strong>`;
+      const idRow = document.createElement('div');
+      idRow.className = 'd-flex align-items-center gap-1 mt-1 hotspot-id-row';
+      const idInput = document.createElement('input');
+      idInput.type = 'text';
+      idInput.readOnly = true;
+      idInput.className = 'form-control form-control-sm hotspot-id-input';
+      idInput.value = hs.id;
+      idInput.title = 'Hotspot ID â€” select and copy';
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn btn-outline-secondary btn-sm btn-copy-hotspot-id py-0 px-1';
+      copyBtn.title = 'Copy ID';
+      copyBtn.innerHTML = 'Copy';
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const text = hs.id;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            showNotification('Hotspot ID copied!', 'success');
+          }).catch(() => {
+            idInput.select();
+            idInput.setSelectionRange(0, text.length);
+            try {
+              document.execCommand('copy');
+              showNotification('Hotspot ID copied!', 'success');
+            } catch (_) {
+              showNotification('Failed to copy Hotspot ID', 'error');
+            }
+          });
+        } else {
+          idInput.select();
+          idInput.setSelectionRange(0, text.length);
+          try {
+            document.execCommand('copy');
+            showNotification('Hotspot ID copied!', 'success');
+          } catch (_) {
+            showNotification('Failed to copy Hotspot ID', 'error');
+          }
+        }
+      });
+      idRow.appendChild(idInput);
+      idRow.appendChild(copyBtn);
+      name.appendChild(idRow);
 
       const activeWrap = document.createElement('div');
       activeWrap.className = 'form-check form-check-inline small mt-1';
@@ -2463,33 +3009,45 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const btnSelect = document.createElement('button');
       btnSelect.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
-      btnSelect.title = 'Select';
+      btnSelect.title = isSelected ? 'Click to deselect' : 'Select hotspot (locks objects & animations)';
       btnSelect.textContent = isSelected ? 'Selected' : 'Select';
       btnSelect.addEventListener('click', () => {
-        activeHotspotId = hs.id;
-        selectedSceneObjectId = null; // Lock scene objects when hotspot is selected
-        isDrawingHotspot = false; // stop drawing when switching
-        selectedHotspotVertexIndex = -1;
+        if (activeHotspotId === hs.id) {
+          activeHotspotId = null;
+          selectedHotspotVertexIndex = -1;
+        } else {
+          activeHotspotId = hs.id;
+          selectedSceneObjectId = null;
+          selectedAnimationInstanceId = null;
+          isDrawingHotspot = false;
+          selectedHotspotVertexIndex = -1;
+        }
         refreshHotspotsListUI();
         refreshSceneObjectsListUI();
+        refreshRoomAnimationInstancesListUI();
         redraw();
       });
 
       const btnEdit = document.createElement('button');
       btnEdit.className = 'btn btn-sm btn-outline-light me-1';
       btnEdit.title = isSelected ? 'Rename' : 'Select before editing';
-      btnEdit.textContent = '✏️';
+      btnEdit.textContent = 'Rename';
       btnEdit.disabled = !isSelected;
-      btnEdit.addEventListener('click', () => {
+      btnEdit.addEventListener('click', async () => {
         if (!isSelected) {
           showNotification('Select the hotspot before editing it', 'warning');
           return;
         }
-        const newName = prompt('Hotspot name:', hs.name || 'Hotspot');
+        const newName = await showInputPrompt({
+          title: 'Rename Hotspot',
+          message: 'Hotspot name:',
+          defaultValue: hs.name || 'Hotspot'
+        });
         if (newName && newName.trim() !== '') {
           hs.name = newName.trim();
           const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
           refreshHotspotsListUI();
+          if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
         }
       });
 
@@ -2497,7 +3055,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnClear = document.createElement('button');
       btnClear.className = 'btn btn-sm btn-outline-danger me-1';
       btnClear.title = isSelected ? 'Clear points' : 'Select before editing';
-      btnClear.textContent = '🧹';
+      btnClear.textContent = 'Clear';
       btnClear.disabled = !isSelected;
       btnClear.addEventListener('click', () => {
         if (!isSelected) {
@@ -2514,14 +3072,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnDelete = document.createElement('button');
       btnDelete.className = 'btn btn-sm btn-danger';
       btnDelete.title = isSelected ? 'Delete' : 'Select before editing';
-      btnDelete.textContent = '🗑️';
+      btnDelete.textContent = 'Delete';
       btnDelete.disabled = !isSelected;
-      btnDelete.addEventListener('click', () => {
+      btnDelete.addEventListener('click', async () => {
         if (!isSelected) {
           showNotification('Select the hotspot before editing it', 'warning');
           return;
         }
-        if (!confirm('Delete this hotspot?')) return;
+        if (!(await showConfirmDialog({ title: 'Delete Hotspot', message: 'Delete this hotspot?', danger: true }))) return;
         const index = hotspots.findIndex(h => h.id === hs.id);
         if (index >= 0) hotspots.splice(index, 1);
         if (activeHotspotId === hs.id) activeHotspotId = hotspots[0] ? hotspots[0].id : null;
@@ -2547,6 +3105,8 @@ document.addEventListener("DOMContentLoaded", () => {
       Sortable.create(hotspotsListContainer, {
         animation: 150,
         ghostClass: 'sortable-ghost',
+        filter: 'input,button,label,.form-check',
+        preventOnFilter: false,
         onEnd: (evt) => {
           const oldI = evt.oldIndex;
           const newI = evt.newIndex;
@@ -2561,11 +3121,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.addHotspot = function() {
-    const name = prompt('Hotspot name:', `Hotspot ${hotspots.length + 1}`);
+  window.addHotspot = async function() {
+    const defaultName = `Hotspot ${hotspots.length + 1}`;
+    const name = await showInputPrompt({
+      title: 'New Hotspot',
+      message: 'Hotspot name:',
+      defaultValue: defaultName
+    });
+    if (name === null) return; // Cancel
     const hs = {
       id: uid('hotspot'),
-      name: name && name.trim() !== '' ? name.trim() : `Hotspot ${hotspots.length + 1}`,
+      name: name && name.trim() !== '' ? name.trim() : defaultName,
       points: [],
       visible: true,
       scripts: {
@@ -2580,6 +3146,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const r = rooms.get(currentRoomId); if (r) r.hotspots = hotspots;
     refreshHotspotsListUI();
     if (typeof refreshHotspotScriptTargets === 'function') refreshHotspotScriptTargets();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     redraw();
   };
 
@@ -2884,7 +3451,7 @@ document.addEventListener("DOMContentLoaded", () => {
     showNotification(`Canvas fitted to screen (${Math.round(editorState.zoom * 100)}%)`, 'info');
   };
 
-  // Reset editor zoom and pan — 100% con (0,0) in alto a sinistra
+  // Reset editor zoom and pan â€” 100% con (0,0) in alto a sinistra
   window.resetEditorZoom = function() {
     alignEditorViewTopLeft();
     showNotification('Viewport at 100% with top-left corner aligned', 'info');
@@ -2932,9 +3499,8 @@ document.addEventListener("DOMContentLoaded", () => {
     ul.className = "list-group";
     ul.style.background = "transparent";
 
-    if (foregrounds.length > 0 && (!selectedForegroundId || !foregrounds.some(f => f.id === selectedForegroundId))) {
-      selectedForegroundId = foregrounds[0].id || uid('fg');
-      foregrounds[0].id = selectedForegroundId;
+    if (foregrounds.length > 0 && selectedForegroundId && !foregrounds.some(f => f.id === selectedForegroundId)) {
+      selectedForegroundId = null;
     }
     if (foregrounds.length === 0) {
       selectedForegroundId = null;
@@ -2964,9 +3530,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const selectBtn = document.createElement("button");
       selectBtn.className = isSelected ? "btn btn-sm btn-success me-1" : "btn btn-sm btn-outline-success me-1";
       selectBtn.textContent = isSelected ? "Selected" : "Select";
-      selectBtn.title = isSelected ? "Active layer" : "Make this layer editable";
+      selectBtn.title = isSelected ? "Click to deselect" : "Make this layer editable";
       selectBtn.addEventListener("click", () => {
-        selectedForegroundId = layerId;
+        selectedForegroundId = isSelected ? null : layerId;
         refreshForegroundListUI();
         redraw();
       });
@@ -2974,7 +3540,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // delete
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-danger ms-2";
-      del.textContent = "✕";
+      del.textContent = "Delete";
       del.title = "Delete layer";
       del.addEventListener("click", async () => {
         if (!isSelected) {
@@ -2985,7 +3551,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Salva il layer prima di eliminarlo per poter eliminare l'asset
         const layerToDelete = foregrounds[idx];
         
-        // Elimina l'asset da Supabase se presente
+        // Elimina l'asset dallo storage locale se presente
         if (layerToDelete && layerToDelete.img) {
           try {
             await deleteAssetFromImage(layerToDelete.img);
@@ -3008,7 +3574,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // optional: move up/down buttons (keyboard users)
       const up = document.createElement("button");
       up.className = "btn btn-sm btn-outline-light me-1";
-      up.textContent = "↑";
+      up.textContent = "Up";
       up.title = "Move up";
       up.addEventListener("click", () => {
         if (!isSelected) {
@@ -3025,7 +3591,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const down = document.createElement("button");
       down.className = "btn btn-sm btn-outline-light me-1";
-      down.textContent = "↓";
+      down.textContent = "Down";
       down.title = "Move down";
       down.addEventListener("click", () => {
         if (!isSelected) {
@@ -3107,7 +3673,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.copyRoomId = function() {
+  window.copyRoomId = async function() {
     const roomIdInput = document.getElementById('room-id-display');
     if (!roomIdInput || !roomIdInput.value) {
       showNotification('No room selected', 'warning');
@@ -3128,12 +3694,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  window.createRoom = function() {
-    const name = prompt('Room name:', `Room ${rooms.size + 1}`);
+  window.createRoom = async function() {
+    const name = await showInputPrompt({ title: 'New Room', message: 'Room name:', defaultValue: `Room ${rooms.size + 1}` });
     if (!name) return;
     const rid = uid('room');
     const prevRoomId = currentRoomId;
-    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], walkableArea: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+    rooms.set(rid, { id: rid, name, background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
     currentRoomId = rid;
     bindRoomRefs();
     refreshForegroundListUI();
@@ -3145,29 +3711,33 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(rid);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(rid, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, rid]);
+      }
     }
+    notifyEditorProjectChanged();
   };
 
-  window.renameRoom = function() {
+  window.renameRoom = async function() {
     const r = rooms.get(currentRoomId); if (!r) return;
-    const name = prompt('New room name:', r.name || 'Room');
+    const name = await showInputPrompt({ title: 'Rename Room', message: 'New room name:', defaultValue: r.name || 'Room' });
     if (!name) return;
     r.name = name;
     refreshRoomsSelector();
+    notifyEditorProjectChanged();
   };
 
   window.deleteRoom = async function() {
     if (rooms.size <= 1) { showNotification('At least one room is required', 'warning'); return; }
-    if (!confirm('Delete current room?')) return;
+    if (!(await showConfirmDialog({ title: 'Delete Room', message: 'Delete current room?', danger: true }))) return;
     
     const prevRoomId = currentRoomId;
     const roomToDelete = rooms.get(currentRoomId);
     
-    // Elimina tutti gli asset della stanza da Supabase
+    // Elimina tutti gli asset della stanza dallo storage locale
     if (roomToDelete) {
       try {
         // Elimina background
@@ -3212,20 +3782,30 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(first);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(first, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, first]);
+      }
     }
+    notifyEditorProjectChanged();
   };
 
 window.selectRoom = function(roomId) {
     if (!rooms.has(roomId)) return;
     const prevRoomId = currentRoomId;
+    const beforeScript = getRoomScriptAttachmentForEvent(roomId, 'on_before_room_change');
+    if (prevRoomId !== roomId && beforeScript) {
+      const content = jsScripts.get(beforeScript) || getScriptContent(beforeScript);
+      executeScriptHandler(content, 'on_before_room_change', [prevRoomId, roomId]);
+    }
     currentRoomId = roomId;
     bindRoomRefs();
     refreshForegroundListUI();
     refreshSceneObjectsListUI();
+    refreshRoomAnimationInstancesListUI();
+    refreshRoomAnimationPickerUI();
     refreshHotspotsListUI();
     refreshRoomsSelector();
     refreshRoomIdDisplay();
@@ -3239,9 +3819,9 @@ window.selectRoom = function(roomId) {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(roomId);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
+    const afterScript = getRoomScriptAttachmentForEvent(roomId, 'on_room_change');
+    if (afterScript) {
+      const content = jsScripts.get(afterScript) || getScriptContent(afterScript);
       executeScriptHandler(content, 'on_room_change', [prevRoomId, roomId]);
     }
   };
@@ -3251,10 +3831,113 @@ window.selectRoom = function(roomId) {
     return prefix + "-" + Math.random().toString(36).slice(2, 9);
   }
 
+  function getStableProjectId(settings, fallbackName) {
+    if (settings && settings.id) return String(settings.id);
+    if (fallbackName) return normalizeProjectIdFromName(fallbackName);
+    return null;
+  }
+
+  function findProjectCacheIndex(projects, { name, id }) {
+    if (!Array.isArray(projects)) return -1;
+    return projects.findIndex((p) => {
+      if (!p) return false;
+      const pName = (p.settings && p.settings.name) ? p.settings.name : '';
+      const pId = p.id || (p.settings && p.settings.id) || normalizeProjectIdFromName(pName);
+      if (id && pId === id) return true;
+      if (name && pName === name) return true;
+      return false;
+    });
+  }
+
+  function removeProjectFromEditorCache(projectName, projectId) {
+    if (!currentUser || !projectName) return;
+
+    const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
+    const deletedFilePath = getProjectFilePath(projectName);
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    const activeId = localStorage.getItem('amiantoActiveProjectId');
+    const isActiveProject = activeName === projectName
+      || (projectId && activeId && activeId === projectId);
+
+    try { localStorage.removeItem(projectKey); } catch (_) {}
+    try { localStorage.removeItem(`${projectKey}_meta`); } catch (_) {}
+    try { localStorage.removeItem(getProjectFilePathKey(projectName)); } catch (_) {}
+    projectFileHandles.delete(projectName);
+
+    if (isActiveProject) {
+      const activeFile = localStorage.getItem('amiantoActiveProjectFile');
+      if (deletedFilePath && activeFile === deletedFilePath) {
+        try { localStorage.removeItem('amiantoActiveProjectFile'); } catch (_) {}
+      }
+      try { localStorage.removeItem('amiantoActiveProjectName'); } catch (_) {}
+      try { localStorage.removeItem('amiantoActiveProjectOwner'); } catch (_) {}
+      try { localStorage.removeItem('amiantoActiveProjectId'); } catch (_) {}
+      try { localStorage.removeItem('amiantoLastSavedProjectJson'); } catch (_) {}
+      try { localStorage.removeItem('amiantoProjectSettings'); } catch (_) {}
+    }
+  }
+
+  function removeProjectLocalBackup(username, projectName) {
+    if (!username || !projectName) return;
+    removeProjectFromEditorCache(projectName);
+  }
+
+  function clearInMemoryProjectState() {
+    jsScripts.clear();
+    objectScripts.clear();
+    roomScripts.clear();
+    characterScripts.clear();
+    inventoryScripts.clear();
+    hotspotScripts.clear();
+    if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
+    refreshScriptSelector();
+    rebuildScriptsTree();
+  }
+
+  function clearEditorWorkspaceAfterProjectRemoved() {
+    rooms = new Map();
+    currentRoomId = null;
+    background = null;
+    foregrounds = [];
+    sceneObjects = [];
+    animationInstances = [];
+    guis = [];
+    roomAnimationsCatalog.clear();
+    selectedRoomAnimationId = null;
+    characters = [];
+    contextualCursors = [];
+    selectedCursorId = null;
+    enableOtherTabs(false);
+    const indicator = document.getElementById('projectSizeIndicator');
+    if (indicator) indicator.style.display = 'none';
+  }
+
+  function refreshActiveProjectNameInUi() {
+    const el = document.getElementById('current-project-name');
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    if (el && activeName) el.textContent = activeName;
+  }
+
+  function getProjectIdFromCacheByName(projectName) {
+    try {
+      if (!currentUser || !currentUser.username || !projectName) return null;
+      const projects = loadProjectsFromCache(currentUser.username);
+      const idx = findProjectCacheIndex(projects, { name: projectName, id: null });
+      if (idx < 0) return null;
+      const p = projects[idx];
+      const id = (p && (p.id || (p.settings && p.settings.id))) ? String(p.id || p.settings.id) : null;
+      return id || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function getActiveProjectId() {
+    const stored = localStorage.getItem('amiantoActiveProjectId');
+    if (stored) return stored;
     const projectName = localStorage.getItem('amiantoActiveProjectName');
     if (!projectName) return null;
-    return projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+    return normalizeProjectIdFromName(projectName);
   }
 
   async function pickResourceImage(options = {}) {
@@ -3264,6 +3947,7 @@ window.selectRoom = function(roomId) {
     }
     return window.amiantoResources.pick(options);
   }
+  window.pickAmiantoResourceImage = pickResourceImage;
 
   async function loadImageFromResourceEntry(resource) {
     if (!resource) return null;
@@ -3273,19 +3957,27 @@ window.selectRoom = function(roomId) {
   }
 
   async function deleteFirestoreAssetDoc(projectId, assetId) {
-    if (!window.firebaseDB || !window.firebaseAuth?.currentUser || !assetId) return false;
+    if (!projectId || !assetId) return true;
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (!storage || !storage.deleteAsset) return true;
     try {
-      await window.firebaseDB
-        .collection('users')
-        .doc(window.firebaseAuth.currentUser.uid)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId)
-        .delete();
-      return true;
+      let metadata = null;
+      if (storage.getAssetMetadata) {
+        metadata = await storage.getAssetMetadata(projectId, assetId);
+      } else if (storage.listProjectAssetMetadata) {
+        const all = await storage.listProjectAssetMetadata(projectId);
+        metadata = all.find((entry) => entry.assetId === assetId) || null;
+      }
+      if (!metadata) return true;
+      return await storage.deleteAsset(
+        projectId,
+        metadata.type || 'sprite',
+        metadata.fileName || `${assetId}.png`,
+        null,
+        metadata.subfolder || null
+      );
     } catch (err) {
-      console.warn('[Asset] Errore eliminazione metadata Firestore:', err);
+      console.warn('[Asset] Errore eliminazione metadata locale:', err);
       return false;
     }
   }
@@ -3297,7 +3989,7 @@ window.selectRoom = function(roomId) {
   if (btnAddBg) {
     btnAddBg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         const projectId = getActiveProjectId();
@@ -3355,7 +4047,7 @@ window.selectRoom = function(roomId) {
           const finalHeight = img.naturalHeight || img.height;
           
           if (!finalWidth || !finalHeight) {
-            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}×${finalHeight}`);
+            throw new Error(`Image loaded but has invalid dimensions: ${finalWidth}Ã—${finalHeight}`);
           }
           
           console.log('[Background] Immagine caricata con successo:', {
@@ -3372,7 +4064,7 @@ window.selectRoom = function(roomId) {
           background = img;
           if (room) room.background = img;
           
-          showNotification(`Background set: ${finalWidth}×${finalHeight}`, 'success');
+          showNotification(`Background set: ${finalWidth}Ã—${finalHeight}`, 'success');
           redraw();
         } catch (error) {
           console.error('[Asset] Errore background da Resources:', error);
@@ -3386,7 +4078,7 @@ window.selectRoom = function(roomId) {
   if (btnAddFg) {
     btnAddFg.addEventListener("click", async () => {
         if (!currentUser || !currentUser.uid) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         if (!getActiveProjectId()) return;
@@ -3445,14 +4137,76 @@ window.selectRoom = function(roomId) {
   // Bind GUI buttons
   const btnAddGuiBg = document.getElementById('btn-add-gui-bg');
   const btnNewGuiButton = document.getElementById('btn-new-gui-button');
+  const btnNewGuiSaveSlot = document.getElementById('btn-new-gui-save-slot');
   const btnDeleteGuiButton = document.getElementById('btn-delete-gui-button');
   const guiTypeSelect = document.getElementById('gui-type-select');
   const guiSettingsContainer = document.getElementById('gui-settings-container');
 
+  function isSaveLoadGuiType(type) {
+    return type === 'SaveLoad';
+  }
+
+  function normalizeSaveLoadSettings(settings) {
+    const s = settings || {};
+    const mode = (s.mode === 'save' || s.mode === 'load' || s.mode === 'both') ? s.mode : 'both';
+    return {
+      mode,
+      startVisible: s.startVisible === true,
+      emptyLabel: (typeof s.emptyLabel === 'string' && s.emptyLabel.trim()) ? s.emptyLabel.trim() : 'Empty',
+      closeOnClickOutside: s.closeOnClickOutside !== false
+    };
+  }
+
+  function nextSaveSlotKey(buttons) {
+    const used = new Set(
+      (buttons || [])
+        .filter(b => b && b.id !== '__drawing__' && b.role === 'saveSlot')
+        .map(b => String(b.slotKey || ''))
+    );
+    for (let i = 1; i <= 10; i++) {
+      if (!used.has(String(i))) return String(i);
+    }
+    return String(used.size + 1);
+  }
+
+  function cancelGuiButtonDrawing() {
+    if (!isDrawingGuiButton) return;
+    isDrawingGuiButton = false;
+    guiDrawStart = null;
+    guiDrawMode = 'button';
+    if (guiButtons.length && guiButtons[guiButtons.length - 1].id === '__drawing__') {
+      guiButtons.pop();
+    }
+  }
+
+  function updateGuiToolbarForType(guiType) {
+    const isDialogBox = guiType === 'DialogBox';
+    const isSaveLoad = isSaveLoadGuiType(guiType);
+    [btnAddGuiBg, btnNewGuiButton, btnDeleteGuiButton].forEach((btn) => {
+      if (btn) btn.disabled = isDialogBox;
+    });
+    if (btnNewGuiSaveSlot) {
+      btnNewGuiSaveSlot.style.display = isSaveLoad ? '' : 'none';
+      btnNewGuiSaveSlot.disabled = isDialogBox || !isSaveLoad;
+    }
+    const hint = document.getElementById('gui-draw-hint');
+    if (hint) {
+      hint.textContent = isSaveLoad
+        ? 'SaveLoad: draw save slots (like inventory slots) and optional Close buttons. Use show_gui / hide_gui in scripts. Click a slot in playtest to save or load.'
+        : 'Draw buttons as rectangles on the canvas (GUI overlay). Click to select, drag to move. Use Delete Selected to remove.';
+    }
+    const heading = document.getElementById('gui-buttons-list-heading');
+    if (heading) {
+      heading.textContent = isSaveLoad ? 'Buttons & save slots' : 'Buttons list';
+    }
+    if (isDialogBox) cancelGuiButtonDrawing();
+  }
+
   if (btnAddGuiBg) {
     btnAddGuiBg.addEventListener('click', async () => {
+        if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
         if (!currentUser) {
-          showNotification('Please log in to select images', 'warning');
+          showNotification('Open a project to select images', 'warning');
           return;
         }
         if (!getActiveProjectId()) {
@@ -3481,12 +4235,22 @@ window.selectRoom = function(roomId) {
 
   if (btnNewGuiButton) {
     btnNewGuiButton.addEventListener('click', () => {
-      // start drawing mode
+      if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
+      guiDrawMode = 'button';
       isDrawingGuiButton = true;
       guiDrawStart = null;
-      // add a temporary placeholder for live preview
-      guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0 });
+      guiButtons.push({ id: '__drawing__', name: 'Drawing...', x: 0, y: 0, w: 0, h: 0, role: 'button' });
       showNotification('Click and drag on canvas to draw a GUI button', 'info');
+    });
+  }
+  if (btnNewGuiSaveSlot) {
+    btnNewGuiSaveSlot.addEventListener('click', () => {
+      if (!guiTypeSelect || guiTypeSelect.value !== 'SaveLoad') return;
+      guiDrawMode = 'saveSlot';
+      isDrawingGuiButton = true;
+      guiDrawStart = null;
+      guiButtons.push({ id: '__drawing__', name: 'Drawing slot...', x: 0, y: 0, w: 0, h: 0, role: 'saveSlot' });
+      showNotification('Click and drag on canvas to draw a save slot', 'info');
     });
   }
   if (guiTypeSelect) {
@@ -3500,6 +4264,7 @@ window.selectRoom = function(roomId) {
         gui.settings = collectGuiSettingsFromUI(newType);
         saveCurrentGUI();
       }
+      updateGuiToolbarForType(newType);
     });
   }
   if (guiSettingsContainer) {
@@ -3514,6 +4279,109 @@ window.selectRoom = function(roomId) {
     };
     guiSettingsContainer.addEventListener('input', onChange);
     guiSettingsContainer.addEventListener('change', onChange);
+  }
+
+  const DIALOG_FONT_SIZE_MIN = 8;
+  const DIALOG_FONT_SIZE_MAX = 96;
+  const DIALOG_FONT_ACCEPT = '.ttf,.otf,.woff,.woff2';
+
+  function clampDialogFontSize(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n)) return 16;
+    return Math.max(DIALOG_FONT_SIZE_MIN, Math.min(DIALOG_FONT_SIZE_MAX, Math.round(n)));
+  }
+
+  function fontFamilyFromFileName(fileName) {
+    const base = String(fileName || 'CustomFont').replace(/\.[^.]+$/, '');
+    const safe = base.replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_') || 'CustomFont';
+    return `Amianto_${safe}`;
+  }
+
+  const dialogFontFaceRegistry = new Set();
+
+  async function resolveDialogFontUrl(fontRef, projectId) {
+    if (!fontRef || typeof fontRef !== 'string') return null;
+    if (fontRef.startsWith('data:') || fontRef.startsWith('http')) return fontRef;
+    if (fontRef.startsWith('asset:')) {
+      const assetId = fontRef.replace('asset:', '');
+      return await resolveAssetUrl(projectId, assetId);
+    }
+    return fontRef;
+  }
+
+  async function registerDialogFontFace(fontFamily, fontUrl) {
+    if (!fontFamily || !fontUrl) return false;
+    const regKey = `${fontFamily}|${fontUrl}`;
+    if (dialogFontFaceRegistry.has(regKey)) return true;
+    try {
+      if (typeof FontFace !== 'undefined' && document.fonts) {
+        const face = new FontFace(fontFamily, `url(${fontUrl})`);
+        await face.load();
+        document.fonts.add(face);
+        dialogFontFaceRegistry.add(regKey);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[GUI] Dialog font load failed:', err);
+    }
+    return false;
+  }
+
+  async function hydrateDialogBoxFont(settings, projectId) {
+    if (!settings || !settings.customFont || !settings.fontFamily) return;
+    const url = await resolveDialogFontUrl(settings.customFont, projectId);
+    if (url) await registerDialogFontFace(settings.fontFamily, url);
+  }
+
+  function normalizeDialogBoxSettings(settings) {
+    const s = settings || {};
+    const legacyBg = s.background || s.backgroundColor;
+    return {
+      balloon: s.balloon || '',
+      balloonImage: s.balloonImage || null,
+      backgroundColor: s.backgroundColor || cssColorToHex(legacyBg, '#1a1a2e'),
+      textColor: s.textColor || '#ffffff',
+      boxBorderColor: s.boxBorderColor || '#39ff14',
+      fontSize: clampDialogFontSize(s.fontSize),
+      fontFamily: (typeof s.fontFamily === 'string' && s.fontFamily.trim()) ? s.fontFamily.trim() : '',
+      customFont: (typeof s.customFont === 'string' && s.customFont.trim()) ? s.customFont.trim() : '',
+      appear: s.appear || 'instant'
+    };
+  }
+
+  function cssColorToHex(color, fallback = '#000000') {
+    if (!color || typeof color !== 'string') return fallback;
+    const trimmed = color.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+    if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+      const r = trimmed[1], g = trimmed[2], b = trimmed[3];
+      return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    const rgbMatch = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (rgbMatch) {
+      const toHex = (n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, '0');
+      return `#${toHex(rgbMatch[1])}${toHex(rgbMatch[2])}${toHex(rgbMatch[3])}`;
+    }
+    return fallback;
+  }
+
+  function bindColorPickerSync(colorInput, hexInput) {
+    if (!colorInput || !hexInput) return;
+    const applyFromColor = () => {
+      hexInput.value = colorInput.value;
+      hexInput.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const applyFromHex = () => {
+      const v = hexInput.value.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+        colorInput.value = v;
+        colorInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    };
+    colorInput.addEventListener('input', applyFromColor);
+    colorInput.addEventListener('change', applyFromColor);
+    hexInput.addEventListener('change', applyFromHex);
+    hexInput.addEventListener('input', applyFromHex);
   }
 
   function renderGuiSettingsPanel(type, settings) {
@@ -3571,21 +4439,216 @@ window.selectRoom = function(roomId) {
       wrap.appendChild(sel);
       return wrap;
     };
+    const makeColorPicker = (label, id, value, fallback = '#ffffff') => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = label;
+      const group = document.createElement('div');
+      group.className = 'input-group input-group-sm';
+      const colorInp = document.createElement('input');
+      colorInp.type = 'color';
+      colorInp.className = 'form-control form-control-color';
+      colorInp.id = id;
+      colorInp.title = label;
+      const hexVal = cssColorToHex(value, fallback);
+      colorInp.value = hexVal;
+      const hexInp = document.createElement('input');
+      hexInp.type = 'text';
+      hexInp.className = 'form-control';
+      hexInp.id = `${id}-hex`;
+      hexInp.value = hexVal;
+      hexInp.spellcheck = false;
+      bindColorPickerSync(colorInp, hexInp);
+      group.appendChild(colorInp);
+      group.appendChild(hexInp);
+      wrap.appendChild(lab);
+      wrap.appendChild(group);
+      return wrap;
+    };
+    const makeBalloonPicker = (dialogSettings) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = 'Dialog balloon (image)';
+      const row = document.createElement('div');
+      row.className = 'd-flex gap-1 flex-wrap align-items-center';
+      const btnBrowse = document.createElement('button');
+      btnBrowse.type = 'button';
+      btnBrowse.className = 'btn btn-outline-info btn-sm';
+      btnBrowse.textContent = 'Browseâ€¦';
+      const btnClear = document.createElement('button');
+      btnClear.type = 'button';
+      btnClear.className = 'btn btn-outline-secondary btn-sm';
+      btnClear.textContent = 'Clear';
+      const status = document.createElement('small');
+      status.className = 'text-muted';
+      status.id = 'gui-set-balloon-label';
+      const updateLabel = () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const img = (gui && gui.settings && gui.settings.balloonImage) || dialogSettings.balloonImage;
+        status.textContent = img ? 'Balloon image set' : 'No balloon (uses colored box)';
+      };
+      updateLabel();
+      btnBrowse.addEventListener('click', async () => {
+        if (!currentUser) {
+          showNotification('Open a project to select images', 'warning');
+          return;
+        }
+        if (!getActiveProjectId()) {
+          showNotification('No project is open', 'warning');
+          return;
+        }
+        const resource = await pickResourceImage({ title: 'Dialog balloon from Resources' });
+        if (!resource) return;
+        try {
+          const img = await loadImageFromResourceEntry(resource);
+          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+          if (!gui) return;
+          const collected = collectGuiSettingsFromUI('DialogBox');
+          collected.balloonImage = img;
+          gui.settings = collected;
+          updateLabel();
+          saveCurrentGUI();
+          showNotification('Dialog balloon set', 'success');
+        } catch (err) {
+          showNotification('Balloon error: ' + err.message, 'error');
+        }
+      });
+      btnClear.addEventListener('click', () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        if (!gui) return;
+        const collected = collectGuiSettingsFromUI('DialogBox');
+        collected.balloonImage = null;
+        collected.balloon = '';
+        gui.settings = collected;
+        updateLabel();
+        saveCurrentGUI();
+        showNotification('Dialog balloon removed', 'info');
+      });
+      row.appendChild(btnBrowse);
+      row.appendChild(btnClear);
+      row.appendChild(status);
+      wrap.appendChild(lab);
+      wrap.appendChild(row);
+      return wrap;
+    };
+    const makeCustomFontPicker = (dialogSettings) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-2';
+      const lab = document.createElement('label');
+      lab.className = 'form-label text-light';
+      lab.textContent = 'Custom font';
+      const row = document.createElement('div');
+      row.className = 'd-flex gap-1 flex-wrap align-items-center mb-1';
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = DIALOG_FONT_ACCEPT;
+      fileInput.className = 'd-none';
+      fileInput.id = 'gui-set-font-file';
+      const btnImport = document.createElement('button');
+      btnImport.type = 'button';
+      btnImport.className = 'btn btn-outline-info btn-sm';
+      btnImport.textContent = 'Import fontâ€¦';
+      const btnClear = document.createElement('button');
+      btnClear.type = 'button';
+      btnClear.className = 'btn btn-outline-secondary btn-sm';
+      btnClear.textContent = 'Clear';
+      const status = document.createElement('small');
+      status.className = 'text-muted';
+      status.id = 'gui-set-font-label';
+      const updateLabel = () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const cf = (gui && gui.settings && gui.settings.customFont) || dialogSettings.customFont;
+        const ff = (gui && gui.settings && gui.settings.fontFamily) || dialogSettings.fontFamily;
+        status.textContent = cf ? `Font: ${ff || 'custom'}` : 'Default font (Arial)';
+      };
+      updateLabel();
+      btnImport.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        fileInput.value = '';
+        if (!file) return;
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!['ttf', 'otf', 'woff', 'woff2'].includes(ext)) {
+          showNotification('Unsupported font format. Use .ttf, .otf, .woff or .woff2', 'warning');
+          return;
+        }
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('Read failed'));
+            reader.readAsDataURL(file);
+          });
+          const familyInput = document.getElementById('gui-set-font-family');
+          const fontFamily = (familyInput && familyInput.value.trim())
+            ? familyInput.value.trim()
+            : fontFamilyFromFileName(file.name);
+          const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+          if (!gui) return;
+          const collected = collectGuiSettingsFromUI('DialogBox');
+          collected.customFont = dataUrl;
+          collected.fontFamily = fontFamily;
+          gui.settings = collected;
+          await registerDialogFontFace(fontFamily, dataUrl);
+          if (familyInput) familyInput.value = fontFamily;
+          updateLabel();
+          saveCurrentGUI();
+          showNotification('Custom font imported', 'success');
+        } catch (err) {
+          showNotification('Font import error: ' + err.message, 'error');
+        }
+      });
+      btnClear.addEventListener('click', () => {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        if (!gui) return;
+        const collected = collectGuiSettingsFromUI('DialogBox');
+        collected.customFont = '';
+        collected.fontFamily = '';
+        gui.settings = collected;
+        const familyInput = document.getElementById('gui-set-font-family');
+        if (familyInput) familyInput.value = '';
+        updateLabel();
+        saveCurrentGUI();
+        showNotification('Custom font removed', 'info');
+      });
+      row.appendChild(fileInput);
+      row.appendChild(btnImport);
+      row.appendChild(btnClear);
+      row.appendChild(status);
+      wrap.appendChild(lab);
+      wrap.appendChild(row);
+      wrap.appendChild(makeInput('Font family name (optional)', 'gui-set-font-family', 'text', dialogSettings.fontFamily || '', {
+        placeholder: 'Auto from file name if empty'
+      }));
+      return wrap;
+    };
 
     switch(type) {
       case 'DialogBox': {
-        frag.appendChild(makeInput('Position X', 'gui-set-x', 'number', settings.x ?? 0));
-        frag.appendChild(makeInput('Position Y', 'gui-set-y', 'number', settings.y ?? 0));
-        frag.appendChild(makeInput('Width', 'gui-set-w', 'number', settings.w ?? 300));
-        frag.appendChild(makeInput('Height', 'gui-set-h', 'number', settings.h ?? 150));
-        frag.appendChild(makeInput('Background (CSS color or data URL)', 'gui-set-bg', 'text', settings.background || 'rgba(0,0,0,0.6)'));
-        frag.appendChild(makeInput('Font CSS', 'gui-set-font', 'text', settings.font || '16px Arial'));
-        frag.appendChild(makeInput('Portrait (optional data URL)', 'gui-set-portrait', 'text', settings.portrait || ''));
+        const dlg = normalizeDialogBoxSettings(settings);
+        frag.appendChild(makeBalloonPicker(dlg));
+        frag.appendChild(makeInput('Font size (px)', 'gui-set-font-size', 'number', dlg.fontSize, {
+          min: DIALOG_FONT_SIZE_MIN,
+          max: DIALOG_FONT_SIZE_MAX,
+          step: 1
+        }));
+        frag.appendChild(makeCustomFontPicker(dlg));
+        frag.appendChild(makeColorPicker('Background color', 'gui-set-bg-color', dlg.backgroundColor, '#1a1a2e'));
+        frag.appendChild(makeColorPicker('Text color', 'gui-set-text-color', dlg.textColor, '#ffffff'));
+        frag.appendChild(makeColorPicker('Box border color', 'gui-set-border-color', dlg.boxBorderColor, '#39ff14'));
         frag.appendChild(makeSelect('Appear behavior', 'gui-set-appear', [
           {value:'instant', label:'Instant'},
           {value:'fade', label:'Fade'},
           {value:'slide', label:'Slide'}
-        ], settings.appear || 'instant'));
+        ], dlg.appear));
+        const hint = document.createElement('p');
+        hint.className = 'text-muted small mb-0';
+        hint.textContent = 'In game the balloon follows the speaking character and sizes to the text. Without a custom font, Arial is used.';
+        frag.appendChild(hint);
         break;
       }
       case 'VerbGUI': {
@@ -3620,6 +4683,34 @@ window.selectRoom = function(roomId) {
         frag.appendChild(makeTextarea('Note/JSON custom (opzionale)', 'gui-set-custom', settings.custom || ''));
         break;
       }
+      case 'SaveLoad': {
+        const sl = normalizeSaveLoadSettings(settings);
+        frag.appendChild(makeSelect('Mode', 'gui-set-saveload-mode', [
+          { value: 'both', label: 'Save & Load (empty→save, filled→load)' },
+          { value: 'save', label: 'Save only' },
+          { value: 'load', label: 'Load only' }
+        ], sl.mode));
+        frag.appendChild(makeInput('Empty slot label', 'gui-set-saveload-empty', 'text', sl.emptyLabel));
+        const visWrap = document.createElement('div');
+        visWrap.className = 'form-check mb-2';
+        visWrap.innerHTML = `
+          <input class="form-check-input" type="checkbox" id="gui-set-saveload-start-visible" ${sl.startVisible ? 'checked' : ''}>
+          <label class="form-check-label text-light" for="gui-set-saveload-start-visible">Visible at game start</label>
+        `;
+        frag.appendChild(visWrap);
+        const closeWrap = document.createElement('div');
+        closeWrap.className = 'form-check mb-2';
+        closeWrap.innerHTML = `
+          <input class="form-check-input" type="checkbox" id="gui-set-saveload-close-outside" ${sl.closeOnClickOutside ? 'checked' : ''}>
+          <label class="form-check-label text-light" for="gui-set-saveload-close-outside">Click outside slots/buttons closes menu</label>
+        `;
+        frag.appendChild(closeWrap);
+        const hint = document.createElement('p');
+        hint.className = 'text-muted small mb-0';
+        hint.textContent = 'Draw Save Slot for each slot (keys 1–10). Optional Draw Button for Close (script: hide_gui). Open with show_gui("GUI name").';
+        frag.appendChild(hint);
+        break;
+      }
       case 'MainInterface':
       default: {
         // MainInterface: nessun campo obbligatorio
@@ -3636,17 +4727,26 @@ window.selectRoom = function(roomId) {
       return el ? (el.type === 'number' ? Number(el.value || 0) : el.value) : undefined;
     };
     switch(type) {
-      case 'DialogBox':
+      case 'DialogBox': {
+        const gui = currentGuiId ? guis.find(g => g.id === currentGuiId) : null;
+        const existing = (gui && gui.settings) ? gui.settings : {};
+        const bgHex = get('gui-set-bg-color-hex') || get('gui-set-bg-color') || '#1a1a2e';
+        const textHex = get('gui-set-text-color-hex') || get('gui-set-text-color') || '#ffffff';
+        const borderHex = get('gui-set-border-color-hex') || get('gui-set-border-color') || '#39ff14';
+        const fontFamilyEl = document.getElementById('gui-set-font-family');
+        const fontFamilyVal = fontFamilyEl ? fontFamilyEl.value.trim() : (existing.fontFamily || '');
         return {
-          x: get('gui-set-x') || 0,
-          y: get('gui-set-y') || 0,
-          w: get('gui-set-w') || 300,
-          h: get('gui-set-h') || 150,
-          background: get('gui-set-bg') || 'rgba(0,0,0,0.6)',
-          font: get('gui-set-font') || '16px Arial',
-          portrait: get('gui-set-portrait') || '',
+          balloon: existing.balloon || '',
+          balloonImage: existing.balloonImage || null,
+          backgroundColor: cssColorToHex(bgHex, '#1a1a2e'),
+          textColor: cssColorToHex(textHex, '#ffffff'),
+          boxBorderColor: cssColorToHex(borderHex, '#39ff14'),
+          fontSize: clampDialogFontSize(get('gui-set-font-size')),
+          fontFamily: fontFamilyVal,
+          customFont: existing.customFont || '',
           appear: get('gui-set-appear') || 'instant'
         };
+      }
       case 'VerbGUI': {
         const verbsStr = get('gui-set-verbs') || '';
         const verbs = String(verbsStr).split(/\r?\n/).map(v => v.trim()).filter(Boolean);
@@ -3673,6 +4773,16 @@ window.selectRoom = function(roomId) {
       }
       case 'OverlayCustom':
         return { custom: get('gui-set-custom') || '' };
+      case 'SaveLoad': {
+        const startVisEl = document.getElementById('gui-set-saveload-start-visible');
+        const closeEl = document.getElementById('gui-set-saveload-close-outside');
+        return normalizeSaveLoadSettings({
+          mode: get('gui-set-saveload-mode') || 'both',
+          emptyLabel: get('gui-set-saveload-empty') || 'Empty',
+          startVisible: !!(startVisEl && startVisEl.checked),
+          closeOnClickOutside: !!(closeEl && closeEl.checked)
+        });
+      }
       case 'MainInterface':
       default:
         return { desc: get('gui-set-desc') || '' };
@@ -3681,6 +4791,7 @@ window.selectRoom = function(roomId) {
 
   if (btnDeleteGuiButton) {
     btnDeleteGuiButton.addEventListener('click', () => {
+      if (guiTypeSelect && guiTypeSelect.value === 'DialogBox') return;
       if (!selectedGuiButtonId) { showNotification('No GUI button selected', 'warning'); return; }
       guiButtons = guiButtons.filter(b => b.id !== selectedGuiButtonId);
       selectedGuiButtonId = null;
@@ -3695,30 +4806,63 @@ window.selectRoom = function(roomId) {
     const list = document.getElementById('gui-buttons-list');
     if (!list) return;
     list.innerHTML = '';
+    const currentType = (guiTypeSelect && guiTypeSelect.value) || 'MainInterface';
     guiButtons.forEach(btn => {
+      if (!btn || btn.id === '__drawing__') return;
+      const isSlot = btn.role === 'saveSlot';
       const item = document.createElement('div');
       item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
       item.dataset.guiId = btn.id;
+      const meta = isSlot
+        ? `Slot key ${btn.slotKey || '?'} — ${btn.x}, ${btn.y} — ${btn.w}×${btn.h}`
+        : `${btn.x}, ${btn.y} — ${btn.w}×${btn.h}`;
       item.innerHTML = `
         <div>
-          <strong>${btn.name}</strong>
-          <br><small>${btn.x}, ${btn.y} — ${btn.w}×${btn.h}</small>
+          <strong>${btn.name || (isSlot ? 'Save slot' : 'Button')}</strong>
+          ${isSlot ? '<span class="badge bg-info ms-1">save slot</span>' : ''}
+          <br><small>${meta}</small>
         </div>
         <div>
-          <button class="btn btn-sm btn-outline-light me-1" title="Rename">✏️</button>
-          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image">🖼️</button>
-          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text">📝</button>
-          <button class="btn btn-sm btn-outline-danger" title="Delete">🗑️</button>
+          <button class="btn btn-sm btn-outline-light me-1" title="Rename" data-act="rename">Rename</button>
+          ${isSlot || currentType === 'SaveLoad' ? '<button class="btn btn-sm btn-outline-success me-1" title="Slot key" data-act="slotkey">Key</button>' : ''}
+          <button class="btn btn-sm btn-outline-info me-1" title="Set Background Image" data-act="image">Image</button>
+          <button class="btn btn-sm btn-outline-warning me-1" title="Set Text" data-act="text">Text</button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete" data-act="delete">Delete</button>
         </div>
       `;
-      const [btnEdit, btnImage, btnText, btnDel] = item.querySelectorAll('button');
-      btnEdit.addEventListener('click', () => {
-        const newName = prompt('GUI button name:', btn.name);
-        if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
-      });
-      btnImage.addEventListener('click', async () => {
+      const btnEdit = item.querySelector('[data-act="rename"]');
+      const btnSlotKey = item.querySelector('[data-act="slotkey"]');
+      const btnImage = item.querySelector('[data-act="image"]');
+      const btnText = item.querySelector('[data-act="text"]');
+      const btnDel = item.querySelector('[data-act="delete"]');
+      if (btnEdit) {
+        btnEdit.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const newName = await showInputPrompt({ title: 'Rename Button', message: 'GUI button name:', defaultValue: btn.name });
+          if (newName && newName.trim() !== '') { btn.name = newName.trim(); saveCurrentGUI(); refreshGuiButtonsList(); }
+        });
+      }
+      if (btnSlotKey) {
+        btnSlotKey.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const cur = btn.slotKey != null ? String(btn.slotKey) : '1';
+          const next = await showInputPrompt({ title: 'Save Slot Key', message: 'Save slot key (1-10 or custom id):', defaultValue: cur });
+          if (next == null || !String(next).trim()) return;
+          btn.role = 'saveSlot';
+          btn.slotKey = String(next).trim();
+          if (!btn.name || /^Slot\s+\d+$/i.test(btn.name) || /^Button\s+\d+$/i.test(btn.name)) {
+            btn.name = `Slot ${btn.slotKey}`;
+          }
+          saveCurrentGUI();
+          refreshGuiButtonsList();
+          redraw();
+        });
+      }
+      if (btnImage) {
+        btnImage.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
           if (!currentUser) {
-            showNotification('Please log in to select images', 'warning');
+            showNotification('Open a project to select images', 'warning');
             return;
           }
           if (!getActiveProjectId()) {
@@ -3740,24 +4884,31 @@ window.selectRoom = function(roomId) {
             console.error('[Asset] Errore immagine pulsante GUI:', error);
             showNotification(`Error: ${error.message}`, 'error');
           }
-      });
-      btnText.addEventListener('click', () => {
-        const newText = prompt('Button text:', btn.text || '');
-        if (newText !== null) { 
-          btn.text = newText; 
+        });
+      }
+      if (btnText) {
+        btnText.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const newText = await showInputPrompt({ title: 'Button Text', message: 'Button text:', defaultValue: btn.text || '' });
+          if (newText !== null) {
+            btn.text = newText;
+            saveCurrentGUI();
+            showNotification(`Text set for ${btn.name}`, 'success');
+            redraw();
+          }
+        });
+      }
+      if (btnDel) {
+        btnDel.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          guiButtons = guiButtons.filter(b => b.id !== btn.id);
+          if (selectedGuiButtonId === btn.id) selectedGuiButtonId = null;
+          refreshGuiButtonsList();
+          if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
           saveCurrentGUI();
-          showNotification(`Text set for ${btn.name}`, 'success'); 
-          redraw(); 
-        }
-      });
-      btnDel.addEventListener('click', () => {
-        guiButtons = guiButtons.filter(b => b.id !== btn.id);
-        if (selectedGuiButtonId === btn.id) selectedGuiButtonId = null;
-        refreshGuiButtonsList();
-        if (typeof refreshGuiScriptTargets === 'function') refreshGuiScriptTargets();
-        saveCurrentGUI();
-        redraw();
-      });
+          redraw();
+        });
+      }
       item.addEventListener('click', () => { selectedGuiButtonId = btn.id; refreshGuiButtonsList(); redraw(); });
       list.appendChild(item);
     });
@@ -3770,7 +4921,7 @@ window.selectRoom = function(roomId) {
   setupMouseWheelZoom();
   setupMousePanning();
 
-  // Handle window resize — ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
+  // Handle window resize â€” ridisegna per aggiornare letterbox; pan 0 mantiene il viewport centrato
   window.addEventListener("resize", () => {
     updateEditorDisplay();
     redraw();
@@ -3842,11 +4993,44 @@ window.selectRoom = function(roomId) {
      ============================ */
 
   // ===== Inventory tab =====
+  /** Chiave script effettiva per un item (scriptName utente > attachment > default Inventory:nome). */
+  function getInventoryItemScriptKey(itemOrName) {
+    const name = typeof itemOrName === 'string' ? itemOrName : (itemOrName && itemOrName.name);
+    if (!name) return '';
+    const item = typeof itemOrName === 'object' && itemOrName
+      ? itemOrName
+      : inventoryItems.find(i => i.name === name);
+    const userKey = item && String(item.scriptName || '').trim();
+    if (userKey) {
+      const k = migrateLegacyScriptKey(userKey);
+      return editorScriptExists(k) ? k : '';
+    }
+    if (inventoryScripts.has(name)) {
+      const k = migrateLegacyScriptKey(inventoryScripts.get(name));
+      return editorScriptExists(k) ? k : '';
+    }
+    const defaultKey = migrateLegacyScriptKey(normalizeScriptKey('Inventory', name));
+    return editorScriptExists(defaultKey) ? defaultKey : '';
+  }
+
   function syncInventoryItemScript(item) {
     if (!item) return;
-    const scriptName = (item.scriptName || '').trim();
-    if (scriptName) inventoryScripts.set(item.name, scriptName);
-    else inventoryScripts.delete(item.name);
+    const scriptName = String(item.scriptName || '').trim();
+    if (scriptName) {
+      inventoryScripts.set(item.name, migrateLegacyScriptKey(scriptName));
+    } else {
+      inventoryScripts.delete(item.name);
+    }
+  }
+
+  /** Collega script a item inventario (solo Map attachments; non modifica item.scriptName). */
+  function attachInventoryItemScript(itemName, scriptKey) {
+    const name = String(itemName || '').trim();
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!name || !key) return false;
+    inventoryScripts.set(name, key);
+    refreshInventoryItemsListUI();
+    return true;
   }
 
   function updateInventoryItemFormImageLabel() {
@@ -3903,7 +5087,7 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.itemId = item.id;
       const info = document.createElement('div');
-      const scriptLabel = item.scriptName ? item.scriptName : '(no script)';
+      const scriptLabel = getDisplayScriptLabel('Inventory', item.name, item);
       const hasImg = item.image ? 'with image' : 'no image';
       info.innerHTML = '<strong>' + item.name + '</strong><br><small class="text-info">Script: ' + scriptLabel + '</small><br><small class="text-muted">' + hasImg + '</small>';
       const controls = document.createElement('div');
@@ -3947,7 +5131,7 @@ window.selectRoom = function(roomId) {
     });
   }
 
-  window.filterInventoryObjects = function(searchTerm) {
+  window.filterInventoryObjects = async function(searchTerm) {
     const objects = document.querySelectorAll('#inventory-list .list-group-item');
     const q = (searchTerm || '').toLowerCase();
     objects.forEach(obj => {
@@ -3955,20 +5139,21 @@ window.selectRoom = function(roomId) {
     });
   };
 
-  window.removeInventoryObject = function(button) {
+  window.removeInventoryObject = async function(button) {
     const row = button.closest('.list-group-item');
     const id = row && row.dataset.itemId;
     if (id) removeInventoryItemById(id);
   };
 
-  function removeInventoryItemById(itemId) {
+  async function removeInventoryItemById(itemId) {
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
-    if (!confirm('Delete this inventory item?')) return;
+    if (!(await showConfirmDialog({ title: 'Delete Inventory Item', message: 'Delete this inventory item?', danger: true }))) return;
     inventoryScripts.delete(item.name);
     inventoryItems = inventoryItems.filter(i => i.id !== itemId);
     if (selectedInventoryItemId === itemId) clearInventoryItemForm();
     else refreshInventoryItemsListUI();
+    redraw();
     showNotification('Inventory item deleted', 'info');
   }
 
@@ -3977,7 +5162,7 @@ window.selectRoom = function(roomId) {
     const scriptName = (document.getElementById('inventory-item-script-name')?.value || '').trim();
     if (!name) { showNotification('Enter a name for the item', 'warning'); return; }
     if (inventoryItems.some(i => i.name === name)) { showNotification('Name already in use', 'warning'); return; }
-    const item = { id: uid('invitem'), name, scriptName: scriptName || name, image: pendingInventoryItemImage || null };
+    const item = { id: uid('invitem'), name, scriptName, image: pendingInventoryItemImage || null };
     syncInventoryItemScript(item);
     inventoryItems.push(item);
     pendingInventoryItemImage = null;
@@ -3996,7 +5181,7 @@ window.selectRoom = function(roomId) {
     if (inventoryItems.some(i => i.id !== item.id && i.name === name)) { showNotification('Name already in use', 'warning'); return; }
     if (oldName !== name && inventoryScripts.has(oldName)) inventoryScripts.delete(oldName);
     item.name = name;
-    item.scriptName = scriptName || name;
+    item.scriptName = scriptName;
     if (pendingInventoryItemImage) item.image = pendingInventoryItemImage;
     syncInventoryItemScript(item);
     pendingInventoryItemImage = null;
@@ -4260,24 +5445,35 @@ window.selectRoom = function(roomId) {
   setupInventoryEditorUI();
   // Functions for Scene Objects (in Rooms tab)
   function ensureSceneObjectSelection() {
-    // Don't auto-select scene objects if a hotspot is active
-    if (activeHotspotId) {
+    // Mutual exclusion: hotspot or animation selection locks scene objects
+    if (activeHotspotId || selectedAnimationInstanceId) {
       selectedSceneObjectId = null;
       return;
     }
-    if (sceneObjects.length > 0 && (!selectedSceneObjectId || !sceneObjects.some(o => o.id === selectedSceneObjectId))) {
-      selectedSceneObjectId = sceneObjects[0].id;
-    }
-    if (sceneObjects.length === 0) {
+    if (selectedSceneObjectId && !sceneObjects.some(o => o.id === selectedSceneObjectId)) {
       selectedSceneObjectId = null;
     }
   }
 
-  function selectSceneObject(objectId) {
-    selectedSceneObjectId = objectId;
-    activeHotspotId = null; // Lock hotspots when scene object is selected
+  function refreshRoomSelectionLists() {
     refreshSceneObjectsListUI();
+    refreshRoomAnimationInstancesListUI();
     refreshHotspotsListUI();
+    if (typeof refreshForegroundListUI === 'function') refreshForegroundListUI();
+  }
+
+  function selectSceneObject(objectId) {
+    // Toggle: click Selected again to deselect
+    if (selectedSceneObjectId === objectId) {
+      selectedSceneObjectId = null;
+    } else {
+      selectedSceneObjectId = objectId;
+      selectedAnimationInstanceId = null;
+      activeHotspotId = null;
+      selectedHotspotVertexIndex = -1;
+      isDrawingHotspot = false;
+    }
+    refreshRoomSelectionLists();
     redraw();
   }
 
@@ -4324,14 +5520,14 @@ window.selectRoom = function(roomId) {
 
     const selectBtn = document.createElement('button');
     selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
-    selectBtn.title = isSelected ? 'Active object' : 'Select to edit';
+    selectBtn.title = isSelected ? 'Click to deselect' : 'Select to edit / drag (locks animations)';
     selectBtn.textContent = isSelected ? 'Selected' : 'Select';
     selectBtn.addEventListener('click', () => selectSceneObject(sceneObject.id));
 
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-sm btn-outline-light me-1';
     editBtn.title = isSelected ? 'Edit' : 'Select before editing';
-    editBtn.textContent = '✏️';
+    editBtn.textContent = 'Edit';
     editBtn.disabled = !isSelected;
     editBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -4344,7 +5540,7 @@ window.selectRoom = function(roomId) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'btn btn-sm btn-outline-danger';
     deleteBtn.title = isSelected ? 'Delete' : 'Select before editing';
-    deleteBtn.textContent = '🗑️';
+    deleteBtn.textContent = 'Delete';
     deleteBtn.disabled = !isSelected;
     deleteBtn.addEventListener('click', () => {
       if (!isSelected) {
@@ -4378,7 +5574,7 @@ window.selectRoom = function(roomId) {
 
   window.addSceneObject = async function() {
     if (!currentUser || !currentUser.uid) {
-      showNotification('Please log in to select images', 'warning');
+      showNotification('Open a project to select images', 'warning');
       return;
     }
     if (!getActiveProjectId()) return;
@@ -4414,17 +5610,20 @@ window.selectRoom = function(roomId) {
       const r = rooms.get(currentRoomId);
       if (r) r.sceneObjects = sceneObjects;
       selectedSceneObjectId = sceneObject.id;
+      selectedAnimationInstanceId = null;
+      activeHotspotId = null;
 
-      refreshSceneObjectsListUI();
+      refreshRoomSelectionLists();
       redraw();
       showNotification(`Scene object "${objectName}" added`, 'success');
+      notifyEditorProjectChanged();
     } catch (error) {
       console.error('[Asset] Errore scene object da Resources:', error);
       showNotification(`Scene object error: ${error.message}`, 'error');
     }
   };
 
-  window.filterSceneObjects = function(searchTerm) {
+  window.filterSceneObjects = async function(searchTerm) {
     const objects = document.querySelectorAll('#scene-objects-list .list-group-item');
     objects.forEach(obj => {
       const text = obj.textContent.toLowerCase();
@@ -4434,7 +5633,7 @@ window.selectRoom = function(roomId) {
   };
 
   window.removeSceneObject = async function(button) {
-    if (confirm('Are you sure you want to delete this scene object?')) {
+    if (await showConfirmDialog({ title: 'Delete Scene Object', message: 'Are you sure you want to delete this scene object?', danger: true })) {
       const listItem = button.closest('.list-group-item');
       const objectId = listItem.dataset.objectId;
       if (objectId !== selectedSceneObjectId) {
@@ -4442,11 +5641,11 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Rimuove solo dall'editor; i file su Supabase restano (eliminabili da Resources)
+      // Rimuove solo dall'editor; i file nello storage locale restano (eliminabili da Resources)
       // Remove from scene objects array (room-scoped)
       sceneObjects = sceneObjects.filter(obj => obj.id !== objectId);
       const r = rooms.get(currentRoomId); if (r) r.sceneObjects = sceneObjects;
-      selectedSceneObjectId = sceneObjects[0] ? sceneObjects[0].id : null;
+      selectedSceneObjectId = null;
       
       // Remove from UI
       refreshSceneObjectsListUI();
@@ -4472,36 +5671,28 @@ window.selectRoom = function(roomId) {
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent;
     
-    // Semplice menu di scelta: rinomina o cambia immagine
-    const action = window.prompt(
-      `Edit scene object "${currentName}"\n` +
-      `Type:\n` +
-      `- "name" to rename\n` +
-      `- "image" to replace the image`,
-      'name'
-    );
-
+    const action = await showChoicePrompt({
+      title: 'Edit Scene Object',
+      message: `Edit "${currentName}" — choose action:`,
+      options: [
+        { value: 'name', label: 'Rename' },
+        { value: 'image', label: 'Replace image' },
+        { value: 'position', label: 'Edit position' }
+      ],
+      defaultValue: 'name'
+    });
     if (!action) return;
 
-    const normalized = String(action).toLowerCase().trim();
-
-    if (normalized === 'name') {
-      const newName = prompt(`Edit scene object name (current: "${currentName}"):`, currentName);
+    if (action === 'name') {
+      const newName = await showInputPrompt({ title: 'Rename Scene Object', message: 'Name:', defaultValue: currentName });
       if (newName && newName.trim() !== '') {
         sceneObject.name = newName.trim();
         nameElement.textContent = newName.trim();
-        
-        // Update position info in UI
-        const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-        if (positionInfo) {
-          positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
-        }
-        
         showNotification(`Scene object renamed to "${newName.trim()}"`, 'success');
       }
-    } else if (normalized === 'image') {
+    } else if (action === 'image') {
       if (!currentUser?.uid) {
-        showNotification('Please log in', 'warning');
+        showNotification('Open a project first', 'warning');
         return;
       }
       const resource = await pickResourceImage({ title: 'New scene object image' });
@@ -4515,25 +5706,22 @@ window.selectRoom = function(roomId) {
       } catch (err) {
         showNotification('Error: ' + err.message, 'error');
       }
-    }
-    
-    // Ask for position change
-    const newX = prompt(`Edit X position (current: ${Math.round(sceneObject.x)}):`, Math.round(sceneObject.x));
-    if (newX && !isNaN(newX)) {
-      sceneObject.x = parseInt(newX);
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+    } else if (action === 'position') {
+      const newX = await showInputPrompt({
+        title: 'Position X',
+        message: 'X:',
+        defaultValue: String(Math.round(sceneObject.x))
+      });
+      if (newX != null && newX !== '' && !isNaN(Number(newX))) {
+        sceneObject.x = parseInt(newX, 10);
       }
-      redraw();
-    }
-    
-    const newY = prompt(`Edit Y position (current: ${Math.round(sceneObject.y)}):`, Math.round(sceneObject.y));
-    if (newY && !isNaN(newY)) {
-      sceneObject.y = parseInt(newY);
-      const positionInfo = listItem.querySelector('small[style*="color: #888"]');
-      if (positionInfo) {
-        positionInfo.textContent = `Position: ${Math.round(sceneObject.x)}, ${Math.round(sceneObject.y)}`;
+      const newY = await showInputPrompt({
+        title: 'Position Y',
+        message: 'Y:',
+        defaultValue: String(Math.round(sceneObject.y))
+      });
+      if (newY != null && newY !== '' && !isNaN(Number(newY))) {
+        sceneObject.y = parseInt(newY, 10);
       }
       redraw();
     }
@@ -4577,6 +5765,7 @@ window.selectRoom = function(roomId) {
     charactersList.innerHTML = '';
     names.forEach((characterName) => {
       const charData = characterFrames.get(characterName);
+      ensureCharacterSpawnSettings(charData);
       const totalFrames = getCharacterFrameCount(charData);
       const isSelected = characterName === selectedName;
       const el = document.createElement('div');
@@ -4584,7 +5773,7 @@ window.selectRoom = function(roomId) {
       if (isSelected) el.classList.add('border', 'border-info');
       el.dataset.characterName = characterName;
       const info = document.createElement('div');
-      const scriptLabel = characterScripts.has(characterName) ? characterName : '(no script)';
+      const scriptLabel = getDisplayScriptLabel('Character', characterName);
       info.innerHTML = '<strong>' + characterName + '</strong><br><small class="text-muted">' + totalFrames + ' frame' + (totalFrames !== 1 ? 's' : '') + '</small><br><small class="character-script-name text-info">Script: ' + scriptLabel + '</small>';
       const controls = document.createElement('div');
       const selectBtn = document.createElement('button');
@@ -4593,7 +5782,7 @@ window.selectRoom = function(roomId) {
       selectBtn.addEventListener('click', () => selectCharacterFromList(characterName));
       const editBtn = document.createElement('button');
       editBtn.className = 'btn btn-sm btn-outline-light me-1';
-      editBtn.textContent = 'Rename';
+      editBtn.textContent = 'Edit';
       editBtn.addEventListener('click', () => window.editCharacter(editBtn));
       const dialogBtn = document.createElement('button');
       dialogBtn.className = 'btn btn-sm btn-outline-warning me-1';
@@ -4638,30 +5827,86 @@ window.selectRoom = function(roomId) {
             nameElement.insertAdjacentElement('afterend', scriptNameDisplay);
           }
         }
-        scriptNameDisplay.textContent = `Script name: "${characterName}"`;
+        scriptNameDisplay.textContent = 'Script: ' + getDisplayScriptLabel('Character', characterName);
         scriptNameDisplay.style.display = 'block';
       }
     });
   }
 
-  window.addCharacter = function() {
-    const name = (prompt('Character name:') || '').trim();
+  function getDefaultCharacterSpawnSettings() {
+    const firstRoom = rooms && rooms.length > 0 ? rooms[0] : null;
+    return {
+      isPlayer: false,
+      autoSpawn: false,
+      roomId: firstRoom ? firstRoom.id : null,
+      x: 0,
+      y: 0,
+      direction: 'south',
+      moveSpeed: 100,
+      scaleMoveSpeedWithDepth: true
+    };
+  }
+
+  function normalizeCharacterSpawnSettings(spawn) {
+    const defaults = getDefaultCharacterSpawnSettings();
+    if (!spawn || typeof spawn !== 'object') return { ...defaults };
+    return {
+      isPlayer: spawn.isPlayer === true,
+      autoSpawn: spawn.autoSpawn === true,
+      roomId: spawn.roomId != null ? spawn.roomId : defaults.roomId,
+      x: typeof spawn.x === 'number' && !isNaN(spawn.x) ? spawn.x : defaults.x,
+      y: typeof spawn.y === 'number' && !isNaN(spawn.y) ? spawn.y : defaults.y,
+      direction: spawn.direction || defaults.direction,
+      moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : defaults.moveSpeed,
+      scaleMoveSpeedWithDepth: spawn.scaleMoveSpeedWithDepth !== false
+    };
+  }
+
+  function createEmptyCharacterData(name) {
+    const n = name != null ? String(name).trim() : '';
+    return {
+      id: n, // sempre uguale al name (chiave Map / runtime)
+      name: n,
+      directions: {},
+      animations: {},
+      currentFrame: 0,
+      spawnSettings: getDefaultCharacterSpawnSettings()
+    };
+  }
+
+  /** Garantisce id === name sul record character in editor */
+  function ensureCharacterIdEqualsName(charData, name) {
+    if (!charData) return;
+    const n = String(name || charData.name || charData.id || '').trim();
+    charData.id = n;
+    charData.name = n;
+  }
+
+  function ensureCharacterSpawnSettings(charData) {
+    if (!charData) return;
+    charData.spawnSettings = normalizeCharacterSpawnSettings(charData.spawnSettings);
+  }
+
+  window.addCharacter = async function() {
+    const nameRaw = await showInputPrompt({ title: 'New Character', message: 'Character name:', defaultValue: '' });
+    const name = (nameRaw || '').trim();
     if (!name) return;
     if (characterFrames.has(name)) {
       showNotification('Character name already in use', 'warning');
       return;
     }
-    characterFrames.set(name, { directions: {}, animations: {}, currentFrame: 0 });
+    characterFrames.set(name, createEmptyCharacterData(name));
     selectCharacterFromList(name);
     showNotification(`Character "${name}" added!`, 'success');
+    notifyEditorProjectChanged();
   };
 
   window.removeCharacter = async function(button) {
-    if (confirm('Are you sure you want to delete this character?')) {
+    if (await showConfirmDialog({ title: 'Delete Character', message: 'Are you sure you want to delete this character?', danger: true })) {
       const characterElement = button.closest('.list-group-item');
       const characterName = characterElement.querySelector('strong').textContent.trim();
       
-      // Ferma la preview se è attiva per questo character
+      // Ferma la preview se Ã¨ attiva per questo character
       const sel = document.getElementById('character-selector');
       const currentCharacter = sel ? sel.value : '';
       if (currentCharacter === characterName) {
@@ -4670,7 +5915,7 @@ window.selectRoom = function(roomId) {
       
       const charData = characterFrames.get(characterName);
 
-      // Pulisce i riferimenti in memoria (i file su Supabase restano; eliminabili da Resources)
+      // Pulisce i riferimenti in memoria (i file nello storage locale restano; eliminabili da Resources)
       // Questo pulisce la mappa anche se alcuni frame non sono stati trovati
       const clearDirectionFramesFromMap = (directionsMap) => {
         if (!directionsMap) return;
@@ -4736,16 +5981,16 @@ window.selectRoom = function(roomId) {
       refreshCharactersListUI();
       
       showNotification('Character deleted!', 'info');
-      console.log(`[Character] ✅ Character "${characterName}" rimosso dall'editor`);
+      console.log(`[Character] âœ… Character "${characterName}" rimosso dall'editor`);
     }
   };
 
-  window.editCharacter = function(button) {
+  window.editCharacter = async function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
     const currentName = nameElement.textContent.trim();
     
-    const newName = prompt('Edit character name:', currentName);
+    const newName = await showInputPrompt({ title: 'Rename Character', message: 'Character name:', defaultValue: currentName });
     if (newName && newName.trim() !== '') {
       const oldName = currentName;
       const trimmedNewName = newName.trim();
@@ -4756,6 +6001,7 @@ window.selectRoom = function(roomId) {
       }
       if (characterFrames.has(oldName)) {
         const data = characterFrames.get(oldName);
+        ensureCharacterIdEqualsName(data, trimmedNewName);
         characterFrames.delete(oldName);
         characterFrames.set(trimmedNewName, data);
       }
@@ -4764,23 +6010,42 @@ window.selectRoom = function(roomId) {
         characterScripts.delete(oldName);
         characterScripts.set(trimmedNewName, script);
       }
+      // Rinomina script key Character:old → Character:new
+      try {
+        const oldKey = `Character:${oldName}`;
+        const newKey = `Character:${trimmedNewName}`;
+        if (jsScripts && jsScripts.has(oldKey)) {
+          jsScripts.set(newKey, jsScripts.get(oldKey));
+          jsScripts.delete(oldKey);
+        }
+      } catch (_) {}
+      // Sync starting player / spawn id=name
+      try {
+        let s = null;
+        try { s = JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) { s = null; }
+        if (s && s.startingPlayer === oldName) {
+          persistStartSettings({ startingPlayer: trimmedNewName });
+        }
+      } catch (_) {}
       const characterSelector = document.getElementById('character-selector');
       if (characterSelector && characterSelector.value === oldName) {
         characterSelector.value = trimmedNewName;
         loadCharacterDirections();
       }
       refreshCharactersListUI();
-      showNotification(`Character renamed to "${trimmedNewName}"`, 'success');
+      try { if (typeof refreshScriptsTree === 'function') refreshScriptsTree(); } catch (_) {}
+      notifyEditorProjectChanged();
+      showNotification(`Character renamed to "${trimmedNewName}" (id=name)`, 'success');
     }
   };
 
-  window.editCharacterDialogs = function(button) {
+  window.editCharacterDialogs = async function(button) {
     const listItem = button.closest('.list-group-item');
     const nameElement = listItem.querySelector('strong');
     const characterName = nameElement.textContent;
     
     // Simple dialog editor - in a real app this would open a more complex dialog
-    const dialogText = prompt(`Edit dialogs for "${characterName}":`, 'Hello! How can I help you?');
+    const dialogText = await showInputPrompt({ title: 'Character Dialog', message: `Edit dialogs for "${characterName}":`, defaultValue: 'Hello! How can I help you?' });
     if (dialogText && dialogText.trim() !== '') {
       showNotification(`Dialog updated for "${characterName}"`, 'success');
       console.log(`Dialog for ${characterName}: ${dialogText}`);
@@ -4795,14 +6060,14 @@ window.selectRoom = function(roomId) {
   let currentDirection = 'south'; // Default direction
 
   const DIRECTION_LABELS = {
-    north: 'North (↑)',
-    northeast: 'Northeast (↗)',
-    east: 'East (→)',
-    southeast: 'Southeast (↘)',
-    south: 'South (↓)',
-    southwest: 'Southwest (↙)',
-    west: 'West (←)',
-    northwest: 'Northwest (↖)'
+    north: 'North',
+    northeast: 'Northeast',
+    east: 'East',
+    southeast: 'Southeast',
+    south: 'South',
+    southwest: 'Southwest',
+    west: 'West',
+    northwest: 'Northwest'
   };
 
   function getSelectedCharacterAnimationKey() {
@@ -4876,7 +6141,7 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  window.onCharacterAnimationChange = function() {
+  window.onCharacterAnimationChange = async function() {
     stopCharacterPreview();
     resetDirectionSelectorLabels();
     updateCharacterAnimationUILabel();
@@ -4884,14 +6149,18 @@ window.selectRoom = function(roomId) {
     redraw();
   };
 
-  window.addCharacterAnimation = function() {
+  window.addCharacterAnimation = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
       showNotification('Select a character first', 'warning');
       return;
     }
-    const name = prompt('Animation name (e.g. idle, talk, pick_up):');
+    const name = await showInputPrompt({
+      title: 'New Character Animation',
+      message: 'Animation name (e.g. idle, talk, pick_up):',
+      defaultValue: ''
+    });
     if (!name || !name.trim()) return;
     const animName = name.trim();
     if (animName.toLowerCase() === 'walking') {
@@ -4900,7 +6169,7 @@ window.selectRoom = function(roomId) {
     }
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
     if (!charData.animations) charData.animations = {};
@@ -4915,9 +6184,10 @@ window.selectRoom = function(roomId) {
     if (animSel) animSel.value = animName;
     onCharacterAnimationChange();
     showNotification(`Animation "${animName}" added`, 'success');
+    notifyEditorProjectChanged();
   };
 
-  window.removeCharacterAnimation = function() {
+  window.removeCharacterAnimation = async function() {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
@@ -4929,7 +6199,7 @@ window.selectRoom = function(roomId) {
       showNotification('Cannot remove the standard walking animation', 'warning');
       return;
     }
-    if (!confirm(`Remove animation "${animKey}" and all its frames?`)) return;
+    if (!(await showConfirmDialog({ title: 'Remove Animation', message: `Remove animation "${animKey}" and all its frames?`, danger: true }))) return;
     const charData = characterFrames.get(who);
     if (charData && charData.animations) {
       delete charData.animations[animKey];
@@ -4994,9 +6264,9 @@ window.selectRoom = function(roomId) {
   }
   
   // Traccia i frame caricati durante la sessione corrente che non sono stati ancora salvati nel progetto
-  // Questo permette di eliminarli da Supabase se si chiude il browser o si fa logout senza salvare
-  const unsavedCharacterFrames = new Set(); // Set di Image objects che sono stati caricati su Supabase ma non salvati
-  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character caricati su Supabase ma non salvati nel progetto
+  // Questo permette di eliminarli dallo storage locale se si chiude il browser o si fa logout senza salvare
+  const unsavedCharacterFrames = new Set(); // Set di Image objects caricati ma non ancora salvati nel progetto
+  const unsavedCharacterAssetIds = new Set(); // Set di assetId di frame character non ancora salvati nel progetto
 
   function refreshCharacterSelector() {
     const sel = document.getElementById('character-selector');
@@ -5031,6 +6301,25 @@ window.selectRoom = function(roomId) {
     if (Object.prototype.hasOwnProperty.call(partial, 'startX')) s.startX = Number(partial.startX) || 0;
     if (Object.prototype.hasOwnProperty.call(partial, 'startY')) s.startY = Number(partial.startY) || 0;
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+
+    // Mantieni allineati spawnSettings del player (runtime usa quelli se isPlayer)
+    try {
+      const playerName = s.startingPlayer
+        || [...characterFrames.keys()].find(n => {
+          const d = characterFrames.get(n);
+          return d && d.spawnSettings && d.spawnSettings.isPlayer === true;
+        });
+      if (playerName && characterFrames.has(playerName)) {
+        const charData = characterFrames.get(playerName);
+        ensureCharacterSpawnSettings(charData);
+        if (Object.prototype.hasOwnProperty.call(partial, 'startX')) charData.spawnSettings.x = s.startX;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startY')) charData.spawnSettings.y = s.startY;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startRoomId')) charData.spawnSettings.roomId = s.startRoomId || charData.spawnSettings.roomId;
+        if (Object.prototype.hasOwnProperty.call(partial, 'startingPlayer')) {
+          charData.spawnSettings.isPlayer = true;
+        }
+      }
+    } catch (_) {}
   }
 
   // Build radio list of characters for selecting the starting player
@@ -5124,7 +6413,7 @@ window.selectRoom = function(roomId) {
     const sel = document.getElementById('character-selector');
     const who = sel ? sel.value : '';
     if (!who) {
-      // Reset toggle a "upload" quando non c'è character selezionato
+      // Reset toggle a "upload" quando non c'Ã¨ character selezionato
       const uploadRadio = document.getElementById('frame-source-upload');
       if (uploadRadio) uploadRadio.checked = true;
       toggleFrameSource();
@@ -5169,7 +6458,8 @@ window.selectRoom = function(roomId) {
     }
     
     const charData = characterFrames.get(characterName);
-    const spawnData = charData && charData.spawnSettings ? charData.spawnSettings : {};
+    ensureCharacterSpawnSettings(charData);
+    const spawnData = charData ? charData.spawnSettings : getDefaultCharacterSpawnSettings();
     
     // Debug: log per verificare il caricamento
     console.log(`[Character] Caricamento spawnSettings per "${characterName}":`, spawnData);
@@ -5197,7 +6487,7 @@ window.selectRoom = function(roomId) {
       console.warn('[Character] autoSpawn checkbox non trovata');
     }
     
-    // Aggiorna visibilità dei campi (dopo aver caricato entrambe le checkbox)
+    // Aggiorna visibilitÃ  dei campi (dopo aver caricato entrambe le checkbox)
     updateSpawnSettingsVisibility();
     
     // Carica room selector
@@ -5241,6 +6531,46 @@ window.selectRoom = function(roomId) {
         speedInput.value = 100; // valore di default
       }
     }
+
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      scaleSpeedCheck.checked = spawnData.scaleMoveSpeedWithDepth !== false;
+    }
+
+    refreshCharacterPortraitsUI(characterName);
+  }
+
+  function refreshCharacterPortraitsUI(characterName) {
+    const list = document.getElementById('character-portraits-list');
+    if (!list) return;
+    const charData = characterName ? characterFrames.get(characterName) : null;
+    const portraits = (charData && charData.portraits && typeof charData.portraits === 'object')
+      ? charData.portraits
+      : {};
+    const keys = Object.keys(portraits);
+    if (!keys.length) {
+      list.innerHTML = '<div class="text-muted small">No portraits yet.</div>';
+      return;
+    }
+    list.innerHTML = keys.map(mood => {
+      const hasImg = !!(portraits[mood]);
+      return `<div class="d-flex justify-content-between align-items-center mb-1" data-portrait-mood="${escapeHtmlAttr(mood)}">
+        <span class="text-light small"><code style="color:#39ff14">${escapeHtmlAttr(mood)}</code> ${hasImg ? '✓' : ''}</span>
+        <button type="button" class="btn btn-outline-danger btn-sm py-0" data-del-portrait="${escapeHtmlAttr(mood)}">×</button>
+      </div>`;
+    }).join('');
+    list.querySelectorAll('[data-del-portrait]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mood = btn.getAttribute('data-del-portrait');
+        const cd = characterFrames.get(characterName);
+        if (!cd || !cd.portraits) return;
+        delete cd.portraits[mood];
+        if (!Object.keys(cd.portraits).length) delete cd.portraits;
+        characterFrames.set(characterName, cd);
+        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+        refreshCharacterPortraitsUI(characterName);
+      });
+    });
   }
 
   // Salva le impostazioni di spawn per il character corrente
@@ -5252,10 +6582,7 @@ window.selectRoom = function(roomId) {
     const charData = characterFrames.get(characterName);
     if (!charData) return;
     
-    // Inizializza spawnSettings se non esiste
-    if (!charData.spawnSettings) {
-      charData.spawnSettings = {};
-    }
+    ensureCharacterSpawnSettings(charData);
     
     // Leggi i valori dall'UI
     const isPlayerCheck = document.getElementById('character-spawn-is-player');
@@ -5274,8 +6601,7 @@ window.selectRoom = function(roomId) {
       console.log(`[Character] Salvataggio autoSpawn per "${characterName}": ${autoSpawnCheck.checked}`);
     }
     
-    // Salva roomId se autoSpawn è true O se isPlayer è true (il player può avere una room iniziale)
-    if (roomSelect && ((autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked))) {
+    if (roomSelect) {
       charData.spawnSettings.roomId = roomSelect.value || null;
     }
     
@@ -5300,70 +6626,86 @@ window.selectRoom = function(roomId) {
         charData.spawnSettings.moveSpeed = 100; // valore di default se non valido
       }
     }
+
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      charData.spawnSettings.scaleMoveSpeedWithDepth = scaleSpeedCheck.checked !== false;
+    } else if (charData.spawnSettings.scaleMoveSpeedWithDepth === undefined) {
+      charData.spawnSettings.scaleMoveSpeedWithDepth = true;
+    }
+
+    // Se è il player, sincronizza anche Start Position legacy (settings.startX/Y)
+    if (charData.spawnSettings.isPlayer === true) {
+      // Un solo player: spegni isPlayer sugli altri
+      characterFrames.forEach((other, otherName) => {
+        if (otherName !== characterName && other && other.spawnSettings) {
+          other.spawnSettings.isPlayer = false;
+        }
+      });
+      persistStartSettings({
+        startingPlayer: characterName,
+        startRoomId: charData.spawnSettings.roomId || null,
+        startX: charData.spawnSettings.x,
+        startY: charData.spawnSettings.y
+      });
+      const startPositionInput = document.getElementById('start-position');
+      if (startPositionInput) {
+        startPositionInput.value = formatPositionString(charData.spawnSettings.x, charData.spawnSettings.y);
+      }
+      try { refreshStartingPlayerUI(); } catch (_) {}
+      try { refreshStartRoomSelector(); } catch (_) {}
+    }
     
     // Salva nel characterFrames
     characterFrames.set(characterName, charData);
   }
 
-  // Aggiorna la visibilità dei campi spawn in base alle checkbox
+  // Aggiorna la visibilitÃ  dei campi spawn (Starting Room, posizione, direzione e velocitÃ  sempre visibili)
   function updateSpawnSettingsVisibility() {
-    const autoSpawnCheck = document.getElementById('character-spawn-auto');
-    const isPlayerCheck = document.getElementById('character-spawn-is-player');
     const roomContainer = document.getElementById('character-spawn-room-container');
     const positionContainer = document.getElementById('character-spawn-position-container');
     const directionContainer = document.getElementById('character-spawn-direction-container');
     const speedContainer = document.getElementById('character-spawn-speed-container');
     
-    const showFields = (autoSpawnCheck && autoSpawnCheck.checked) || (isPlayerCheck && isPlayerCheck.checked);
-    
-    if (roomContainer) {
-      roomContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (positionContainer) {
-      positionContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (directionContainer) {
-      directionContainer.style.display = showFields ? 'block' : 'none';
-    }
-    if (speedContainer) {
-      speedContainer.style.display = showFields ? 'block' : 'none';
-    }
+    if (roomContainer) roomContainer.style.display = 'block';
+    if (positionContainer) positionContainer.style.display = 'block';
+    if (directionContainer) directionContainer.style.display = 'block';
+    if (speedContainer) speedContainer.style.display = 'block';
   }
 
-  // Add event listener for character selection change
-  document.addEventListener('DOMContentLoaded', function() {
+  // Character spawn / portrait UI (already inside outer DOMContentLoaded — do not nest another)
+  {
     const characterSelector = document.getElementById('character-selector');
     if (characterSelector) {
       characterSelector.addEventListener('change', function() {
         loadCharacterDirections();
       });
     }
-    
-    // Setup spawn settings event listeners
+
     const isPlayerCheck = document.getElementById('character-spawn-is-player');
     const autoSpawnCheck = document.getElementById('character-spawn-auto');
     const roomSelect = document.getElementById('character-spawn-room');
     const positionInput = document.getElementById('character-spawn-position');
     const directionSelect = document.getElementById('character-spawn-direction');
-    
+
     if (isPlayerCheck) {
       isPlayerCheck.addEventListener('change', function() {
         saveCharacterSpawnSettings();
         updateSpawnSettingsVisibility();
       });
     }
-    
+
     if (autoSpawnCheck) {
       autoSpawnCheck.addEventListener('change', function() {
         saveCharacterSpawnSettings();
         updateSpawnSettingsVisibility();
       });
     }
-    
+
     if (roomSelect) {
       roomSelect.addEventListener('change', saveCharacterSpawnSettings);
     }
-    
+
     if (positionInput) {
       positionInput.addEventListener('input', function() {
         const parsed = parsePositionString(positionInput.value);
@@ -5372,49 +6714,81 @@ window.selectRoom = function(roomId) {
         }
       });
     }
-    
+
     if (directionSelect) {
       directionSelect.addEventListener('change', saveCharacterSpawnSettings);
     }
-    
+
     const speedInput = document.getElementById('character-spawn-speed');
     if (speedInput) {
       speedInput.addEventListener('change', saveCharacterSpawnSettings);
       speedInput.addEventListener('input', function() {
-        // Salva anche durante la digitazione per feedback immediato
         const value = Number(speedInput.value);
         if (!isNaN(value) && value > 0 && value <= 1000) {
           saveCharacterSpawnSettings();
         }
       });
     }
-    
-    // Gestione right-click per aggiornare posizione character spawn
+
+    const scaleSpeedCheck = document.getElementById('character-spawn-scale-speed');
+    if (scaleSpeedCheck) {
+      scaleSpeedCheck.addEventListener('change', saveCharacterSpawnSettings);
+    }
+
+    const portraitAddBtn = document.getElementById('character-portrait-add-btn');
+    if (portraitAddBtn && !portraitAddBtn._amiantoBound) {
+      portraitAddBtn._amiantoBound = true;
+      portraitAddBtn.addEventListener('click', async function() {
+        const sel = document.getElementById('character-selector');
+        const characterName = sel ? sel.value : '';
+        if (!characterName) {
+          showNotification('Select a character first', 'warning');
+          return;
+        }
+        const moodInput = document.getElementById('character-portrait-mood');
+        const mood = String(moodInput && moodInput.value ? moodInput.value : '').trim() || 'default';
+        const resource = await pickResourceImage({ title: 'Portrait for mood: ' + mood });
+        if (!resource) return;
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) {
+          showNotification('Could not load portrait image', 'warning');
+          return;
+        }
+        let charData = characterFrames.get(characterName);
+        if (!charData) {
+          charData = createEmptyCharacterData(characterName);
+        }
+        if (!charData.portraits) charData.portraits = {};
+        const serialized = typeof serializeImage === 'function' ? serializeImage(img) : (img.src || '');
+        charData.portraits[mood] = serialized || img.src || resource.publicUrl || '';
+        characterFrames.set(characterName, charData);
+        if (moodInput) moodInput.value = '';
+        if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+        refreshCharacterPortraitsUI(characterName);
+        showNotification(`Portrait "${mood}" set for ${characterName}`, 'success');
+      });
+    }
+
     if (canvas) {
       canvas.addEventListener('contextmenu', function(e) {
         e.preventDefault();
-        
-        // Calcola sempre le coordinate (indipendentemente dalla tab)
+
         const worldPos = screenToWorld(e.clientX, e.clientY);
         const roundedX = Math.round(worldPos.x);
         const roundedY = Math.round(worldPos.y);
-        
-        // Nota: la copia delle coordinate negli appunti in modalità rooms è gestita
-        // dal gestore contextmenu principale (riga 1773)
-        
+
         const sel = document.getElementById('character-selector');
         if (sel && sel.value) {
-          // Se siamo nella tab characters e c'è un character selezionato
           const currentTab = document.querySelector('.nav-link.active');
           if (currentTab && currentTab.getAttribute('data-tab') === 'characters') {
-            const positionInput = document.getElementById('character-spawn-position');
-            if (positionInput) {
-              positionInput.value = formatPositionString(roundedX, roundedY);
-              const parsed = parsePositionString(positionInput.value);
+            const posInput = document.getElementById('character-spawn-position');
+            if (posInput) {
+              posInput.value = formatPositionString(roundedX, roundedY);
+              const parsed = parsePositionString(posInput.value);
               if (parsed.valid) {
-                positionInput.style.backgroundColor = '#2d5016';
+                posInput.style.backgroundColor = '#2d5016';
                 setTimeout(() => {
-                  positionInput.style.backgroundColor = '';
+                  posInput.style.backgroundColor = '';
                 }, 500);
                 saveCharacterSpawnSettings();
               }
@@ -5423,7 +6797,7 @@ window.selectRoom = function(roomId) {
         }
       });
     }
-  });
+  }
 
   window.uploadCharacterFrames = async function() {
     const sel = document.getElementById('character-selector');
@@ -5432,9 +6806,9 @@ window.selectRoom = function(roomId) {
 
     const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
     const resources = await pickResourceImage({
-      title: `Animation frames — ${who} [${animLabel}]`,
+      title: `Animation frames â€” ${who} [${animLabel}]`,
       multiple: true,
-      hint: 'Click multiple images to select them. Confirm with «Add selection». Frame order follows numbers in the file name.'
+      hint: 'Click multiple images to select them. Confirm with Â«Add selectionÂ». Frame order follows numbers in the file name.'
     });
     if (!resources || !resources.length) return;
 
@@ -5442,7 +6816,7 @@ window.selectRoom = function(roomId) {
     const direction = dirSel ? dirSel.value : 'south';
 
     if (!currentUser) {
-      showNotification('Please log in', 'warning');
+      showNotification('Open a project first', 'warning');
       return;
     }
 
@@ -5454,7 +6828,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
 
@@ -5493,27 +6867,27 @@ window.selectRoom = function(roomId) {
         return Infinity;
       }
       
-      // Se c'è un solo numero, usalo
+      // Se c'Ã¨ un solo numero, usalo
       if (numberMatches.length === 1) {
         return numberMatches[0].value;
       }
       
-      // Se ci sono più numeri, preferisci quello con padding (001, 002, 01, etc.)
-      // perché di solito è il frame number
+      // Se ci sono piÃ¹ numeri, preferisci quello con padding (001, 002, 01, etc.)
+      // perchÃ© di solito Ã¨ il frame number
       const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
       
       if (paddedNumbers.length > 0) {
-        // Se ci sono numeri con padding, usa quello con più cifre (001 > 01)
+        // Se ci sono numeri con padding, usa quello con piÃ¹ cifre (001 > 01)
         // o se hanno la stessa lunghezza, usa l'ultimo
         paddedNumbers.sort((a, b) => {
-          if (b.length !== a.length) return b.length - a.length; // Preferisci più cifre
+          if (b.length !== a.length) return b.length - a.length; // Preferisci piÃ¹ cifre
           return b.position - a.position; // Se stessa lunghezza, usa l'ultimo
         });
         return paddedNumbers[0].value;
       }
       
       // Se non ci sono numeri con padding, usa l'ultimo numero trovato
-      // (spesso è il frame number quando ci sono altri numeri nel nome)
+      // (spesso Ã¨ il frame number quando ci sono altri numeri nel nome)
       return numberMatches[numberMatches.length - 1].value;
     };
     
@@ -5535,10 +6909,10 @@ window.selectRoom = function(roomId) {
       return (a.displayName || a.name).localeCompare(b.displayName || b.name);
     });
     
-    console.log(`[Frame] 📁 Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
-    console.log(`[Frame] ✅ Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
+    console.log(`[Frame] ðŸ“ Resources (${resources.length}):`, resources.map(f => f.displayName || f.name));
+    console.log(`[Frame] âœ… Ordinati (${sortedFiles.length}):`, sortedFiles.map(f => {
       const num = extractNumberFromFileName(f.displayName || f.fileName || f.name);
-      return `${f.displayName || f.name} → num: ${num !== Infinity ? num : 'N/A'}`;
+      return `${f.displayName || f.name} â†’ num: ${num !== Infinity ? num : 'N/A'}`;
     }));
     
     // Verifica che l'ordinamento sia corretto
@@ -5549,7 +6923,7 @@ window.selectRoom = function(roomId) {
       const isOrdered = num === Infinity || prevNum === Infinity || num >= prevNum;
       return { file: label, num, isOrdered };
     });
-    console.log(`[Frame] 🔍 Verifica ordine:`, orderCheck);
+    console.log(`[Frame] ðŸ” Verifica ordine:`, orderCheck);
     
     // Carica i frame su storage e registra nella mappa
     showNotification(`Loading ${sortedFiles.length} frame(s) from Resources...`, 'info');
@@ -5569,7 +6943,7 @@ window.selectRoom = function(roomId) {
           
           return { frameData, index: actualFrameIndex, assetId: resource.assetId };
         } catch (error) {
-          console.error(`[Frame] ❌ Errore frame ${resource.displayName || resource.name}:`, error);
+          console.error(`[Frame] âŒ Errore frame ${resource.displayName || resource.name}:`, error);
           return { frameData: null, index: existingFrameCount + index, error: error.message };
         }
       });
@@ -5586,10 +6960,10 @@ window.selectRoom = function(roomId) {
         if (frameData) {
           dirData.frames.push(frameData);
           successCount++;
-          console.log(`[Frame] ✅ Frame ${index} caricato: ${assetId}`);
+          console.log(`[Frame] âœ… Frame ${index} caricato: ${assetId}`);
         } else {
           errorCount++;
-          console.error(`[Frame] ❌ Frame ${index} fallito: ${error || 'Unknown error'}`);
+          console.error(`[Frame] âŒ Frame ${index} fallito: ${error || 'Unknown error'}`);
         }
       });
       
@@ -5597,7 +6971,7 @@ window.selectRoom = function(roomId) {
       characterFrames.set(who, charData);
       
       if (successCount > 0) {
-        showNotification(`✅ ${successCount} frame(s) uploaded and saved to storage`, 'success');
+        showNotification(`${successCount} frame(s) uploaded and saved to storage`, 'success');
         updateDirectionInfo();
         // Initialize pivot if it doesn't exist
         initializePivotForCharacter(charData, direction);
@@ -5605,11 +6979,11 @@ window.selectRoom = function(roomId) {
       }
       
       if (errorCount > 0) {
-        showNotification(`⚠️ ${errorCount} frame(s) failed to upload`, 'warning');
+        showNotification(`âš ï¸ ${errorCount} frame(s) failed to upload`, 'warning');
       }
       
     } catch (error) {
-      console.error('[Frame] ❌ Errore durante upload frame:', error);
+      console.error('[Frame] âŒ Errore durante upload frame:', error);
       showNotification('Error uploading frames', 'error');
     }
   };
@@ -5677,7 +7051,7 @@ window.selectRoom = function(roomId) {
     showNotification(`Preview started: ${who} [${animLabel}] (${currentDirection}) - ${totalFrames} frame${totalFrames !== 1 ? 's' : ''} @ ${fps} FPS (${interval}ms/frame)`, 'info');
   };
 
-  window.stopCharacterPreview = function() {
+  window.stopCharacterPreview = async function() {
     if (characterPreviewTimer) {
       clearInterval(characterPreviewTimer);
       characterPreviewTimer = null;
@@ -5691,8 +7065,8 @@ window.selectRoom = function(roomId) {
     if (!who) { showNotification('Select a character first', 'warning'); return; }
 
     const animLabel = getSelectedCharacterAnimationKey() === 'walking' ? 'walking' : getSelectedCharacterAnimationKey();
-    if (confirm(`Clear all frames for animation "${animLabel}"?`)) {
-      // Ferma la preview se è attiva
+    if (await showConfirmDialog({ title: 'Clear Frames', message: `Clear all frames for animation "${animLabel}"?`, danger: true })) {
+      // Ferma la preview se Ã¨ attiva
       stopCharacterPreview();
 
       const charData = characterFrames.get(who);
@@ -5704,8 +7078,11 @@ window.selectRoom = function(roomId) {
           if (dirData.frames) dirData.frames = [];
         }
         if (charData) characterFrames.set(who, charData);
+      } else if (charData) {
+        ensureCharacterSpawnSettings(charData);
+        characterFrames.set(who, charData);
       } else {
-        characterFrames.set(who, { directions: {}, animations: {}, currentFrame: 0 });
+        characterFrames.set(who, createEmptyCharacterData(who));
       }
       
       // Reset dell'indice della preview
@@ -5723,6 +7100,634 @@ window.selectRoom = function(roomId) {
       showNotification(`Frames cleared for ${who} (${animLabel})`, 'success');
     }
   };
+
+  // ============================================
+  // Room Animations (catalog + room placements)
+  // ============================================
+
+  function notifyEditorProjectChanged() {
+    if (typeof window.markAmiantoProjectDirty === 'function') {
+      window.markAmiantoProjectDirty();
+    }
+  }
+
+  function createEmptyRoomAnimationData(name) {
+    return {
+      id: uid('anim'),
+      name: name || 'Animation',
+      fps: 8,
+      loop: true,
+      layer: 'background',
+      frames: []
+    };
+  }
+
+  function extractNumberFromFileName(fileName) {
+    const nameWithoutExt = String(fileName || '').replace(/\.[^.]*$/, '');
+    const numberMatches = [];
+    let match;
+    const numberRegex = /\d+/g;
+    while ((match = numberRegex.exec(nameWithoutExt)) !== null) {
+      numberMatches.push({
+        value: parseInt(match[0], 10),
+        original: match[0],
+        position: match.index,
+        length: match[0].length
+      });
+    }
+    if (numberMatches.length === 0) return Infinity;
+    if (numberMatches.length === 1) return numberMatches[0].value;
+    const paddedNumbers = numberMatches.filter(n => n.original.length >= 2 && n.original.startsWith('0'));
+    if (paddedNumbers.length > 0) {
+      paddedNumbers.sort((a, b) => {
+        if (b.length !== a.length) return b.length - a.length;
+        return b.position - a.position;
+      });
+      return paddedNumbers[0].value;
+    }
+    return numberMatches[numberMatches.length - 1].value;
+  }
+
+  function selectRoomAnimationFromList(animId) {
+    selectedRoomAnimationId = animId;
+    const sel = document.getElementById('room-animation-selector');
+    if (sel) sel.value = animId || '';
+    onRoomAnimationSelect();
+    refreshRoomAnimationsCatalogListUI();
+  }
+
+  window.onRoomAnimationSelect = function() {
+    const sel = document.getElementById('room-animation-selector');
+    selectedRoomAnimationId = sel && sel.value ? sel.value : null;
+    const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    const fpsInput = document.getElementById('room-animation-fps');
+    const layerSel = document.getElementById('room-animation-layer');
+    const loopChk = document.getElementById('room-animation-loop');
+    if (fpsInput) fpsInput.value = animDef ? (Number(animDef.fps) || 8) : 8;
+    if (layerSel) layerSel.value = animDef && animDef.layer === 'foreground' ? 'foreground' : 'background';
+    if (loopChk) loopChk.checked = animDef ? animDef.loop !== false : true;
+    stopRoomAnimationPreview();
+    roomAnimationPreviewIndex = 0;
+    refreshRoomAnimationFramesPreview();
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    redraw();
+  };
+
+  function refreshRoomAnimationSelector() {
+    const sel = document.getElementById('room-animation-selector');
+    if (!sel) return;
+    const previous = sel.value;
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Select animation...';
+    sel.appendChild(opt);
+    const ids = [];
+    roomAnimationsCatalog.forEach((_, id) => ids.push(id));
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = anim ? anim.name : id;
+      sel.appendChild(o);
+    });
+    if (previous && ids.includes(previous)) sel.value = previous;
+    else if (selectedRoomAnimationId && ids.includes(selectedRoomAnimationId)) sel.value = selectedRoomAnimationId;
+  }
+
+  function refreshRoomAnimationPickerUI() {
+    const picker = document.getElementById('room-animation-picker');
+    if (!picker) return;
+    const previous = picker.value;
+    picker.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Select animation...';
+    picker.appendChild(opt);
+    const ids = [];
+    roomAnimationsCatalog.forEach((anim, id) => {
+      if (anim && anim.frames && anim.frames.length > 0) ids.push(id);
+    });
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = anim ? anim.name : id;
+      picker.appendChild(o);
+    });
+    if (previous && ids.includes(previous)) picker.value = previous;
+  }
+
+  function refreshRoomAnimationsCatalogListUI() {
+    const list = document.getElementById('room-animations-catalog-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const ids = [];
+    roomAnimationsCatalog.forEach((_, id) => ids.push(id));
+    ids.sort((a, b) => {
+      const na = (roomAnimationsCatalog.get(a) || {}).name || a;
+      const nb = (roomAnimationsCatalog.get(b) || {}).name || b;
+      return na.localeCompare(nb);
+    });
+    ids.forEach((id) => {
+      const anim = roomAnimationsCatalog.get(id);
+      if (!anim) return;
+      const isSelected = id === selectedRoomAnimationId;
+      const el = document.createElement('div');
+      el.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+      if (isSelected) el.classList.add('border', 'border-info');
+      const frameCount = anim.frames ? anim.frames.length : 0;
+      const info = document.createElement('div');
+      info.innerHTML = `<strong>${anim.name}</strong><br><small class="text-muted">${frameCount} frame${frameCount !== 1 ? 's' : ''} | ${anim.layer || 'background'}</small>`;
+      const controls = document.createElement('div');
+      const selectBtn = document.createElement('button');
+      selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+      selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', () => selectRoomAnimationFromList(id));
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'btn btn-sm btn-outline-light me-1';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', () => window.renameRoomAnimation(id));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-outline-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => window.removeRoomAnimation(id));
+      controls.appendChild(selectBtn);
+      controls.appendChild(renameBtn);
+      controls.appendChild(delBtn);
+      el.appendChild(info);
+      el.appendChild(controls);
+      list.appendChild(el);
+    });
+    refreshRoomAnimationSelector();
+    refreshRoomAnimationPickerUI();
+  }
+
+  function refreshRoomAnimationFramesPreview() {
+    const container = document.getElementById('room-animation-frames-preview');
+    if (!container) return;
+    const animDef = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!animDef || !animDef.frames || !animDef.frames.length) {
+      container.innerHTML = '<div class="text-muted">No frames loaded</div>';
+      return;
+    }
+    container.innerHTML = '';
+    animDef.frames.forEach((frameData, index) => {
+      const frameItem = document.createElement('div');
+      frameItem.className = 'frame-item';
+      frameItem.draggable = true;
+      frameItem.dataset.frameIndex = index;
+      const img = document.createElement('img');
+      img.draggable = false;
+      if (frameData && frameData.img) {
+        img.src = frameData.img.src || frameData.img;
+      }
+      const frameLabel = `Frame ${index + 1}`;
+      img.alt = frameLabel;
+
+      const frameNumber = document.createElement('div');
+      frameNumber.className = 'frame-number';
+      frameNumber.textContent = index + 1;
+
+      const frameFileName = document.createElement('div');
+      frameFileName.className = 'frame-filename';
+      frameFileName.textContent = frameLabel;
+      if (frameData && frameData.name) {
+        frameFileName.title = frameData.name;
+      }
+
+      frameItem.appendChild(img);
+      frameItem.appendChild(frameNumber);
+      frameItem.appendChild(frameFileName);
+      container.appendChild(frameItem);
+    });
+    initializeRoomAnimationFrameDragDrop();
+  }
+
+  function initializeRoomAnimationFrameDragDrop() {
+    const container = document.getElementById('room-animation-frames-preview');
+    if (!container) return;
+
+    let draggedIndex = null;
+
+    container.querySelectorAll('.frame-item').forEach((item) => {
+      item.addEventListener('dragstart', (e) => {
+        draggedIndex = parseInt(item.dataset.frameIndex, 10);
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(draggedIndex)); } catch (_) {}
+      });
+
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        draggedIndex = null;
+      });
+
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      });
+
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const targetIndex = parseInt(item.dataset.frameIndex, 10);
+        const fromIndex = draggedIndex;
+        if (fromIndex === null || Number.isNaN(targetIndex) || fromIndex === targetIndex) return;
+        const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+        if (!anim || !Array.isArray(anim.frames)) return;
+        const frames = anim.frames;
+        const [draggedFrame] = frames.splice(fromIndex, 1);
+        frames.splice(targetIndex, 0, draggedFrame);
+        frames.forEach((f, i) => { if (f && typeof f === 'object') f.orderIndex = i; });
+        refreshRoomAnimationFramesPreview();
+        redraw();
+        showNotification(`Frame moved from position ${fromIndex + 1} to ${targetIndex + 1}`, 'success');
+        notifyEditorProjectChanged();
+      });
+    });
+  }
+
+  window.addRoomAnimation = async function() {
+    const name = (await showInputPrompt({
+      title: 'New Animation',
+      message: 'Animation name:',
+      defaultValue: ''
+    }) || '').trim();
+    if (!name) return;
+    for (const anim of roomAnimationsCatalog.values()) {
+      if (anim.name === name) {
+        showNotification('Animation name already in use', 'warning');
+        return;
+      }
+    }
+    const animData = createEmptyRoomAnimationData(name);
+    roomAnimationsCatalog.set(animData.id, animData);
+    selectRoomAnimationFromList(animData.id);
+    showNotification(`Animation "${name}" added`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.renameRoomAnimation = async function(animId) {
+    const anim = getRoomAnimationDef(animId);
+    if (!anim) return;
+    const newName = (await showInputPrompt({
+      title: 'Rename Animation',
+      message: 'New animation name:',
+      defaultValue: anim.name
+    }) || '').trim();
+    if (!newName || newName === anim.name) return;
+    for (const [id, other] of roomAnimationsCatalog.entries()) {
+      if (id !== animId && other.name === newName) {
+        showNotification('Animation name already in use', 'warning');
+        return;
+      }
+    }
+    anim.name = newName;
+    refreshRoomAnimationsCatalogListUI();
+    showNotification(`Animation renamed to "${newName}"`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.removeRoomAnimation = async function(animId) {
+    const anim = getRoomAnimationDef(animId);
+    if (!anim) return;
+    if (!(await showConfirmDialog({ title: 'Delete Animation', message: `Delete animation "${anim.name}"? Room placements using it will also be removed.`, danger: true }))) return;
+    stopRoomAnimationPreview();
+    roomAnimationsCatalog.delete(animId);
+    rooms.forEach((room) => {
+      if (Array.isArray(room.animationInstances)) {
+        room.animationInstances = room.animationInstances.filter(inst => inst.animationId !== animId);
+      }
+    });
+    if (selectedRoomAnimationId === animId) {
+      selectedRoomAnimationId = roomAnimationsCatalog.keys().next().value || null;
+    }
+    bindRoomRefs();
+    refreshRoomAnimationInstancesListUI();
+    refreshRoomAnimationsCatalogListUI();
+    onRoomAnimationSelect();
+    redraw();
+    showNotification(`Animation "${anim.name}" deleted`, 'info');
+    notifyEditorProjectChanged();
+  };
+
+  window.updateRoomAnimationFPS = function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim) { showNotification('Select an animation first', 'warning'); return; }
+    const fpsInput = document.getElementById('room-animation-fps');
+    const fps = fpsInput ? Number(fpsInput.value) : 8;
+    anim.fps = Math.max(1, Math.min(60, fps || 8));
+    if (fpsInput) fpsInput.value = anim.fps;
+    showNotification(`FPS updated to ${anim.fps}`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.uploadRoomAnimationFrames = async function() {
+    if (!selectedRoomAnimationId) {
+      showNotification('Select an animation first', 'warning');
+      return;
+    }
+    const anim = getRoomAnimationDef(selectedRoomAnimationId);
+    if (!anim) return;
+
+    const resources = await pickResourceImage({
+      title: `Animation frames — ${anim.name}`,
+      multiple: true,
+      hint: 'Click multiple images to select them. Frame order follows numbers in the file name.'
+    });
+    if (!resources || !resources.length) return;
+    if (!currentUser || !getActiveProjectId()) {
+      showNotification('Open a project first', 'warning');
+      return;
+    }
+
+    const existingFrameCount = anim.frames ? anim.frames.length : 0;
+    const sortedFiles = [...resources].sort((a, b) => {
+      const numA = extractNumberFromFileName(a.displayName || a.fileName || a.name);
+      const numB = extractNumberFromFileName(b.displayName || b.fileName || b.name);
+      if (numA !== Infinity && numB !== Infinity) return numA - numB;
+      if (numA !== Infinity) return -1;
+      if (numB !== Infinity) return 1;
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name);
+    });
+
+    showNotification(`Loading ${sortedFiles.length} frame(s)...`, 'info');
+    try {
+      for (let index = 0; index < sortedFiles.length; index++) {
+        const resource = sortedFiles[index];
+        const img = await loadImageFromResourceEntry(resource);
+        if (!img) continue;
+        anim.frames.push({
+          img,
+          name: resource.displayName || resource.fileName || resource.name,
+          orderIndex: existingFrameCount + index
+        });
+        if (resource.assetId) {
+          imageAssetMap.set(img, {
+            assetId: resource.assetId,
+            type: 'animation',
+            projectId: getActiveProjectId()
+          });
+        }
+      }
+      roomAnimationsCatalog.set(anim.id, anim);
+      refreshRoomAnimationFramesPreview();
+      refreshRoomAnimationsCatalogListUI();
+      refreshRoomAnimationPickerUI();
+      redraw();
+      showNotification(`${sortedFiles.length} frame(s) added`, 'success');
+      notifyEditorProjectChanged();
+    } catch (error) {
+      console.error('[Animation] Frame upload error:', error);
+      showNotification('Error uploading frames', 'error');
+    }
+  };
+
+  const btnRoomAnimationFramesBrowse = document.getElementById('btn-room-animation-frames-browse');
+  if (btnRoomAnimationFramesBrowse) {
+    btnRoomAnimationFramesBrowse.addEventListener('click', () => window.uploadRoomAnimationFrames());
+  }
+
+  const roomAnimationLayerSel = document.getElementById('room-animation-layer');
+  if (roomAnimationLayerSel) {
+    roomAnimationLayerSel.addEventListener('change', () => {
+      const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+      if (!anim) return;
+      anim.layer = roomAnimationLayerSel.value === 'foreground' ? 'foreground' : 'background';
+      refreshRoomAnimationsCatalogListUI();
+      notifyEditorProjectChanged();
+    });
+  }
+
+  const roomAnimationLoopChk = document.getElementById('room-animation-loop');
+  if (roomAnimationLoopChk) {
+    roomAnimationLoopChk.addEventListener('change', () => {
+      const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+      if (!anim) return;
+      anim.loop = !!roomAnimationLoopChk.checked;
+      notifyEditorProjectChanged();
+    });
+  }
+
+  window.startRoomAnimationPreview = async function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim || !anim.frames || !anim.frames.length) {
+      showNotification('No frames loaded for this animation', 'warning');
+      return;
+    }
+    stopRoomAnimationPreview();
+    roomAnimationPreviewIndex = 0;
+    const fps = Number(anim.fps) || 8;
+    const interval = Math.max(1, Math.round(1000 / fps));
+    redraw();
+    roomAnimationPreviewTimer = setInterval(() => {
+      roomAnimationPreviewIndex = (roomAnimationPreviewIndex + 1) % anim.frames.length;
+      redraw();
+    }, interval);
+    showNotification(`Preview started: ${anim.name} (${anim.frames.length} frames @ ${fps} FPS)`, 'info');
+  };
+
+  window.stopRoomAnimationPreview = async function() {
+    if (roomAnimationPreviewTimer) {
+      clearInterval(roomAnimationPreviewTimer);
+      roomAnimationPreviewTimer = null;
+      showNotification('Preview stopped', 'info');
+    }
+  };
+
+  window.clearRoomAnimationFrames = async function() {
+    const anim = selectedRoomAnimationId ? getRoomAnimationDef(selectedRoomAnimationId) : null;
+    if (!anim) { showNotification('Select an animation first', 'warning'); return; }
+    if (!(await showConfirmDialog({ title: 'Clear Frames', message: `Clear all frames for "${anim.name}"?`, danger: true }))) return;
+    stopRoomAnimationPreview();
+    anim.frames = [];
+    roomAnimationPreviewIndex = 0;
+    refreshRoomAnimationFramesPreview();
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    redraw();
+    showNotification('Frames cleared', 'success');
+    notifyEditorProjectChanged();
+  };
+
+  function selectRoomAnimationInstance(instanceId) {
+    // Toggle: click Selected again to deselect
+    if (selectedAnimationInstanceId === instanceId) {
+      selectedAnimationInstanceId = null;
+    } else {
+      selectedAnimationInstanceId = instanceId;
+      selectedSceneObjectId = null;
+      activeHotspotId = null;
+      selectedHotspotVertexIndex = -1;
+      isDrawingHotspot = false;
+    }
+    refreshRoomSelectionLists();
+    redraw();
+  }
+
+  function createRoomAnimationInstanceListItem(inst) {
+    const animDef = getRoomAnimationDef(inst.animationId);
+    const isSelected = inst.id === selectedAnimationInstanceId;
+    const item = document.createElement('div');
+    item.className = 'list-group-item bg-secondary text-light d-flex justify-content-between align-items-center';
+    if (isSelected) item.classList.add('border', 'border-info');
+    item.dataset.animationInstanceId = inst.id;
+    const info = document.createElement('div');
+    const animName = animDef ? animDef.name : inst.animationId;
+    info.innerHTML = `<strong>${inst.name || animName}</strong><br><small class="text-muted">Script name: <code>${inst.name || inst.id}</code></small><br><small class="text-muted">${inst.layer || 'background'} layer</small><br><small class="animation-instance-position text-muted">Position: ${Math.round(inst.x || 0)}, ${Math.round(inst.y || 0)}</small>`;
+    const visibleWrap = document.createElement('div');
+    visibleWrap.className = 'form-check form-check-inline small mt-1';
+    const visibleChk = document.createElement('input');
+    visibleChk.type = 'checkbox';
+    visibleChk.className = 'form-check-input';
+    visibleChk.checked = inst.visible !== false;
+    visibleChk.addEventListener('change', () => {
+      inst.visible = visibleChk.checked;
+      const r = rooms.get(currentRoomId);
+      if (r) r.animationInstances = animationInstances;
+      redraw();
+    });
+    const visibleLbl = document.createElement('label');
+    visibleLbl.className = 'form-check-label text-light';
+    visibleLbl.textContent = 'Visible';
+    visibleWrap.appendChild(visibleChk);
+    visibleWrap.appendChild(visibleLbl);
+    info.appendChild(visibleWrap);
+    const controls = document.createElement('div');
+    const selectBtn = document.createElement('button');
+    selectBtn.className = isSelected ? 'btn btn-sm btn-success me-1' : 'btn btn-sm btn-outline-success me-1';
+    selectBtn.title = isSelected ? 'Click to deselect' : 'Select to drag (locks scene objects)';
+    selectBtn.textContent = isSelected ? 'Selected' : 'Select';
+    selectBtn.addEventListener('click', () => selectRoomAnimationInstance(inst.id));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-sm btn-outline-danger';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => window.removeRoomAnimationInstance(inst.id));
+    controls.appendChild(selectBtn);
+    controls.appendChild(delBtn);
+    item.appendChild(info);
+    item.appendChild(controls);
+    return item;
+  }
+
+  function refreshRoomAnimationInstancesListUI() {
+    const list = document.getElementById('room-animations-list');
+    if (!list) return;
+    list.innerHTML = '';
+    animationInstances.forEach((inst) => {
+      if (!inst.id) inst.id = uid('ainst');
+      list.appendChild(createRoomAnimationInstanceListItem(inst));
+    });
+  }
+
+  window.addRoomAnimationInstance = async function() {
+    const picker = document.getElementById('room-animation-picker');
+    const animationId = picker ? picker.value : '';
+    if (!animationId) {
+      showNotification('Select an animation with frames first', 'warning');
+      return;
+    }
+    const animDef = getRoomAnimationDef(animationId);
+    if (!animDef || !animDef.frames || !animDef.frames.length) {
+      showNotification('Selected animation has no frames', 'warning');
+      return;
+    }
+    const instance = {
+      id: uid('ainst'),
+      animationId,
+      name: `${animDef.name}_${Date.now()}`,
+      x: 100 + Math.random() * 200,
+      y: 100 + Math.random() * 200,
+      layer: animDef.layer === 'foreground' ? 'foreground' : 'background',
+      visible: true,
+      autoPlay: false
+    };
+    animationInstances.push(instance);
+    const r = rooms.get(currentRoomId);
+    if (r) r.animationInstances = animationInstances;
+    selectedAnimationInstanceId = instance.id;
+    selectedSceneObjectId = null;
+    activeHotspotId = null;
+    refreshRoomSelectionLists();
+    redraw();
+    showNotification(`Animation "${animDef.name}" placed in room`, 'success');
+    notifyEditorProjectChanged();
+  };
+
+  window.removeRoomAnimationInstance = async function(instanceId) {
+    if (!(await showConfirmDialog({ title: 'Delete Placement', message: 'Delete this animation placement from the room?', danger: true }))) return;
+    animationInstances = animationInstances.filter(inst => inst.id !== instanceId);
+    const r = rooms.get(currentRoomId);
+    if (r) r.animationInstances = animationInstances;
+    selectedAnimationInstanceId = null;
+    refreshRoomAnimationInstancesListUI();
+    redraw();
+    showNotification('Animation placement removed', 'info');
+    notifyEditorProjectChanged();
+  };
+
+  function serializeRoomAnimationsCatalog() {
+    const result = [];
+    roomAnimationsCatalog.forEach((anim) => {
+      result.push({
+        id: anim.id,
+        name: anim.name,
+        fps: Number(anim.fps) || 8,
+        loop: anim.loop !== false,
+        layer: anim.layer === 'foreground' ? 'foreground' : 'background',
+        frames: Array.isArray(anim.frames) ? anim.frames.map(fr => {
+          if (fr && fr.img) return serializeImage(fr.img);
+          return null;
+        }).filter(Boolean) : []
+      });
+    });
+    return result;
+  }
+
+  async function loadRoomAnimationsCatalogFromData(animationsData, projectId) {
+    roomAnimationsCatalog.clear();
+    if (!Array.isArray(animationsData)) return;
+    for (const src of animationsData) {
+      if (!src || !src.id) continue;
+      const frames = [];
+      if (Array.isArray(src.frames)) {
+        for (let i = 0; i < src.frames.length; i++) {
+          const frameRef = src.frames[i];
+          if (!frameRef) continue;
+          const img = await createImageFromDataUrl(frameRef, projectId);
+          if (img) {
+            frames.push({ img, name: `frame_${i + 1}`, orderIndex: i });
+            if (typeof frameRef === 'string' && frameRef.startsWith('asset:')) {
+              imageAssetMap.set(img, { assetId: frameRef.replace('asset:', ''), type: 'animation', projectId });
+            }
+          }
+        }
+      }
+      roomAnimationsCatalog.set(src.id, {
+        id: src.id,
+        name: src.name || src.id,
+        fps: Number(src.fps) || 8,
+        loop: src.loop !== false,
+        layer: src.layer === 'foreground' ? 'foreground' : 'background',
+        frames
+      });
+    }
+    selectedRoomAnimationId = roomAnimationsCatalog.keys().next().value || null;
+    refreshRoomAnimationsCatalogListUI();
+    refreshRoomAnimationPickerUI();
+    onRoomAnimationSelect();
+  }
 
   // Character Pivot Management - Automatic initialization
   function initializePivotForCharacter(charData, direction) {
@@ -5806,13 +7811,13 @@ window.selectRoom = function(roomId) {
   };
 
   // Helper function per ottenere l'immagine di un frame e se deve essere specchiata
-  // Gestisce sia frame normali che frame specchiati (con proprietà mirror)
+  // Gestisce sia frame normali che frame specchiati (con proprietÃ  mirror)
   function getFrameImage(frame, directionsStore, frameIndex, direction) {
     if (!frame || !directionsStore) {
       return { img: null, mirrored: false };
     }
 
-    // Se il frame è un riferimento specchiato
+    // Se il frame Ã¨ un riferimento specchiato
     if (frame.mirror && typeof frame.mirror === 'string') {
       const sourceDirection = frame.mirror;
       const sourceDirData = directionsStore[sourceDirection];
@@ -5835,7 +7840,7 @@ window.selectRoom = function(roomId) {
     // Frame normale: estrai l'immagine (gestisce entrambi i formati)
     let frameImg = null;
     if (frame.img && typeof frame.img === 'object') {
-      // Formato nuovo: oggetto con proprietà img
+      // Formato nuovo: oggetto con proprietÃ  img
       frameImg = frame.img;
     } else if (frame.src || (frame.width && frame.height)) {
       // Formato salvato: oggetto Image direttamente
@@ -5955,7 +7960,7 @@ window.selectRoom = function(roomId) {
 
     let charData = characterFrames.get(who);
     if (!charData) {
-      charData = { directions: {}, animations: {}, currentFrame: 0 };
+      charData = createEmptyCharacterData(who);
       characterFrames.set(who, charData);
     }
 
@@ -5974,7 +7979,7 @@ window.selectRoom = function(roomId) {
     const container = document.getElementById('frames-preview');
     if (!container) return;
     
-    // Verifica se il toggle è su "mirror" - in quel caso non mostrare i thumbnails
+    // Verifica se il toggle Ã¨ su "mirror" - in quel caso non mostrare i thumbnails
     const mirrorRadio = document.getElementById('frame-source-mirror');
     if (mirrorRadio && mirrorRadio.checked) {
       container.innerHTML = '<div class="text-muted">Thumbnails hidden when using mirror mode</div>';
@@ -6009,6 +8014,7 @@ window.selectRoom = function(roomId) {
       frameItem.dataset.frameIndex = index;
       
       const img = document.createElement('img');
+      img.draggable = false;
       let frameName = `Frame ${index + 1}`; // Nome di default
       let isMirrored = false;
       
@@ -6020,7 +8026,7 @@ window.selectRoom = function(roomId) {
         img.src = frameResult.img.src || frameResult.img;
         isMirrored = frameResult.mirrored;
         
-        // Se è specchiato, aggiungi un indicatore nel nome
+        // Se Ã¨ specchiato, aggiungi un indicatore nel nome
         if (isMirrored) {
           frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror})`;
         }
@@ -6028,12 +8034,12 @@ window.selectRoom = function(roomId) {
         // Frame specchiato ma non riuscito a risolvere l'immagine
         frameName = `Frame ${index + 1} (mirrored from ${frameData.mirror} - source not found)`;
         // Usa un'immagine placeholder o salta questo frame
-        console.warn(`Frame ${index + 1} è specchiato ma la direzione sorgente non è stata trovata`);
+        console.warn(`Frame ${index + 1} Ã¨ specchiato ma la direzione sorgente non Ã¨ stata trovata`);
         return; // Salta questo frame se non possiamo risolverlo
       } else {
-        // Gestisce frame normali (compatibilità con codice precedente)
+        // Gestisce frame normali (compatibilitÃ  con codice precedente)
         if (frameData && typeof frameData === 'object' && frameData.img) {
-          // Formato nuovo: oggetto con proprietà img
+          // Formato nuovo: oggetto con proprietÃ  img
           img.src = frameData.img.src || frameData.img;
           if (frameData.name) {
             frameName = frameData.name;
@@ -6060,13 +8066,13 @@ window.selectRoom = function(roomId) {
           }
         } else {
           console.warn(`Frame ${index + 1} ha formato non riconosciuto:`, frameData);
-          return; // Salta questo frame se non è valido
+          return; // Salta questo frame se non Ã¨ valido
         }
       }
       
       img.alt = frameName;
       
-      // Se è specchiato, applica CSS transform per mostrarlo specchiato nella preview
+      // Se Ã¨ specchiato, applica CSS transform per mostrarlo specchiato nella preview
       if (isMirrored) {
         img.style.transform = 'scaleX(-1)';
       }
@@ -6087,7 +8093,7 @@ window.selectRoom = function(roomId) {
       
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'frame-delete';
-      deleteBtn.innerHTML = '×';
+      deleteBtn.innerHTML = 'Ã—';
       deleteBtn.title = 'Delete frame';
       deleteBtn.onclick = (e) => {
         e.stopPropagation();
@@ -6117,10 +8123,10 @@ window.selectRoom = function(roomId) {
     const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
     if (!charData || !activeDirections || !activeDirections[currentDirection]) return;
 
-    if (confirm(`Delete frame ${frameIndex + 1}?`)) {
+    if (await showConfirmDialog({ title: 'Delete Frame', message: `Delete frame ${frameIndex + 1}?`, danger: true })) {
       const frameToDelete = activeDirections[currentDirection].frames[frameIndex];
       
-      // Se è un frame specchiato, non eliminare asset (non ne ha uno)
+      // Se Ã¨ un frame specchiato, non eliminare asset (non ne ha uno)
       if (frameToDelete && typeof frameToDelete === 'object' && frameToDelete.mirror) {
         activeDirections[currentDirection].frames.splice(frameIndex, 1);
         characterFrames.set(who, charData);
@@ -6158,7 +8164,7 @@ window.selectRoom = function(roomId) {
         draggedIndex = parseInt(item.dataset.frameIndex);
         item.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/html', item.outerHTML);
+        try { e.dataTransfer.setData('text/plain', String(draggedIndex)); } catch (_) {}
       });
 
       item.addEventListener('dragend', (e) => {
@@ -6174,6 +8180,7 @@ window.selectRoom = function(roomId) {
 
       item.addEventListener('drop', (e) => {
         e.preventDefault();
+        e.stopPropagation();
         const targetIndex = parseInt(item.dataset.frameIndex);
         
         if (draggedIndex !== null && draggedIndex !== targetIndex) {
@@ -6185,12 +8192,14 @@ window.selectRoom = function(roomId) {
             const activeDirections = charData ? getCharacterDirectionsStore(charData) : null;
             if (charData && activeDirections && activeDirections[currentDirection]) {
               const frames = activeDirections[currentDirection].frames;
-              const draggedFrame = frames.splice(draggedIndex, 1)[0];
+              const fromIndex = draggedIndex;
+              const draggedFrame = frames.splice(fromIndex, 1)[0];
               frames.splice(targetIndex, 0, draggedFrame);
               
               // Refresh the preview
               refreshFramesPreview();
-              showNotification(`Frame moved from position ${draggedIndex + 1} to ${targetIndex + 1}`, 'success');
+              redraw();
+              showNotification(`Frame moved from position ${fromIndex + 1} to ${targetIndex + 1}`, 'success');
             }
           }
         }
@@ -6204,36 +8213,146 @@ window.selectRoom = function(roomId) {
   let currentScriptName = 'Global:main';
   const jsScripts = new Map(); // name -> content
   const objectScripts = new Map(); // sceneObjectId -> scriptName
-  const roomScripts = new Map(); // roomId -> scriptName
+  const roomScripts = new Map(); // roomId -> string (legacy) | { on_before_room_change?, on_room_change?, legacy? }
   const characterScripts = new Map(); // characterName -> scriptName
   const inventoryScripts = new Map(); // inventory item name -> scriptName
   const hotspotScripts = new Map(); // hotspotId -> scriptName
 
-  /** Chiave canonica script da scope + target (dropdown / albero). */
-  function normalizeScriptKey(scope, target) {
+  const ROOM_TRANSITION_EVENTS = {
+    on_before_room_change: true,
+    on_room_change: true
+  };
+
+  function isRoomTransitionEvent(eventId) {
+    return !!ROOM_TRANSITION_EVENTS[String(eventId || '')];
+  }
+
+  function roomTransitionEventLabel(eventId) {
+    if (eventId === 'on_before_room_change') return 'Before room load';
+    if (eventId === 'on_room_change') return 'After room load';
+    return eventId || '';
+  }
+
+  /** Parse Room:roomId[:event] keys. */
+  function parseRoomScriptKeyParts(scriptKey) {
+    const key = String(scriptKey || '');
+    if (!key.startsWith('Room:')) return null;
+    const rest = key.slice('Room:'.length);
+    if (rest.endsWith(':on_before_room_change')) {
+      return {
+        roomId: rest.slice(0, -':on_before_room_change'.length),
+        eventId: 'on_before_room_change'
+      };
+    }
+    if (rest.endsWith(':on_room_change')) {
+      return {
+        roomId: rest.slice(0, -':on_room_change'.length),
+        eventId: 'on_room_change'
+      };
+    }
+    return { roomId: rest, eventId: null };
+  }
+
+  function attachRoomScript(roomId, scriptKey, eventId) {
+    const id = String(roomId || '');
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!id || !key) return;
+    let entry = roomScripts.get(id);
+    if (typeof entry === 'string') {
+      entry = { legacy: entry };
+    } else if (!entry || typeof entry !== 'object') {
+      entry = {};
+    } else {
+      entry = { ...entry };
+    }
+    if (isRoomTransitionEvent(eventId)) {
+      entry[eventId] = key;
+    } else {
+      entry.legacy = key;
+    }
+    roomScripts.set(id, entry);
+  }
+
+  function getRoomScriptAttachmentForEvent(roomId, eventId) {
+    const entry = roomScripts.get(String(roomId || ''));
+    if (!entry) return null;
+    if (typeof entry === 'string') return entry;
+    if (isRoomTransitionEvent(eventId) && entry[eventId]) return entry[eventId];
+    return entry.legacy || null;
+  }
+
+  function listRoomScriptAttachmentKeys(roomId) {
+    const entry = roomScripts.get(String(roomId || ''));
+    if (!entry) return [];
+    if (typeof entry === 'string') return entry ? [entry] : [];
+    return Object.values(entry).filter(v => typeof v === 'string' && v);
+  }
+
+  function detachRoomScriptKey(scriptName) {
+    const name = String(scriptName || '');
+    for (const [roomId, attached] of [...roomScripts.entries()]) {
+      if (attached === name) {
+        roomScripts.delete(roomId);
+        continue;
+      }
+      if (attached && typeof attached === 'object') {
+        let changed = false;
+        const next = { ...attached };
+        Object.keys(next).forEach(k => {
+          if (next[k] === name) {
+            delete next[k];
+            changed = true;
+          }
+        });
+        if (changed) {
+          if (Object.keys(next).length === 0) roomScripts.delete(roomId);
+          else roomScripts.set(roomId, next);
+        }
+      }
+    }
+  }
+
+  /** Chiave canonica script da scope + target (+ event per before/after room load). */
+  function normalizeScriptKey(scope, target, eventId) {
     const s = String(scope || '');
     let t = String(target == null ? '' : target).trim();
-    if (s === 'Global') return 'Global:main';
+    if (s === 'Global') {
+      if (isRoomTransitionEvent(eventId)) return `Global:${eventId}`;
+      return 'Global:main';
+    }
     if (s === 'Hotspot') {
       if (t.startsWith('hotspot:')) t = t.slice('hotspot:'.length);
       return `Hotspot:${t}`;
+    }
+    if (s === 'Room') {
+      if (isRoomTransitionEvent(eventId)) return `Room:${t}:${eventId}`;
+      return `Room:${t}`;
     }
     return `${s}:${t}`;
   }
 
   /** Risolve la chiave effettiva (attachment custom o chiave standard). */
-  function resolveScriptKey(scope, target) {
-    const defaultKey = normalizeScriptKey(scope, target);
-    if (scope === 'Room' && roomScripts.has(target)) return roomScripts.get(target);
+  function resolveScriptKey(scope, target, eventId) {
+    const defaultKey = normalizeScriptKey(scope, target, eventId);
+    if (scope === 'Room') {
+      const attached = getRoomScriptAttachmentForEvent(target, eventId);
+      if (attached) return attached;
+    }
     if (scope === 'Object' && objectScripts.has(target)) return objectScripts.get(target);
     if (scope === 'Character' && characterScripts.has(target)) return characterScripts.get(target);
+    if (scope === 'Inventory') {
+      const item = inventoryItems.find(i => i.name === target);
+      const userKey = item && String(item.scriptName || '').trim();
+      if (userKey) return migrateLegacyScriptKey(userKey);
+      if (inventoryScripts.has(target)) return inventoryScripts.get(target);
+    }
     if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target)) {
       return guiScripts.get(target);
     }
     return defaultKey;
   }
 
-  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id → Hotspot:id). */
+  /** Migra chiavi hotspot legacy (Hotspot:hotspot:id â†’ Hotspot:id). */
   function migrateLegacyScriptKey(key) {
     const k = String(key || '');
     const m = k.match(/^Hotspot:hotspot:(.+)$/);
@@ -6255,6 +8374,209 @@ window.selectRoom = function(roomId) {
     const key = migrateLegacyScriptKey(String(scriptKey || ''));
     if (!key) return '';
     return jsScripts.get(key) || (() => { try { return localStorage.getItem(`script-${key}`); } catch (_) { return ''; } })() || '';
+  }
+
+  /** Chiave canonica 1:1 per la tab Scripts (Scope:target[:event]). */
+  function getEditorScriptKey(scope, target, eventId) {
+    return migrateLegacyScriptKey(normalizeScriptKey(scope, target, eventId));
+  }
+
+  /** Nome script da mostrare in liste UI (sempre visibile, mai "(no script)"). */
+  function getDisplayScriptLabel(scope, target, itemOrName) {
+    if (scope === 'Inventory') {
+      const name = typeof itemOrName === 'string' ? itemOrName : (itemOrName && itemOrName.name);
+      if (!name) return '';
+      const item = typeof itemOrName === 'object' && itemOrName
+        ? itemOrName
+        : inventoryItems.find(i => i.name === name);
+      const userKey = item && String(item.scriptName || '').trim();
+      if (userKey) return migrateLegacyScriptKey(userKey);
+      if (inventoryScripts.has(name)) return migrateLegacyScriptKey(inventoryScripts.get(name));
+      return getEditorScriptKey('Inventory', name);
+    }
+    return migrateLegacyScriptKey(resolveScriptKey(scope, target));
+  }
+
+  function editorScriptExists(scriptKey) {
+    const key = migrateLegacyScriptKey(String(scriptKey || ''));
+    if (!key) return false;
+    if (jsScripts.has(key)) return true;
+    try {
+      return localStorage.getItem(`script-${key}`) != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function parseScriptKeyScopeTarget(scriptName) {
+    const key = migrateLegacyScriptKey(String(scriptName || ''));
+    const roomParts = parseRoomScriptKeyParts(key);
+    if (roomParts) {
+      return { scope: 'Room', target: roomParts.roomId, eventId: roomParts.eventId || undefined };
+    }
+    if (key.startsWith('Global:')) {
+      const rest = key.slice('Global:'.length);
+      if (isRoomTransitionEvent(rest)) {
+        return { scope: 'Global', target: 'main', eventId: rest };
+      }
+      return { scope: 'Global', target: rest === 'main' ? 'main' : rest };
+    }
+    const sep = key.indexOf(':');
+    if (sep <= 0) return null;
+    return { scope: key.slice(0, sep), target: key.slice(sep + 1) };
+  }
+
+  function clearEditorScriptAttachment(scope, target, eventId) {
+    if (scope === 'Room') {
+      if (isRoomTransitionEvent(eventId)) {
+        const entry = roomScripts.get(target);
+        if (typeof entry === 'string') {
+          roomScripts.delete(target);
+          return;
+        }
+        if (entry && typeof entry === 'object') {
+          const next = { ...entry };
+          delete next[eventId];
+          if (Object.keys(next).length === 0) roomScripts.delete(target);
+          else roomScripts.set(target, next);
+        }
+        return;
+      }
+      roomScripts.delete(target);
+      return;
+    }
+    if (scope === 'Object') {
+      objectScripts.delete(target);
+      return;
+    }
+    if (scope === 'Character') {
+      characterScripts.delete(target);
+      return;
+    }
+    if (scope === 'Inventory') {
+      inventoryScripts.delete(target);
+      const item = inventoryItems.find(i => i.name === target);
+      if (item) {
+        const canonical = getEditorScriptKey('Inventory', target);
+        const userKey = migrateLegacyScriptKey(String(item.scriptName || '').trim());
+        if (!userKey || userKey === canonical) {
+          item.scriptName = '';
+        }
+      }
+      refreshInventoryItemsListUI();
+      return;
+    }
+    if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.delete) {
+      guiScripts.delete(target);
+    }
+  }
+
+  function syncEditorScriptAttachment(scope, target, canonicalKey, eventId) {
+    const key = migrateLegacyScriptKey(String(canonicalKey || ''));
+    if (!key) return;
+    if (scope === 'Room') attachRoomScript(target, key, eventId);
+    else if (scope === 'Object') objectScripts.set(target, key);
+    else if (scope === 'Character') characterScripts.set(target, key);
+    else if (scope === 'Inventory') attachInventoryItemScript(target, key);
+    else if (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+  }
+
+  function hasEditorScriptLink(scope, target, eventId) {
+    if (scope === 'Room') {
+      if (isRoomTransitionEvent(eventId)) return !!getRoomScriptAttachmentForEvent(target, eventId);
+      return roomScripts.has(target) || listRoomScriptAttachmentKeys(target).length > 0;
+    }
+    if (scope === 'Object') return objectScripts.has(target);
+    if (scope === 'Character') return characterScripts.has(target);
+    if (scope === 'Inventory') return inventoryScripts.has(target);
+    if (scope === 'GUI') return typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target);
+    if (scope === 'Hotspot') {
+      const hotspotId = String(target || '').replace(/^hotspot:/, '');
+      const key = getEditorScriptKey('Hotspot', hotspotId);
+      if (jsScripts.has(key)) return true;
+      let linked = false;
+      let embedded = false;
+      rooms.forEach((room) => {
+        if (!room.hotspots) return;
+        const hs = room.hotspots.find(h => h.id === hotspotId);
+        if (!hs) return;
+        if (hs._meta && hs._meta.linkedScriptName) linked = true;
+        if (hs.scripts && hs.scripts.onClick && String(hs.scripts.onClick.code || '').trim()) embedded = true;
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hs = hotspots.find(h => h.id === hotspotId);
+        if (hs) {
+          if (hs._meta && hs._meta.linkedScriptName) linked = true;
+          if (hs.scripts && hs.scripts.onClick && String(hs.scripts.onClick.code || '').trim()) embedded = true;
+        }
+      }
+      return linked || embedded;
+    }
+    if (scope === 'Global') {
+      const key = getEditorScriptKey('Global', 'main');
+      return jsScripts.has(key);
+    }
+    return false;
+  }
+
+  function loadEditorScriptContent(scope, target, eventId) {
+    const canonicalKey = getEditorScriptKey(scope, target, eventId);
+    let content = getScriptContent(canonicalKey);
+
+    if (!String(content || '').trim()) {
+      const legacyKey = migrateLegacyScriptKey(resolveScriptKey(scope, target, eventId));
+      if (legacyKey && legacyKey !== canonicalKey) {
+        const legacyContent = getScriptContent(legacyKey);
+        // Non migrare un file legacy combinato dentro una chiave event-specific:
+        // before/after devono restare script distinti.
+        if (String(legacyContent || '').trim() && !isRoomTransitionEvent(eventId)) {
+          content = legacyContent;
+          jsScripts.set(canonicalKey, content);
+          try { localStorage.setItem(`script-${canonicalKey}`, content); } catch (_) {}
+          syncEditorScriptAttachment(scope, target, canonicalKey, eventId);
+        }
+      }
+    }
+
+    if (scope === 'Hotspot' && !String(content || '').trim()) {
+      const hotspotId = String(target || '').replace(/^hotspot:/, '');
+      let embedded = '';
+      rooms.forEach((room) => {
+        if (embedded) return;
+        if (!room.hotspots) return;
+        const hs = room.hotspots.find(h => h.id === hotspotId);
+        if (hs && hs.scripts && hs.scripts.onClick && hs.scripts.onClick.code) {
+          embedded = String(hs.scripts.onClick.code);
+        }
+      });
+      if (!embedded && typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        const hs = hotspots.find(h => h.id === hotspotId);
+        if (hs && hs.scripts && hs.scripts.onClick && hs.scripts.onClick.code) {
+          embedded = String(hs.scripts.onClick.code);
+        }
+      }
+      if (embedded.trim()) {
+        content = embedded;
+        jsScripts.set(canonicalKey, content);
+        try { localStorage.setItem(`script-${canonicalKey}`, content); } catch (_) {}
+      }
+    }
+
+    return { key: canonicalKey, content: String(content || '') };
+  }
+
+  function shouldShowEditorScript(scope, target, content, seenKeys, eventId) {
+    const key = getEditorScriptKey(scope, target, eventId);
+    if (seenKeys.has(key)) return false;
+    const hasContent = String(content || '').trim().length > 0;
+    if (!hasContent) {
+      if (hasEditorScriptLink(scope, target, eventId)) {
+        clearEditorScriptAttachment(scope, target, eventId);
+      }
+      return false;
+    }
+    seenKeys.add(key);
+    return true;
   }
 
   // Event conditions storage
@@ -6302,25 +8624,64 @@ window.selectRoom = function(roomId) {
     attachAutoHint(largeCodeMirrorEditor, 'large');
   }
 
-  // Game API completions for CodeMirror
+  // CodeMirror autocomplete â€” keep in sync with JS/runtime.js:
+  // getScriptApiBindings() + SUPPORTED_SCRIPT_HANDLERS (on_*)
   const GAME_API_COMPLETIONS = [
-    'print', 'show_message', 'move_object',
-    'on_game_start', 'on_room_change', 'on_object_click', 'on_character_click', 'on_hotspot_click',
-    'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
-    'load_room', 'get_current_room', 'get_room_objects', 'set_room_background',
-    'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
+    'Game', 'GameAPI',
+    'Game.getVar', 'Game.setVar', 'Game.hasVar', 'Game.toggleVar',
+    'GameAPI.print', 'GameAPI.error', 'GameAPI.getVariable', 'GameAPI.setVariable',
+    'on_game_start', 'on_before_room_change', 'on_room_change', 'on_object_click', 'on_character_click',
+    'on_hotspot_click', 'on_gui_click', 'on_use_with', 'on_inventory_use_with', 'on_dialogue_action',
+    'print', 'log', 'wait', 'show_message', 'showText',
+    'show_dialogue', 'show_dialogue_text', 'end_dialogue', 'start_dialogue',
+    'save_game', 'load_game', 'delete_save', 'get_save_info', 'show_gui', 'hide_gui',
+    'play_music', 'play_sound', 'stop_music', 'stop_sound',
+    'play_animation', 'stop_animation', 'show_animation', 'hide_animation',
+    'show_image', 'hide_image',
+    'getVariable', 'setVariable', 'get_var', 'set_var', 'has_var', 'toggle_var',
+    'load_room', 'set_room_transition', 'get_room_transition', 'transition_to_room',
+    'get_current_room', 'getCurrentRoom', 'get_room_objects', 'set_room_background',
+    'move_object', 'spawn_object', 'despawn_object', 'rotate_object', 'scale_object', 'set_object_visible',
     'enableObject', 'disableObject', 'enableHotspot', 'disableHotspot',
-    'spawn_character', 'move_character', 'walk_character', 'set_character_direction', 'animate_character',
-    'play_character_animation'
+    'add_to_inventory', 'remove_from_inventory', 'has_item', 'get_item_count', 'clear_inventory',
+    'get_carried_item', 'set_carried_item', 'clear_carried_item',
+    'spawn_character', 'move_character', 'walk_character', 'set_character_direction',
+    'set_character_visibility', 'set_character_opacity',
+    'animate_character', 'play_character_animation'
   ];
+
+  const GAME_DOT_METHODS = ['getVar', 'setVar', 'hasVar', 'toggleVar'];
+  const GAMEAPI_DOT_METHODS = ['print', 'error', 'getVariable', 'setVariable'];
 
   function cmGameApiHint(cm) {
     const cursor = cm.getCursor();
     const token = cm.getTokenAt(cursor);
     const start = token.start;
     const end = cursor.ch;
+    const line = cm.getLine(cursor.line);
+    const before = line.slice(0, start);
     const currentWord = token.string || '';
-    const list = GAME_API_COMPLETIONS.filter(name => name.toLowerCase().startsWith(currentWord.toLowerCase()));
+
+    const dotMatch = before.match(/(Game|GameAPI)\.(\w*)$/);
+    if (dotMatch) {
+      const ns = dotMatch[1];
+      const partial = dotMatch[2] || '';
+      const methods = ns === 'Game' ? GAME_DOT_METHODS : GAMEAPI_DOT_METHODS;
+      const fromCh = start - partial.length;
+      let list = methods
+        .filter(m => m.toLowerCase().startsWith(partial.toLowerCase()))
+        .map(m => ns + '.' + m);
+      if (!list.length) list = methods.map(m => ns + '.' + m);
+      return {
+        list,
+        from: CodeMirror.Pos(cursor.line, fromCh),
+        to: CodeMirror.Pos(cursor.line, end)
+      };
+    }
+
+    const list = GAME_API_COMPLETIONS.filter(name =>
+      name.toLowerCase().startsWith(currentWord.toLowerCase())
+    );
     return {
       list: list.length ? list : GAME_API_COMPLETIONS,
       from: CodeMirror.Pos(cursor.line, start),
@@ -6328,15 +8689,19 @@ window.selectRoom = function(roomId) {
     };
   }
 
-  // Attach auto-hint on typing for CodeMirror editors
+  // Attach auto-hint on typing for CodeMirror editors (WeakSet → più istanze, es. dialoghi Visual)
+  const autoHintAttachedEditors = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
   let autoHintAttachedToSmall = false;
   let autoHintAttachedToLarge = false;
   function attachAutoHint(cm, which = 'small') {
     if (!cm || typeof cm.on !== 'function') return;
-    if (which === 'large') {
+    if (autoHintAttachedEditors) {
+      if (autoHintAttachedEditors.has(cm)) return;
+      autoHintAttachedEditors.add(cm);
+    } else if (which === 'large') {
       if (autoHintAttachedToLarge) return;
       autoHintAttachedToLarge = true;
-    } else {
+    } else if (which === 'small') {
       if (autoHintAttachedToSmall) return;
       autoHintAttachedToSmall = true;
     }
@@ -6356,18 +8721,44 @@ window.selectRoom = function(roomId) {
     });
   }
 
+  /**
+   * Monta CodeMirror + hint API su un <textarea> (usato dall'editor dialoghi Visual per run_script).
+   * @returns {object|null} istanza CodeMirror
+   */
+  window.amiantoMountScriptCodeMirror = function(textarea, options = {}) {
+    if (!textarea || typeof CodeMirror === 'undefined') return null;
+    if (textarea._amiantoCm) return textarea._amiantoCm;
+    const height = options.height != null ? options.height : 180;
+    const cm = CodeMirror.fromTextArea(textarea, {
+      mode: 'javascript',
+      theme: 'dracula',
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 2,
+      tabSize: 2,
+      hintOptions: { hint: cmGameApiHint, completeSingle: false }
+    });
+    cm.setSize('100%', height);
+    attachAutoHint(cm, 'dialogue');
+    textarea._amiantoCm = cm;
+    return cm;
+  };
+
   // Events per scope: id = handler name in runtime, label = human-readable
   const SCRIPT_EVENTS = {
     Global: [
       { id: 'on_game_start', label: 'onGameStart' },
-      { id: 'on_room_change', label: 'onRoomChange' }
+      { id: 'on_before_room_change', label: 'Before room load' },
+      { id: 'on_room_change', label: 'After room load' },
+      { id: 'on_inventory_use_with', label: 'onInventoryUseWith' }
     ],
     Room: [
-      // Anche disponibile a livello globale; mantenuto qui per comodità UI
-      { id: 'on_room_change', label: 'onRoomChange' }
+      { id: 'on_before_room_change', label: 'Before room load' },
+      { id: 'on_room_change', label: 'After room load' }
     ],
     Object: [{ id: 'on_object_click', label: 'onClick' }],
     Character: [{ id: 'on_character_click', label: 'onClick' }],
+    Inventory: [{ id: 'on_use_with', label: 'onUseWith' }],
     Hotspot: [{ id: 'on_hotspot_click', label: 'onClick' }]
     // Nessun evento GUI: runtime non ancora collegato
   };
@@ -6436,6 +8827,17 @@ window.selectRoom = function(roomId) {
         const opt = document.createElement('option');
         opt.value = name;
         opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      return;
+    }
+
+    if (scope === 'Inventory') {
+      addPlaceholder('Select inventory item...');
+      (inventoryItems || []).forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.name;
+        opt.textContent = item.name;
         sel.appendChild(opt);
       });
       return;
@@ -6510,13 +8912,17 @@ window.selectRoom = function(roomId) {
     const handlers = new Set();
     [
       'on_game_start',
+      'on_before_room_change',
       'on_room_change',
       'on_object_click',
       'on_character_click',
       'on_hotspot_click',
-      'on_gui_click'
+      'on_gui_click',
+      'on_use_with',
+      'on_inventory_use_with',
+      'on_dialogue_action'
     ].forEach(h => {
-      const re = new RegExp(`function\\s+${h}\\s*\\(`);
+      const re = new RegExp(`(?:async\\s+)?function\\s+${h}\\s*\\(`);
       if (re.test(content)) handlers.add(h);
     });
     return handlers;
@@ -6529,6 +8935,7 @@ window.selectRoom = function(roomId) {
     tree.innerHTML = '';
 
     const container = document.createElement('div');
+    const seenScriptKeys = new Set();
 
     // Helper per creare un elemento script nella lista
     const createScriptItem = (scriptInfo, onClickHandler) => {
@@ -6588,7 +8995,7 @@ window.selectRoom = function(roomId) {
       // Salva il contenuto dello script corrente prima di aprire un nuovo script
       saveCurrentScriptIfNeeded();
       
-      // Imposta currentScriptName PRIMA di qualsiasi controllo, così deleteScript funziona anche se l'hotspot non viene trovato
+      // Imposta currentScriptName PRIMA di qualsiasi controllo, cosÃ¬ deleteScript funziona anche se l'hotspot non viene trovato
       const hotspotKey = `Hotspot:${hotspotId}`;
       currentScriptName = hotspotKey;
       
@@ -6688,13 +9095,32 @@ window.selectRoom = function(roomId) {
       }
     };
 
-    // Global (single)
-    const globalKey = 'Global:main';
-    let globalContent = getScriptContent(globalKey);
-    const globalHandlers = extractHandlersFromScript(globalContent);
-    const globalHandlerNames = Array.from(globalHandlers).sort();
+    // Global scripts (main + before/after room load distinti)
+    const globalEntries = [];
+    const globalMainKey = getEditorScriptKey('Global', 'main');
+    const { content: globalMainContent } = loadEditorScriptContent('Global', 'main');
+    if (String(globalMainContent || '').trim() && !seenScriptKeys.has(globalMainKey)) {
+      globalEntries.push({
+        key: globalMainKey,
+        label: 'Global',
+        eventId: null,
+        content: globalMainContent
+      });
+    }
+    ['on_before_room_change', 'on_room_change'].forEach(eventId => {
+      const key = getEditorScriptKey('Global', 'main', eventId);
+      const content = getScriptContent(key);
+      if (String(content || '').trim() && !seenScriptKeys.has(key)) {
+        globalEntries.push({
+          key,
+          label: `Global — ${roomTransitionEventLabel(eventId)}`,
+          eventId,
+          content
+        });
+      }
+    });
 
-    if (globalContent.trim().length > 0) {
+    if (globalEntries.length > 0) {
       const globalGroup = document.createElement('div');
       globalGroup.className = 'mb-3';
       const h = document.createElement('div');
@@ -6704,20 +9130,24 @@ window.selectRoom = function(roomId) {
       h.style.fontSize = '14px';
       h.style.marginBottom = '8px';
       globalGroup.appendChild(h);
-      
+
       const ul = document.createElement('ul');
       ul.style.paddingLeft = '16px';
       ul.style.listStyleType = 'none';
-      
-      const scriptItem = createScriptItem({
-        label: 'Global',
-        handlers: globalHandlerNames,
-        hasContent: globalContent.trim().length > 0
-      }, (handlerId) => {
-        openScriptFromTree('Global', 'main', handlerId || null);
+
+      globalEntries.forEach(entry => {
+        seenScriptKeys.add(entry.key);
+        const handlers = Array.from(extractHandlersFromScript(entry.content)).sort();
+        const scriptItem = createScriptItem({
+          label: entry.label,
+          handlers,
+          hasContent: true
+        }, (handlerId) => {
+          openScriptFromTree('Global', 'main', handlerId || entry.eventId || null, entry.eventId || null);
+        });
+        ul.appendChild(scriptItem);
       });
-      ul.appendChild(scriptItem);
-      
+
       globalGroup.appendChild(ul);
       container.appendChild(globalGroup);
     }
@@ -6727,36 +9157,42 @@ window.selectRoom = function(roomId) {
     rooms.forEach((room, roomId) => {
       const scriptsInRoom = [];
       
-      // Script della stanza
-      const scriptKeyToUse = resolveScriptKey('Room', roomId);
-      const roomContent = getScriptContent(scriptKeyToUse);
-      // Mostra lo script se ha contenuto OPPURE se ha un attachment (anche se vuoto)
-      if (roomScripts.has(roomId) || roomContent.trim().length > 0) {
-        const handlers = extractHandlersFromScript(roomContent);
+      // Script della stanza — before/after sono file distinti
+      const roomScriptDefs = [
+        { eventId: 'on_before_room_change', labelSuffix: 'Before room load' },
+        { eventId: 'on_room_change', labelSuffix: 'After room load' },
+        { eventId: null, labelSuffix: null }
+      ];
+      roomScriptDefs.forEach(def => {
+        const key = getEditorScriptKey('Room', roomId, def.eventId);
+        const content = getScriptContent(key);
+        if (!shouldShowEditorScript('Room', roomId, content, seenScriptKeys, def.eventId)) return;
+        const handlers = extractHandlersFromScript(content);
         const handlerNames = Array.from(handlers).sort();
+        const base = `Room: ${room.name || roomId}`;
         scriptsInRoom.push({
           type: 'room',
           scope: 'Room',
           target: roomId,
-          label: `📋 Room: ${room.name || roomId}`,
+          eventId: def.eventId,
+          label: def.labelSuffix ? `${base} — ${def.labelSuffix}` : base,
           handlers: handlerNames,
-          hasContent: roomContent.trim().length > 0
+          hasContent: content.trim().length > 0
         });
-      }
+      });
       
       // Oggetti nella stanza con script
       if (room.sceneObjects && Array.isArray(room.sceneObjects)) {
         room.sceneObjects.forEach(obj => {
-          const scriptKeyToUse = resolveScriptKey('Object', obj.id);
-          const objContent = getScriptContent(scriptKeyToUse);
-          if (objectScripts.has(obj.id) || objContent.trim().length > 0) {
+          const { content: objContent } = loadEditorScriptContent('Object', obj.id);
+          if (shouldShowEditorScript('Object', obj.id, objContent, seenScriptKeys)) {
             const handlers = extractHandlersFromScript(objContent);
             const handlerNames = Array.from(handlers).sort();
             scriptsInRoom.push({
               type: 'object',
               scope: 'Object',
               target: obj.id,
-              label: `📦 Object: ${obj.name || obj.id}`,
+              label: `Object: ${obj.name || obj.id}`,
               handlers: handlerNames,
               hasContent: objContent.trim().length > 0
             });
@@ -6767,24 +9203,20 @@ window.selectRoom = function(roomId) {
       // Hotspot nella stanza con script
       if (room.hotspots && Array.isArray(room.hotspots)) {
         room.hotspots.forEach(hotspot => {
-          const hotspotKey = normalizeScriptKey('Hotspot', hotspot.id);
-          const fromHotspot = (hotspot.scripts && hotspot.scripts.onClick && hotspot.scripts.onClick.code)
-            ? String(hotspot.scripts.onClick.code) : '';
-          const fromStore = getScriptContent(hotspotKey);
-          const hotspotCode = fromHotspot.trim() ? fromHotspot : fromStore;
-          const linkedName = hotspot._meta && hotspot._meta.linkedScriptName;
-          if (!hotspotCode.trim() && !linkedName) return;
-          const handlers = extractHandlersFromScript(hotspotCode);
-          const handlerNames = Array.from(handlers).sort();
-          scriptsInRoom.push({
-            type: 'hotspot',
-            scope: 'Hotspot',
-            target: hotspot.id,
-            roomId: roomId,
-            label: `🖱️ Hotspot: ${hotspot.name || hotspot.id}`,
-            handlers: handlerNames,
-            hasContent: hotspotCode.trim().length > 0
-          });
+          const { content: hotspotCode } = loadEditorScriptContent('Hotspot', hotspot.id);
+          if (shouldShowEditorScript('Hotspot', hotspot.id, hotspotCode, seenScriptKeys)) {
+            const handlers = extractHandlersFromScript(hotspotCode);
+            const handlerNames = Array.from(handlers).sort();
+            scriptsInRoom.push({
+              type: 'hotspot',
+              scope: 'Hotspot',
+              target: hotspot.id,
+              roomId: roomId,
+              label: `Hotspot: ${hotspot.name || hotspot.id}`,
+              handlers: handlerNames,
+              hasContent: hotspotCode.trim().length > 0
+            });
+          }
         });
       }
       
@@ -6809,7 +9241,7 @@ window.selectRoom = function(roomId) {
       const roomGroup = document.createElement('div');
       roomGroup.className = 'mb-3';
       const h = document.createElement('div');
-      h.textContent = `🏠 ${roomData.roomName}`;
+      h.textContent = roomData.roomName;
       h.style.color = '#39ff14';
       h.style.fontWeight = '600';
       h.style.fontSize = '14px';
@@ -6829,7 +9261,12 @@ window.selectRoom = function(roomId) {
           };
         } else {
           onClickHandler = (handlerId) => {
-            openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+            openScriptFromTree(
+              scriptInfo.scope,
+              scriptInfo.target,
+              handlerId || scriptInfo.eventId || null,
+              scriptInfo.eventId || null
+            );
           };
         }
         
@@ -6841,15 +9278,104 @@ window.selectRoom = function(roomId) {
       container.appendChild(roomGroup);
     });
 
+    // Inventory items with scripts
+    const inventoryScriptItems = [];
+    (inventoryItems || []).forEach(item => {
+      const { content } = loadEditorScriptContent('Inventory', item.name);
+      if (shouldShowEditorScript('Inventory', item.name, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        inventoryScriptItems.push({
+          scope: 'Inventory',
+          target: item.name,
+          label: `Item: ${item.name}`,
+          handlers: handlerNames,
+          hasContent: content.trim().length > 0
+        });
+      }
+    });
+
+    if (inventoryScriptItems.length > 0) {
+      const invGroup = document.createElement('div');
+      invGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Inventory';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      invGroup.appendChild(h);
+
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+
+      inventoryScriptItems.forEach(scriptInfo => {
+        const scriptItem = createScriptItem(scriptInfo, (handlerId) => {
+          openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
+      });
+
+      invGroup.appendChild(ul);
+      container.appendChild(invGroup);
+    }
+
+    // Characters with scripts
+    const characterScriptItems = [];
+    const characterNames = [];
+    characterFrames.forEach((_, name) => characterNames.push(name));
+    characterNames.sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }));
+    characterNames.forEach(charName => {
+      const { content } = loadEditorScriptContent('Character', charName);
+      if (shouldShowEditorScript('Character', charName, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        characterScriptItems.push({
+          scope: 'Character',
+          target: charName,
+          label: `Character: ${charName}`,
+          handlers: handlerNames,
+          hasContent: content.trim().length > 0
+        });
+      }
+    });
+
+    if (characterScriptItems.length > 0) {
+      const charGroup = document.createElement('div');
+      charGroup.className = 'mb-3';
+      const h = document.createElement('div');
+      h.textContent = 'Characters';
+      h.style.color = '#39ff14';
+      h.style.fontWeight = '600';
+      h.style.fontSize = '14px';
+      h.style.marginBottom = '8px';
+      charGroup.appendChild(h);
+
+      const ul = document.createElement('ul');
+      ul.style.paddingLeft = '16px';
+      ul.style.listStyleType = 'none';
+
+      characterScriptItems.forEach(scriptInfo => {
+        const scriptItem = createScriptItem(scriptInfo, (handlerId) => {
+          openScriptFromTree(scriptInfo.scope, scriptInfo.target, handlerId || null);
+        });
+        ul.appendChild(scriptItem);
+      });
+
+      charGroup.appendChild(ul);
+      container.appendChild(charGroup);
+    }
+
     // GUI attached
     const guiItems = [];
     (typeof guiButtons !== 'undefined' ? guiButtons : []).forEach(b => {
-      const key = resolveScriptKey('GUI', b.id);
-      const content = getScriptContent(key);
-      if (!guiScripts.has(b.id) && !content.trim()) return;
-      const handlers = extractHandlersFromScript(content);
-      const handlerNames = Array.from(handlers).sort();
-      guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
+      const { content } = loadEditorScriptContent('GUI', b.id);
+      if (shouldShowEditorScript('GUI', b.id, content, seenScriptKeys)) {
+        const handlers = extractHandlersFromScript(content);
+        const handlerNames = Array.from(handlers).sort();
+        guiItems.push({ scope: 'GUI', target: b.id, label: `GUI: ${b.name || b.id}`, handlers: handlerNames, hasContent: content.trim().length > 0 });
+      }
     });
     
     if (guiItems.length > 0) {
@@ -6881,9 +9407,16 @@ window.selectRoom = function(roomId) {
     tree.appendChild(container);
   }
 
+  // Flag persist condivisi (dichiarati qui perché usati da script flush + autosave)
+  let amiantoDiskSaveTimer = null;
+  let amiantoPersistInProgress = false;
+  const AMIANTO_DISK_SAVE_DEBOUNCE_MS = 2500;
+
   // Helper function per salvare il contenuto dello script corrente
-  function saveCurrentScriptIfNeeded() {
+  // options.markDirty: se false non marca il progetto (es. flush durante persist)
+  function saveCurrentScriptIfNeeded(options = {}) {
     if (!currentScriptName) return;
+    const allowMarkDirty = options.markDirty !== false && !amiantoPersistInProgress;
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
@@ -6902,26 +9435,22 @@ window.selectRoom = function(roomId) {
     const currentKey = migrateLegacyScriptKey(String(currentScriptName));
     if (currentKey !== currentScriptName) currentScriptName = currentKey;
     if (currentContent.trim().length > 0 || jsScripts.has(currentKey)) {
+      const prevContent = jsScripts.has(currentKey) ? String(jsScripts.get(currentKey)) : '';
+      const contentChanged = prevContent !== String(currentContent);
       jsScripts.set(currentKey, currentContent);
       try { localStorage.setItem(`script-${currentKey}`, currentContent); } catch(_) {}
       
       if (currentKey.startsWith('Hotspot:')) {
         const hotspotId = currentKey.slice('Hotspot:'.length);
-        rooms.forEach((room, roomId) => {
-          if (room.hotspots && Array.isArray(room.hotspots)) {
-            const hotspot = room.hotspots.find(h => h.id === hotspotId);
-            if (hotspot) {
-              if (!hotspot.scripts) hotspot.scripts = {};
-              hotspot.scripts.onClick = {
-                code: String(currentContent),
-                enabled: true
-              };
-            }
-          }
-        });
+        syncHotspotScriptToAllRooms(hotspotId, currentContent, currentKey);
+        // Solo se il testo è davvero cambiato — altrimenti crea un loop
+        // dirty → autosave → flush script → dirty → …
+        if (allowMarkDirty && contentChanged && typeof window.markAmiantoProjectDirty === 'function') {
+          window.markAmiantoProjectDirty();
+        }
       }
       
-      // Se è uno script oggetto, mantieni l'attachment in objectScripts
+      // Se Ã¨ uno script oggetto, mantieni l'attachment in objectScripts
       if (currentKey.startsWith('Object:')) {
         const objId = currentKey.replace('Object:', '');
         // Verifica che l'oggetto esista
@@ -6937,39 +9466,56 @@ window.selectRoom = function(roomId) {
           objectScripts.set(objId, currentKey);
         }
       }
+
+      if (currentKey.startsWith('Inventory:')) {
+        const itemName = currentKey.slice('Inventory:'.length);
+        attachInventoryItemScript(itemName, currentKey);
+      }
+      if (currentKey.startsWith('Room:')) {
+        const parts = parseRoomScriptKeyParts(currentKey);
+        if (parts && parts.roomId) attachRoomScript(parts.roomId, currentKey, parts.eventId);
+      }
+      if (currentKey.startsWith('Character:')) {
+        characterScripts.set(currentKey.slice('Character:'.length), currentKey);
+      }
+      if (currentKey.startsWith('GUI:')) {
+        const btnId = currentKey.slice('GUI:'.length);
+        if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(btnId, currentKey);
+      }
     }
   }
 
-  function openScriptFromTree(scope, target, handlerId) {
+  function openScriptFromTree(scope, target, handlerId, eventId) {
     // Salva il contenuto dello script corrente prima di aprire un nuovo script
     saveCurrentScriptIfNeeded();
     
     ensureLargeScriptEditor();
     ensureScriptEditor();
-    const scriptKeyToUse = migrateLegacyScriptKey(resolveScriptKey(scope, target));
-    let content = getScriptContent(scriptKeyToUse);
+    const resolvedEvent = eventId || (isRoomTransitionEvent(handlerId) ? handlerId : null);
+    const { key: scriptKeyToUse, content: loadedContent } = loadEditorScriptContent(scope, target, resolvedEvent);
+    let content = loadedContent;
     // Permetti di aprire script vuoti (potrebbero essere appena creati)
     // Se lo script non esiste affatto, crealo vuoto
     if (content === '' && !jsScripts.has(scriptKeyToUse) && !localStorage.getItem(`script-${scriptKeyToUse}`)) {
-      // Verifica se c'è un attachment che indica che lo script dovrebbe esistere
-      const hasAttachment = (scope === 'Room' && roomScripts.has(target)) ||
-                            (scope === 'Object' && objectScripts.has(target)) ||
-                            (scope === 'Character' && characterScripts.has(target)) ||
-                            (scope === 'GUI' && typeof guiScripts !== 'undefined' && guiScripts.has && guiScripts.has(target));
-      // Per gli oggetti, permetti sempre di creare uno script vuoto (l'attachment verrà creato quando viene salvato)
-      if (!hasAttachment && scope !== 'Object') {
+      const hasAttachment = hasEditorScriptLink(scope, target);
+      // Per oggetti/inventario/personaggi, permetti sempre di creare uno script vuoto (l'attachment verrÃ  creato al salvataggio)
+      if (!hasAttachment && scope !== 'Object' && scope !== 'Inventory' && scope !== 'Character') {
         showNotification('Script not found', 'warning');
         return;
       }
-      // Crea lo script vuoto se ha un attachment o se è un oggetto
+      // Crea lo script vuoto se ha un attachment o se Ã¨ un oggetto/inventario/personaggio
       content = '';
       jsScripts.set(scriptKeyToUse, content);
       try { localStorage.setItem(`script-${scriptKeyToUse}`, content); } catch(_) {}
       
-      // Per gli oggetti, crea subito l'attachment quando si apre lo script per la prima volta
-      // Questo garantisce che lo script sia associato all'oggetto anche prima di essere salvato
       if (scope === 'Object' && !hasAttachment) {
         objectScripts.set(target, scriptKeyToUse);
+      }
+      if (scope === 'Inventory' && !hasAttachment) {
+        attachInventoryItemScript(target, scriptKeyToUse);
+      }
+      if (scope === 'Character' && !hasAttachment) {
+        characterScripts.set(target, scriptKeyToUse);
       }
     }
     currentScriptName = scriptKeyToUse;
@@ -6983,7 +9529,7 @@ window.selectRoom = function(roomId) {
           if (typeof largeCodeMirrorEditor.refresh === 'function') {
             largeCodeMirrorEditor.refresh();
           }
-          // Forza il focus se l'editor è visibile
+          // Forza il focus se l'editor Ã¨ visibile
           const editorContainer = document.getElementById('codeEditorContainer');
           if (editorContainer && editorContainer.style.display !== 'none') {
             largeCodeMirrorEditor.focus();
@@ -7004,10 +9550,17 @@ window.selectRoom = function(roomId) {
     // Reflect dropdowns and optionally lock
     const scopeSel = document.getElementById('script-scope');
     const targetSel = document.getElementById('script-target');
+    const eventSel = document.getElementById('script-event');
     if (scopeSel && targetSel) {
       scopeSel.value = scope;
       populateTargetsForScope(scope);
+      populateEventsForScope(scope);
       if (targetSel.querySelector(`option[value="${target}"]`)) targetSel.value = target;
+      if (eventSel && resolvedEvent && eventSel.querySelector(`option[value="${resolvedEvent}"]`)) {
+        eventSel.value = resolvedEvent;
+      } else if (eventSel && handlerId && eventSel.querySelector(`option[value="${handlerId}"]`)) {
+        eventSel.value = handlerId;
+      }
       const lock = document.getElementById('lock-script-scope');
       if (lock && lock.checked) {
         targetSel.disabled = (scope !== 'Global');
@@ -7028,7 +9581,7 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  window.createScriptFromDropdown = function() {
+  window.createScriptFromDropdown = async function() {
     ensureLargeScriptEditor();
     const scopeSel = document.getElementById('script-scope');
     const targetSel = document.getElementById('script-target');
@@ -7040,40 +9593,75 @@ window.selectRoom = function(roomId) {
     if (!target) { showNotification('Select a valid target', 'warning'); return; }
     const handlerId = eventSel.value || 'on_game_start';
     const eventDef = (SCRIPT_EVENTS[scope] || []).find(e => e.id === handlerId) || { label: handlerId };
+    const eventScoped = isRoomTransitionEvent(handlerId);
 
-    const key = migrateLegacyScriptKey(normalizeScriptKey(scope, target));
+    // Before/After room load → script file distinti (non nello stesso Global:main / Room:id)
+    const key = getEditorScriptKey(scope, target, eventScoped ? handlerId : null);
     let content = getScriptContent(key);
 
-    // Ensure header
+    // One script per scope + target + event
+    const handlerRegex = new RegExp(`(?:async\\s+)?function\\s+${handlerId}\\s*\\(`);
+    if (handlerRegex.test(content)) {
+      showNotification('Script already exists', 'warning');
+      openScriptFromTree(scope, target, handlerId, eventScoped ? handlerId : null);
+      return;
+    }
+    // Se l'handler esiste ancora nel file legacy combinato, avvisa
+    if (eventScoped) {
+      const legacyKey = scope === 'Room' ? `Room:${target}` : 'Global:main';
+      if (legacyKey !== key && handlerRegex.test(getScriptContent(legacyKey))) {
+        showNotification('Handler already exists in the combined room script — open that script to edit it', 'warning');
+        openScriptFromTree(scope, target, handlerId, null);
+        return;
+      }
+    }
+
+    // Ensure header (nuovo file per before/after)
     if (!content) {
       const header = [
         `// Scope: ${scope}`,
         `// Target: ${target}`,
+        eventScoped ? `// Event: ${eventDef.label}` : null,
         ''
-      ].join('\n');
+      ].filter(line => line !== null).join('\n');
       content = header;
     }
 
-    // Insert handler skeleton if missing
-    const handlerRegex = new RegExp(`function\\s+${handlerId}\\s*\\(`);
-    if (!handlerRegex.test(content)) {
-      let skeleton = '\n';
-      skeleton += `// Event: ${eventDef.label}\n`;
-      if (handlerId === 'on_game_start') {
-        skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
-      } else if (handlerId === 'on_room_change') {
-        skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_object_click') {
-        skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_character_click') {
-        skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
-      } else if (handlerId === 'on_hotspot_click') {
-        skeleton += `function on_hotspot_click(hotspotId){\n  // your code here\n}\n`;
-      } else {
-        skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
-      }
-      content = content.replace(/\s*$/, '') + '\n' + skeleton;
+    // Insert handler skeleton
+    let skeleton = '\n';
+    skeleton += `// Event: ${eventDef.label}\n`;
+    if (handlerId === 'on_game_start') {
+      skeleton += `function on_game_start(){\n  print('Game started');\n}\n`;
+    } else if (handlerId === 'on_before_room_change') {
+      skeleton += `function on_before_room_change(oldRoomId, newRoomId){\n  // runs before the new room is loaded (old room still active)\n}\n`;
+    } else if (handlerId === 'on_room_change') {
+      skeleton += `function on_room_change(oldRoomId, newRoomId){\n  // runs after the new room is fully loaded\n}\n`;
+    } else if (handlerId === 'on_object_click') {
+      skeleton += `function on_object_click(object_id, x, y){\n  // your code here\n}\n`;
+    } else if (handlerId === 'on_character_click') {
+      skeleton += `function on_character_click(characterId){\n  // your code here\n}\n`;
+    } else if (handlerId === 'on_hotspot_click') {
+      skeleton += `function on_hotspot_click(hotspotId, x, y, usedItemId){\n`;
+      skeleton += `  // usedItemId valorizzato solo con combinazione inventario; return true se gestita\n`;
+      skeleton += `  return false;\n}\n`;
+    } else if (handlerId === 'on_use_with') {
+      skeleton += `function on_use_with(targetType, targetId, x, y){\n`;
+      skeleton += `  // Handler per script item inventario (Scope Inventory)\n`;
+      skeleton += `  // targetType: hotspot | object | character | inventory\n`;
+      skeleton += `  // targetId: id dell'hotspot/oggetto/item (non il name, salvo coincidano)\n`;
+      skeleton += `  if (targetType !== "hotspot" || targetId !== "hotspot_id_here") return false;\n`;
+      skeleton += `  show_message("Combinazione riuscita.");\n`;
+      skeleton += `  return true;\n`;
+      skeleton += `}\n`;
+    } else if (handlerId === 'on_inventory_use_with') {
+      skeleton += `function on_inventory_use_with(itemId, targetType, targetId, x, y){\n`;
+      skeleton += `  // Solo script Global (fallback). Sugli item inventario usare on_use_with.\n`;
+      skeleton += `  return false;\n`;
+      skeleton += `}\n`;
+    } else {
+      skeleton += `function ${handlerId}(){\n  // your code here\n}\n`;
     }
+    content = content.replace(/\s*$/, '') + '\n' + skeleton;
 
     // Save and attach
     jsScripts.set(key, content);
@@ -7081,47 +9669,24 @@ window.selectRoom = function(roomId) {
     currentScriptName = key;
 
     if (scope === 'Room') {
-      roomScripts.set(target, key);
+      attachRoomScript(target, key, eventScoped ? handlerId : null);
     } else if (scope === 'Object') {
       objectScripts.set(target, key);
+    } else if (scope === 'Character') {
+      characterScripts.set(target, key);
     } else if (scope === 'Hotspot') {
       const hotspotId = key.slice('Hotspot:'.length);
-      // Salva direttamente nell'hotspot
-      let hotspotFound = false;
-      rooms.forEach((room, roomId) => {
-        if (room.hotspots && Array.isArray(room.hotspots)) {
-          const hotspot = room.hotspots.find(h => h.id === hotspotId);
-          if (hotspot) {
-            if (!hotspot.scripts) hotspot.scripts = {};
-            hotspot.scripts.onClick = {
-              code: String(content),
-              enabled: true
-            };
-            // Aggiungi metadata per tracciare lo script
-            if (!hotspot._meta) hotspot._meta = {};
-            hotspot._meta.linkedScriptName = key;
-            hotspotFound = true;
-          }
-        }
-      });
-      // Aggiorna anche l'hotspot globale se esiste
-      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
-        const globalHotspot = hotspots.find(h => h.id === hotspotId);
-        if (globalHotspot) {
-          if (!globalHotspot.scripts) globalHotspot.scripts = {};
-          globalHotspot.scripts.onClick = {
-            code: String(content),
-            enabled: true
-          };
-          if (!globalHotspot._meta) globalHotspot._meta = {};
-          globalHotspot._meta.linkedScriptName = key;
-        }
-      }
-      if (!hotspotFound) {
-        console.warn(`[createScriptFromDropdown] Hotspot ${hotspotId} non trovato`);
-      }
+      syncHotspotScriptToAllRooms(hotspotId, content, key);
+      if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
     } else if (scope === 'GUI') {
       if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(target, key);
+    } else if (scope === 'Inventory') {
+      const item = inventoryItems.find(i => i.name === target);
+      if (!item) {
+        showNotification(`Inventory item "${target}" not found`, 'warning');
+        return;
+      }
+      attachInventoryItemScript(target, key);
     }
 
     if (largeCodeMirrorEditor) {
@@ -7143,13 +9708,17 @@ window.selectRoom = function(roomId) {
     // Riabilita sempre i dropdown dopo la creazione per permettere la creazione di altri script
     // Il lock viene applicato solo quando si apre uno script esistente dall'albero
     scopeSel.disabled = false;
+    populateEventsForScope(scope);
+    if (eventSel.querySelector(`option[value="${handlerId}"]`)) {
+      eventSel.value = handlerId;
+    }
     if (scope === 'Global') {
       targetSel.disabled = true;
     } else {
       targetSel.disabled = false;
     }
     
-    showNotification(`Script created: ${scope} → ${target} (${eventDef.label})`, 'success');
+    showNotification(`Script created: ${key} (${eventDef.label})`, 'success');
   }
 
   // ============================================
@@ -7162,6 +9731,9 @@ window.selectRoom = function(roomId) {
   
   // Definizioni delle variabili (per editor UI e validazione)
   window.gameVariableDefinitions = window.gameVariableDefinitions || [];
+
+  /** Dialoghi ramificati del progetto (grafo line/choice/end). Persistiti in .amnt come project.dialogues */
+  window.projectDialogues = window.projectDialogues || [];
   
   // API Game State
   window.Game.setVar = function(key, value) {
@@ -7194,7 +9766,7 @@ window.selectRoom = function(roomId) {
       return undefined;
     }
     if (!(key in _gameState)) {
-      // Se la variabile è definita ma non ancora impostata, restituisci il valore iniziale
+      // Se la variabile Ã¨ definita ma non ancora impostata, restituisci il valore iniziale
       const def = gameVariableDefinitions.find(v => v.name === key);
       if (def && 'initialValue' in def) {
         return def.initialValue;
@@ -7220,7 +9792,7 @@ window.selectRoom = function(roomId) {
       Game.setVar(key, !current);
       return true;
     } else {
-      // Se non è boolean, inizializza a true
+      // Se non Ã¨ boolean, inizializza a true
       Game.setVar(key, true);
       return true;
     }
@@ -7232,7 +9804,7 @@ window.selectRoom = function(roomId) {
   };
 
   // API opzionale per mostrare testo nel gioco (usata da print(..., { showInGame: true }))
-  // L'implementazione concreta nel runtime può sovrascrivere questo metodo.
+  // L'implementazione concreta nel runtime puÃ² sovrascrivere questo metodo.
   window.Game.showText = window.Game.showText || function(text) {
     // Di default, in editor mostriamo una notifica non invasiva
     try {
@@ -7282,7 +9854,7 @@ window.selectRoom = function(roomId) {
       return varExists;
     }
     
-    // Se la variabile non esiste e l'operatore non è "exists", fallisce
+    // Se la variabile non esiste e l'operatore non Ã¨ "exists", fallisce
     if (!varExists) {
       console.warn(`[Condition.evaluate] Variable "${varName}" does not exist`);
       return false;
@@ -7318,7 +9890,7 @@ window.selectRoom = function(roomId) {
   };
 
   // Helper per serializzare valori nello Script Log (ScriptLogService)
-  // Deve essere standalone perché viene usata in contesti diversi (sandbox)
+  // Deve essere standalone perchÃ© viene usata in contesti diversi (sandbox)
   function serializeValue(value) {
     if (value === null) return 'null';
     if (value === undefined) return 'undefined';
@@ -7349,23 +9921,23 @@ window.selectRoom = function(roomId) {
   }
 
   // Specific event trigger functions
-  window.triggerGameStart = function() {
+  window.triggerGameStart = async function() {
     triggerGameEvent('game_start');
   };
 
-  window.triggerRoomChange = function(oldRoomId, newRoomId) {
+  window.triggerRoomChange = async function(oldRoomId, newRoomId) {
     triggerGameEvent('room_change', oldRoomId, newRoomId);
   };
 
-  window.triggerObjectClick = function(objectId, x, y) {
+  window.triggerObjectClick = async function(objectId, x, y) {
     triggerGameEvent('object_click', objectId, x, y);
   };
 
-  window.triggerCharacterClick = function(characterId) {
+  window.triggerCharacterClick = async function(characterId) {
     triggerGameEvent('character_click', characterId);
   };
 
-  window.triggerHotspotClick = function(hotspotId) {
+  window.triggerHotspotClick = async function(hotspotId) {
     triggerGameEvent('hotspot_click', hotspotId);
   };
 
@@ -7380,13 +9952,13 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Script handler non più supportato in modalità iframe
+    // Script handler non piÃ¹ supportato in modalitÃ  iframe
     // Gli script vengono eseguiti nel runtime standalone
     addDebugMessage(`[Script] Handler "${handlerName}" - scripts run in the standalone runtime`, 'info');
   }
 
-  window.newScript = function() {
-    if (confirm('Do you want to create a new script? The current content will be lost.')) {
+  window.newScript = async function() {
+    if (await showConfirmDialog({ title: 'Create Script', message: 'Do you want to create a new script? The current content will be lost.' })) {
       ensureLargeScriptEditor();
       ensureScriptEditor();
       const editors = [largeCodeMirrorEditor, codeMirrorEditor].filter(Boolean);
@@ -7424,40 +9996,13 @@ window.selectRoom = function(roomId) {
 
     const oldContent = getScriptContent(key);
     
-    // ⚠️ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se è uno script hotspot
+    // âš ï¸ GESTIONE SPECIALE PER HOTSPOT: Salva direttamente nell'hotspot se Ã¨ uno script hotspot
     if (key.startsWith('Hotspot:')) {
       const hotspotId = key.replace('Hotspot:', '');
-      // Trova l'hotspot in tutte le stanze
-      let hotspotFound = false;
-      rooms.forEach((room, roomId) => {
-        if (room.hotspots && Array.isArray(room.hotspots)) {
-          const hotspot = room.hotspots.find(h => h.id === hotspotId);
-          if (hotspot) {
-            if (!hotspot.scripts) hotspot.scripts = {};
-            hotspot.scripts.onClick = {
-              code: String(content),
-              enabled: true
-            };
-            hotspotFound = true;
-            
-            // Aggiorna anche l'hotspot globale se esiste
-            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspotId) : null;
-            if (globalHotspot) {
-              if (!globalHotspot.scripts) globalHotspot.scripts = {};
-              globalHotspot.scripts.onClick = {
-                code: String(content),
-                enabled: true
-              };
-            }
-          }
-        }
-      });
-      if (!hotspotFound) {
-        console.warn(`[saveScript] Hotspot ${hotspotId} non trovato in nessuna stanza`);
-      }
+      syncHotspotScriptToAllRooms(hotspotId, content, key);
     }
     
-    // ⚠️ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se è uno script oggetto
+    // âš ï¸ GESTIONE SPECIALE PER OGGETTI: Crea/aggiorna l'attachment in objectScripts se Ã¨ uno script oggetto
     if (key.startsWith('Object:')) {
       const objId = key.replace('Object:', '');
       // Verifica che l'oggetto esista in almeno una stanza
@@ -7481,46 +10026,51 @@ window.selectRoom = function(roomId) {
         objectScripts.set(objId, key);
       }
     }
+
+    if (key.startsWith('Inventory:')) {
+      const itemName = key.slice('Inventory:'.length);
+      attachInventoryItemScript(itemName, key);
+    }
+    if (key.startsWith('Room:')) {
+      const parts = parseRoomScriptKeyParts(key);
+      if (parts && parts.roomId) attachRoomScript(parts.roomId, key, parts.eventId);
+    }
+    if (key.startsWith('Character:')) {
+      characterScripts.set(key.slice('Character:'.length), key);
+    }
+    if (key.startsWith('GUI:')) {
+      const btnId = key.slice('GUI:'.length);
+      if (typeof guiScripts !== 'undefined' && guiScripts.set) guiScripts.set(btnId, key);
+    }
     
     // Salva il nuovo contenuto (anche per hotspot, per mantenere sincronizzazione)
     try { localStorage.setItem(`script-${key}`, content); } catch(_) {}
     jsScripts.set(key, content);
-    
-    // Sincronizza solo hotspot collegati esplicitamente a questo script (mai per confronto sul codice)
-    if (content.trim() !== '') {
-      const hotspotIdFromKey = key.startsWith('Hotspot:') ? key.slice('Hotspot:'.length) : null;
-      const syncedHotspotIds = new Set();
 
+    if (key.startsWith('Hotspot:')) {
+      syncHotspotScriptToAllRooms(key.slice('Hotspot:'.length), content, key);
+    } else if (content.trim() !== '') {
+      const syncedHotspotIds = new Set();
       const syncHotspotIfLinked = (hotspot, source) => {
         if (!hotspot || syncedHotspotIds.has(hotspot.id)) return false;
         const linkedRaw = hotspot._meta && hotspot._meta.linkedScriptName;
         const linked = linkedRaw ? migrateLegacyScriptKey(String(linkedRaw)) : '';
-        const isDirect = hotspotIdFromKey && hotspot.id === hotspotIdFromKey;
-        const isLinked = linked === key;
-        if (!isDirect && !isLinked) return false;
-
-        if (!hotspot.scripts) hotspot.scripts = {};
-        hotspot.scripts.onClick = { code: String(content), enabled: true };
-        if (!hotspot._meta) hotspot._meta = {};
-        hotspot._meta.linkedScriptName = key;
+        if (linked !== key) return false;
+        syncHotspotScriptToAllRooms(hotspot.id, content, key);
         syncedHotspotIds.add(hotspot.id);
-        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} ← "${key}" [${source}]`);
+        console.log(`[saveScript] [SYNC] Hotspot ${hotspot.id} â† "${key}" [${source}]`);
         return true;
       };
-
       rooms.forEach((room, roomId) => {
         if (!room.hotspots) return;
-        room.hotspots.forEach(hotspot => {
-          if (syncHotspotIfLinked(hotspot, `room:${roomId}`)) {
-            const globalHotspot = typeof hotspots !== 'undefined' ? hotspots.find(h => h.id === hotspot.id) : null;
-            if (globalHotspot) syncHotspotIfLinked(globalHotspot, 'global');
-          }
-        });
+        room.hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, `room:${roomId}`));
       });
       if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
         hotspots.forEach(hotspot => syncHotspotIfLinked(hotspot, 'global-only'));
       }
     }
+
+    if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
     
     showNotification(`Script "${key}" saved!`, 'success');
 
@@ -7530,9 +10080,10 @@ window.selectRoom = function(roomId) {
     
     // Aggiorna sempre l'albero degli script per riflettere le modifiche
     rebuildScriptsTree();
+    scheduleProjectSizeIndicatorRefresh(250);
   };
 
-  window.runScript = function() {
+  window.runScript = async function() {
     ensureLargeScriptEditor();
     ensureScriptEditor();
     const content = largeCodeMirrorEditor ? largeCodeMirrorEditor.getValue() : (codeMirrorEditor ? codeMirrorEditor.getValue() : (document.getElementById('script-editor-large')?.value || document.getElementById('script-editor')?.value || ''));
@@ -7543,12 +10094,12 @@ window.selectRoom = function(roomId) {
     }
     
     // Per eseguire script, apri il runtime in una nuova finestra
-    // Il runtime caricherà automaticamente il progetto da localStorage
+    // Il runtime caricherÃ  automaticamente il progetto da localStorage
     const jsonString = window.serializeProjectToJsonString(true);
     localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
     
     // Apri runtime in nuova finestra
-    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
+    const runtimeUrl = getRuntimePageUrl();
     const runtimeWindow = window.open(
       runtimeUrl,
       'AmiantoRuntime',
@@ -7563,7 +10114,7 @@ window.selectRoom = function(roomId) {
     showNotification('Runtime opened in a new window. The script will run automatically.', 'info');
   };
 
-  window.deleteScript = function() {
+  window.deleteScript = async function() {
     let scriptName = currentScriptName && migrateLegacyScriptKey(String(currentScriptName));
     if (!scriptName) {
       const selector = document.getElementById('script-selector');
@@ -7576,7 +10127,7 @@ window.selectRoom = function(roomId) {
     }
     
     // Chiedi conferma
-    if (!confirm(`Delete script "${scriptName}"?\n\nThis action cannot be undone.`)) {
+    if (!(await showConfirmDialog({ title: 'Delete Script', message: `Delete script "${scriptName}"?\n\nThis action cannot be undone.`, danger: true }))) {
       return;
     }
     
@@ -7632,12 +10183,8 @@ window.selectRoom = function(roomId) {
       }
     }
     
-    // Room scripts
-    for (const [roomId, attachedScript] of roomScripts.entries()) {
-      if (attachedScript === scriptName) {
-        roomScripts.delete(roomId);
-      }
-    }
+    // Room scripts (string legacy o mappa per-evento)
+    detachRoomScriptKey(scriptName);
     
     // Character scripts
     for (const [charName, attachedScript] of characterScripts.entries()) {
@@ -7651,6 +10198,17 @@ window.selectRoom = function(roomId) {
       if (attachedScript === scriptName) {
         inventoryScripts.delete(itemName);
       }
+    }
+    inventoryItems.forEach(item => {
+      const userKey = migrateLegacyScriptKey(String(item.scriptName || '').trim());
+      if (userKey === scriptName) {
+        item.scriptName = '';
+        inventoryScripts.delete(item.name);
+      }
+    });
+    const parsedKey = parseScriptKeyScopeTarget(scriptName);
+    if (parsedKey && parsedKey.scope !== 'Hotspot' && parsedKey.scope !== 'Global') {
+      clearEditorScriptAttachment(parsedKey.scope, parsedKey.target);
     }
     
     // Hotspot scripts - Rimuovi anche dalla struttura hotspot.scripts.onClick
@@ -7723,7 +10281,9 @@ window.selectRoom = function(roomId) {
     
     // Aggiorna l'albero degli script
     rebuildScriptsTree();
-    
+
+    refreshInventoryItemsListUI();
+
     // Aggiorna tutti i target selector
     refreshSceneObjectScriptTargets();
     refreshRoomScriptTargets();
@@ -7737,7 +10297,7 @@ window.selectRoom = function(roomId) {
   };
 
   window.stopScript = function() {
-    // Non serve più fermare script singoli, ma possiamo pulire lo stato se necessario
+    // Non serve piÃ¹ fermare script singoli, ma possiamo pulire lo stato se necessario
     showNotification('Script execution stopped', 'info');
   };
 
@@ -7808,8 +10368,8 @@ window.selectRoom = function(roomId) {
             <br><small class="text-muted">Initial: ${JSON.stringify(varDef.initialValue)}</small>
           </div>
           <div class="btn-group btn-group-sm">
-            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">✏️</button>
-            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">🗑️</button>
+            <button class="btn btn-outline-light" onclick="editGameVariable(${index})" title="Edit">Edit</button>
+            <button class="btn btn-outline-danger" onclick="deleteGameVariable(${index})" title="Delete">Delete</button>
           </div>
         </div>
       `;
@@ -7817,99 +10377,623 @@ window.selectRoom = function(roomId) {
     });
   }
   
-  window.addGameVariable = function() {
-    const name = prompt('Variable name:');
-    if (!name || !name.trim()) return;
-    
-    const trimmedName = name.trim();
+  window.addGameVariable = async function() {
+    const data = await showVariableFormDialog({
+      title: 'Add Variable',
+      name: '',
+      type: 'boolean',
+      initialValue: false
+    });
+    if (!data || !data.name) return;
+
+    const trimmedName = data.name.trim();
     if (gameVariableDefinitions.find(v => v.name === trimmedName)) {
       showNotification(`Variable "${trimmedName}" already exists`, 'warning');
       return;
     }
-    
-    const type = prompt('Variable type (boolean/number/string):', 'boolean');
-    if (!['boolean', 'number', 'string'].includes(type)) {
-      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
-      return;
-    }
-    
-    let initialValue;
-    if (type === 'boolean') {
-      initialValue = false;
-    } else if (type === 'number') {
-      const num = prompt('Initial value (number):', '0');
-      initialValue = Number(num) || 0;
-    } else {
-      initialValue = prompt('Initial value (string):', '');
-    }
-    
+
     gameVariableDefinitions.push({
       name: trimmedName,
-      type: type,
-      initialValue: initialValue
+      type: data.type,
+      initialValue: data.initialValue
     });
-    
-    // Inizializza la variabile nello stato se non esiste
+
     if (!Game.hasVar(trimmedName)) {
-      Game.setVar(trimmedName, initialValue);
+      Game.setVar(trimmedName, data.initialValue);
     }
-    
+
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${trimmedName}" added`, 'success');
   };
-  
-  window.editGameVariable = function(index) {
+
+  window.editGameVariable = async function(index) {
     if (index < 0 || index >= gameVariableDefinitions.length) return;
-    
+
     const varDef = gameVariableDefinitions[index];
-    const newName = prompt('Variable name:', varDef.name);
-    if (!newName || !newName.trim()) return;
-    
-    const trimmedName = newName.trim();
+    const data = await showVariableFormDialog({
+      title: 'Edit Variable',
+      name: varDef.name,
+      type: varDef.type,
+      initialValue: varDef.initialValue
+    });
+    if (!data || !data.name) return;
+
+    const trimmedName = data.name.trim();
     if (trimmedName !== varDef.name && gameVariableDefinitions.find(v => v.name === trimmedName)) {
       showNotification(`Variable "${trimmedName}" already exists`, 'warning');
       return;
     }
-    
-    const type = prompt('Variable type (boolean/number/string):', varDef.type);
-    if (!['boolean', 'number', 'string'].includes(type)) {
-      showNotification('Invalid type. Must be boolean, number, or string', 'warning');
-      return;
-    }
-    
-    let initialValue = varDef.initialValue;
-    if (type === 'boolean') {
-      initialValue = confirm('Initial value (OK = true, Cancel = false):') ? true : false;
-    } else if (type === 'number') {
-      const num = prompt('Initial value (number):', String(initialValue));
-      initialValue = Number(num) || 0;
-    } else {
-      initialValue = prompt('Initial value (string):', String(initialValue));
-    }
-    
-    // Aggiorna definizione
+
     varDef.name = trimmedName;
-    varDef.type = type;
-    varDef.initialValue = initialValue;
-    
-    // Aggiorna valore nello stato se esiste
-    if (Game.hasVar(varDef.name)) {
-      Game.setVar(trimmedName, initialValue);
-    }
-    
+    varDef.type = data.type;
+    varDef.initialValue = data.initialValue;
+    Game.setVar(trimmedName, data.initialValue);
+
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${trimmedName}" updated`, 'success');
   };
-  
-  window.deleteGameVariable = function(index) {
+
+  window.deleteGameVariable = async function(index) {
     if (index < 0 || index >= gameVariableDefinitions.length) return;
-    
+
     const varDef = gameVariableDefinitions[index];
-    if (!confirm(`Delete variable "${varDef.name}"?`)) return;
-    
+    const ok = await showConfirmDialog({
+      title: 'Delete Variable',
+      message: `Delete variable "${varDef.name}"?`,
+      danger: true
+    });
+    if (!ok) return;
+
     gameVariableDefinitions.splice(index, 1);
     refreshVariablesList();
+    if (typeof notifyEditorProjectChanged === 'function') notifyEditorProjectChanged();
     showNotification(`Variable "${varDef.name}" deleted`, 'info');
+  };
+
+  // ============================================
+  // DIALOGUES EDITOR (form + visual graph)
+  // ============================================
+  let selectedDialogueId = null;
+  let dialogueSearchQuery = '';
+
+  function getSelectedDialogue() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    if (!selectedDialogueId) return null;
+    return list.find(d => d.id === selectedDialogueId) || null;
+  }
+
+  function uidDialogue(prefix) {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function escapeHtmlAttr(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function syncDialogueGraphEditor() {
+    const GE = window.AmiantoDialogueGraphEditor;
+    if (!GE) return;
+    // setDialogue already soft-refreshes when the id is unchanged (keeps selection / typing focus)
+    if (typeof GE.setDialogue === 'function') {
+      GE.setDialogue(selectedDialogueId);
+    }
+  }
+
+  function renderDialogueSidebarList() {
+    const box = document.getElementById('dialogue-sidebar-list');
+    if (!box) return;
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    const q = String(dialogueSearchQuery || '').trim().toLowerCase();
+    const filtered = !q
+      ? list
+      : list.filter(d => {
+          const name = String(d.name || '').toLowerCase();
+          const id = String(d.id || '').toLowerCase();
+          return name.indexOf(q) >= 0 || id.indexOf(q) >= 0;
+        });
+    if (!filtered.length) {
+      box.innerHTML = '<div class="text-muted small px-1">No matches</div>';
+      return;
+    }
+    box.innerHTML = filtered.map(d => {
+      const active = d.id === selectedDialogueId ? ' is-active' : '';
+      return `<div class="dlg-sidebar-item${active}" data-dlg-id="${escapeHtmlAttr(d.id)}" title="${escapeHtmlAttr(d.id)}">
+        <span>${escapeHtmlAttr(d.name || d.id)}</span>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('[data-dlg-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        selectedDialogueId = el.getAttribute('data-dlg-id');
+        const select = document.getElementById('dialogue-select');
+        if (select) select.value = selectedDialogueId;
+        renderDialoguesEditor();
+      });
+    });
+  }
+
+  window.onDialogueSearchInput = function() {
+    const input = document.getElementById('dialogue-search');
+    dialogueSearchQuery = input ? input.value : '';
+    renderDialogueSidebarList();
+  };
+
+  window.setDialogueEditorMode = function(mode) {
+    const GE = window.AmiantoDialogueGraphEditor;
+    const m = mode === 'visual' ? 'visual' : 'form';
+    if (GE && typeof GE.setMode === 'function') {
+      GE.setMode(m);
+    }
+    // Keep sidebar list in sync; form body visibility handled by graph editor + below
+    const formMode = document.getElementById('dialogue-form-mode');
+    if (m === 'form' && formMode) formMode.style.display = '';
+    renderDialoguesEditor();
+  };
+
+  window.validateActiveDialogue = function() {
+    const dlg = getSelectedDialogue();
+    const V = window.AmiantoDialogueValidate;
+    if (!dlg) {
+      showNotification('No dialogue selected', 'warning');
+      return;
+    }
+    if (!V || typeof V.validateDialogue !== 'function') {
+      showNotification('Validator not loaded', 'warning');
+      return;
+    }
+    const res = V.validateDialogue(dlg, window.AmiantoDialogueLogic);
+    const ec = (res.errors || []).length;
+    const wc = (res.warnings || []).length;
+    if (window.AmiantoDialogueGraphEditor && window.AmiantoDialogueGraphEditor.getMode() === 'visual') {
+      window.AmiantoDialogueGraphEditor.validate();
+    }
+    showNotification(
+      ec ? `Dialogue: ${ec} error(s), ${wc} warning(s)` : `Dialogue OK (${wc} warning(s))`,
+      ec ? 'warning' : 'success'
+    );
+  };
+
+  window.duplicateProjectDialogue = function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    const copy = JSON.parse(JSON.stringify(dlg));
+    copy.id = uidDialogue('dlg');
+    copy.name = (dlg.name || dlg.id) + ' (copy)';
+    // Remap node ids to keep once-only keys distinct for the new dialogue asset
+    const idMap = {};
+    const nodes = copy.nodes || {};
+    Object.keys(nodes).forEach(oldId => {
+      const n = nodes[oldId];
+      const prefix = n.type === 'line' ? 'ln' : n.type === 'choice' ? 'ch' : n.type === 'jump' ? 'jmp' : n.type === 'action' ? 'act' : 'end';
+      idMap[oldId] = uidDialogue(prefix);
+    });
+    const newNodes = {};
+    Object.keys(nodes).forEach(oldId => {
+      const n = nodes[oldId];
+      const nid = idMap[oldId];
+      n.id = nid;
+      if (n.next && idMap[n.next]) n.next = idMap[n.next];
+      if (n.target && idMap[n.target]) n.target = idMap[n.target];
+      if (Array.isArray(n.options)) {
+        n.options.forEach(opt => {
+          if (opt) {
+            opt.id = uidDialogue('opt');
+            if (opt.next && idMap[opt.next]) opt.next = idMap[opt.next];
+          }
+        });
+      }
+      newNodes[nid] = n;
+    });
+    copy.nodes = newNodes;
+    if (copy.startNodeId && idMap[copy.startNodeId]) {
+      copy.startNodeId = idMap[copy.startNodeId];
+    }
+    if (!Array.isArray(window.projectDialogues)) window.projectDialogues = [];
+    window.projectDialogues.push(copy);
+    selectedDialogueId = copy.id;
+    markDialoguesDirty();
+    renderDialoguesEditor();
+    showNotification(`Dialogue duplicated as "${copy.name}"`, 'success');
+  };
+
+  window.renderDialoguesEditor = function renderDialoguesEditor() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    const select = document.getElementById('dialogue-select');
+    const body = document.getElementById('dialogue-editor-body');
+    const empty = document.getElementById('dialogue-editor-empty');
+    if (!select) return;
+
+    if (!selectedDialogueId || !list.some(d => d.id === selectedDialogueId)) {
+      selectedDialogueId = list.length ? list[0].id : null;
+    }
+
+    select.innerHTML = '';
+    if (!list.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(none)';
+      select.appendChild(opt);
+      if (body) body.style.display = 'none';
+      if (empty) empty.style.display = 'block';
+      renderDialogueSidebarList();
+      syncDialogueGraphEditor();
+      return;
+    }
+
+    if (empty) empty.style.display = 'none';
+    if (body) body.style.display = 'block';
+
+    list.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      opt.textContent = `${d.name || d.id} (${d.id})`;
+      if (d.id === selectedDialogueId) opt.selected = true;
+      select.appendChild(opt);
+    });
+
+    const dlg = getSelectedDialogue();
+    const startInput = document.getElementById('dialogue-start-node');
+    if (startInput) startInput.value = dlg ? (dlg.startNodeId || '') : '';
+
+    const GE = window.AmiantoDialogueGraphEditor;
+    const visual = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
+    const formMode = document.getElementById('dialogue-form-mode');
+    if (formMode) formMode.style.display = visual ? 'none' : '';
+
+    if (!visual) {
+      renderDialogueNodesList();
+    }
+    renderDialogueSidebarList();
+    syncDialogueGraphEditor();
+  };
+
+  function renderDialogueNodesList() {
+    const container = document.getElementById('dialogue-nodes-list');
+    if (!container) return;
+    // Don't wipe the form while the user is typing in a node field
+    const ae = document.activeElement;
+    if (ae && container.contains(ae)) {
+      const tag = (ae.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable) {
+        return;
+      }
+    }
+    const dlg = getSelectedDialogue();
+    container.innerHTML = '';
+    if (!dlg) return;
+
+    const nodes = dlg.nodes || {};
+    const ids = Object.keys(nodes);
+    if (!ids.length) {
+      container.innerHTML = '<div class="text-muted text-center py-2"><small>No nodes. Add Line, Choice, Jump, Action, or End.</small></div>';
+      return;
+    }
+
+    ids.forEach(nid => {
+      const node = nodes[nid];
+      const card = document.createElement('div');
+      card.className = 'mb-2 p-2';
+      card.style.cssText = 'background:#222;border:1px solid #444;border-radius:6px;';
+
+      const typeBadge = String(node.type || 'end');
+      let fields = `
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span><code style="color:#39ff14">${escapeHtmlAttr(node.id)}</code>
+            <span class="badge bg-secondary ms-1">${escapeHtmlAttr(typeBadge)}</span>
+            ${dlg.startNodeId === node.id ? '<span class="badge bg-success ms-1">start</span>' : ''}
+          </span>
+          <button type="button" class="btn btn-outline-danger btn-sm" data-del-node="${escapeHtmlAttr(node.id)}">Del</button>
+        </div>`;
+
+      if (node.type === 'line') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Speaker (character name/id)</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="speaker" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.speaker || '')}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Text</label>
+          <textarea class="form-control form-control-sm mb-1" rows="2" data-dlg-field="text" data-node="${escapeHtmlAttr(node.id)}">${escapeHtmlAttr(node.text || '')}</textarea>
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Mood (optional)</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="mood" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.mood || '')}" placeholder="happy / default / …" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Portrait (optional override)</label>
+          <div class="d-flex gap-1 mb-1 align-items-start">
+            <input type="text" class="form-control form-control-sm" data-dlg-field="portrait" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.portrait || '')}" placeholder="Browse… or paste URL" />
+            <button type="button" class="btn btn-outline-info btn-sm text-nowrap" data-dlg-portrait-pick="${escapeHtmlAttr(node.id)}">Browse…</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-dlg-portrait-clear="${escapeHtmlAttr(node.id)}" title="Clear">×</button>
+          </div>
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON (optional)</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"set_var","key":"met_npc","value":true}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />`;
+      } else if (node.type === 'choice') {
+        const opts = Array.isArray(node.options) ? node.options : [];
+        fields += `<div class="mb-1" data-choice-opts="${escapeHtmlAttr(node.id)}">`;
+        opts.forEach((opt, oi) => {
+          fields += `
+            <div class="border border-secondary rounded p-1 mb-1" data-opt-index="${oi}">
+              <div class="d-flex justify-content-between mb-1">
+                <small class="text-muted">Option ${oi + 1} <code style="color:#888">${escapeHtmlAttr(opt.id || '')}</code></small>
+                <button type="button" class="btn btn-outline-danger btn-sm py-0" data-del-opt="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}">×</button>
+              </div>
+              <input type="text" class="form-control form-control-sm mb-1" placeholder="Choice text" data-dlg-opt="text" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.text || '')}" />
+              <input type="text" class="form-control form-control-sm mb-1" placeholder="Next node ID" data-dlg-opt="next" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(opt.next || '')}" />
+              <label class="form-check form-check-inline mb-1" style="font-size:0.8em;color:#ccc;">
+                <input type="checkbox" class="form-check-input" data-dlg-opt-once="1" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" ${opt.once ? 'checked' : ''} />
+                Once only
+              </label>
+              <input type="text" class="form-control form-control-sm mb-1" placeholder='Condition JSON e.g. {"type":"has_item","itemId":"key"}' data-dlg-opt-json="condition" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(dialogueConditionToEditorString(opt.condition))}" />
+              <input type="text" class="form-control form-control-sm" placeholder='Actions JSON (optional)' data-dlg-opt-json="actions" data-node="${escapeHtmlAttr(node.id)}" data-opt-index="${oi}" value="${escapeHtmlAttr(dialogueActionsToEditorString(opt.actions))}" />
+            </div>`;
+        });
+        fields += `</div>
+          <button type="button" class="btn btn-outline-success btn-sm" data-add-opt="${escapeHtmlAttr(node.id)}">+ Option</button>`;
+      } else if (node.type === 'jump') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Target node ID</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field="target" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.target || '')}" />`;
+      } else if (node.type === 'action') {
+        fields += `
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Actions JSON</label>
+          <input type="text" class="form-control form-control-sm mb-1" data-dlg-field-json="actions" data-node="${escapeHtmlAttr(node.id)}" placeholder='[{"type":"run_script","code":"function on_dialogue_action(d,n,o){print(d);}"}]' value="${escapeHtmlAttr(dialogueActionsToEditorString(node.actions))}" />
+          <label class="form-label text-muted mb-0" style="font-size:0.75em">Next node ID</label>
+          <input type="text" class="form-control form-control-sm" data-dlg-field="next" data-node="${escapeHtmlAttr(node.id)}" value="${escapeHtmlAttr(node.next || '')}" />`;
+      } else {
+        fields += `<small class="text-muted">Ends the dialogue session.</small>`;
+      }
+
+      card.innerHTML = fields;
+      container.appendChild(card);
+    });
+
+    container.querySelectorAll('[data-dlg-field]').forEach(el => {
+      const applyField = () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-field');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        const val = el.value;
+        if ((field === 'mood' || field === 'portrait') && !String(val || '').trim()) {
+          delete n[field];
+        } else {
+          n[field] = val;
+        }
+        markDialoguesDirty();
+      };
+      // Live sync so typing is never lost / fields stay editable across autosave hooks
+      el.addEventListener('input', applyField);
+      el.addEventListener('change', applyField);
+    });
+    container.querySelectorAll('[data-dlg-portrait-pick]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const nodeId = btn.getAttribute('data-dlg-portrait-pick');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        const resource = await pickResourceImage({ title: 'Dialogue portrait' });
+        if (!resource) return;
+        let src = resource.publicUrl || '';
+        try {
+          const img = await loadImageFromResourceEntry(resource);
+          if (img && img.src) src = img.src;
+        } catch (_) { /* keep publicUrl */ }
+        if (!src) {
+          showNotification('Could not load portrait image', 'warning');
+          return;
+        }
+        n.portrait = src;
+        markDialoguesDirty();
+        renderDialogueNodesList();
+      });
+    });
+    container.querySelectorAll('[data-dlg-portrait-clear]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-dlg-portrait-clear');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        delete n.portrait;
+        markDialoguesDirty();
+        renderDialogueNodesList();
+      });
+    });
+    container.querySelectorAll('[data-dlg-field-json]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-field-json');
+        const n = dlg.nodes[nodeId];
+        if (!n) return;
+        if (field === 'actions') {
+          const parsed = parseDialogueActionsFromEditor(el.value);
+          if (parsed) n.actions = parsed;
+          else delete n.actions;
+        }
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-opt]').forEach(el => {
+      const applyOpt = () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-opt');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        n.options[oi][field] = el.value;
+        markDialoguesDirty();
+      };
+      el.addEventListener('input', applyOpt);
+      el.addEventListener('change', applyOpt);
+    });
+    container.querySelectorAll('[data-dlg-opt-once]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        if (el.checked) n.options[oi].once = true;
+        else delete n.options[oi].once;
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-dlg-opt-json]').forEach(el => {
+      el.addEventListener('change', () => {
+        const nodeId = el.getAttribute('data-node');
+        const field = el.getAttribute('data-dlg-opt-json');
+        const oi = Number(el.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options) || !n.options[oi]) return;
+        if (field === 'condition') {
+          const parsed = parseDialogueConditionFromEditor(el.value);
+          if (parsed) n.options[oi].condition = parsed;
+          else delete n.options[oi].condition;
+        } else if (field === 'actions') {
+          const parsed = parseDialogueActionsFromEditor(el.value);
+          if (parsed) n.options[oi].actions = parsed;
+          else delete n.options[oi].actions;
+        }
+        markDialoguesDirty();
+      });
+    });
+    container.querySelectorAll('[data-del-node]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const nodeId = btn.getAttribute('data-del-node');
+        if (!nodeId || !dlg.nodes[nodeId]) return;
+        if (!(await showConfirmDialog({ title: 'Delete Node', message: `Delete node "${nodeId}"?`, danger: true }))) return;
+        delete dlg.nodes[nodeId];
+        if (dlg.startNodeId === nodeId) {
+          const keys = Object.keys(dlg.nodes);
+          dlg.startNodeId = keys[0] || '';
+        }
+        markDialoguesDirty();
+        renderDialoguesEditor();
+      });
+    });
+    container.querySelectorAll('[data-add-opt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-add-opt');
+        const n = dlg.nodes[nodeId];
+        if (!n || n.type !== 'choice') return;
+        if (!Array.isArray(n.options)) n.options = [];
+        n.options.push({ id: uidDialogue('opt'), text: 'New choice', next: '' });
+        markDialoguesDirty();
+        renderDialogueNodesList();
+      });
+    });
+    container.querySelectorAll('[data-del-opt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.getAttribute('data-del-opt');
+        const oi = Number(btn.getAttribute('data-opt-index'));
+        const n = dlg.nodes[nodeId];
+        if (!n || !Array.isArray(n.options)) return;
+        n.options.splice(oi, 1);
+        markDialoguesDirty();
+        renderDialogueNodesList();
+      });
+    });
+  }
+
+  window.onDialogueSelectChange = async function() {
+    const select = document.getElementById('dialogue-select');
+    selectedDialogueId = select && select.value ? select.value : null;
+    renderDialoguesEditor();
+  };
+
+  window.onDialogueStartNodeChange = async function() {
+    const dlg = getSelectedDialogue();
+    const input = document.getElementById('dialogue-start-node');
+    if (!dlg || !input) return;
+    dlg.startNodeId = String(input.value || '').trim();
+    markDialoguesDirty();
+    renderDialogueNodesList();
+  };
+
+  window.addProjectDialogue = async function() {
+    const name = await showInputPrompt({ title: 'New Dialogue', message: 'Dialogue name:', defaultValue: 'New Dialogue' });
+    if (!name || !name.trim()) return;
+    const id = uidDialogue('dlg');
+    const endId = 'n_end';
+    const lineId = 'n1';
+    const choiceId = 'n2';
+    const lineOutA = 'n3';
+    const dialogue = {
+      id,
+      name: name.trim(),
+      startNodeId: lineId,
+      nodes: {
+        [lineId]: { id: lineId, type: 'line', speaker: 'NPC', text: 'Hello!', next: choiceId },
+        [choiceId]: {
+          id: choiceId,
+          type: 'choice',
+          options: [
+            { id: 'opt_a', text: 'Tell me more.', next: lineOutA },
+            { id: 'opt_b', text: 'Goodbye.', next: endId }
+          ]
+        },
+        [lineOutA]: { id: lineOutA, type: 'line', speaker: 'NPC', text: 'There is nothing more to say.', next: endId },
+        [endId]: { id: endId, type: 'end' }
+      }
+    };
+    if (!Array.isArray(window.projectDialogues)) window.projectDialogues = [];
+    window.projectDialogues.push(dialogue);
+    selectedDialogueId = id;
+    markDialoguesDirty();
+    renderDialoguesEditor();
+    showNotification(`Dialogue "${dialogue.name}" created — use start_dialogue("${dialogue.name}")`, 'success');
+  };
+
+  window.renameProjectDialogue = async function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    const name = await showInputPrompt({ title: 'Rename Dialogue', message: 'Dialogue name:', defaultValue: dlg.name || dlg.id });
+    if (!name || !name.trim()) return;
+    dlg.name = name.trim();
+    markDialoguesDirty();
+    renderDialoguesEditor();
+  };
+
+  window.deleteProjectDialogue = async function() {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    if (!(await showConfirmDialog({ title: 'Delete Dialogue', message: `Delete dialogue "${dlg.name || dlg.id}"?`, danger: true }))) return;
+    window.projectDialogues = (window.projectDialogues || []).filter(d => d.id !== dlg.id);
+    selectedDialogueId = null;
+    markDialoguesDirty();
+    renderDialoguesEditor();
+    showNotification('Dialogue deleted', 'info');
+  };
+
+  window.addDialogueNode = function(type) {
+    const dlg = getSelectedDialogue();
+    if (!dlg) return;
+    if (!dlg.nodes) dlg.nodes = {};
+    const t = String(type || 'end').toLowerCase();
+    let id;
+    if (t === 'line') {
+      id = uidDialogue('ln');
+      dlg.nodes[id] = { id, type: 'line', speaker: '', text: '', next: '' };
+    } else if (t === 'choice') {
+      id = uidDialogue('ch');
+      dlg.nodes[id] = {
+        id,
+        type: 'choice',
+        options: [
+          { id: uidDialogue('opt'), text: 'Option A', next: '' },
+          { id: uidDialogue('opt'), text: 'Option B', next: '' }
+        ]
+      };
+    } else if (t === 'jump') {
+      id = uidDialogue('jmp');
+      dlg.nodes[id] = { id, type: 'jump', target: '' };
+    } else if (t === 'action') {
+      id = uidDialogue('act');
+      dlg.nodes[id] = { id, type: 'action', next: '', actions: [] };
+    } else {
+      id = uidDialogue('end');
+      dlg.nodes[id] = { id, type: 'end' };
+    }
+    if (!dlg.startNodeId) dlg.startNodeId = id;
+    markDialoguesDirty();
+    renderDialoguesEditor();
   };
   
   // Refresh variables list quando si carica la sezione Scripts
@@ -8030,13 +11114,14 @@ window.selectRoom = function(roomId) {
     showNotification(`Attached script "${scriptName}" to scene object`, 'success');
   };
 
-  window.attachScriptToRoom = function() {
+    window.attachScriptToRoom = function() {
     const selector = document.getElementById('script-selector');
     const scriptName = selector.value;
     const targetSel = document.getElementById('room-script-target');
     const roomId = targetSel.value || currentRoomId;
     if (!scriptName || !roomId) { showNotification('Select a script and a room', 'warning'); return; }
-    roomScripts.set(roomId, scriptName);
+    const parts = parseRoomScriptKeyParts(scriptName);
+    attachRoomScript(roomId, scriptName, parts && parts.eventId);
     showNotification(`Attached script "${scriptName}" to room`, 'success');
   };
 
@@ -8172,7 +11257,7 @@ window.selectRoom = function(roomId) {
     
     const hotspotId = targetValue.replace('hotspot:', '');
     
-    // ⚠️ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
+    // âš ï¸ NUOVA STRUTTURA: Salva script direttamente nell'hotspot
     const hotspot = hotspots.find(h => h.id === hotspotId);
     if (!hotspot) {
       showNotification('Hotspot not found', 'error');
@@ -8183,7 +11268,7 @@ window.selectRoom = function(roomId) {
     
     // DEBUG: Verifica che il contenuto dello script sia disponibile
     if (!scriptContent || scriptContent.trim() === '') {
-      console.warn(`[attachScriptToHotspot] Script "${scriptName}" è vuoto o non trovato!`);
+      console.warn(`[attachScriptToHotspot] Script "${scriptName}" Ã¨ vuoto o non trovato!`);
       showNotification(`Script "${scriptName}" is empty or not found`, 'warning');
       return;
     }
@@ -8200,38 +11285,11 @@ window.selectRoom = function(roomId) {
       hotspot.scripts = {};
     }
     
-    // Salva script direttamente nell'hotspot
-    hotspot.scripts.onClick = {
-      code: String(scriptContent),
-      enabled: true
-    };
-    
-    // Aggiorna anche nella room
-    const r = rooms.get(currentRoomId);
-    if (r && r.hotspots) {
-      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
-      if (roomHotspot) {
-        if (!roomHotspot.scripts) roomHotspot.scripts = {};
-        roomHotspot.scripts.onClick = {
-          code: String(scriptContent),
-          enabled: true
-        };
-      }
-    }
-    
-    // ⚠️ SINCRONIZZAZIONE: Salva anche il nome dello script in un campo meta per tracciamento futuro
-    // Questo ci permette di sapere quale script è collegato all'hotspot per sincronizzazioni future
-    // (nota: questo campo non viene serializzato, è solo per uso interno)
-    if (!hotspot._meta) hotspot._meta = {};
-    hotspot._meta.linkedScriptName = scriptName;
-    if (r && r.hotspots) {
-      const roomHotspot = r.hotspots.find(h => h.id === hotspotId);
-      if (roomHotspot) {
-        if (!roomHotspot._meta) roomHotspot._meta = {};
-        roomHotspot._meta.linkedScriptName = scriptName;
-      }
-    }
-    
+    syncHotspotScriptToAllRooms(hotspotId, scriptContent, scriptName);
+    jsScripts.set(scriptName, String(scriptContent));
+    try { localStorage.setItem(`script-${scriptName}`, String(scriptContent)); } catch (_) {}
+    if (typeof window.markAmiantoProjectDirty === 'function') window.markAmiantoProjectDirty();
+
     showNotification(`Attached script "${scriptName}" to hotspot`, 'success');
     
     // Aggiorna l'albero degli script per mostrare il nuovo script associato
@@ -8240,7 +11298,7 @@ window.selectRoom = function(roomId) {
     redraw();
   };
 
-  // On tab change to scripts, ensure editor exists and switch canvas/editor visibility
+  // On tab change, switch main workspace (canvas / scripts / dialogues / resources / docs)
   function setMainWorkspaceMode(mode) {
     const canvasInfo = document.querySelector('.canvas-info');
     const canvasControls = document.querySelector('.canvas-controls');
@@ -8248,24 +11306,49 @@ window.selectRoom = function(roomId) {
     const codeEditorContainer = document.getElementById('codeEditorContainer');
     const resourcesMainPanel = document.getElementById('resourcesMainPanel');
     const docsMainPanel = document.getElementById('docsMainPanel');
+    const dialogueGraphMainPanel = document.getElementById('dialogueGraphMainPanel');
+    const dialogueFormMainPanel = document.getElementById('dialogueFormMainPanel');
 
     const showCanvas = mode === 'canvas';
     const showScripts = mode === 'scripts';
     const showResources = mode === 'resources';
     const showDocs = mode === 'docs';
+    const showDialoguesVisual = mode === 'dialogues';
+    const showDialoguesForm = mode === 'dialogues-form';
 
     if (canvasInfo) canvasInfo.style.display = showCanvas ? '' : 'none';
     if (canvasControls) canvasControls.style.display = showCanvas ? '' : 'none';
     if (canvasContainer) canvasContainer.style.display = showCanvas ? 'block' : 'none';
     if (codeEditorContainer) codeEditorContainer.style.display = showScripts ? 'flex' : 'none';
-    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'flex' : 'none';
+    if (resourcesMainPanel) resourcesMainPanel.style.display = showResources ? 'grid' : 'none';
     if (docsMainPanel) docsMainPanel.style.display = showDocs ? 'flex' : 'none';
+    if (dialogueFormMainPanel) {
+      dialogueFormMainPanel.style.display = showDialoguesForm ? 'flex' : 'none';
+    }
+    if (dialogueGraphMainPanel) {
+      dialogueGraphMainPanel.style.display = showDialoguesVisual ? 'flex' : 'none';
+      dialogueGraphMainPanel.classList.toggle('is-visible', showDialoguesVisual);
+    }
   }
+  window.setMainWorkspaceMode = setMainWorkspaceMode;
+
+  function applyDialoguesWorkspaceMode() {
+    const GE = window.AmiantoDialogueGraphEditor;
+    const visual = GE && typeof GE.getMode === 'function' && GE.getMode() === 'visual';
+    setMainWorkspaceMode(visual ? 'dialogues' : 'dialogues-form');
+    if (visual && GE && typeof GE.refresh === 'function') {
+      GE.refresh();
+    }
+    if (typeof window.renderDialoguesEditor === 'function') {
+      window.renderDialoguesEditor();
+    }
+  }
+  window.applyDialoguesWorkspaceMode = applyDialoguesWorkspaceMode;
 
   document.addEventListener('tabChanged', function(e){
     if (e.detail.currentTab === 'scripts') {
       setMainWorkspaceMode('scripts');
-      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
@@ -8282,12 +11365,17 @@ window.selectRoom = function(roomId) {
       refreshRoomScriptTargets();
       refreshCharacterScriptTargets();
       refreshInventoryScriptTargets();
-      // Aggiorna le dimensioni di CodeMirror dopo che il container è visibile
+      // Aggiorna le dimensioni di CodeMirror dopo che il container Ã¨ visibile
       setTimeout(() => {
         if (largeCodeMirrorEditor && typeof largeCodeMirrorEditor.refresh === 'function') {
           largeCodeMirrorEditor.refresh();
         }
       }, 100);
+    } else if (e.detail.currentTab === 'dialogues') {
+      applyDialoguesWorkspaceMode();
+      if (window.applyConsoleLogVisibilityState) {
+        window.applyConsoleLogVisibilityState();
+      }
     } else if (e.detail.currentTab === 'resources') {
       setMainWorkspaceMode('resources');
       if (window.applyConsoleLogVisibilityState) {
@@ -8303,15 +11391,12 @@ window.selectRoom = function(roomId) {
       }
     } else {
       setMainWorkspaceMode('canvas');
-      // Applica lo stato salvato delle console log invece di forzare la visibilità
+      // Applica lo stato salvato delle console log invece di forzare la visibilitÃ 
       if (window.applyConsoleLogVisibilityState) {
         window.applyConsoleLogVisibilityState();
       }
     }
   });
-
-  // Variabile globale per tracciare lo stato di sincronizzazione
-  let isSyncingProjects = false;
 
   // Function to show loading overlay with mnt.png
   /**
@@ -8376,6 +11461,86 @@ window.selectRoom = function(roomId) {
     if (overlay) {
       overlay.remove();
     }
+  }
+  window.showLoadingOverlay = showLoadingOverlay;
+  window.hideLoadingOverlay = hideLoadingOverlay;
+
+  function yieldToUi() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+  }
+
+  /**
+   * Overlay di avanzamento per Export Game (HTML).
+   * @param {string} [message]
+   * @param {number} [percent]
+   */
+  function showExportProgressOverlay(message, percent) {
+    let overlay = document.getElementById('exportProgressOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'exportProgressOverlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'exportProgressTitle');
+      overlay.style.cssText = [
+        'position:fixed',
+        'inset:0',
+        'z-index:10070',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'background:rgba(0,0,0,0.88)',
+        'backdrop-filter:blur(4px)',
+        'font-family:Segoe UI,Tahoma,sans-serif'
+      ].join(';');
+      overlay.innerHTML = `
+        <div style="width:min(420px,92vw);padding:28px 24px;background:#121212;border:1px solid #2a2a2a;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.55);">
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;">
+            <img src="img/mnt.png" alt="" width="48" height="48" style="object-fit:contain;flex-shrink:0;">
+            <div>
+              <div id="exportProgressTitle" style="color:#39ff14;font-size:18px;font-weight:600;line-height:1.2;">Exporting game…</div>
+              <div id="exportProgressDetail" style="color:#aaa;font-size:13px;margin-top:4px;">Preparing</div>
+            </div>
+          </div>
+          <div style="background:#1e1e1e;border:1px solid #333;border-radius:8px;height:14px;overflow:hidden;">
+            <div id="exportProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#39ff14,#66ff66);transition:width 0.2s ease;box-shadow:0 0 10px rgba(57,255,20,0.45);"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+            <span id="exportProgressStep" style="color:#888;font-size:12px;">Step 0</span>
+            <span id="exportProgressPercent" style="color:#39ff14;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;">0%</span>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+    updateExportProgress(message, percent);
+  }
+
+  /**
+   * @param {string} [message]
+   * @param {number} [percent] 0–100
+   * @param {{ step?: string }} [extra]
+   */
+  function updateExportProgress(message, percent, extra) {
+    const overlay = document.getElementById('exportProgressOverlay');
+    if (!overlay) return;
+    const detail = document.getElementById('exportProgressDetail');
+    const bar = document.getElementById('exportProgressBar');
+    const pctEl = document.getElementById('exportProgressPercent');
+    const stepEl = document.getElementById('exportProgressStep');
+    if (typeof message === 'string' && detail) detail.textContent = message;
+    const pct = Math.max(0, Math.min(100, Number(percent)));
+    if (Number.isFinite(pct)) {
+      if (bar) bar.style.width = pct + '%';
+      if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+    }
+    if (extra && extra.step && stepEl) stepEl.textContent = extra.step;
+  }
+
+  function hideExportProgressOverlay() {
+    const overlay = document.getElementById('exportProgressOverlay');
+    if (overlay) overlay.remove();
   }
 
   // Function to close project selection modal deterministically
@@ -8450,7 +11615,7 @@ window.selectRoom = function(roomId) {
     
     // Assicurati che il loop di rendering del canvas embedded continui anche quando si cambia tab
     if (embeddedRuntime.isInitialized && embeddedRuntime.canvas && embeddedRuntime.ctx) {
-      // Se il loop non è attivo, riavvialo
+      // Se il loop non Ã¨ attivo, riavvialo
       if (!embeddedRuntime.renderLoopId) {
         startEmbeddedRenderLoop();
       }
@@ -8466,6 +11631,8 @@ window.selectRoom = function(roomId) {
         break;
       case 'rooms':
         disableRoomCanvasEditing();
+        refreshRoomAnimationInstancesListUI();
+        refreshRoomAnimationPickerUI();
         redraw();
         break;
       case 'gui':
@@ -8473,10 +11640,21 @@ window.selectRoom = function(roomId) {
         refreshGuiButtonsList();
         redraw();
         break;
+      case 'cursors':
+        disableRoomCanvasEditing();
+        refreshCursorsList();
+        redraw();
+        break;
       case 'characters':
         disableRoomCanvasEditing();
         // ensure character selector refreshed and redraw preview
         refreshCharacterSelector();
+        redraw();
+        break;
+      case 'animations':
+        disableRoomCanvasEditing();
+        refreshRoomAnimationsCatalogListUI();
+        onRoomAnimationSelect();
         redraw();
         break;
       case 'scripts':
@@ -8502,7 +11680,8 @@ window.selectRoom = function(roomId) {
     pendingScripts: [],
     gameState: {
       currentRoomId: null,
-      variables: new Map()
+      variables: new Map(),
+      inventory: { contents: {}, carriedItemKey: null }
     },
     isInitialized: false,
     renderLoopId: null,
@@ -8537,254 +11716,244 @@ window.selectRoom = function(roomId) {
     addDebugMessage(`[Runtime] ${message}`, level);
   }
 
+  function getRuntimePageUrl() {
+    // Cache-bust: altrimenti la finestra PLAY tiene il vecchio runtime.js e i fix non si applicano
+    try {
+      const u = new URL('runtime.html', window.location.href);
+      u.searchParams.set('v', String(Date.now()));
+      return u.href;
+    } catch (_) {
+      return 'runtime.html?v=' + Date.now();
+    }
+  }
+
   // ============================================
   // GESTIONE IFRAME SANDBOXED
   // ============================================
   
   // Crea l'iframe sandboxed per l'esecuzione degli script
+  let sandboxMessageHandlerInstalled = false;
+
+  function handleSandboxMessage(event) {
+    const message = event.data;
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    switch (message.type) {
+      case 'RUNTIME_READY':
+        if (!embeddedRuntime.isReady) {
+          embeddedRuntime.isReady = true;
+          sendRuntimeLogToEditor('Sandbox runtime ready and initialized', 'info');
+          sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
+          updateSandboxContext();
+          embeddedRuntime.pendingScripts.forEach(script => {
+            executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
+          });
+          embeddedRuntime.pendingScripts = [];
+        }
+        break;
+
+      case 'SCRIPT_LOG':
+        if (window.ScriptLogService) {
+          const level = message.level || 'info';
+          let mappedType = 'print';
+          if (level === 'error') mappedType = 'error';
+          else if (level === 'warning') mappedType = 'warning';
+          const timestamp = message.timestamp || Date.now();
+          ScriptLogService.log({
+            type: mappedType,
+            message: message.message || '',
+            source: 'runtime',
+            timestamp: timestamp
+          });
+        } else {
+          console.log('[Runtime Log]', message.message || '');
+        }
+        break;
+
+      case 'SCRIPT_ERROR':
+        sendRuntimeLogToEditor(`Script error: ${message.error || 'Unknown error'}`, 'error');
+        if (window.ScriptLogService) {
+          ScriptLogService.log({
+            type: 'error',
+            message: message.error || 'Unknown error',
+            source: 'runtime',
+            timestamp: message.timestamp || Date.now()
+          });
+        }
+        break;
+
+      case 'SCRIPT_DONE':
+        break;
+
+      case 'INVENTORY_STATE':
+        if (message.inventory) {
+          applyEditorInventorySnapshot(message.inventory);
+          if (event.source !== playTestState.runtimeWindow) {
+            pushPlaytestContextToRuntimeWindow();
+          }
+        }
+        break;
+
+      case 'PLAYTEST_RUNTIME_READY':
+        pushPlaytestContextToRuntimeWindow();
+        if (playTestState.pendingDialoguePreview) {
+          const previewId = playTestState.pendingDialoguePreview;
+          playTestState.pendingDialoguePreview = null;
+          setTimeout(() => runDialoguePreviewInPlaytestWindow(previewId), 400);
+        }
+        break;
+
+      case 'ROOM_CHANGE_REQUEST':
+        sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
+        break;
+
+      default:
+        break;
+    }
+  }
+
   function createSandboxIframe() {
-    // Rimuovi iframe esistente se presente
+    if (!sandboxMessageHandlerInstalled) {
+      window.addEventListener('message', handleSandboxMessage);
+      sandboxMessageHandlerInstalled = true;
+    }
+
     if (embeddedRuntime.sandboxIframe) {
       try {
-        // Rimuovi listener precedente se presente
-        if (embeddedRuntime.sandboxIframe._messageHandler) {
-          window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
-        }
         embeddedRuntime.sandboxIframe.remove();
       } catch (e) {
-        // Ignora errori di rimozione
+        // ignore
       }
       embeddedRuntime.sandboxIframe = null;
     }
 
-    // Listener per messaggi dall'iframe (deve essere configurato PRIMA di aggiungere l'iframe)
-    const messageHandler = function(event) {
-      // NOTA: In produzione, verificare event.origin per sicurezza
-      const message = event.data;
-      if (!message || typeof message !== 'object') {
-        return;
-      }
-
-      switch (message.type) {
-        case 'RUNTIME_READY':
-          if (!embeddedRuntime.isReady) {
-            embeddedRuntime.isReady = true;
-            sendRuntimeLogToEditor('✓ Sandbox runtime ready and initialized', 'info');
-            sendRuntimeLogToEditor(`Runtime initialized with ${embeddedRuntime.pendingScripts.length} pending script(s)`, 'info');
-            
-            // Aggiorna contesto prima di eseguire script
-            updateSandboxContext();
-            
-            // Esegui script in attesa
-            embeddedRuntime.pendingScripts.forEach(script => {
-              executeScriptInSandbox(script.name, script.code, script.handler, script.args, script.context);
-            });
-            embeddedRuntime.pendingScripts = [];
-          } else {
-            sendRuntimeLogToEditor('Warning: RUNTIME_READY received but runtime already marked as ready', 'warning');
-          }
-          break;
-
-        case 'SCRIPT_LOG':
-          if (window.ScriptLogService) {
-            const level = message.level || 'info';
-            let mappedType = 'print';
-            if (level === 'error') mappedType = 'error';
-            else if (level === 'warning') mappedType = 'warning';
-            
-            // Usa timestamp dal messaggio o genera uno nuovo se mancante
-            const timestamp = message.timestamp || Date.now();
-            
-            ScriptLogService.log({
-              type: mappedType,
-              message: message.message || '',
-              source: 'runtime',
-              timestamp: timestamp
-            });
-          } else {
-            // Fallback se ScriptLogService non è disponibile
-            console.log('[Runtime Log]', message.message || '');
-          }
-          break;
-
-        case 'SCRIPT_ERROR':
-          const errorMsg = message.error || 'Unknown error';
-          const errorTimestamp = message.timestamp || Date.now();
-          
-          sendRuntimeLogToEditor(`Script error: ${errorMsg}`, 'error');
-          if (window.ScriptLogService) {
-            ScriptLogService.log({
-              type: 'error',
-              message: errorMsg,
-              source: 'runtime',
-              timestamp: errorTimestamp
-            });
-          } else {
-            // Fallback se ScriptLogService non è disponibile
-            console.error('[Runtime Error]', errorMsg);
-          }
-          break;
-
-        case 'SCRIPT_DONE':
-          // Script completato (opzionale, per logging)
-          break;
-
-        case 'ROOM_CHANGE_REQUEST':
-          // Richiesta cambio stanza dallo script
-          sendRuntimeLogToEditor(`Script requested room change: ${message.roomId}`, 'info');
-          // TODO: Implementare cambio stanza se necessario
-          break;
-
-        default:
-          // Ignora messaggi sconosciuti
-          break;
-      }
-    };
-
-    // Aggiungi listener PRIMA di creare l'iframe
-    window.addEventListener('message', messageHandler);
-
-    // Crea nuovo iframe con sandbox="allow-scripts" (SENZA allow-same-origin)
     const iframe = document.createElement('iframe');
     iframe.id = 'sandbox-runtime-iframe';
-    iframe.style.display = 'none'; // Nascosto, serve solo per esecuzione script
+    iframe.style.display = 'none';
     iframe.style.width = '0';
     iframe.style.height = '0';
     iframe.style.border = 'none';
-    iframe.sandbox = 'allow-scripts'; // IMPORTANTE: solo allow-scripts, NO allow-same-origin
-    
-    // Usa direttamente runtime.html (più affidabile)
-    // Il percorso deve essere relativo alla root o assoluto
-    const runtimePath = window.location.pathname.endsWith('/') 
-      ? 'runtime.html' 
-      : './runtime.html';
-    iframe.src = runtimePath;
-    
-    // Salva riferimento al listener per rimozione futura
-    iframe._messageHandler = messageHandler;
+    iframe.sandbox = 'allow-scripts allow-same-origin';
 
-    // Listener per errori di caricamento
+    let runtimeUrl;
+    try {
+      runtimeUrl = new URL('runtime-sandbox.html', window.location.href).href;
+    } catch (_) {
+      runtimeUrl = 'runtime-sandbox.html';
+    }
+    iframe.src = runtimeUrl;
+
     iframe.onerror = function(e) {
       sendRuntimeLogToEditor('Error loading sandbox iframe', 'error');
       console.error('[Sandbox] Iframe load error:', e);
     };
 
-    // Listener per quando l'iframe è caricato (per debug)
     iframe.onload = function() {
       sendRuntimeLogToEditor('Sandbox iframe loaded, waiting for initialization...', 'info');
-      
-      // Prova a verificare se ci sono errori nell'iframe
       try {
-        // Prova ad accedere alla console dell'iframe per vedere errori (se possibile)
-        if (iframe.contentWindow && iframe.contentWindow.console) {
-          const originalError = iframe.contentWindow.console.error;
-          iframe.contentWindow.console.error = function(...args) {
-            sendRuntimeLogToEditor('Iframe error: ' + args.join(' '), 'error');
-            if (originalError) originalError.apply(iframe.contentWindow.console, args);
-          };
+        if (iframe.contentWindow) {
+          iframe.contentWindow.postMessage({ type: 'SANDBOX_PING' }, '*');
         }
-        
-        // Verifica se runtime.js è stato caricato
-        setTimeout(() => {
-          try {
-            if (iframe.contentWindow && iframe.contentWindow.GameAPI) {
-              sendRuntimeLogToEditor('Runtime.js loaded successfully - GameAPI available', 'info');
-            } else {
-              sendRuntimeLogToEditor('Warning: Runtime.js may not have loaded - GameAPI not found', 'warning');
-            }
-          } catch (e) {
-            // Non possiamo accedere (sandbox restriction)
-            sendRuntimeLogToEditor('Cannot verify runtime.js load status (sandbox restriction)', 'warning');
-          }
-        }, 500);
-      } catch (e) {
-        // Non possiamo accedere alla console dell'iframe (sandbox restriction)
-        sendRuntimeLogToEditor('Cannot access iframe console (sandbox restriction): ' + (e.message || e), 'warning');
+      } catch (_) {
+        // ignore
       }
-      
-      // Se dopo 2 secondi non abbiamo ricevuto RUNTIME_READY, potrebbe esserci un problema
       setTimeout(() => {
         if (!embeddedRuntime.isReady) {
-          sendRuntimeLogToEditor('Warning: Iframe loaded but RUNTIME_READY not received after 2s. Check if JS/runtime.js is loading correctly.', 'warning');
-          // Verifica se possiamo accedere all'iframe
+          sendRuntimeLogToEditor('Warning: RUNTIME_READY not received yet after iframe load', 'warning');
           try {
             if (iframe.contentWindow) {
-              if (iframe.contentWindow.GameAPI) {
-                sendRuntimeLogToEditor('GameAPI exists but RUNTIME_READY not sent - runtime may not be initializing', 'error');
-              } else {
-                sendRuntimeLogToEditor('GameAPI not found - JS/runtime.js may not have loaded', 'error');
-              }
+              iframe.contentWindow.postMessage({ type: 'SANDBOX_PING' }, '*');
             }
-          } catch (e) {
-            sendRuntimeLogToEditor('Cannot access iframe contentWindow to verify runtime status', 'warning');
+          } catch (_) {
+            // ignore
           }
         }
       }, 2000);
     };
 
-    // Aggiungi iframe al DOM
     document.body.appendChild(iframe);
     embeddedRuntime.sandboxIframe = iframe;
     embeddedRuntime.isReady = false;
 
-    // Timeout per rilevare se l'iframe non si carica
     setTimeout(() => {
       if (!embeddedRuntime.isReady) {
-        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 5s. Runtime may not be working.', 'error');
-        sendRuntimeLogToEditor('Check: 1) runtime.html exists, 2) JS/runtime.js is accessible, 3) No CORS errors in console', 'error');
-        
-        // Prova a verificare se l'iframe è caricato
-        try {
-          if (iframe.contentWindow) {
-            sendRuntimeLogToEditor('Iframe contentWindow accessible, but RUNTIME_READY not received', 'error');
-            // Verifica se runtime.js è caricato
-            try {
-              if (iframe.contentWindow.GameAPI) {
-                sendRuntimeLogToEditor('GameAPI exists - runtime.js loaded but RUNTIME_READY message not sent', 'error');
-              } else {
-                sendRuntimeLogToEditor('GameAPI NOT found - JS/runtime.js may not have loaded correctly', 'error');
-              }
-            } catch (e) {
-              sendRuntimeLogToEditor('Cannot check GameAPI (sandbox restriction): ' + (e.message || e), 'warning');
-            }
-          } else {
-            sendRuntimeLogToEditor('Iframe contentWindow not accessible (sandbox restriction)', 'warning');
-          }
-        } catch (e) {
-          sendRuntimeLogToEditor('Cannot access iframe contentWindow: ' + (e.message || e), 'warning');
-        }
-        
-        // Mostra informazioni di debug
+        sendRuntimeLogToEditor('ERROR: Sandbox iframe initialization timeout after 8s.', 'error');
         sendRuntimeLogToEditor(`Iframe src: ${iframe.src}`, 'info');
-        sendRuntimeLogToEditor(`Iframe sandbox: ${iframe.sandbox}`, 'info');
-        sendRuntimeLogToEditor(`Current page location: ${window.location.href}`, 'info');
-      } else {
-        sendRuntimeLogToEditor('✓ Runtime initialization completed successfully', 'info');
+        sendRuntimeLogToEditor('Check DevTools console for runtime-sandbox.html load errors.', 'error');
       }
-    }, 5000);
+    }, 8000);
   }
 
   // Esegue uno script nell'iframe sandboxed
+  function createEmptyEditorRuntimeInventory() {
+    return { contents: {}, carriedItemKey: null };
+  }
+
+  function applyEditorInventorySnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
+      return;
+    }
+    const contents = {};
+    if (snapshot.contents && typeof snapshot.contents === 'object') {
+      Object.keys(snapshot.contents).forEach(key => {
+        const count = Math.max(0, Number(snapshot.contents[key]) || 0);
+        if (count > 0) contents[key] = count;
+      });
+    }
+    embeddedRuntime.gameState.inventory = {
+      contents,
+      carriedItemKey: snapshot.carriedItemKey != null && snapshot.carriedItemKey !== ''
+        ? String(snapshot.carriedItemKey)
+        : null
+    };
+  }
+
+  function buildSandboxContext(extra) {
+    const inv = embeddedRuntime.gameState.inventory || createEmptyEditorRuntimeInventory();
+    const variables = {};
+    embeddedRuntime.gameState.variables.forEach((value, key) => {
+      variables[key] = value;
+    });
+    return {
+      roomId: embeddedRuntime.gameState.currentRoomId,
+      objectId: (extra && extra.objectId) || null,
+      variables,
+      inventory: {
+        contents: Object.assign({}, inv.contents),
+        carriedItemKey: inv.carriedItemKey || null
+      }
+    };
+  }
+
+  function pushPlaytestContextToRuntimeWindow() {
+    if (!playTestState.isRunning || !playTestState.runtimeWindow || playTestState.runtimeWindow.closed) {
+      return;
+    }
+    try {
+      playTestState.runtimeWindow.postMessage({
+        type: 'UPDATE_CONTEXT',
+        context: buildSandboxContext()
+      }, '*');
+    } catch (_) {
+      // finestra playtest chiusa o cross-origin
+    }
+  }
+
   function executeScriptInSandbox(scriptName, scriptContent, handlerName, argsArray, context) {
     if (!scriptContent || typeof scriptContent !== 'string' || !scriptContent.trim()) {
       return;
     }
 
     const callArgs = Array.isArray(argsArray) ? argsArray : [];
-    
-    // Prepara il contesto di esecuzione
-    const executionContext = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: context?.objectId || null,
-      variables: {}
-    };
+    const executionContext = buildSandboxContext(context || {});
+    if (context && context.objectId) {
+      executionContext.objectId = context.objectId;
+    }
 
-    // Copia variabili dal gameState
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      executionContext.variables[key] = value;
-    });
-
-    // Se l'iframe non è pronto, metti in coda
+    // Se l'iframe non Ã¨ pronto, metti in coda
     if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
       embeddedRuntime.pendingScripts.push({
         name: scriptName,
@@ -8796,7 +11965,7 @@ window.selectRoom = function(roomId) {
       return;
     }
 
-    // Invia script all'iframe (l'handler verrà gestito dal runtime.js)
+    // Invia script all'iframe (l'handler verrÃ  gestito dal runtime.js)
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'RUN_SCRIPT',
@@ -8814,30 +11983,22 @@ window.selectRoom = function(roomId) {
     }
   }
 
-  // Aggiorna il contesto dell'iframe (variabili, room, etc.)
+  // Aggiorna il contesto dell'iframe (variabili, stanza, inventario)
   function updateSandboxContext() {
     if (!embeddedRuntime.isReady || !embeddedRuntime.sandboxIframe) {
       return;
     }
 
-    const context = {
-      roomId: embeddedRuntime.gameState.currentRoomId,
-      objectId: null,
-      variables: {}
-    };
-
-    embeddedRuntime.gameState.variables.forEach((value, key) => {
-      context.variables[key] = value;
-    });
-
     try {
       embeddedRuntime.sandboxIframe.contentWindow.postMessage({
         type: 'UPDATE_CONTEXT',
-        context: context
+        context: buildSandboxContext()
       }, '*');
     } catch (e) {
       // Ignora errori di comunicazione
     }
+
+    pushPlaytestContextToRuntimeWindow();
   }
 
   // Inizializza gli script del runtime usando l'iframe sandboxed
@@ -8852,6 +12013,7 @@ window.selectRoom = function(roomId) {
     
     // Reset e carica variabili iniziali
     embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
     if (embeddedRuntime.gameData.variables && Array.isArray(embeddedRuntime.gameData.variables)) {
       embeddedRuntime.gameData.variables.forEach(v => {
         if (v && v.name) {
@@ -8875,16 +12037,28 @@ window.selectRoom = function(roomId) {
       }
     });
     
-    // Esegui script di room
+    // Esegui script di room (legacy Room:id + chiavi event-specific)
     if (embeddedRuntime.gameState.currentRoomId) {
-      const roomScriptName = `Room:${embeddedRuntime.gameState.currentRoomId}`;
-      if (scripts[roomScriptName]) {
+      const newRoomId = embeddedRuntime.gameState.currentRoomId;
+      const roomScriptCandidates = [
+        `Room:${newRoomId}:on_before_room_change`,
+        `Room:${newRoomId}:on_room_change`,
+        `Room:${newRoomId}`
+      ];
+      roomScriptCandidates.forEach(roomScriptName => {
+        if (!scripts[roomScriptName]) return;
         sendRuntimeLogToEditor(`[Script] Executing room script: ${roomScriptName}`, 'info');
-        const newRoomId = embeddedRuntime.gameState.currentRoomId;
-        executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
-          roomId: newRoomId
-        });
-      }
+        if (roomScriptName.endsWith(':on_before_room_change') || roomScriptName === `Room:${newRoomId}`) {
+          executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_before_room_change', [null, newRoomId], {
+            roomId: newRoomId
+          });
+        }
+        if (roomScriptName.endsWith(':on_room_change') || roomScriptName === `Room:${newRoomId}`) {
+          executeScriptInSandbox(roomScriptName, scripts[roomScriptName], 'on_room_change', [null, newRoomId], {
+            roomId: newRoomId
+          });
+        }
+      });
     }
   }
 
@@ -8936,7 +12110,7 @@ window.selectRoom = function(roomId) {
     
     // Verifica che il canvas sia inizializzato
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
-      // Prova a inizializzare il canvas se non è già inizializzato
+      // Prova a inizializzare il canvas se non Ã¨ giÃ  inizializzato
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
         embeddedRuntime.canvas = canvasElement;
@@ -8993,7 +12167,7 @@ window.selectRoom = function(roomId) {
       }
     }
 
-    // Disegna marker posizione iniziale se questa è la stanza di start
+    // Disegna marker posizione iniziale se questa Ã¨ la stanza di start
     try {
       const s = embeddedRuntime.gameData && embeddedRuntime.gameData.settings ? embeddedRuntime.gameData.settings : null;
       if (s && s.startRoomId) {
@@ -9027,7 +12201,7 @@ window.selectRoom = function(roomId) {
 
     sendRuntimeLogToEditor('Initializing sandbox runtime...', 'info');
 
-    // Inizializza il canvas embedded se non è già inizializzato
+    // Inizializza il canvas embedded se non Ã¨ giÃ  inizializzato
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
@@ -9085,8 +12259,8 @@ window.selectRoom = function(roomId) {
     sendRuntimeLogToEditor('Initializing sandbox iframe...', 'info');
     createSandboxIframe();
     
-    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe è pronto)
-    // Gli script verranno messi in pendingScripts se l'iframe non è ancora pronto
+    // Inizializza ed esegui gli script (verranno eseguiti quando l'iframe Ã¨ pronto)
+    // Gli script verranno messi in pendingScripts se l'iframe non Ã¨ ancora pronto
     initializeEmbeddedRuntimeScripts();
     
     embeddedRuntime.isInitialized = true;
@@ -9103,7 +12277,7 @@ window.selectRoom = function(roomId) {
     
     // Verifica che il canvas sia disponibile prima di avviare il loop
     if (!embeddedRuntime.canvas || !embeddedRuntime.ctx) {
-      // Prova a inizializzare il canvas se non è già inizializzato
+      // Prova a inizializzare il canvas se non Ã¨ giÃ  inizializzato
       const canvasElement = document.getElementById('embedded-gameCanvas');
       if (canvasElement) {
         embeddedRuntime.canvas = canvasElement;
@@ -9126,7 +12300,7 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.lastRenderTime = performance.now();
     
     function renderLoop(currentTime) {
-      // Verifica la tab attiva - non renderizzare se si è nella tab "characters"
+      // Verifica la tab attiva - non renderizzare se si Ã¨ nella tab "characters"
       const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
       if (activeTab === 'characters') {
         // Nella tab characters, non renderizzare il canvas embedded
@@ -9142,7 +12316,7 @@ window.selectRoom = function(roomId) {
         return;
       }
       
-      // Renderizza solo se il canvas è disponibile e il runtime è inizializzato
+      // Renderizza solo se il canvas Ã¨ disponibile e il runtime Ã¨ inizializzato
       if (embeddedRuntime.canvas && embeddedRuntime.ctx && embeddedRuntime.isInitialized && 
           embeddedRuntime.gameData && embeddedRuntime.currentRoomIndex >= 0) {
         // Verifica che il canvas non sia stato resettato (controlla le dimensioni)
@@ -9186,14 +12360,6 @@ window.selectRoom = function(roomId) {
     
     // Rimuovi iframe sandboxed
     if (embeddedRuntime.sandboxIframe) {
-      // Rimuovi listener messaggi se presente
-      if (embeddedRuntime.sandboxIframe._messageHandler) {
-        window.removeEventListener('message', embeddedRuntime.sandboxIframe._messageHandler);
-      }
-      // Revoca blob URL se presente
-      if (embeddedRuntime.sandboxIframe._blobUrl) {
-        URL.revokeObjectURL(embeddedRuntime.sandboxIframe._blobUrl);
-      }
       try {
         embeddedRuntime.sandboxIframe.remove();
       } catch (e) {
@@ -9213,6 +12379,7 @@ window.selectRoom = function(roomId) {
     embeddedRuntime.currentRoomIndex = 0;
     embeddedRuntime.gameState.currentRoomId = null;
     embeddedRuntime.gameState.variables.clear();
+    embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
     embeddedRuntime.isInitialized = false;
   }
 
@@ -9221,131 +12388,236 @@ window.selectRoom = function(roomId) {
     isRunning: false,
     isPaused: false,
     startTime: null,
-    runtimeWindow: null
+    runtimeWindow: null,
+    pendingDialoguePreview: null
   };
 
-  window.startPlayTest = async function() {
-    if (playTestState.isRunning) {
-      // Se già in esecuzione, porta la finestra in primo piano
-      if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
-        playTestState.runtimeWindow.focus();
-        return;
-      } else {
-        // Finestra chiusa, riavvia
-        playTestState.isRunning = false;
-      }
+  function runDialoguePreviewInPlaytestWindow(dialogueIdOrName) {
+    if (!playTestState.isRunning || !playTestState.runtimeWindow || playTestState.runtimeWindow.closed) {
+      return false;
     }
-
-    // Verifica se c'è un progetto attivo e se è stato caricato da Firebase
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    const currentUser = AppState.user;
-    
-    let projectObj = null;
-    let jsonString = null;
-
-    // Se c'è un progetto attivo e un utente autenticato, prova a ricaricarlo da Firebase
-    if (activeProjectName && currentUser && currentUser.uid && window.firebaseDB) {
-      try {
-        addDebugMessage('Loading project from Firebase for playtest...', 'info');
-        
-        // Cerca il progetto nella lista progetti per ottenere l'ID
-        const projects = AppState.projects || [];
-        const projectInfo = projects.find(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : p.name || '';
-          return name === activeProjectName;
-        });
-
-        if (projectInfo && projectInfo.id) {
-          // Carica il progetto completo da Firebase
-          const firebaseProject = await loadProjectFromFirestore(currentUser.uid, projectInfo.id);
-          
-          if (firebaseProject) {
-            projectObj = firebaseProject;
-            
-            // Aggiungi metadata per il runtime (userId, projectId per risolvere assetId)
-            if (!projectObj._meta) {
-              projectObj._meta = {};
-            }
-            projectObj._meta.userId = currentUser.uid;
-            projectObj._meta.projectId = projectInfo.id;
-            
-            jsonString = JSON.stringify(projectObj, null, 2);
-            addDebugMessage('Project loaded from Firebase for playtest', 'success');
-          }
-        }
-      } catch (error) {
-        console.error('[PlayTest] Errore caricamento da Firebase:', error);
-        addDebugMessage('Firebase load error, using current project', 'warning');
-      }
-    }
-
-    // Fallback: serializza il progetto corrente
-    if (!projectObj || !jsonString) {
-      if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
-        try {
-          await window.amiantoResources.refresh();
-        } catch (e) {
-          console.warn('[PlayTest] Resources refresh before serialize:', e);
-        }
-      }
-      jsonString = window.serializeProjectToJsonString(true);
-      projectObj = window.serializeProject();
-      addDebugMessage('Using serialized current project', 'info');
-    } else if (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function') {
-      try {
-        await window.amiantoResources.refresh();
-        projectObj.resourcesCatalog = window.amiantoResources.getCatalog();
-        jsonString = JSON.stringify(projectObj, null, 2);
-      } catch (e) {
-        console.warn('[PlayTest] Resources catalog merge:', e);
-      }
-    }
-
-    // Salva in localStorage per il runtime (PRIORITÀ ASSOLUTA per playtest)
+    const id = String(dialogueIdOrName || '').trim();
+    if (!id) return false;
+    const code = [
+      'async function on_dialogue_preview() {',
+      '  await start_dialogue(' + JSON.stringify(id) + ');',
+      '}'
+    ].join('\n');
     try {
-      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-      addDebugMessage('Project saved to localStorage for runtime', 'success');
-    } catch (error) {
-      console.error('[PlayTest] Errore salvataggio localStorage:', error);
-      addDebugMessage('localStorage save error: ' + error.message, 'error');
+      playTestState.runtimeWindow.postMessage({
+        type: 'RUN_SCRIPT',
+        scriptName: 'dialogue_preview_' + Date.now().toString(36),
+        code: code,
+        handlerName: 'on_dialogue_preview',
+        handlerArgs: [],
+        context: (typeof buildSandboxContext === 'function') ? buildSandboxContext() : {}
+      }, '*');
+      showNotification('Dialogue preview started in Play Test', 'success');
+      return true;
+    } catch (e) {
+      showNotification('Preview failed: ' + (e && e.message ? e.message : e), 'warning');
+      return false;
     }
-    
-    // Salva anche in cache locale con chiave progetto (backup)
-    try {
-      const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'Untitled';
-      const currentUser = AppState.user;
-      if (currentUser && currentUser.username) {
-        const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-        localStorage.setItem(projectKey, jsonString);
-        localStorage.setItem('amiantoActiveProjectName', projectName);
-        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-        addDebugMessage('Project saved to local cache', 'info');
-      }
-    } catch (error) {
-      console.error('[PlayTest] Errore salvataggio cache:', error);
+  }
+
+  window.previewProjectDialogue = async function(dialogueIdOrName) {
+    const id = String(dialogueIdOrName || '').trim();
+    if (!id) {
+      showNotification('No dialogue selected to preview', 'warning');
+      return;
     }
-    
-    // Save game.json depending on mode
-    if (window.AMIANTO_PLAYTEST_MODE === 'server') {
-      saveGameJsonServer(jsonString);
+    const runtimeOpen = playTestState.isRunning
+      && playTestState.runtimeWindow
+      && !playTestState.runtimeWindow.closed;
+    if (runtimeOpen) {
+      runDialoguePreviewInPlaytestWindow(id);
+      try { playTestState.runtimeWindow.focus(); } catch (_) {}
+      return;
+    }
+    playTestState.pendingDialoguePreview = id;
+    if (typeof window.startPlayTest === 'function') {
+      await window.startPlayTest();
+      setTimeout(() => {
+        if (playTestState.pendingDialoguePreview === id) {
+          playTestState.pendingDialoguePreview = null;
+          runDialoguePreviewInPlaytestWindow(id);
+        }
+      }, 2500);
     } else {
-      // saveGameJsonLocal già chiama saveProjectJsonToOPFS, non duplicare
-      saveGameJsonLocal(jsonString);
+      showNotification('Play Test unavailable', 'warning');
     }
-    
-    // Salva anche con nome progetto in OPFS (backup aggiuntivo)
-    // Usa setTimeout per evitare chiamate simultanee
-    setTimeout(() => {
-      saveProjectJsonToOPFS(jsonString, projectObj.settings && projectObj.settings.name).catch(() => {});
-    }, 100);
+  };
 
-    // Apri runtime.html in una nuova finestra
-    const runtimeUrl = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'runtime.html';
-    const runtimeWindow = window.open(
+  function createElectronRuntimeWindowProxy() {
+    const native = window.amiantoNativeFs;
+    if (!native || typeof native.openRuntimeWindow !== 'function') return null;
+    return {
+      _electronRuntime: true,
+      closed: false,
+      postMessage(message) {
+        if (typeof native.postToRuntime === 'function') {
+          native.postToRuntime(message);
+        }
+      },
+      focus() {
+        if (typeof native.focusRuntimeWindow === 'function') {
+          native.focusRuntimeWindow();
+        }
+      },
+      close() {
+        this.closed = true;
+        if (typeof native.closeRuntimeWindow === 'function') {
+          native.closeRuntimeWindow();
+        }
+      }
+    };
+  }
+
+  async function openPlaytestRuntimeWindow(runtimeUrl, projectData) {
+    // Preferisci window.open: condivide localStorage + window.opener con l'editor
+    // (necessario perché il Runtime carica il progetto da amiantoLastSavedProjectJson).
+    // La policy autoplay è impostata in setWindowOpenHandler (electron/main.js).
+    const opened = window.open(
       runtimeUrl,
       'AmiantoRuntime',
       'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
     );
+    if (opened) return opened;
+
+    // Fallback: BrowserWindow gestita dal main process
+    const native = window.amiantoNativeFs;
+    if (native && typeof native.openRuntimeWindow === 'function') {
+      try {
+        await native.openRuntimeWindow(runtimeUrl);
+        const proxy = createElectronRuntimeWindowProxy();
+        if (proxy && projectData) {
+          // La finestra IPC non ha opener/localStorage condiviso in modo affidabile:
+          // invia il progetto esplicitamente.
+          setTimeout(() => {
+            try {
+              proxy.postMessage({ type: 'START_PLAYTEST', projectData });
+            } catch (_) {}
+          }, 500);
+        }
+        return proxy;
+      } catch (err) {
+        console.warn('[PlayTest] openRuntimeWindow IPC failed:', err);
+      }
+    }
+    return null;
+  }
+
+  window.startPlayTest = async function() {
+    const runtimeWasAlreadyOpen = playTestState.isRunning
+      && playTestState.runtimeWindow
+      && !playTestState.runtimeWindow.closed;
+
+    if (playTestState.isRunning && playTestState.runtimeWindow && playTestState.runtimeWindow.closed) {
+      playTestState.isRunning = false;
+      playTestState.runtimeWindow = null;
+    }
+
+    // Sync closed state for Electron-managed runtime window
+    if (playTestState.runtimeWindow && playTestState.runtimeWindow._electronRuntime &&
+        window.amiantoNativeFs && typeof window.amiantoNativeFs.isRuntimeWindowClosed === 'function') {
+      try {
+        const closed = await window.amiantoNativeFs.isRuntimeWindowClosed();
+        if (closed) {
+          playTestState.runtimeWindow.closed = true;
+          playTestState.isRunning = false;
+          playTestState.runtimeWindow = null;
+        }
+      } catch (_) {}
+    }
+
+    const currentUser = AppState.user;
+    let projectObj = null;
+    let jsonString = null;
+
+    // Playtest usa sempre lo stato LIVE dell'editor (non snapshot obsoleto senza script in stanze)
+    if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
+      try {
+        await window.amiantoResources.refresh();
+      } catch (e) {
+        console.warn('[PlayTest] Resources refresh before serialize:', e);
+      }
+    }
+
+    projectObj = buildPlaytestProjectPayload();
+    if (currentUser && currentUser.uid) {
+      if (!projectObj._meta) projectObj._meta = {};
+      projectObj._meta.userId = currentUser.uid;
+      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!projectObj._meta.projectId) {
+        projectObj._meta.projectId = activeProjectId || (activeProjectName ? normalizeProjectIdFromName(activeProjectName) : null);
+      }
+    }
+    jsonString = JSON.stringify(projectObj, null, 2);
+    addDebugMessage('Playtest: project serialized from current editor state', 'info');
+
+    if (!runtimeWasAlreadyOpen) {
+      embeddedRuntime.gameState.inventory = createEmptyEditorRuntimeInventory();
+    }
+
+    if (runtimeWasAlreadyOpen) {
+      try {
+        localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+        const runtimeUrl = getRuntimePageUrl();
+        // Hard reload della finestra: RELOAD_PLAYTEST_PROJECT non ricaricava runtime.js
+        if (playTestState.runtimeWindow._electronRuntime) {
+          playTestState.isRunning = false;
+          playTestState.runtimeWindow = null;
+          if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+            try { await window.amiantoNativeFs.closeRuntimeWindow(); } catch (_) {}
+          }
+          // ricade sull'apertura nuova finestra sotto
+        } else if (playTestState.runtimeWindow.location) {
+          playTestState.runtimeWindow.location.href = runtimeUrl;
+          playTestState.runtimeWindow.focus();
+          addDebugMessage('Playtest: runtime window hard-reloaded (nuovo runtime.js + progetto)', 'success');
+          updateGameStatus('Test running...');
+          setTimeout(() => pushPlaytestContextToRuntimeWindow(), 1000);
+          return;
+        } else {
+          playTestState.runtimeWindow.postMessage({ type: 'RELOAD_PLAYTEST_PROJECT' }, '*');
+          playTestState.runtimeWindow.focus();
+          addDebugMessage('Playtest: project reloaded in runtime window (scripts recompiled)', 'success');
+          updateGameStatus('Test running...');
+          setTimeout(() => pushPlaytestContextToRuntimeWindow(), 800);
+          return;
+        }
+      } catch (reloadErr) {
+        console.warn('[PlayTest] Ricarica finestra esistente fallita, apro nuova finestra:', reloadErr);
+        playTestState.isRunning = false;
+        playTestState.runtimeWindow = null;
+      }
+    }
+
+    // Salva in localStorage per il runtime (snapshot playtest, non sostituisce il backup del progetto)
+    try {
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+      addDebugMessage('Playtest snapshot saved for runtime', 'success');
+    } catch (error) {
+      console.error('[PlayTest] Errore salvataggio localStorage:', error);
+      addDebugMessage('localStorage save error: ' + error.message, 'error');
+    }
+
+    // Save game.json depending on mode
+    if (window.AMIANTO_PLAYTEST_MODE === 'server') {
+      saveGameJsonServer(jsonString);
+    } else {
+      // saveGameJsonLocal giÃ  chiama saveProjectJsonToOPFS, non duplicare
+      saveGameJsonLocal(jsonString);
+    }
+
+    // Apri runtime.html (window.open: localStorage + opener condivisi con l'editor)
+    const runtimeUrl = getRuntimePageUrl();
+    // Chiudi eventuale Runtime IPC residuo (sessioni precedenti)
+    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+      try { await window.amiantoNativeFs.closeRuntimeWindow(); } catch (_) {}
+    }
+    const runtimeWindow = await openPlaytestRuntimeWindow(runtimeUrl, projectObj);
 
     if (!runtimeWindow) {
       showNotification('Could not open the runtime window. Check that pop-ups are allowed.', 'error');
@@ -9357,16 +12629,24 @@ window.selectRoom = function(roomId) {
     playTestState.startTime = Date.now();
     playTestState.runtimeWindow = runtimeWindow;
     updateGameStatus('Test running...');
-    addDebugMessage('Runtime avviato in finestra separata', 'success');
+    addDebugMessage('Runtime started in separate window', 'success');
 
-    // Non inviare postMessage se localStorage è disponibile (priorità a localStorage)
-    // Il runtime caricherà automaticamente da localStorage all'avvio
-    // PostMessage è solo un fallback se localStorage non funziona
+    // Non inviare postMessage se localStorage Ã¨ disponibile (prioritÃ  a localStorage)
+    // Il runtime caricherÃ  automaticamente da localStorage all'avvio
+    // PostMessage Ã¨ solo un fallback se localStorage non funziona
     addDebugMessage('Project saved to localStorage; the runtime will load it automatically', 'info');
 
     // Monitora se la finestra viene chiusa
-    const checkWindowClosed = setInterval(() => {
-      if (runtimeWindow.closed) {
+    const checkWindowClosed = setInterval(async () => {
+      let closed = !!(runtimeWindow.closed);
+      if (runtimeWindow._electronRuntime && window.amiantoNativeFs &&
+          typeof window.amiantoNativeFs.isRuntimeWindowClosed === 'function') {
+        try {
+          closed = await window.amiantoNativeFs.isRuntimeWindowClosed();
+          runtimeWindow.closed = closed;
+        } catch (_) {}
+      }
+      if (closed) {
         clearInterval(checkWindowClosed);
         playTestState.isRunning = false;
         playTestState.runtimeWindow = null;
@@ -9398,6 +12678,9 @@ window.selectRoom = function(roomId) {
     // Chiudi la finestra runtime se aperta
     if (playTestState.runtimeWindow && !playTestState.runtimeWindow.closed) {
       playTestState.runtimeWindow.close();
+    }
+    if (window.amiantoNativeFs && typeof window.amiantoNativeFs.closeRuntimeWindow === 'function') {
+      window.amiantoNativeFs.closeRuntimeWindow();
     }
     
     const duration = playTestState.startTime ? Date.now() - playTestState.startTime : 0;
@@ -9461,11 +12744,13 @@ window.selectRoom = function(roomId) {
     try {
       // Handler gestiti tramite executeScriptHandler (iframe sandboxed)
     } catch(_) {}
-    const roomScript = roomScripts.get(nextId);
-    if (roomScript) {
-      const content = jsScripts.get(roomScript);
-      addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
-      executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+    {
+      const roomScript = getRoomScriptAttachmentForEvent(nextId, 'on_room_change');
+      if (roomScript) {
+        const content = jsScripts.get(roomScript) || getScriptContent(roomScript);
+        addDebugMessage(`[Room:onEnter] ${nextId}`, 'info');
+        executeScriptHandler(content, 'on_room_change', [prevRoomId, nextId]);
+      }
     }
     setTimeout(() => { addDebugMessage('Room change completed', 'success'); }, 500);
   };
@@ -9538,7 +12823,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     addDebugMessage(`Testing hotspot interaction: ${hotspot.name}...`, 'info');
     
-    // ⚠️ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
+    // âš ï¸ NUOVA STRUTTURA: Leggi script direttamente dall'hotspot
     if (!hotspot.scripts || !hotspot.scripts.onClick) {
       addDebugMessage('No script attached to this hotspot', 'warning');
       return;
@@ -9547,7 +12832,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const onClickScript = hotspot.scripts.onClick;
     
     // BUG FIX: Usa la stessa logica di normalizzazione del runtime
-    // Se enabled non è definito e c'è codice, considera enabled=true
+    // Se enabled non Ã¨ definito e c'Ã¨ codice, considera enabled=true
     const hasCode = onClickScript.code && typeof onClickScript.code === 'string' && onClickScript.code.trim() !== '';
     const isEnabled = (typeof onClickScript.enabled === 'boolean') 
       ? onClickScript.enabled 
@@ -9763,10 +13048,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // ============================================
-  // SISTEMA DI COMUNICAZIONE EDITOR ↔ RUNTIME
+  // SISTEMA DI COMUNICAZIONE EDITOR â†” RUNTIME
   // ============================================
-  // NOTA: Il runtime è ora incorporato nell'editor, quindi non serve più postMessage
-  // Mantenuto per compatibilità futura se necessario
+  // NOTA: Il runtime Ã¨ ora incorporato nell'editor, quindi non serve piÃ¹ postMessage
+  // Mantenuto per compatibilitÃ  futura se necessario
   /*
   // Listener per messaggi dal runtime (postMessage) - DISABILITATO: runtime incorporato
   // Gestisce solo messaggi con type === "SCRIPT_LOG"
@@ -9786,7 +13071,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   });
   */
 
-  // Funzione di compatibilità: aggiunge messaggi al pannello Script Log
+  // Funzione di compatibilitÃ : aggiunge messaggi al pannello Script Log
   // Supporta livelli: info, warning, error
   // NON usa console.log come output principale
   function appendToScriptLog(message, level = 'info') {
@@ -9797,7 +13082,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Script console: mostra solo output degli script (print, errori handler, ecc.)
-  // Mantiene compatibilità con il resto del codice che chiama addScriptLogMessage
+  // Mantiene compatibilitÃ  con il resto del codice che chiama addScriptLogMessage
   function addScriptLogMessage(message, type = 'print') {
     ScriptLogService.log({ type, message, source: 'editor' });
   }
@@ -9828,6 +13113,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       description: '',
       canvasWidth: gameViewport.width || 800,
       canvasHeight: gameViewport.height || 600,
+      roomTransition: 'none',
+      roomTransitionDuration: 600,
       enableFullscreen: true,
       enableSound: true,
       enableMusic: true
@@ -9844,6 +13131,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         currentSettings.description = s.description || '';
         currentSettings.canvasWidth = s.canvasWidth || gameViewport.width || 800;
         currentSettings.canvasHeight = s.canvasHeight || gameViewport.height || 600;
+        const loadedTransition = String(s.roomTransition || 'none').trim().toLowerCase();
+        currentSettings.roomTransition = [
+          'none', 'fade', 'fade_to_black', 'fade_to_white', 'slide', 'dissolve', 'iris'
+        ].indexOf(loadedTransition) >= 0
+          ? loadedTransition
+          : 'none';
+        currentSettings.roomTransitionDuration = Number.isFinite(Number(s.roomTransitionDuration))
+          ? Number(s.roomTransitionDuration)
+          : 600;
         currentSettings.enableFullscreen = s.enableFullscreen !== undefined ? s.enableFullscreen : true;
         currentSettings.enableSound = s.enableSound !== undefined ? s.enableSound : true;
         currentSettings.enableMusic = s.enableMusic !== undefined ? s.enableMusic : true;
@@ -9904,6 +13200,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 <input type="number" class="form-control bg-secondary text-light border-secondary" id="canvasHeight" value="${currentSettings.canvasHeight || 600}">
               </div>
               <div class="mb-3">
+                <label for="roomTransition" class="form-label">Room transition</label>
+                <select class="form-select bg-secondary text-light border-secondary" id="roomTransition">
+                  <option value="none" ${currentSettings.roomTransition === 'none' ? 'selected' : ''}>None</option>
+                  <option value="fade" ${currentSettings.roomTransition === 'fade' ? 'selected' : ''}>Fade</option>
+                  <option value="fade_to_black" ${currentSettings.roomTransition === 'fade_to_black' ? 'selected' : ''}>Fade to black</option>
+                  <option value="fade_to_white" ${currentSettings.roomTransition === 'fade_to_white' ? 'selected' : ''}>Fade to white</option>
+                  <option value="slide" ${currentSettings.roomTransition === 'slide' ? 'selected' : ''}>Slide</option>
+                  <option value="dissolve" ${currentSettings.roomTransition === 'dissolve' ? 'selected' : ''}>Dissolve</option>
+                  <option value="iris" ${currentSettings.roomTransition === 'iris' ? 'selected' : ''}>Iris</option>
+                </select>
+                <div class="form-text text-secondary">Default effect for load_room. A script can override it with set_room_transition or transition_to_room.</div>
+              </div>
+              <div class="mb-3">
+                <label for="roomTransitionDuration" class="form-label">Transition duration (ms)</label>
+                <input type="number" min="0" max="10000" step="50" class="form-control bg-secondary text-light border-secondary" id="roomTransitionDuration" value="${Number.isFinite(Number(currentSettings.roomTransitionDuration)) ? Number(currentSettings.roomTransitionDuration) : 600}">
+                <div class="form-text text-secondary">Time of the effect, in milliseconds. 0 skips the animation.</div>
+              </div>
+              <div class="mb-3">
                 <div class="form-check">
                   <input class="form-check-input" type="checkbox" id="enableFullscreen" ${currentSettings.enableFullscreen ? 'checked' : ''}>
                   <label class="form-check-label" for="enableFullscreen">
@@ -9953,7 +13267,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Save project settings function
-  window.saveProjectSettings = function() {
+  window.saveProjectSettings = async function() {
     if (!currentUser) {
       showNotification('You must be logged in to save project settings', 'warning');
       return;
@@ -9968,6 +13282,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const newWidth = parseInt(document.getElementById('canvasWidth').value);
     const newHeight = parseInt(document.getElementById('canvasHeight').value);
     const newProjectName = document.getElementById('projectName').value.trim();
+    const transitionTypeRaw = (document.getElementById('roomTransition').value || 'none').trim().toLowerCase();
+    const allowedTransitions = [
+      'none', 'fade', 'fade_to_black', 'fade_to_white', 'slide', 'dissolve', 'iris'
+    ];
+    const roomTransition = allowedTransitions.indexOf(transitionTypeRaw) >= 0 ? transitionTypeRaw : 'none';
+    let roomTransitionDuration = parseInt(document.getElementById('roomTransitionDuration').value, 10);
+    if (!Number.isFinite(roomTransitionDuration) || roomTransitionDuration < 0) roomTransitionDuration = 600;
+    if (roomTransitionDuration > 10000) roomTransitionDuration = 10000;
     
     if (!newProjectName) {
       showNotification('Project name cannot be empty', 'warning');
@@ -9981,6 +13303,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       description: document.getElementById('projectDescription').value,
       canvasWidth: newWidth,
       canvasHeight: newHeight,
+      roomTransition: roomTransition,
+      roomTransitionDuration: roomTransitionDuration,
       enableFullscreen: document.getElementById('enableFullscreen').checked,
       enableSound: document.getElementById('enableSound').checked,
       enableMusic: document.getElementById('enableMusic').checked
@@ -9998,65 +13322,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     updateEditorDisplay();
     redraw();
     
-    // Se il nome del progetto è cambiato, aggiorna il progetto attivo
-    if (newProjectName !== activeProjectName) {
-      console.log(`[ProjectSettings] Nome progetto cambiato: "${activeProjectName}" -> "${newProjectName}"`);
-      localStorage.setItem('amiantoActiveProjectName', newProjectName);
-      
-      // Aggiorna anche la lista progetti nella cache
-      try {
-        const userProjects = loadProjectsFromCache(currentUser.username);
-        const projectIndex = userProjects.findIndex(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
-          return name === activeProjectName;
-        });
-        
-        if (projectIndex >= 0) {
-          // Aggiorna il nome nel progetto nella cache
-          if (!userProjects[projectIndex].settings) {
-            userProjects[projectIndex].settings = {};
-          }
-          userProjects[projectIndex].settings.name = newProjectName;
-          saveProjectsToCache(currentUser.username, userProjects);
-          console.log('[ProjectSettings] Cache progetti aggiornata con nuovo nome');
-        }
-      } catch (error) {
-        console.warn('[ProjectSettings] Errore aggiornamento cache progetti:', error);
-      }
-    }
-    
-    // Salva le impostazioni in localStorage
+    const previousProjectName = activeProjectName;
+    const stableProjectId = getStableProjectId(settings, previousProjectName);
+    settings.id = stableProjectId;
+
     localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
-    
-    // Salva il progetto completo con le nuove impostazioni
-    // Questo assicura che le impostazioni siano persistenti nel progetto stesso
+    localStorage.setItem('amiantoActiveProjectId', stableProjectId);
+
+    if (newProjectName !== previousProjectName) {
+      console.log(`[ProjectSettings] Rinomina progetto corrente: "${previousProjectName}" -> "${newProjectName}" (id: ${stableProjectId})`);
+      localStorage.setItem('amiantoActiveProjectName', newProjectName);
+      removeProjectLocalBackup(currentUser.username, previousProjectName);
+      deleteProjectFileFromOPFS(previousProjectName).catch(() => {});
+      window.__amiantoProjectRenameFrom = previousProjectName;
+    } else {
+      window.__amiantoProjectRenameFrom = null;
+    }
+
     try {
-      const projectObj = window.serializeProject();
-      if (projectObj) {
-        // Aggiorna le impostazioni nel progetto
-        if (!projectObj.settings) {
-          projectObj.settings = {};
-        }
-        Object.assign(projectObj.settings, settings);
-        
-        // Salva il progetto aggiornato
-        // Usa saveCurrentProject se disponibile, altrimenti salva manualmente
-        if (typeof window.saveCurrentProject === 'function') {
-          // Salva il progetto (questo aggiornerà anche Firestore se disponibile)
-          window.saveCurrentProject().catch(error => {
-            console.warn('[ProjectSettings] Errore salvataggio progetto:', error);
-            showNotification('Settings saved locally, but full project save failed', 'warning');
-          });
-        } else {
-          // Fallback: salva solo in cache locale
-          const jsonString = JSON.stringify(projectObj);
-          const projectKey = `amiantoProject_${currentUser.username}:${newProjectName}`;
-          localStorage.setItem(projectKey, jsonString);
-          console.log('[ProjectSettings] Progetto salvato in cache locale');
-        }
+      if (typeof window.saveCurrentProject === 'function') {
+        await window.saveCurrentProject();
       }
     } catch (error) {
       console.warn('[ProjectSettings] Errore aggiornamento progetto:', error);
+      showNotification('Settings saved locally, but full project save failed', 'warning');
+    } finally {
+      window.__amiantoProjectRenameFrom = null;
     }
     
     // Close modal
@@ -10065,14 +13356,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       modal.hide();
     }
     
-    showNotification(`Project settings saved! Viewport: ${newWidth}×${newHeight}`, 'success');
+    showNotification(`Project settings saved! Viewport: ${newWidth}Ã—${newHeight}`, 'success');
     
     // Log settings for debugging
     console.log('Project settings saved:', settings);
     
-    // Aggiorna la UI se necessario (es. nome progetto nella sidebar)
-    if (typeof updateProjectsTab === 'function') {
-      updateProjectsTab();
+    refreshActiveProjectNameInUi();
+    if (typeof loadAndRenderProjectsTab === 'function') {
+      loadAndRenderProjectsTab().catch(() => {});
     }
   };
 
@@ -10109,43 +13400,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // USER AUTHENTICATION SYSTEM
   // ================================
 
-  // User management variables
-  let currentUser = null;
-  let isDemoMode = false;
+  // User management variables — utente locale sempre disponibile
+  let currentUser = getLocalUser();
+  updateAppState({ user: currentUser });
+  localStorage.setItem('amiantoCurrentUser', currentUser.username);
 
-  // Firebase auth (v9) integration via CDN
-  let __fbApp = null;
-  let __fbAuthMod = null;
-  let __fbAuth = null;
-  async function ensureFirebaseAuth() {
-    if (__fbApp && __fbAuth && __fbAuthMod) return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
-    const appMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js');
-    __fbAuthMod = await import('https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js');
-    const firebaseConfig = {
-      apiKey: "AIzaSyAg-wvBsbaKEWw896GbfUU9LDURrNa0xjY",
-      authDomain: "amianto-editor.firebaseapp.com",
-      projectId: "amianto-editor",
-      appId: "1:1044586682132:web:c53a04a0d204412f051401"
-    };
-    __fbApp = appMod.initializeApp(firebaseConfig);
-    __fbAuth = __fbAuthMod.getAuth(__fbApp);
-    return { app: __fbApp, auth: __fbAuth, mod: __fbAuthMod };
-  }
-  async function fbObserveAuthState(callback) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.onAuthStateChanged(auth, callback);
-  }
-  async function fbRegister(email, password) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.createUserWithEmailAndPassword(auth, email, password);
-  }
-  async function fbLogin(email, password) {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.signInWithEmailAndPassword(auth, email, password);
-  }
-  async function fbSignOut() {
-    const { auth, mod } = await ensureFirebaseAuth();
-    return mod.signOut(auth);
+  function ensureCurrentUser() {
+    if (!currentUser) {
+      currentUser = getLocalUser();
+      updateAppState({ user: currentUser });
+      localStorage.setItem('amiantoCurrentUser', currentUser.username);
+    }
+    return currentUser;
   }
 
   // Rimuovi progetto attivo alla chiusura della pagina
@@ -10177,7 +13443,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         // Aggiungi frame tracciati come assetId (cerca nell'imageAssetMap)
         for (const assetId of unsavedCharacterAssetIds) {
-          // Verifica se questo assetId è già nella lista (da unsavedCharacterFrames)
+          // Verifica se questo assetId Ã¨ giÃ  nella lista (da unsavedCharacterFrames)
           const alreadyInList = framesToClean.some(f => f.assetId === assetId);
           if (!alreadyInList) {
             // Cerca l'assetInfo nell'imageAssetMap
@@ -10218,206 +13484,52 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (!stored) return;
 
       const framesToDelete = JSON.parse(stored);
-      console.log(`[Cleanup] Trovati ${framesToDelete.length} frame da eliminare dalla sessione precedente...`);
-
-      if (window.supabaseStorage && window.supabaseStorage.deleteAsset && 
-          window.firebaseAuth && window.firebaseAuth.currentUser) {
-        const userId = window.firebaseAuth.currentUser.uid;
-        let deletedCount = 0;
-
-        for (const frameInfo of framesToDelete) {
-          try {
-            // PRIMA: controlla se è un asset legacy Firebase Storage
-            let firebaseStoragePath = null;
-            let isFirebaseLegacy = false;
-            if (frameInfo.assetId && window.firebaseDB) {
-              try {
-                const assetRef = window.firebaseDB
-                  .collection('users')
-                  .doc(userId)
-                  .collection('projects')
-                  .doc(frameInfo.projectId)
-                  .collection('assets')
-                  .doc(frameInfo.assetId);
-                
-                const doc = await assetRef.get();
-                if (doc.exists) {
-                  const data = doc.data();
-                  // Controlla se è un asset legacy Firebase Storage
-                  if (data && data.storagePath && (!data.storageProvider || data.storageProvider !== 'supabase')) {
-                    firebaseStoragePath = data.storagePath;
-                    isFirebaseLegacy = true;
-                    console.log(`[Cleanup] ⚠️ Frame legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
-                  }
-                }
-              } catch (metaErr) {
-                console.warn(`[Cleanup] Impossibile recuperare metadata da Firestore per frame:`, metaErr);
-              }
-            }
-            
-            // Elimina da Firebase Storage se è un asset legacy
-            let firebaseDeleted = true; // Default true se non è un asset legacy
-            if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
-              try {
-                console.log(`[Cleanup] Eliminazione frame legacy da Firebase Storage: ${firebaseStoragePath}`);
-                const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
-                await storageRef.delete();
-                firebaseDeleted = true;
-                console.log(`[Cleanup] ✅ Frame eliminato da Firebase Storage: ${firebaseStoragePath}`);
-              } catch (firebaseError) {
-                console.warn(`[Cleanup] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
-                // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
-                firebaseDeleted = false;
-              }
-            }
-            
-            // POI: elimina da Supabase Storage
-            const deleted = await window.supabaseStorage.deleteAsset(
-              frameInfo.projectId,
-              frameInfo.type,
-              frameInfo.fileName,
-              userId,
-              frameInfo.subfolder
-            );
-            
-            // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
-            if (deleted || (firebaseDeleted && isFirebaseLegacy)) {
-              deletedCount++;
-            }
-          } catch (error) {
-            console.warn('[Cleanup] Errore eliminazione frame dalla sessione precedente:', error);
-          }
-        }
-
-        console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame dalla sessione precedente`);
-      }
-
-      // Rimuovi dallo storage dopo il cleanup
-      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
-    } catch (error) {
-      console.error('[Cleanup] Errore cleanup frame dalla sessione precedente:', error);
-    }
-  }
-
-  // Initialize authentication system
-  async function initAuthSystem() {
-    // Default view
-    showLoginPage();
-
-    // Wire forms
-    setupLoginForm();
-    setupRegistrationModal();
-
-    // Restore demo mode if previously set for this session
-    if (sessionStorage.getItem('amiantoDemoMode') === '1') {
-      isDemoMode = true;
-      setTimeout(() => {
-        if (typeof window.enterDemoMode === 'function') {
-          window.enterDemoMode();
-        }
-      }, 0);
-    }
-
-    // Esegui bootstrap iniziale
-    await bootstrapApp();
-    
-    // Pulisci i frame non salvati dalla sessione precedente (se la pagina è stata chiusa senza salvare)
-    cleanupStoredUnsavedFrames().catch(err => {
-      console.warn('[Bootstrap] Errore cleanup frame sessione precedente:', err);
-    });
-    
-    // Nascondi loading dopo bootstrap
-    hideLoadingOverlay();
-    
-    // Se l'app è inizializzata con un utente, mostra dashboard
-    if (AppState.initialized && AppState.user) {
-      currentUser = AppState.user;
-      localStorage.setItem('amiantoCurrentUser', AppState.user.username);
-      showDashboard();
-      
-      // Controlla se c'è un progetto attivo e abilita/disabilita tab
-      const activeProject = localStorage.getItem('amiantoActiveProjectName');
-      enableOtherTabs(!!activeProject);
-      
-      // Carica progetti nella tab Projects se siamo nella tab Projects
-      setTimeout(async () => {
-        const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
-        if (currentTab === 'projects') {
-          await loadAndRenderProjectsTab();
-        }
-      }, 500);
-    }
-
-    // Observe Firebase auth state per cambiamenti successivi
-    fbObserveAuthState(async function(user){
-      // In demo mode, ignore Firebase auth state transitions
-      if (isDemoMode) {
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.deleteAsset) {
+        sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
         return;
       }
-      
-      if (user) {
-        const mappedUser = {
-          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-          email: user.email || '',
-          uid: user.uid
-        };
-        
-        // Se l'utente è già loggato e corrisponde, aggiorna AppState e sincronizza in background
-        if (AppState.user && AppState.user.uid === mappedUser.uid) {
-          console.log('[AuthObserver] Utente già loggato, aggiornamento progetti in background...');
-          
-          // Sincronizza in background (non blocca UI)
-          syncProjectsFromFirestore(mappedUser.uid)
-            .then(() => {
-              // Ricarica progetti da Firestore e aggiorna AppState
-              return loadProjectsDirectlyFromFirestore(mappedUser.uid);
-            })
-            .then(projects => {
-              updateAppState({ projects: projects });
-              if (mappedUser.username) {
-                saveProjectsToCache(mappedUser.username, projects);
-              }
-              console.log('[AuthObserver] ✅ Progetti aggiornati in background');
-            })
-            .catch(error => {
-              console.error('[AuthObserver] Errore aggiornamento background:', error);
-            });
-          
-          // Mostra modale se necessario
-          const activeProject = localStorage.getItem('amiantoActiveProjectName');
-          if (!activeProject) {
-            showProjectSelectionModal(false);
-          }
-          return;
+
+      let deletedCount = 0;
+      for (const frameInfo of framesToDelete) {
+        try {
+          const deleted = await storage.deleteAsset(
+            frameInfo.projectId,
+            frameInfo.type,
+            frameInfo.fileName,
+            'local',
+            frameInfo.subfolder
+          );
+          if (deleted) deletedCount++;
+        } catch (error) {
+          console.warn('[Cleanup] Errore eliminazione frame:', error);
         }
-        
-        // Nuovo login: esegui bootstrap completo
-        updateAppState({ loading: true, user: null, projects: [] });
-        showLoadingOverlay('Loading projects...');
-        await bootstrapApp();
-        hideLoadingOverlay();
-        
-        if (AppState.user) {
-          currentUser = AppState.user;
-          localStorage.setItem('amiantoCurrentUser', AppState.user.username);
-          showDashboard();
-          
-          // Verifica che i progetti siano stati caricati
-          console.log('[AuthObserver] Progetti caricati:', AppState.projects.length);
-          
-          // Mostra modale selezione progetto (AppState.projects è già popolato da bootstrapApp)
-          showProjectSelectionModal(false);
-        }
-      } else {
-        // Logout
-        currentUser = null;
-        updateAppState({ user: null, projects: [] });
-        showLoginPage();
       }
-    });
+      console.log(`[Cleanup] Eliminati ${deletedCount}/${framesToDelete.length} frame`);
+      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+    } catch (error) {
+      console.error('[Cleanup] Errore cleanup frame:', error);
+    }
   }
 
-  // Force reset all auth data (emergency function) — demo user removed
+  async function initAuthSystem() {
+    try {
+      await bootstrapApp();
+    } catch (error) {
+      console.error('[Auth] Errore bootstrap:', error);
+      updateAppState({
+        user: getLocalUser(),
+        loading: false,
+        initialized: true,
+        error: error.message || 'Bootstrap failed'
+      });
+    }
+    cleanupStoredUnsavedFrames().catch(() => {});
+    if (typeof hideLoadingOverlay === 'function') hideLoadingOverlay();
+    window.enterLocalMode();
+  }
+
+  // Force reset all auth data (emergency function) â€” demo user removed
   window.forceResetAuth = function() {
     console.log('FORCE RESETTING ALL AUTH DATA');
 
@@ -10441,126 +13553,32 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     location.reload();
   };
 
-  // Show login page
-  function showLoginPage() {
-    document.getElementById('loginPage').style.display = 'block';
-    document.getElementById('mainDashboard').style.display = 'none';
-    document.getElementById('loginHeader').style.display = 'block';
-    document.getElementById('dashboardHeader').style.display = 'none';
-
-    // Clear form
-    document.getElementById('loginUsername').value = '';
-    document.getElementById('loginPassword').value = '';
-    document.getElementById('loginAlert').classList.add('d-none');
-  }
-
   // Show dashboard
   async function showDashboard() {
     try {
-      console.log('[showDashboard] Starting...');
-      const loginPage = document.getElementById('loginPage');
       const mainDashboard = document.getElementById('mainDashboard');
-      const loginHeader = document.getElementById('loginHeader');
       const dashboardHeader = document.getElementById('dashboardHeader');
-      
-      if (!loginPage || !mainDashboard || !loginHeader || !dashboardHeader) {
-        console.error('[showDashboard] Required elements not found');
-        return;
-      }
-      
-      loginPage.style.display = 'none';
+      if (!mainDashboard || !dashboardHeader) return;
+
       mainDashboard.style.display = 'block';
-      loginHeader.style.display = 'none';
       dashboardHeader.style.display = 'block';
 
-      // Update user info in header
       const currentUserNameEl = document.getElementById('currentUserName');
       const userDisplayNameEl = document.getElementById('userDisplayName');
-      if (currentUserNameEl && currentUser) {
-        currentUserNameEl.textContent = currentUser.username;
-      }
-      if (userDisplayNameEl && currentUser) {
-        userDisplayNameEl.textContent = currentUser.username;
-      }
-      console.log('[showDashboard] UI updated');
+      if (currentUserNameEl && currentUser) currentUserNameEl.textContent = currentUser.username;
+      if (userDisplayNameEl && currentUser) userDisplayNameEl.textContent = currentUser.username;
 
-    // Load user's projects
-    loadUserProjects();
-    
-    // Verifica se ci sono progetti: se non ce ne sono, mostra il modale
-    // (solo se non c'è un progetto attivo già aperto)
-    const activeProject = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProject && currentUser && currentUser.uid) {
-      // Sincronizza e verifica progetti
-      if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userProjects = await syncProjectsFromFirestore(currentUser.uid);
-          if (userProjects.length === 0) {
-            // Nessun progetto: mostra il modale
-            await showProjectSelectionModal(true);
-          }
-        } catch (error) {
-          console.error('[Dashboard] Errore verifica progetti:', error);
-          // In caso di errore, prova comunque a mostrare il modale usando getProjectsForUI
-          try {
-            const localProjects = await getProjectsForUI(currentUser.uid);
-            if (localProjects.length === 0) {
-              await showProjectSelectionModal(true, true); // skipSync = true
-            }
-          } catch (fallbackError) {
-            console.error('[Dashboard] Errore anche nel fallback:', fallbackError);
-            // Se anche il fallback fallisce, mostra comunque il modale (sarà vuoto)
-            await showProjectSelectionModal(true, true);
-          }
+      loadUserProjects();
+
+      const activeProject = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProject && currentUser && currentUser.uid) {
+        const userProjects = loadProjectsFromCache(currentUser.username);
+        if (userProjects.length === 0) {
+          await showProjectSelectionModal(true);
         }
       }
-    }
-      console.log('[showDashboard] Completed successfully');
     } catch (error) {
       console.error('[showDashboard] Error:', error);
-      console.error('[showDashboard] Error stack:', error.stack);
-      throw error; // Re-throw per essere gestito dal chiamante
-    }
-  }
-
-  // Setup login form
-  function setupLoginForm() {
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-      loginForm.addEventListener('submit', function(e) {
-        e.preventDefault();
-        const email = document.getElementById('loginUsername').value.trim();
-        const password = document.getElementById('loginPassword').value;
-        if (!email || !password) {
-          showLoginError('Please enter both email and password');
-          return;
-        }
-        fbLogin(email, password).then(async (cred) => {
-          const user = cred && cred.user;
-          if (user) {
-            console.log('[Login] User authenticated:', user.email);
-            const mapped = {
-              username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-              email: user.email || '',
-              uid: user.uid
-            };
-            console.log('[Login] Calling loginUser with:', mapped);
-            try {
-              await loginUser(mapped, document.getElementById('rememberMe').checked);
-              console.log('[Login] loginUser completed successfully');
-            } catch (loginError) {
-              console.error('[Login] Error in loginUser:', loginError);
-              showLoginError('Error during login process. Please try again.');
-            }
-          } else {
-            console.error('[Login] No user in credentials');
-            showLoginError('Invalid email or password');
-          }
-        }).catch((err) => {
-          console.error('[Login] Firebase error:', err && err.code, err && err.message);
-          showLoginError('Invalid email or password');
-        });
-      });
     }
   }
 
@@ -10601,14 +13619,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Trova container modale
     const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
     if (!modalBody) {
-      console.error('[ProjectModal] ❌ modal-body non trovato, impossibile aggiornare');
+      console.error('[ProjectModal] âŒ modal-body non trovato, impossibile aggiornare');
       return;
     }
     
-    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÀ)
+    // Renderizza lista usando AppState.projects (UNICA FONTE DI VERITÃ€)
     renderProjectsList(AppState.projects, modalBody);
     
-    console.log('[ProjectModal] ✅ Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
+    console.log('[ProjectModal] âœ… Contenuto modale aggiornato con', AppState.projects.length, 'progetti da AppState');
   }
 
   /**
@@ -10618,12 +13636,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * Non avvia caricamenti, non fa fallback, non gestisce async
    * 
    * Flusso corretto:
-   * click →
-   *   se AppState.loading === true → mostra loader
-   *   se AppState.projects.length === 0 → mostra empty state
-   *   altrimenti → render lista e apri modale
+   * click â†’
+   *   se AppState.loading === true â†’ mostra loader
+   *   se AppState.projects.length === 0 â†’ mostra empty state
+   *   altrimenti â†’ render lista e apri modale
    * 
-   * @param {boolean} forceShow - Forza apertura anche se c'è progetto attivo
+   * @param {boolean} forceShow - Forza apertura anche se c'Ã¨ progetto attivo
    */
   function showProjectSelectionModal(forceShow = false) {
     // Verifica che l'app sia inizializzata
@@ -10648,7 +13666,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Usa il modale statico dall'HTML invece di crearlo dinamicamente
     let modal = document.getElementById('projectSelectionModal');
     
-    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilità)
+    // Se il modale non esiste nell'HTML, crealo (fallback per compatibilitÃ )
     if (!modal) {
       console.warn('[ProjectModal] Modale statico non trovato, creazione dinamica...');
       modal = document.createElement('div');
@@ -10684,11 +13702,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     });
 
-    // Se c'è già un progetto attivo e non è forzato, non mostrare il modale
+    // Se c'Ã¨ giÃ  un progetto attivo e non Ã¨ forzato, non mostrare il modale
     if (!forceShow) {
       const activeProject = localStorage.getItem('amiantoActiveProjectName');
       if (activeProject) {
-        console.log('[ProjectModal] Progetto già attivo, salto modale:', activeProject);
+        console.log('[ProjectModal] Progetto giÃ  attivo, salto modale:', activeProject);
         return;
       }
     }
@@ -10701,7 +13719,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         showLoadingOverlay('Loading projects...');
       }
 
-      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÀ)
+      // STEP 2: Leggi progetti da AppState (UNICA FONTE DI VERITÃ€)
       const userProjects = AppState.projects || [];
       console.log('[ProjectModal] Progetti da AppState:', userProjects.length);
 
@@ -10740,13 +13758,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
       // STEP 7: Nascondi loader se era visibile
       if (AppState.loading) {
-        // Il loader verrà nascosto quando AppState.loading diventa false
+        // Il loader verrÃ  nascosto quando AppState.loading diventa false
         // Ma nascondiamo anche qui per sicurezza
         hideLoadingOverlay();
       }
 
     // Gestione click su pulsanti Open con event delegation (funziona anche dopo aggiornamenti contenuto)
-    // Aggiungi listener solo se non è già stato aggiunto
+    // Aggiungi listener solo se non Ã¨ giÃ  stato aggiunto
     if (!modal.dataset.clickListenersAttached) {
       modal.dataset.clickListenersAttached = 'true';
       
@@ -10776,7 +13794,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             try {
               await openProjectByName(projectName);
               
-              // Chiudi il modale DOPO che il progetto è stato caricato con successo
+              // Chiudi il modale DOPO che il progetto Ã¨ stato caricato con successo
               closeProjectModal();
             } catch (error) {
               console.error('[ProjectModal] Errore apertura progetto:', error);
@@ -10789,56 +13807,94 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         target = target.parentElement;
       }
       
+      // Gestione click su pulsante "Load Project" (modale)
+      if (e.target && (e.target.id === 'btn-load-project-modal' || e.target.closest('#btn-load-project-modal'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (AppState.loading) {
+          showNotification('Please wait for loading to complete', 'warning');
+          return false;
+        }
+        try {
+          await window.loadProjectFromFile();
+          const currentBsModal = bootstrap.Modal.getInstance(modal);
+          if (currentBsModal) {
+            const modalBody = modal.querySelector('#projectSelectionModalBody') || modal.querySelector('.modal-body');
+            if (modalBody) renderProjectsList(AppState.projects || [], modalBody);
+          }
+          const activeProject = localStorage.getItem('amiantoActiveProjectName');
+          if (activeProject && currentBsModal) currentBsModal.hide();
+        } catch (err) {
+          if (err && err.name !== 'AbortError') {
+            console.error('[ProjectModal] Errore load project:', err);
+          }
+        }
+        return false;
+      }
+
       // Gestione click su pulsante "Create New Project"
       if (e.target && (e.target.id === 'btn-create-new-project' || e.target.closest('#btn-create-new-project'))) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        
-        // Blocca durante la sincronizzazione
-        if (isSyncingProjects) {
-          showNotification('Please wait for synchronization to complete', 'warning');
+
+        if (AppState.loading) {
+          showNotification('Please wait for loading to complete', 'warning');
           return false;
         }
-        
-        const projectName = prompt('Enter the new project name:');
-        if (projectName && projectName.trim()) {
-          showNotification(`Creating project "${projectName.trim()}"...`, 'info');
-          
-          // Crea il progetto (questo salva anche su Firestore)
-          // Passa false per showSuccessNotification per evitare notifica duplicata
-          await window.createNewProject(projectName.trim(), false);
-          
-          // Attendi che Firestore abbia completato il salvataggio e propagato i cambiamenti
-          // Firestore può richiedere tempo per propagare i cambiamenti, specialmente su dispositivi lenti
-          console.log('[ProjectModal] Attesa completamento salvataggio Firestore...');
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Aumentato a 2 secondi per dare tempo a Firestore
-          
-          // Mostra notifica di successo dopo la creazione
-          showNotification(`Project "${projectName.trim()}" created and opened!`, 'success');
-          
-          // Dopo la creazione, sincronizza e aggiorna il modale con la nuova lista progetti
-          // Questo mostrerà il loading durante la sincronizzazione
-          console.log('[ProjectModal] Avvio sincronizzazione per aggiornare lista progetti...');
-          const currentBsModal = bootstrap.Modal.getInstance(modal);
-          if (currentBsModal) {
-            await updateProjectModalContent(modal, currentBsModal);
-            console.log('[ProjectModal] Sincronizzazione completata, modale aggiornato');
-          }
-          
-          // Chiudi il modale solo se il progetto è stato aperto con successo
-          const activeProject = localStorage.getItem('amiantoActiveProjectName');
-          if (activeProject === projectName.trim() && currentBsModal) {
-            currentBsModal.hide();
-          }
-        } else if (projectName !== null) {
-          // L'utente ha inserito un nome vuoto, mostra di nuovo il prompt
-          showNotification('Project name cannot be empty', 'warning');
+
+        const nameInput = modal.querySelector('#new-project-name-input');
+        const projectName = (nameInput && nameInput.value ? nameInput.value : '').trim();
+        if (!projectName) {
+          showNotification('Enter a project name first', 'warning');
+          if (nameInput) nameInput.focus();
+          return false;
         }
-        // Se projectName === null, l'utente ha annullato, non fare nulla
+
+        showNotification('Creating project "' + projectName + '"...', 'info');
+
+        // Nascondi il modale PRIMA dei dialoghi nativi (non rimuoverlo dal DOM)
+        try {
+          const bsInst = bootstrap.Modal.getInstance(modal);
+          if (bsInst) {
+            await new Promise(function(resolve) {
+              var done = false;
+              var finish = function() { if (done) return; done = true; resolve(); };
+              modal.addEventListener('hidden.bs.modal', finish, { once: true });
+              bsInst.hide();
+              setTimeout(finish, 450);
+            });
+          } else {
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+            document.querySelectorAll('.modal-backdrop').forEach(function(b) { b.remove(); });
+            document.body.classList.remove('modal-open');
+            await new Promise(function(r) { setTimeout(r, 200); });
+          }
+        } catch (_) {
+          await new Promise(function(r) { setTimeout(r, 200); });
+        }
+
+        try {
+          const created = await window.createNewProject(projectName, true);
+          if (!created || !created.ok) {
+            if (!localStorage.getItem('amiantoActiveProjectName')) {
+              try { await showProjectSelectionModal(true); } catch (_) {}
+            }
+            return false;
+          }
+          await loadAndRenderProjectsTab();
+        } catch (err) {
+          console.error('[ProjectModal] Errore creazione progetto:', err);
+          showNotification('Error creating project: ' + (err && err.message ? err.message : err), 'danger');
+          if (!localStorage.getItem('amiantoActiveProjectName')) {
+            try { await showProjectSelectionModal(true); } catch (_) {}
+          }
+        }
         return false;
       }
-      
+
       // Previeni chiusura tramite click sul backdrop (area esterna al modale)
       if (e.target === modal) {
         e.preventDefault();
@@ -10852,7 +13908,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }, { capture: true });
     }
 
-      // Il modale è statico nell'HTML, non rimuoverlo quando viene nascosto
+      // Il modale Ã¨ statico nell'HTML, non rimuoverlo quando viene nascosto
       // Aggiungi listener per sincronizzare sempre all'apertura (solo una volta)
       if (!modal.dataset.listenersAttached) {
         modal.dataset.listenersAttached = 'true';
@@ -10868,7 +13924,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               console.log('[ProjectModal] Modale aggiornato con', AppState.projects.length, 'progetti da AppState');
             }
             
-            // Se AppState.loading è true, mostra loader
+            // Se AppState.loading Ã¨ true, mostra loader
             if (AppState.loading) {
               showLoadingOverlay('Loading projects...');
             } else {
@@ -10890,12 +13946,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           showNotification('You must select or create a project to continue', 'warning');
           return false;
         }
-        // Se c'è un progetto attivo, permettere la chiusura
+        // Se c'Ã¨ un progetto attivo, permettere la chiusura
         console.log('[ProjectModal] Chiusura permessa - progetto attivo:', activeProject);
       });
     }
 
-    // Il listener per il backdrop è già gestito dentro handleProjectClick
+    // Il listener per il backdrop Ã¨ giÃ  gestito dentro handleProjectClick
     // Non aggiungere listener duplicati
 
     } catch (error) {
@@ -10903,12 +13959,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       console.error('[ProjectModal] Errore durante il rendering:', error);
 
       // Distingui tra diversi tipi di errori
-      if (error.code === 'permission-denied') {
-        console.error('[ProjectModal] Firestore permission denied error:', error);
-        console.error('[ProjectModal] Check Firestore security rules for user:', AppState.user?.uid);
-      } else if (error.code === 'network-error' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[ProjectModal] Network error:', error);
-      } else if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
+      if (error.message?.includes('DOM') || error.message?.includes('Bootstrap')) {
         console.error('[ProjectModal] DOM/Bootstrap error:', error);
         showNotification('Error creating modal. Reload the page.', 'danger');
         return;
@@ -10952,197 +14003,41 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Login user
-  async function loginUser(user, rememberMe = false) {
-    console.log('[loginUser] Starting with user:', user);
-    if (!user || !user.uid) {
-      console.error('[loginUser] Invalid user object:', user);
-      throw new Error('Invalid user object');
-    }
-    currentUser = user;
-    console.log('[loginUser] currentUser set to:', currentUser);
-    localStorage.setItem('amiantoCurrentUser', user.username);
-
-    if (rememberMe) {
-      localStorage.setItem('amiantoRememberUser', user.username);
-    } else {
-      localStorage.removeItem('amiantoRememberUser');
-    }
-
-    // Mostra loading overlay durante la sincronizzazione progetti
-    // IMPORTANTE: Durante il caricamento si vede SOLO il loading, NON il modale
-    showLoadingOverlay('Loading projects...');
-
-    // Sincronizza progetti da Firestore PRIMA di mostrare la dashboard
-    if (user.uid && window.firebaseDB && window.firebaseAuth) {
-      console.log('[Login] Avvio sincronizzazione progetti da Firestore...');
-      
-      try {
-        // STEP 1: Sincronizza progetti (salva in localStorage)
-        await syncProjectsFromFirestore(user.uid);
-        console.log('[Login] ✅ Sincronizzazione progetti completata');
-        
-        // STEP 2: Carica progetti da Firestore e aggiorna AppState
-        const projects = await loadProjectsDirectlyFromFirestore(user.uid);
-        console.log('[Login] ✅ Progetti caricati:', projects.length);
-        
-        // STEP 3: Aggiorna AppState con i progetti caricati
-        updateAppState({ projects: projects });
-        
-        // STEP 4: Aggiorna anche la cache localStorage
-        if (user.username) {
-          saveProjectsToCache(user.username, projects);
-        }
-        
-      } catch (error) {
-        console.error('[Login] Errore durante sincronizzazione progetti:', error);
-        
-        // In caso di errore, prova a caricare dalla cache come fallback
-        if (user.username) {
-          console.log('[Login] Fallback a cache localStorage...');
-          const cachedProjects = loadProjectsFromCache(user.username);
-          updateAppState({ projects: cachedProjects });
-          console.log('[Login] Progetti da cache:', cachedProjects.length);
-        } else {
-          updateAppState({ projects: [] });
-        }
-        
-        // Per dispositivi senza cache (primo accesso), questo è normale se non ci sono progetti
-        // Mostra un messaggio informativo ma non bloccante
-        if (error.code === 'permission-denied') {
-          console.error('[Login] Firestore permission denied error');
-          console.warn('[Login] Questo può essere normale per nuovi utenti. L\'utente può comunque creare progetti.');
-          // Non mostrare notifica per permission-denied, il modale gestirà l'errore
-        } else if (error.code === 'network-error') {
-          console.error('[Login] Network error');
-          showNotification('Connection error. You can still create a new project.', 'warning');
-        } else {
-          // Per altri errori, mostra un messaggio informativo
-          console.warn('[Login] Errore sincronizzazione. L\'utente può comunque creare progetti.');
-          // Non mostrare notifica per errori generici, il modale gestirà l'errore
-        }
+  window.enterLocalMode = async function() {
+    currentUser = getLocalUser();
+    updateAppState({ user: currentUser, initialized: true, loading: false });
+    localStorage.setItem('amiantoCurrentUser', currentUser.username);
+    showDashboard();
+    const activeProject = localStorage.getItem('amiantoActiveProjectName');
+    enableOtherTabs(!!activeProject);
+    setTimeout(async () => {
+      const currentTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : null;
+      if (currentTab === 'projects') {
+        await loadAndRenderProjectsTab();
+      } else if (!activeProject) {
+        showProjectSelectionModal(false);
       }
-    } else {
-      console.warn('[Login] Firestore non disponibile, salto sincronizzazione');
-      updateAppState({ projects: [] });
-    }
-
-    // Nascondi loading overlay e mostra dashboard solo dopo la sincronizzazione
-    try {
-      hideLoadingOverlay();
-      console.log('[Login] Showing dashboard...');
-      await showDashboard();
-      console.log('[Login] Dashboard shown');
-      
-      if (typeof showNotification === 'function') {
-        showNotification(`Welcome back, ${user.username}!`, 'success');
-      }
-      
-      // Mostra modale di selezione progetto (sempre, anche se non ci sono progetti)
-      // L'utente deve selezionare o creare un progetto per continuare
-      // skipSync = true perché abbiamo già sincronizzato i progetti sopra
-      // Il modale verrà mostrato SOLO dopo che il loading è nascosto (gestito internamente)
-      await showProjectSelectionModal(false, true);
-      console.log('[Login] Project selection modal shown');
-    } catch (dashboardError) {
-      console.error('[Login] Error showing dashboard:', dashboardError);
-      hideLoadingOverlay();
-      if (typeof showLoginError === 'function') {
-        showLoginError('Error showing dashboard. Please refresh the page.');
-      }
-    }
-  }
-
-  // Show login error
-  function showLoginError(message) {
-    const alert = document.getElementById('loginAlert');
-    alert.textContent = message;
-    alert.classList.remove('d-none');
-  }
-
-  // Show registration modal
-  window.showRegistration = function() {
-    const modal = new bootstrap.Modal(document.getElementById('registerModal'));
-    modal.show();
-
-    // Clear form
-    document.getElementById('registerEmail').value = '';
-    document.getElementById('registerPassword').value = '';
-    document.getElementById('registerConfirmPassword').value = '';
-    document.getElementById('registerAlert').classList.add('d-none');
+    }, 300);
   };
 
-  // Setup registration modal
-  function setupRegistrationModal() {
-    // Auto-focus first field when modal opens
-    const registerModal = document.getElementById('registerModal');
-    if (registerModal) {
-      registerModal.addEventListener('shown.bs.modal', function() {
-        document.getElementById('registerEmail').focus();
-      });
+  window.logout = async function() {
+    if (await showConfirmDialog({ title: 'Close Project', message: 'Close the current project and return to project selection?' })) {
+      try { await cleanupUnsavedCharacterFrames(); } catch (_) {}
+      localStorage.removeItem('amiantoActiveProjectName');
+      localStorage.removeItem('amiantoActiveProjectOwner');
+      enableOtherTabs(false);
+      showProjectSelectionModal(true);
     }
-  }
-
-  // Register new user
-  window.registerUser = function() {
-    const email = document.getElementById('registerEmail').value.trim();
-    const password = document.getElementById('registerPassword').value;
-    const confirmPassword = document.getElementById('registerConfirmPassword').value;
-
-    // Validation
-    if (!email || !password || !confirmPassword) {
-      showRegisterError('Please fill in all fields');
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      showRegisterError('Passwords do not match');
-      return;
-    }
-
-    if (password.length < 6) {
-      showRegisterError('Password must be at least 6 characters long');
-      return;
-    }
-
-    // Firebase registration
-    fbRegister(email, password).then((cred) => {
-      const user = cred && cred.user;
-      if (user) {
-        const mapped = {
-          username: (user.email || '').split('@')[0] || (user.uid ? `user_${user.uid.substring(0, 6)}` : 'User'),
-          email: user.email || '',
-          uid: user.uid
-        };
-        loginUser(mapped);
-      }
-      const modal = bootstrap.Modal.getInstance(document.getElementById('registerModal'));
-      if (modal) modal.hide();
-      showNotification('Account created successfully!', 'success');
-    }).catch((err) => {
-      console.error('[Register] Firebase error:', err && err.code, err && err.message);
-      showRegisterError('Registration failed. Please check your email and try again.');
-    });
   };
-
-  // Show registration error
-  function showRegisterError(message) {
-    const alert = document.getElementById('registerAlert');
-    alert.textContent = message;
-    alert.classList.remove('d-none');
-  }
-
-  // Funzione per pulire i frame non salvati da Supabase
   async function cleanupUnsavedCharacterFrames() {
     if (unsavedCharacterFrames.size === 0 && unsavedCharacterAssetIds.size === 0) {
       return; // Nessun frame da eliminare
     }
 
-    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati da Supabase...`);
+    console.log(`[Cleanup] Eliminazione di ${unsavedCharacterFrames.size + unsavedCharacterAssetIds.size} frame character non salvati...`);
 
     let deletedCount = 0;
     
-    // Prima: elimina usando gli Image objects tracciati
     const framesToDelete = Array.from(unsavedCharacterFrames);
     for (const frameImg of framesToDelete) {
       try {
@@ -11156,97 +14051,30 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
     
-    // Secondo: elimina usando gli assetId tracciati (cerca le immagini corrispondenti)
-    if (unsavedCharacterAssetIds.size > 0 && window.supabaseStorage && window.supabaseStorage.deleteAsset) {
-      try {
-        const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-        const projectId = activeProjectName ? activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_') : null;
-        
-        if (projectId && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          const userId = window.firebaseAuth.currentUser.uid;
-          
-          // Cerca le immagini corrispondenti agli assetId nell'imageAssetMap
-          for (const assetId of Array.from(unsavedCharacterAssetIds)) {
-            try {
-              // Cerca l'immagine nell'imageAssetMap
-              let foundImage = null;
-              for (const [img, assetInfo] of imageAssetMap.entries()) {
-                if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
-                  foundImage = img;
-                  break;
-                }
-              }
-              
-              if (foundImage) {
-                const deleted = await deleteAssetFromImage(foundImage);
-                if (deleted) {
-                  deletedCount++;
-                }
-              } else {
-                // Se non trovato nell'imageAssetMap, prova a eliminare direttamente usando i metadati
-                // (richiede che abbiamo salvato i metadati in Firestore)
-                console.warn(`[Cleanup] Immagine non trovata nell'imageAssetMap per assetId ${assetId}, eliminazione diretta non supportata`);
-              }
-            } catch (error) {
-              console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
+    if (unsavedCharacterAssetIds.size > 0) {
+      for (const assetId of Array.from(unsavedCharacterAssetIds)) {
+        try {
+          let foundImage = null;
+          for (const [img, assetInfo] of imageAssetMap.entries()) {
+            if (assetInfo.assetId === assetId && assetInfo.type === 'character') {
+              foundImage = img;
+              break;
             }
           }
+          if (foundImage) {
+            const deleted = await deleteAssetFromImage(foundImage);
+            if (deleted) deletedCount++;
+          }
+        } catch (error) {
+          console.warn(`[Cleanup] Errore eliminazione assetId ${assetId}:`, error);
         }
-      } catch (error) {
-        console.error('[Cleanup] Errore eliminazione frame per assetId:', error);
       }
     }
 
-    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati da Supabase`);
+    console.log(`[Cleanup] Eliminati ${deletedCount} frame non salvati`);
     unsavedCharacterFrames.clear();
     unsavedCharacterAssetIds.clear();
   }
-
-  // Logout user
-  window.logout = async function() {
-    // If in demo mode, just exit demo without calling Firebase
-    if (isDemoMode) {
-      isDemoMode = false;
-      sessionStorage.removeItem('amiantoDemoMode');
-      currentUser = null;
-      localStorage.removeItem('amiantoCurrentUser');
-      localStorage.removeItem('amiantoRememberUser');
-      showLoginPage();
-      showNotification('You left Demo Mode', 'info');
-      return;
-    }
-
-    if (confirm('Are you sure you want to logout?')) {
-      // Pulisci i frame non salvati prima del logout
-      try {
-        await cleanupUnsavedCharacterFrames();
-      } catch (error) {
-        console.error('[Logout] Errore cleanup frame:', error);
-        // Continua comunque con il logout
-      }
-
-      fbSignOut().catch(()=>{}).finally(() => {
-        currentUser = null;
-        localStorage.removeItem('amiantoCurrentUser');
-        localStorage.removeItem('amiantoRememberUser');
-        showLoginPage();
-        showNotification('Logged out successfully', 'info');
-      });
-    }
-  };
-
-  // Enter demo mode (no account required)
-  window.enterDemoMode = function() {
-    isDemoMode = true;
-    sessionStorage.setItem('amiantoDemoMode', '1');
-    currentUser = {
-      username: 'Demo',
-      email: '',
-      uid: 'demo'
-    };
-    showDashboard();
-    showNotification('Demo Mode active: you are using the editor without an account', 'info');
-  };
 
   // Show user profile (placeholder)
   window.showUserProfile = function() {
@@ -11263,7 +14091,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification('Password recovery feature coming soon!', 'info');
   };
 
-  // Debug authentication system (simplified — demo user removed)
+  // Debug authentication system (simplified â€” demo user removed)
   window.debugAuth = function() {
     console.log('=== AUTH DEBUG INFO ===');
     console.log('Current user:', currentUser);
@@ -11327,26 +14155,29 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return `asset:${assetInfo.assetId}`;
     }
     
-    // IMPORTANTE: Se l'immagine è un oggetto Image ma non è nella mappa,
-    // serializzala come dataURL. Verrà poi processata da saveAllAssetsToStorage
-    // che la convertirà in assetId e la caricherà nello storage.
+    // IMPORTANTE: Se l'immagine Ã¨ un oggetto Image ma non Ã¨ nella mappa,
+    // serializzala come dataURL. VerrÃ  poi processata da saveAllAssetsToStorage
+    // che la convertirÃ  in assetId e la caricherÃ  nello storage.
     // Questo garantisce che TUTTI gli assets vengano serializzati e salvati.
     if (img && typeof img === 'object' && (img.src || (img.width && img.height))) {
-      // È un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
+      // Ãˆ un oggetto Image, convertilo in dataURL per essere processato da saveAllAssetsToStorage
       const dataURL = imageToDataURL(img);
       if (dataURL) {
-        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrà convertita in assetId al salvataggio)`);
+        console.log(`[Serialize] Immagine non tracciata nella mappa, serializzata come dataURL (verrÃ  convertita in assetId al salvataggio)`);
         return dataURL;
       }
     }
     
     // Se è già una stringa (dataURL o assetId), restituiscila così com'è
     if (typeof img === 'string') {
+      if (img.startsWith('blob:')) return null;
       return img;
     }
     
     // Fallback: usa dataURL (per compatibilità con progetti esistenti)
-    return imageToDataURL(img);
+    const dataUrl = imageToDataURL(img);
+    if (dataUrl && dataUrl.startsWith('blob:')) return null;
+    return dataUrl;
   }
 
   function serializeRooms() {
@@ -11356,7 +14187,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (Array.isArray(r.foregrounds)) {
         console.log(`[Serialize] Room ${r.id}: serializzando ${r.foregrounds.length} foreground`, r.foregrounds.map(f => ({ id: f.id, name: f.name, hasImg: !!f.img })));
       } else {
-        console.log(`[Serialize] Room ${r.id}: r.foregrounds non è un array`, typeof r.foregrounds, r.foregrounds);
+        console.log(`[Serialize] Room ${r.id}: r.foregrounds non Ã¨ un array`, typeof r.foregrounds, r.foregrounds);
       }
       serialized.push({
         id: r.id,
@@ -11372,8 +14203,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             image: serializeImage(f.img),
             x: Number(x) || 0,
             y: Number(y) || 0,
-            offsetX: Number(x) || 0, // Mantieni per compatibilità
-            offsetY: Number(y) || 0, // Mantieni per compatibilità
+            offsetX: Number(x) || 0, // Mantieni per compatibilitÃ 
+            offsetY: Number(y) || 0, // Mantieni per compatibilitÃ 
             rotationRad: Number(f.rotationRad) || 0,
             scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
             scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
@@ -11397,9 +14228,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             enabled
           };
         }) : [],
+        animationInstances: Array.isArray(r.animationInstances) ? r.animationInstances.map(inst => ({
+          id: inst.id,
+          animationId: inst.animationId,
+          name: inst.name || inst.id,
+          x: Number(inst.x) || 0,
+          y: Number(inst.y) || 0,
+          layer: inst.layer === 'foreground' ? 'foreground' : 'background',
+          visible: inst.visible !== false,
+          autoPlay: inst.autoPlay === true
+        })) : [],
         walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
         hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
-          // ⚠️ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
+          // âš ï¸ NUOVA STRUTTURA: script salvato direttamente nell'hotspot
           const hotspotObj = {
             id: h.id,
             name: h.name,
@@ -11408,9 +14249,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             scripts: {}
           };
           
-          // ⚠️ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
-          // enabled = true di default se non definito e c'è codice
-          // BUG FIX CRITICO: Garantisce che enabled=true quando c'è codice e enabled non è esplicitamente definito come false
+          // âš ï¸ NORMALIZZAZIONE: Usa SOLO la struttura scripts.onClick dell'hotspot
+          // enabled = true di default se non definito e c'Ã¨ codice
+          // BUG FIX CRITICO: Garantisce che enabled=true quando c'Ã¨ codice e enabled non Ã¨ esplicitamente definito come false
           if (h.scripts && h.scripts.onClick) {
             const onClickData = h.scripts.onClick;
             
@@ -11425,24 +14266,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             
             const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
             
-            // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
-            // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+            // AUTOMATIZZAZIONE: Se c'Ã¨ codice, enabled deve essere sempre true
+            // L'obiettivo Ã¨ eliminare il blocco "enabled = false" per hotspot con codice
             let normalizedEnabled;
             if (hasCode) {
-              // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+              // Se c'Ã¨ codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
               normalizedEnabled = true;
               if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
                 console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
               }
             } else {
-              // Se non c'è codice, enabled può essere false
+              // Se non c'Ã¨ codice, enabled puÃ² essere false
               normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
             }
             
             // DEBUG: Verifica che il codice venga salvato correttamente
             const codeToSave = String(onClickData.code || '');
             if (hasCode && codeToSave.length === 0) {
-              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave è vuoto!`, {
+              console.error(`[Serialize] [ERRORE] Hotspot ${h.id} ha codice ma codeToSave Ã¨ vuoto!`, {
                 originalCode: onClickData.code,
                 codeType: typeof onClickData.code,
                 codeLength: onClickData.code ? String(onClickData.code).length : 0
@@ -11454,7 +14295,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               enabled: normalizedEnabled
             };
           } else {
-            // Se non c'è script, imposta struttura vuota e disabilitata
+            // Se non c'Ã¨ script, imposta struttura vuota e disabilitata
             hotspotObj.scripts.onClick = {
               code: '',
               enabled: false
@@ -11473,9 +14314,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // DEBUG: Verifica che foregrounds sia incluso nel JSON serializzato
       const serializedRoom = serialized[serialized.length - 1];
       if (serializedRoom && Array.isArray(serializedRoom.foregrounds)) {
-        console.log(`[Serialize] ✓ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
+        console.log(`[Serialize] âœ“ Room ${r.id}: ${serializedRoom.foregrounds.length} foreground serializzati nel JSON`);
       } else {
-        console.warn(`[Serialize] ⚠️ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
+        console.warn(`[Serialize] âš ï¸ Room ${r.id}: foregrounds non serializzati correttamente!`, serializedRoom);
       }
     });
     return serialized;
@@ -11488,23 +14329,49 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       type: g.type || 'MainInterface',
       settings: serializeGuiSettings(g.settings, g.type),
       background: serializeImage(g.background),
-      buttons: Array.isArray(g.buttons) ? g.buttons.map(b => ({
-        id: b.id,
-        name: b.name,
-        x: Number(b.x)||0,
-        y: Number(b.y)||0,
-        w: Number(b.w)||0,
-        h: Number(b.h)||0,
-        text: b.text || '',
-        backgroundImage: serializeImage(b.backgroundImage)
-      })) : []
+      buttons: Array.isArray(g.buttons) ? g.buttons.map(b => {
+        const out = {
+          id: b.id,
+          name: b.name,
+          x: Number(b.x)||0,
+          y: Number(b.y)||0,
+          w: Number(b.w)||0,
+          h: Number(b.h)||0,
+          text: b.text || '',
+          backgroundImage: serializeImage(b.backgroundImage)
+        };
+        if (b.role === 'saveSlot' || b.slotKey != null) {
+          out.role = 'saveSlot';
+          out.slotKey = String(b.slotKey != null ? b.slotKey : '1');
+        } else if (b.role) {
+          out.role = b.role;
+        }
+        return out;
+      }) : []
     })) : [];
   }
 
   function serializeGuiSettings(settings, type) {
     try {
-      // Ensure JSON-safe clone
-      return JSON.parse(JSON.stringify(settings || {}));
+      const src = settings || {};
+      const out = { ...src };
+      if (type === 'DialogBox') {
+        if (out.balloonImage) {
+          out.balloon = serializeImage(out.balloonImage) || out.balloon || '';
+        }
+        delete out.balloonImage;
+        delete out.x;
+        delete out.y;
+        delete out.w;
+        delete out.h;
+        delete out.portrait;
+        delete out.background;
+        delete out.previewText;
+        if (!out.customFont) {
+          delete out.fontFamily;
+        }
+      }
+      return JSON.parse(JSON.stringify(out));
     } catch (_) {
       return {};
     }
@@ -11535,26 +14402,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const names = collectCharacterNames();
     names.forEach(name => {
       const charData = (characterFrames && characterFrames.get) ? characterFrames.get(name) : null;
-      const out = { name, directions: {} };
+      if (charData) ensureCharacterIdEqualsName(charData, name);
+      // id === name sempre nel .amnt / JSON progetto
+      const out = { id: name, name: name, directions: {} };
       // Include pivot if it exists
       if (charData && charData.pivotX !== undefined && charData.pivotY !== undefined) {
         out.pivotX = Number(charData.pivotX) || 0;
         out.pivotY = Number(charData.pivotY) || 0;
       }
-      // Include spawnSettings if it exists
-      if (charData && charData.spawnSettings) {
-        const spawn = charData.spawnSettings;
-        out.spawnSettings = {
-          isPlayer: spawn.isPlayer === true,
-          autoSpawn: spawn.autoSpawn === true,
-          roomId: spawn.roomId || null,
-          x: typeof spawn.x === 'number' ? spawn.x : 0,
-          y: typeof spawn.y === 'number' ? spawn.y : 0,
-          direction: spawn.direction || 'south',
-          moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100
-        };
-        console.log(`[Character] Serializzazione spawnSettings per "${name}":`, out.spawnSettings);
-      }
+      ensureCharacterSpawnSettings(charData);
+      const spawn = charData.spawnSettings;
+      out.spawnSettings = {
+        isPlayer: spawn.isPlayer === true,
+        autoSpawn: spawn.autoSpawn === true,
+        roomId: spawn.roomId || null,
+        x: typeof spawn.x === 'number' ? spawn.x : 0,
+        y: typeof spawn.y === 'number' ? spawn.y : 0,
+        direction: spawn.direction || 'south',
+        moveSpeed: typeof spawn.moveSpeed === 'number' && spawn.moveSpeed > 0 ? spawn.moveSpeed : 100,
+        scaleMoveSpeedWithDepth: spawn.scaleMoveSpeedWithDepth !== false
+      };
       out.directions = serializeDirectionsMap(charData ? charData.directions : null);
       if (charData && charData.animations && Object.keys(charData.animations).length > 0) {
         out.animations = {};
@@ -11565,6 +14432,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             };
           }
         });
+      }
+      if (charData && charData.portraits && typeof charData.portraits === 'object') {
+        const portraits = {};
+        Object.keys(charData.portraits).forEach(moodKey => {
+          const ref = charData.portraits[moodKey];
+          if (typeof ref === 'string' && ref.trim()) {
+            portraits[String(moodKey).trim()] = ref.trim();
+          } else if (ref && ref.src) {
+            portraits[String(moodKey).trim()] = serializeImage(ref) || '';
+          }
+        });
+        Object.keys(portraits).forEach(k => { if (!portraits[k]) delete portraits[k]; });
+        if (Object.keys(portraits).length) out.portraits = portraits;
       }
       result.push(out);
     });
@@ -11602,12 +14482,188 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       items: inventoryItems.map(item => ({
         id: item.id,
         name: item.name,
-        scriptName: item.scriptName || item.name,
+        scriptName: item.scriptName != null ? String(item.scriptName) : '',
         image: serializeImage(item.image)
       }))
     };
   }
 
+
+  /** Raccoglie codice hotspot embedded da un oggetto progetto serializzato. */
+  function collectEmbeddedHotspotScriptCodesFromProject(projectObj) {
+    const embeddedById = new Map();
+    if (!projectObj || !Array.isArray(projectObj.rooms)) return embeddedById;
+    for (const room of projectObj.rooms) {
+      if (!Array.isArray(room.hotspots)) continue;
+      for (const h of room.hotspots) {
+        const code = h && h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+        if (code && String(code).trim()) {
+          embeddedById.set(String(h.id), String(code).trim());
+        }
+      }
+    }
+    return embeddedById;
+  }
+
+  /** Raccoglie codice hotspot giÃ  embedded nelle stanze live (chiave = hotspot id). */
+  function collectEmbeddedHotspotScriptCodes() {
+    return collectEmbeddedHotspotScriptCodesFromProject({ rooms: Array.from(rooms.values()) });
+  }
+
+  /**
+   * Sincronizza scripts.onClick su tutte le stanze (e hotspot globali) con lo stesso id.
+   */
+  function syncHotspotScriptToAllRooms(hotspotId, content, linkedScriptName) {
+    const id = String(hotspotId || '');
+    if (!id) return;
+    const code = String(content || '');
+    const onClick = { code, enabled: code.trim().length > 0 };
+    const linked = linkedScriptName ? migrateLegacyScriptKey(String(linkedScriptName)) : null;
+
+    const applyTo = (hotspot) => {
+      if (!hotspot || String(hotspot.id) !== id) return;
+      if (!hotspot.scripts) hotspot.scripts = {};
+      hotspot.scripts.onClick = { code: onClick.code, enabled: onClick.enabled };
+      if (linked) {
+        if (!hotspot._meta) hotspot._meta = {};
+        hotspot._meta.linkedScriptName = linked;
+      }
+    };
+
+    try {
+      rooms.forEach((room) => {
+        if (room.hotspots && Array.isArray(room.hotspots)) {
+          room.hotspots.forEach(applyTo);
+        }
+      });
+      if (typeof hotspots !== 'undefined' && Array.isArray(hotspots)) {
+        hotspots.forEach(applyTo);
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Prima di serializzare/playtest: copia jsScripts negli hotspot embedded nelle stanze.
+   * Senza questo passaggio il runtime vede rooms[].hotspots[].scripts.onClick vuoti
+   * finchÃ© non si fa Save progetto (che prima era l'unico momento di sync).
+   */
+  function syncEditorScriptsToRoomsBeforeSerialize() {
+    try {
+      if (jsScripts && jsScripts.forEach) {
+        jsScripts.forEach((content, key) => {
+          if (!key || !String(content || '').trim()) return;
+          const canonical = migrateLegacyScriptKey(String(key));
+          if (canonical.startsWith('Hotspot:')) {
+            syncHotspotScriptToAllRooms(canonical.slice('Hotspot:'.length), content, canonical);
+          }
+        });
+      }
+      rooms.forEach((room) => {
+        if (!room.hotspots || !Array.isArray(room.hotspots)) return;
+        room.hotspots.forEach((h) => {
+          const code = h.scripts && h.scripts.onClick && h.scripts.onClick.code;
+          if (!code || !String(code).trim()) return;
+          const linked = h._meta && h._meta.linkedScriptName;
+          const scriptKey = linked
+            ? migrateLegacyScriptKey(String(linked))
+            : `Hotspot:${h.id}`;
+          const prev = jsScripts.has(scriptKey) ? String(jsScripts.get(scriptKey)) : '';
+          if (prev !== String(code)) {
+            jsScripts.set(scriptKey, String(code));
+            try { localStorage.setItem(`script-${scriptKey}`, String(code)); } catch (_) {}
+          }
+        });
+      });
+    } catch (e) {
+      console.warn('[Serialize] syncEditorScriptsToRoomsBeforeSerialize:', e);
+    }
+  }
+
+  /** Allinea inventoryScripts dagli script Inventory:* in jsScripts (non modifica item.scriptName). */
+  function syncInventoryScriptAttachments() {
+    try {
+      if (!jsScripts || !jsScripts.forEach) return;
+      jsScripts.forEach((content, key) => {
+        const k = migrateLegacyScriptKey(String(key));
+        if (!k.startsWith('Inventory:') || !String(content || '').trim()) return;
+        const itemName = k.slice('Inventory:'.length);
+        const item = inventoryItems.find(i => i.name === itemName || i.id === itemName);
+        if (!item) return;
+        const userKey = String(item.scriptName || '').trim();
+        if (userKey && editorScriptExists(migrateLegacyScriptKey(userKey))) return;
+        attachInventoryItemScript(item.name, k);
+      });
+    } catch (e) {
+      console.warn('[Serialize] syncInventoryScriptAttachments:', e);
+    }
+  }
+
+  /**
+   * Dopo serializeProject, reinserisce script Hotspot/Inventory in scripts{} per il runtime
+   * (serializeScripts li rimuove se giÃ  embedded) e riallinea rooms via mergeLegacy.
+   */
+  function reinjectHotspotScriptsForPlaytest(projectObj) {
+    if (!projectObj.scripts || typeof projectObj.scripts !== 'object') {
+      projectObj.scripts = {};
+    }
+    if (jsScripts && jsScripts.forEach) {
+      jsScripts.forEach((content, key) => {
+        const k = migrateLegacyScriptKey(String(key));
+        if (!String(content || '').trim()) return;
+        if (k.startsWith('Hotspot:') || k.startsWith('Inventory:')) {
+          projectObj.scripts[k] = String(content);
+        }
+      });
+    }
+    mergeLegacyHotspotScriptsIntoRooms(projectObj);
+  }
+
+  /** Sincronizza lo stato live della stanza corrente prima di serializzare/playtest. */
+  function syncEditorRoomStateBeforeSerialize() {
+    try {
+      if (!currentRoomId || !rooms.has(currentRoomId)) return;
+      const r = rooms.get(currentRoomId);
+      if (!r) return;
+      r.animationInstances = animationInstances;
+      r.sceneObjects = sceneObjects;
+      r.foregrounds = foregrounds;
+      r.hotspots = hotspots;
+      r.walkableArea = walkableArea;
+    } catch (e) {
+      console.warn('[Serialize] syncEditorRoomStateBeforeSerialize:', e);
+    }
+  }
+
+  /** Payload progetto pronto per runtime / playtest (stato live editor). */
+  function buildPlaytestProjectPayload() {
+    saveCurrentScriptIfNeeded();
+    syncEditorRoomStateBeforeSerialize();
+    syncEditorScriptsToRoomsBeforeSerialize();
+    syncInventoryScriptAttachments();
+    const projectObj = window.serializeProject();
+    reinjectHotspotScriptsForPlaytest(projectObj);
+    projectObj.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
+    return projectObj;
+  }
+
+  /**
+   * Gli script hotspot vivono in rooms[].hotspots[].scripts.onClick.
+   * Rimuove Hotspot:* duplicati da scripts{} quando il codice Ã¨ giÃ  embedded.
+   */
+  function pruneDuplicateHotspotScriptsFromScriptsObject(scriptsObj, projectObjForEmbedded) {
+    if (!scriptsObj || typeof scriptsObj !== 'object') return scriptsObj;
+    const embeddedById = projectObjForEmbedded
+      ? collectEmbeddedHotspotScriptCodesFromProject(projectObjForEmbedded)
+      : collectEmbeddedHotspotScriptCodes();
+    for (const key of Object.keys(scriptsObj)) {
+      if (!key.startsWith('Hotspot:')) continue;
+      const hotspotId = key.slice('Hotspot:'.length);
+      if (embeddedById.has(hotspotId)) {
+        delete scriptsObj[key];
+      }
+    }
+    return scriptsObj;
+  }
 
   function serializeScripts() {
     const scriptsObj = {};
@@ -11616,17 +14672,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         jsScripts.forEach((content, name) => { if (name) scriptsObj[name] = String(content || ''); });
       }
     } catch (_) {}
-    // Include any saved in localStorage (prefix: script-)
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('script-')) {
-          const name = key.slice('script-'.length);
-          if (!(name in scriptsObj)) scriptsObj[name] = String(localStorage.getItem(key) || '');
-        }
-      }
-    } catch (_) {}
-    return scriptsObj;
+    return pruneDuplicateHotspotScriptsFromScriptsObject(scriptsObj);
   }
 
   function mapToObject(mapInstance) {
@@ -11635,24 +14681,44 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return obj;
   }
 
+  function serializeRoomScriptsAttachments() {
+    const obj = {};
+    try {
+      roomScripts.forEach((v, k) => {
+        if (!k) return;
+        if (typeof v === 'string') {
+          if (v) obj[String(k)] = String(v);
+        } else if (v && typeof v === 'object') {
+          const entry = {};
+          Object.keys(v).forEach(ek => {
+            if (v[ek]) entry[ek] = String(v[ek]);
+          });
+          if (Object.keys(entry).length) obj[String(k)] = entry;
+        }
+      });
+    } catch (_) {}
+    return obj;
+  }
+
   function serializeAttachments() {
     return {
-      roomScripts: mapToObject(roomScripts),
+      roomScripts: serializeRoomScriptsAttachments(),
       objectScripts: mapToObject(objectScripts),
       characterScripts: mapToObject(characterScripts),
       inventoryScripts: mapToObject(inventoryScripts),
       guiScripts: (typeof guiScripts !== 'undefined') ? mapToObject(guiScripts) : {}
-      // ⚠️ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
+      // âš ï¸ hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
     };
   }
 
   function serializeCursors() {
     return Array.isArray(contextualCursors) ? contextualCursors.map(c => ({
       id: c.id,
-      targetType: c.targetType,
-      targetId: c.targetId,
+      category: c.category || 'default',
       actionText: c.actionText || '',
       scriptName: c.scriptName || '',
+      pivotX: typeof c.pivotX === 'number' ? c.pivotX : 0,
+      pivotY: typeof c.pivotY === 'number' ? c.pivotY : 0,
       cursorImage: serializeImage(c.cursorImage)
     })) : [];
   }
@@ -11669,16 +14735,46 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     // Ensure width/height reflect current viewport
     settings.canvasWidth = gameViewport.width;
     settings.canvasHeight = gameViewport.height;
-    // Project name best-effort
+    // Nome e ID del progetto corrente (non creare un nuovo progetto al salvataggio)
+    const activeName = localStorage.getItem('amiantoActiveProjectName');
+    const activeId = localStorage.getItem('amiantoActiveProjectId');
     const nameField = document.getElementById('projectName');
-    if (nameField && nameField.value) settings.name = nameField.value;
+    if (nameField && nameField.value) {
+      settings.name = nameField.value.trim();
+    } else if (activeName) {
+      settings.name = activeName;
+    }
     if (!settings.name) settings.name = 'Untitled Project';
+    const stableId = getStableProjectId(settings, settings.name);
+    if (stableId) settings.id = stableId;
+    else if (activeId) settings.id = activeId;
+    // Allinea startX/Y/room al player (spawnSettings.isPlayer) — evita drift con walk_character
+    try {
+      characterFrames.forEach((charData, name) => {
+        if (!charData || !charData.spawnSettings || charData.spawnSettings.isPlayer !== true) return;
+        const sp = charData.spawnSettings;
+        settings.startingPlayer = name;
+        if (sp.roomId) {
+          settings.startRoomId = sp.roomId;
+          settings.startRoom = sp.roomId;
+        }
+        if (typeof sp.x === 'number' && !isNaN(sp.x)) settings.startX = sp.x;
+        if (typeof sp.y === 'number' && !isNaN(sp.y)) settings.startY = sp.y;
+      });
+    } catch (_) {}
     // Normalize start config types
     if (typeof settings.startX !== 'undefined') settings.startX = Number(settings.startX) || 0;
     if (typeof settings.startY !== 'undefined') settings.startY = Number(settings.startY) || 0;
     // Map startRoomId to startRoom for runtime compatibility
     if (settings.startRoomId && !settings.startRoom) {
       settings.startRoom = settings.startRoomId;
+    }
+    // Cursor action text overlay (optional)
+    const actionTextToggle = document.getElementById('show-cursor-action-text');
+    if (actionTextToggle) {
+      settings.showCursorActionText = !!actionTextToggle.checked;
+    } else if (typeof settings.showCursorActionText === 'undefined') {
+      settings.showCursorActionText = false;
     }
     return settings;
   }
@@ -11692,6 +14788,111 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       })),
       state: Game.getState()
     };
+  }
+
+  function serializeDialogues() {
+    const list = Array.isArray(window.projectDialogues) ? window.projectDialogues : [];
+    return list.map(d => normalizeDialogueForSerialize(d)).filter(Boolean);
+  }
+
+  function normalizeDialogueForSerialize(raw) {
+    const logic = window.AmiantoDialogueLogic;
+    if (logic && typeof logic.normalizeDialogueDef === 'function') {
+      return logic.normalizeDialogueDef(raw);
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || '').trim();
+    if (!id) return null;
+    const name = String(raw.name || id).trim() || id;
+    const nodesIn = (raw.nodes && typeof raw.nodes === 'object') ? raw.nodes : {};
+    const nodes = {};
+    Object.keys(nodesIn).forEach(nid => {
+      const n = normalizeDialogueNodeForSerialize(nodesIn[nid], nid);
+      if (n) nodes[n.id] = n;
+    });
+    let startNodeId = String(raw.startNodeId || '').trim();
+    if (!startNodeId || !nodes[startNodeId]) {
+      const keys = Object.keys(nodes);
+      startNodeId = keys.length ? keys[0] : '';
+    }
+    return { id, name, startNodeId, nodes };
+  }
+
+  function normalizeDialogueNodeForSerialize(raw, fallbackId) {
+    const logic = window.AmiantoDialogueLogic;
+    if (logic && typeof logic.normalizeNode === 'function') {
+      return logic.normalizeNode(raw, fallbackId);
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || fallbackId || '').trim();
+    if (!id) return null;
+    const type = String(raw.type || 'end').toLowerCase();
+    if (type === 'line') {
+      return {
+        id,
+        type: 'line',
+        speaker: String(raw.speaker || '').trim(),
+        text: String(raw.text != null ? raw.text : ''),
+        next: String(raw.next || '').trim()
+      };
+    }
+    if (type === 'choice') {
+      const options = Array.isArray(raw.options) ? raw.options.map((opt, i) => ({
+        id: String((opt && opt.id) || `opt_${i}`).trim(),
+        text: String((opt && opt.text) != null ? opt.text : '').trim(),
+        next: String((opt && opt.next) || '').trim()
+      })).filter(o => o.id) : [];
+      return { id, type: 'choice', options };
+    }
+    if (type === 'jump') {
+      return { id, type: 'jump', target: String(raw.target || raw.next || '').trim() };
+    }
+    if (type === 'action') {
+      return { id, type: 'action', next: String(raw.next || '').trim(), actions: Array.isArray(raw.actions) ? raw.actions : [] };
+    }
+    return { id, type: 'end' };
+  }
+
+  /** Compact JSON helpers for dialogue condition/actions in the form editor */
+  function dialogueConditionToEditorString(cond) {
+    if (!cond) return '';
+    try { return JSON.stringify(cond); } catch (_) { return ''; }
+  }
+
+  function dialogueActionsToEditorString(actions) {
+    if (!Array.isArray(actions) || !actions.length) return '';
+    try { return JSON.stringify(actions); } catch (_) { return ''; }
+  }
+
+  function parseDialogueConditionFromEditor(str) {
+    const s = String(str || '').trim();
+    if (!s) return undefined;
+    try {
+      const parsed = JSON.parse(s);
+      const logic = window.AmiantoDialogueLogic;
+      if (logic && logic.normalizeCondition) {
+        return logic.normalizeCondition(parsed) || undefined;
+      }
+      return parsed;
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  function parseDialogueActionsFromEditor(str) {
+    const s = String(str || '').trim();
+    if (!s) return undefined;
+    try {
+      const parsed = JSON.parse(s);
+      const logic = window.AmiantoDialogueLogic;
+      if (logic && logic.normalizeActions) {
+        const list = logic.normalizeActions(parsed);
+        return list.length ? list : undefined;
+      }
+      return Array.isArray(parsed) ? parsed : undefined;
+    } catch (_) {
+      return undefined;
+    }
   }
   
   function serializeEventConditions() {
@@ -11720,6 +14921,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   window.serializeProject = function() {
+    syncEditorRoomStateBeforeSerialize();
+    syncEditorScriptsToRoomsBeforeSerialize();
     const projectObj = {
       format: 'amianto-game',
       version: 1,
@@ -11730,6 +14933,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       },
       settings: serializeSettings(),
       rooms: serializeRooms(),
+      roomAnimations: serializeRoomAnimationsCatalog(),
       guis: serializeGUI(),
       characters: serializeCharacters(),
       inventory: serializeInventory(),
@@ -11737,6 +14941,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       attachments: serializeAttachments(),
       cursors: serializeCursors(),
       variables: serializeVariables(),
+      dialogues: serializeDialogues(),
       eventConditions: serializeEventConditions(),
       resourcesCatalog: (window.amiantoResources && typeof window.amiantoResources.getCatalog === 'function')
         ? window.amiantoResources.getCatalog()
@@ -11750,13 +14955,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       // Prova a ottenere projectId da settings.id o normalizzando settings.name
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      const activeProjectId = localStorage.getItem('amiantoActiveProjectId');
       if (projectObj.settings && projectObj.settings.id) {
         projectObj._meta.projectId = projectObj.settings.id;
       } else if (projectObj.settings && projectObj.settings.name) {
         // Normalizza il nome come viene fatto in saveCurrentProject
-        projectObj._meta.projectId = projectObj.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-      } else if (activeProjectName) {
-        projectObj._meta.projectId = activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+        projectObj._meta.projectId = normalizeProjectIdFromName(projectObj.settings.name);
+      } else if (activeProjectId || activeProjectName) {
+        projectObj._meta.projectId = activeProjectId || normalizeProjectIdFromName(activeProjectName);
       }
     }
     
@@ -11791,7 +14997,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     try {
       if (!navigator.storage || !navigator.storage.getDirectory) return null;
       
-      // Debounce: se è passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
+      // Debounce: se Ã¨ passato meno di OPFS_SAVE_DEBOUNCE_MS dall'ultimo salvataggio, aspetta
       const now = Date.now();
       const timeSinceLastSave = now - lastOpfsSaveTime;
       
@@ -11818,8 +15024,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       lastOpfsSaveTime = now;
       return await saveProjectJsonToOPFSInternal(jsonString, projectName);
     } catch (err) {
-      // Non loggare errori OPFS come warning - è solo un fallback opzionale
-      // OPFS può fallire per vari motivi (permessi, sicurezza browser, ecc.)
+      // Non loggare errori OPFS come warning - Ã¨ solo un fallback opzionale
+      // OPFS puÃ² fallire per vari motivi (permessi, sicurezza browser, ecc.)
       return null;
     }
   }
@@ -11892,23 +15098,108 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  /** Conta stringhe data:…;base64, nel progetto (immagini, audio, ecc.). */
+  const EMBEDDED_DATA_URL_RE = /^data:[^;]+;base64,/i;
+  const FIRESTORE_ASSET_FIELD_KEYS = new Set([
+    'background', 'image', 'toggleIcon', 'backgroundImage', 'balloon', 'balloonImage',
+    'cursorImage', 'customFont', 'backgroundRef', 'imageRef', 'toggleIconRef'
+  ]);
+
+  function isEmbeddedDataUrl(value) {
+    return typeof value === 'string' && EMBEDDED_DATA_URL_RE.test(value);
+  }
+
+  function isAssetRefString(value) {
+    return typeof value === 'string' && value.startsWith('asset:');
+  }
+
+  /** Conta stringhe data:â€¦;base64, nel progetto (immagini, audio, ecc.). */
   function countEmbeddedDataUrls(root) {
-    let count = 0;
-    const walk = (v) => {
-      if (typeof v === 'string' && /^data:[^;]+;base64,/i.test(v)) {
-        count++;
+    return collectEmbeddedDataUrlStats(root).embeddedAssetCount;
+  }
+
+  /** Somma i byte delle stringhe data:â€¦;base64, ancora nel progetto serializzato. */
+  function measureEmbeddedDataUrlBytes(root) {
+    return collectEmbeddedDataUrlStats(root).embeddedBytes;
+  }
+
+  /**
+   * Statistiche asset embedded (path, byte, top offenders).
+   * @param {*} root
+   * @returns {{ embeddedAssetCount: number, embeddedBytes: number, offenders: Array<{path:string,bytes:number}>, largestEmbeddedAsset: {path:string,bytes:number}|null }}
+   */
+  function collectEmbeddedDataUrlStats(root) {
+    const offenders = [];
+    const walk = (v, path) => {
+      if (typeof v === 'string' && EMBEDDED_DATA_URL_RE.test(v)) {
+        const bytes = new Blob([v]).size;
+        offenders.push({ path: path || '(root)', bytes });
         return;
       }
       if (!v || typeof v !== 'object') return;
       if (Array.isArray(v)) {
-        v.forEach(walk);
+        v.forEach((item, i) => walk(item, `${path}[${i}]`));
         return;
       }
-      Object.values(v).forEach(walk);
+      for (const [k, child] of Object.entries(v)) {
+        const childPath = path ? `${path}.${k}` : k;
+        walk(child, childPath);
+      }
     };
-    walk(root);
+    walk(root, '');
+    offenders.sort((a, b) => b.bytes - a.bytes);
+    const embeddedBytes = offenders.reduce((sum, o) => sum + o.bytes, 0);
+    return {
+      embeddedAssetCount: offenders.length,
+      embeddedBytes,
+      offenders,
+      largestEmbeddedAsset: offenders[0] || null
+    };
+  }
+
+  /** Conta base64 solo nei campi asset (esclude scripts/eventConditions dove il testo puÃ² contenere "data:"). */
+  function measurePendingAssetDataUrlBytes(projectObj) {
+    if (!projectObj || typeof projectObj !== 'object') return 0;
+    let total = 0;
+    const assetRoots = [
+      projectObj.rooms,
+      projectObj.guis,
+      projectObj.characters,
+      projectObj.inventory,
+      projectObj.cursors,
+      projectObj.resourcesCatalog
+    ];
+    for (const root of assetRoots) {
+      if (root) total += measureEmbeddedDataUrlBytes(root);
+    }
+    return total;
+  }
+
+  function countPendingAssetDataUrls(projectObj) {
+    if (!projectObj || typeof projectObj !== 'object') return 0;
+    let count = 0;
+    const assetRoots = [
+      projectObj.rooms,
+      projectObj.guis,
+      projectObj.characters,
+      projectObj.inventory,
+      projectObj.cursors,
+      projectObj.resourcesCatalog
+    ];
+    for (const root of assetRoots) {
+      if (root) count += countEmbeddedDataUrls(root);
+    }
     return count;
+  }
+
+  /** Stima = payload canonico (stesso oggetto del salvataggio). */
+  function estimateFirestorePayloadBytes(projectObj) {
+    return measureFirestorePayloadBytes(projectObj);
+  }
+
+  function formatProjectSizeLabel(bytes) {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${bytes} B`;
   }
 
   function slimResourcesCatalogForFirestore(catalog) {
@@ -11939,32 +15230,476 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     return codes;
   }
 
-  /** Rimuove scripts Hotspot:* duplicati se già in rooms[].hotspots[].scripts.onClick */
-  function dedupeHotspotScriptsForFirestore(projectObj) {
-    const clone = JSON.parse(JSON.stringify(projectObj));
-    if (!clone.scripts || typeof clone.scripts !== 'object') return clone;
-    const embeddedById = collectHotspotOnClickCodesById(clone);
-    const scripts = { ...clone.scripts };
-    for (const key of Object.keys(scripts)) {
-      if (!key.startsWith('Hotspot:')) continue;
-      const hotspotId = key.slice('Hotspot:'.length);
-      const embedded = embeddedById.get(hotspotId);
-      const legacy = String(scripts[key] || '').trim();
-      if (embedded && legacy && embedded === legacy) {
-        delete scripts[key];
-      }
+  function sanitizeUndefinedDeep(value) {
+    if (value === undefined) return null;
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(sanitizeUndefinedDeep);
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v === undefined) continue;
+      out[k] = sanitizeUndefinedDeep(v);
     }
-    clone.scripts = scripts;
-    return clone;
+    return out;
   }
 
+  function normalizeScriptKeysInFirestorePayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.scripts && typeof payload.scripts === 'object') {
+      const next = {};
+      for (const [key, content] of Object.entries(payload.scripts)) {
+        next[migrateLegacyScriptKey(key)] = String(content || '');
+      }
+      payload.scripts = next;
+    }
+    if (payload.attachments && typeof payload.attachments === 'object') {
+      const mapNames = ['roomScripts', 'objectScripts', 'characterScripts', 'inventoryScripts', 'guiScripts'];
+      for (const mapName of mapNames) {
+        const m = payload.attachments[mapName];
+        if (!m || typeof m !== 'object') continue;
+        const next = {};
+        for (const [k, v] of Object.entries(m)) {
+          if (mapName === 'roomScripts' && v && typeof v === 'object' && !Array.isArray(v)) {
+            const entry = {};
+            Object.keys(v).forEach(ek => {
+              if (v[ek]) entry[ek] = migrateLegacyScriptKey(String(v[ek]));
+            });
+            next[String(k)] = entry;
+          } else {
+            next[migrateLegacyScriptKey(k)] = String(v || '');
+          }
+        }
+        payload.attachments[mapName] = next;
+      }
+    }
+    if (Array.isArray(payload.cursors)) {
+      payload.cursors.forEach(c => {
+        if (c && c.scriptName) c.scriptName = migrateLegacyScriptKey(String(c.scriptName));
+      });
+    }
+    const inv = payload.inventory;
+    if (inv && typeof inv === 'object' && Array.isArray(inv.items)) {
+      inv.items.forEach(item => {
+        if (item && item.scriptName != null && String(item.scriptName).trim()) {
+          item.scriptName = migrateLegacyScriptKey(String(item.scriptName));
+        }
+      });
+    }
+  }
+
+  /** Inventario: solo *Ref (asset:), mai base64 nei campi legacy. */
+  function normalizeInventoryAssetRefsForFirestore(inv) {
+    if (!inv || typeof inv !== 'object') return;
+    const promoteRef = (legacyKey, refKey) => {
+      const legacy = inv[legacyKey];
+      const existing = inv[refKey];
+      const src = existing != null && existing !== '' ? existing : legacy;
+      if (src == null || src === '') {
+        delete inv[legacyKey];
+        delete inv[refKey];
+        return;
+      }
+      if (typeof src !== 'string') {
+        delete inv[legacyKey];
+        delete inv[refKey];
+        return;
+      }
+      if (isAssetRefString(src)) {
+        inv[refKey] = src;
+      } else if (isEmbeddedDataUrl(src)) {
+        delete inv[refKey];
+      } else if (!src.startsWith('data:')) {
+        inv[refKey] = src;
+      }
+      delete inv[legacyKey];
+    };
+    promoteRef('background', 'backgroundRef');
+    promoteRef('toggleIcon', 'toggleIconRef');
+    if (Array.isArray(inv.items)) {
+      inv.items = inv.items.map(item => {
+        if (!item || typeof item !== 'object') return item;
+        const next = { ...item };
+        const src = next.imageRef != null && next.imageRef !== '' ? next.imageRef : next.image;
+        if (typeof src === 'string' && isAssetRefString(src)) {
+          next.imageRef = src;
+        } else if (typeof src === 'string' && isEmbeddedDataUrl(src)) {
+          delete next.imageRef;
+        } else if (typeof src === 'string' && src && !src.startsWith('data:')) {
+          next.imageRef = src;
+        } else {
+          delete next.imageRef;
+        }
+        delete next.image;
+        if (next.scriptName != null) next.scriptName = String(next.scriptName);
+        return next;
+      });
+    }
+    if (Array.isArray(inv.slots)) {
+      inv.slots = inv.slots.filter(s => s && s.id !== '__drawing__');
+    }
+  }
+
+  function normalizeAssetRefFieldsForFirestore(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    normalizeInventoryAssetRefsForFirestore(payload.inventory);
+    const walk = (node, path) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((item, i) => walk(item, `${path}[${i}]`));
+        return;
+      }
+      for (const [key, val] of Object.entries(node)) {
+        const childPath = path ? `${path}.${key}` : key;
+        if (FIRESTORE_ASSET_FIELD_KEYS.has(key) && typeof val === 'string') {
+          if (isEmbeddedDataUrl(val)) {
+            node[key] = null;
+          } else if (isAssetRefString(val)) {
+            node[key] = val;
+          }
+        } else if (val && typeof val === 'object') {
+          walk(val, childPath);
+        }
+      }
+    };
+    walk(payload, '');
+  }
+
+  function removeEditorTransientFieldsFromFirestorePayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (Array.isArray(payload.rooms)) {
+      for (const room of payload.rooms) {
+        if (!Array.isArray(room.hotspots)) continue;
+        for (const h of room.hotspots) {
+          if (h && h._meta) delete h._meta;
+        }
+      }
+    }
+    delete payload._editorCache;
+    delete payload._playtestSnapshot;
+  }
+
+  function detectDuplicateScriptBodies(scriptsObj) {
+    const byBody = new Map();
+    const duplicates = [];
+    if (!scriptsObj || typeof scriptsObj !== 'object') return duplicates;
+    for (const [key, code] of Object.entries(scriptsObj)) {
+      const body = String(code || '').trim();
+      if (!body) continue;
+      if (byBody.has(body)) {
+        duplicates.push({ keys: [byBody.get(body), key], bytes: new Blob([body]).size });
+      } else {
+        byBody.set(body, key);
+      }
+    }
+    return duplicates;
+  }
+
+  /** Rimuove scripts Hotspot:* duplicati se giÃ  in rooms[].hotspots[].scripts.onClick */
+  function dedupeHotspotScriptsInPayload(payload) {
+    if (!payload || typeof payload !== 'object') return payload;
+    if (!payload.scripts || typeof payload.scripts !== 'object') return payload;
+    payload.scripts = pruneDuplicateHotspotScriptsFromScriptsObject({ ...payload.scripts }, payload);
+    return payload;
+  }
+
+  /**
+   * Unica sorgente di veritÃ  per payload canonico, stima dimensione ed export slim.
+   * @param {Object} projectObj - Progetto da serializeProject() (o equivalente)
+   * @returns {Object} Clone normalizzato pronto per JSON.stringify / salvataggio locale
+   */
   function prepareProjectPayloadForFirestore(projectObj) {
-    let payload = dedupeHotspotScriptsForFirestore(projectObj);
+    if (!projectObj || typeof projectObj !== 'object') {
+      return projectObj;
+    }
+    const payload = sanitizeUndefinedDeep(JSON.parse(JSON.stringify(projectObj)));
+    mergeLegacyHotspotScriptsIntoRooms(payload);
+    dedupeHotspotScriptsInPayload(payload);
+    normalizeScriptKeysInFirestorePayload(payload);
+    normalizeAssetRefFieldsForFirestore(payload);
+    removeEditorTransientFieldsFromFirestorePayload(payload);
     payload.resourcesCatalog = slimResourcesCatalogForFirestore(projectObj.resourcesCatalog);
     return payload;
   }
 
-  /** Progetti legacy: script solo in scripts['Hotspot:id'] → hotspot.scripts.onClick */
+  function measureFirestorePayloadBytes(projectObj) {
+    const payload = prepareProjectPayloadForFirestore(projectObj);
+    return new Blob([JSON.stringify(payload)]).size;
+  }
+
+  /**
+   * @param {Object} payload - Payload giÃ  preparato o grezzo
+   * @param {{ autoStrip?: boolean, warn?: boolean }} [options]
+   */
+  function assertNoEmbeddedDataUrls(payload, options = {}) {
+    const prepared = payload && payload.format === 'amianto-game'
+      ? prepareProjectPayloadForFirestore(payload)
+      : payload;
+    const stats = collectEmbeddedDataUrlStats(prepared);
+    const warn = options.warn !== false;
+    if (stats.embeddedAssetCount > 0 && warn) {
+      const top = stats.offenders.slice(0, 5).map(o => `${o.path} (${formatProjectSizeLabel(o.bytes)})`).join(', ');
+      const msg = `[Payload] ${stats.embeddedAssetCount} embedded (base64) assets in payload (${formatProjectSizeLabel(stats.embeddedBytes)}). Upload to storage before saving. Top: ${top}`;
+      console.warn(msg, stats);
+      addDebugMessage(msg, 'warning');
+    }
+    if (options.autoStrip && stats.embeddedAssetCount > 0) {
+      normalizeAssetRefFieldsForFirestore(prepared.inventory);
+      const walk = (node) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+          node.forEach(walk);
+          return;
+        }
+        for (const [key, val] of Object.entries(node)) {
+          if (typeof val === 'string' && isEmbeddedDataUrl(val) && FIRESTORE_ASSET_FIELD_KEYS.has(key)) {
+            node[key] = null;
+          } else if (val && typeof val === 'object') {
+            walk(val);
+          }
+        }
+      };
+      walk(prepared);
+    }
+    return stats;
+  }
+
+  function getPayloadSectionByteBreakdown(payload) {
+    const sections = {};
+    if (!payload || typeof payload !== 'object') return sections;
+    for (const key of Object.keys(payload)) {
+      try {
+        sections[key] = new Blob([JSON.stringify(payload[key])]).size;
+      } catch (_) {
+        sections[key] = 0;
+      }
+    }
+    return sections;
+  }
+
+  function debugProjectPayloadSize() {
+    const raw = typeof window.serializeProject === 'function' ? window.serializeProject() : null;
+    if (!raw) {
+      console.warn('[PayloadDebug] serializeProject non disponibile');
+      return null;
+    }
+    const prepared = prepareProjectPayloadForFirestore(raw);
+    const jsonString = JSON.stringify(prepared);
+    const totalBytes = new Blob([jsonString]).size;
+    const embedded = collectEmbeddedDataUrlStats(prepared);
+    const pendingEmbedded = collectEmbeddedDataUrlStats({
+      rooms: raw.rooms,
+      guis: raw.guis,
+      characters: raw.characters,
+      inventory: raw.inventory,
+      cursors: raw.cursors,
+      resourcesCatalog: raw.resourcesCatalog
+    });
+    const breakdown = getPayloadSectionByteBreakdown(prepared);
+    const scriptDupes = detectDuplicateScriptBodies(prepared.scripts);
+    const report = {
+      totalBytes,
+      totalLabel: formatProjectSizeLabel(totalBytes),
+      embeddedAssetCount: embedded.embeddedAssetCount,
+      embeddedBytes: embedded.embeddedBytes,
+      largestEmbeddedAsset: embedded.largestEmbeddedAsset,
+      topEmbeddedOffenders: embedded.offenders.slice(0, 10),
+      pendingBeforePrepare: pendingEmbedded,
+      sectionBreakdown: breakdown,
+      duplicateScriptBodies: scriptDupes
+    };
+    console.group('[PayloadDebug] Project payload');
+    console.log('Dimensione serializzata (prepared):', report.totalLabel, `(${totalBytes} B)`);
+    console.log('Embedded nel payload prepared:', embedded);
+    console.log('Embedded negli asset live (pre-prepare):', pendingEmbedded);
+    console.log('Breakdown sezioni (byte):', breakdown);
+    if (scriptDupes.length) console.warn('Script duplicati (stesso corpo):', scriptDupes);
+    console.groupEnd();
+    return report;
+  }
+
+  /** Allinea nomi ref inventario legacy â†’ campi editor (background, image, â€¦). */
+  function migrateLegacyInventoryRefsOnLoad(projectObj) {
+    const inv = projectObj && projectObj.inventory;
+    if (!inv || typeof inv !== 'object') return;
+    if (inv.backgroundRef && !inv.background) inv.background = inv.backgroundRef;
+    if (inv.toggleIconRef && !inv.toggleIcon) inv.toggleIcon = inv.toggleIconRef;
+    if (Array.isArray(inv.items)) {
+      inv.items.forEach(item => {
+        if (item && item.imageRef && !item.image) item.image = item.imageRef;
+      });
+    }
+  }
+
+  function migrateEmbeddedAssetsOnProjectLoad(projectObj) {
+    if (!projectObj) return { embeddedCount: 0, embeddedBytes: 0 };
+    migrateLegacyInventoryRefsOnLoad(projectObj);
+    const stats = collectEmbeddedDataUrlStats({
+      rooms: projectObj.rooms,
+      guis: projectObj.guis,
+      characters: projectObj.characters,
+      inventory: projectObj.inventory,
+      cursors: projectObj.cursors,
+      resourcesCatalog: projectObj.resourcesCatalog
+    });
+    if (stats.embeddedAssetCount > 0) {
+      console.warn(
+        `[Load] Project has ${stats.embeddedAssetCount} embedded assets (${formatProjectSizeLabel(stats.embeddedBytes)}). ` +
+        'Use Save project to migrate them to storage.'
+      );
+      window.__amiantoEmbeddedAssetsOnLoad = stats;
+    } else {
+      window.__amiantoEmbeddedAssetsOnLoad = null;
+    }
+    return stats;
+  }
+
+  window.prepareProjectPayloadForFirestore = prepareProjectPayloadForFirestore;
+  window.measureFirestorePayloadBytes = measureFirestorePayloadBytes;
+  window.collectEmbeddedDataUrlStats = collectEmbeddedDataUrlStats;
+  window.assertNoEmbeddedDataUrls = assertNoEmbeddedDataUrls;
+  window.debugProjectPayloadSize = debugProjectPayloadSize;
+  window.markAmiantoProjectDirty = function() {
+    const wasDirty = !!window.__amiantoProjectDirty;
+    window.__amiantoProjectDirty = true;
+    // Evita flash UI se siamo già dirty (o in mezzo a un save)
+    if (!wasDirty && !amiantoPersistInProgress) {
+      updateProjectSaveStatusUI('dirty');
+    }
+    scheduleProjectSizeIndicatorRefresh(350);
+    if (typeof scheduleAmiantoDiskPersist === 'function') {
+      scheduleAmiantoDiskPersist();
+    }
+  };
+
+  function clearAmiantoProjectDirty() {
+    window.__amiantoProjectDirty = false;
+    if (amiantoDiskSaveTimer) {
+      clearTimeout(amiantoDiskSaveTimer);
+      amiantoDiskSaveTimer = null;
+    }
+  }
+
+  const AMIANTO_PERIODIC_AUTOSAVE_MS = 45000;
+  let amiantoPeriodicAutosaveTimer = null;
+
+  function formatSaveStatusTime(when) {
+    if (!when) return '';
+    try {
+      return new Date(when).toLocaleTimeString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function updateProjectSaveStatusUI(state, detail) {
+    const el = document.getElementById('projectSaveStatus');
+    if (!el) return;
+    const active = localStorage.getItem('amiantoActiveProjectName');
+    if (!active) {
+      el.textContent = 'No project open';
+      el.style.color = '#666';
+      return;
+    }
+    if (state === 'saving') {
+      el.textContent = 'Autosaving…';
+      el.style.color = '#ffaa00';
+      return;
+    }
+    if (state === 'dirty') {
+      el.textContent = 'Unsaved changes';
+      el.style.color = '#ff8844';
+      return;
+    }
+    if (state === 'disk-failed') {
+      const t = formatSaveStatusTime(window.__amiantoLastCacheSaveAt);
+      el.textContent = 'Disk save failed (cache OK' + (t ? ' ' + t : '') + ')' + (detail ? `: ${detail}` : '');
+      el.style.color = '#ff4444';
+      el.title = 'Browser cache updated, but the linked .amnt file was not written. Unsaved changes remain for disk.';
+      return;
+    }
+    if (state === 'error') {
+      el.textContent = 'Autosave failed' + (detail ? `: ${detail}` : '');
+      el.style.color = '#ff4444';
+      return;
+    }
+    if (state === 'cache-saved') {
+      const t = formatSaveStatusTime(detail || window.__amiantoLastCacheSaveAt);
+      el.textContent = 'Saved to cache' + (t ? ' ' + t : '');
+      el.style.color = '#9acd32';
+      el.title = 'Project saved to browser cache only (no linked .amnt file, or disk write skipped).';
+      return;
+    }
+    // disk-saved / saved
+    const when = detail || window.__amiantoLastDiskSaveAt || window.__amiantoLastCacheSaveAt;
+    const t = formatSaveStatusTime(when);
+    if (window.__amiantoLastDiskSaveAt && (!detail || detail === window.__amiantoLastDiskSaveAt)) {
+      el.textContent = 'Saved to disk' + (t ? ' ' + t : '');
+      el.title = 'Linked .amnt file written successfully.';
+    } else {
+      el.textContent = 'Saved to cache' + (t ? ' ' + t : '');
+      el.title = 'Saved to browser cache.';
+    }
+    el.style.color = '#39ff14';
+  }
+
+  function applyPersistResultToSaveStatus(result) {
+    if (!result) return;
+    if (result.ok === false && result.reason === 'in-progress') return;
+    if (result.ok === false && result.reason === 'disk-failed') {
+      updateProjectSaveStatusUI(
+        'disk-failed',
+        result.error && result.error.message ? result.error.message : ''
+      );
+      return;
+    }
+    if (result.ok && result.diskPath) {
+      updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
+      return;
+    }
+    if (result.ok && result.cacheOnly) {
+      updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+      return;
+    }
+    if (result.ok) {
+      updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+    }
+  }
+
+  function startAmiantoPeriodicAutosave() {
+    if (amiantoPeriodicAutosaveTimer) return;
+    amiantoPeriodicAutosaveTimer = setInterval(() => {
+      if (!window.__amiantoProjectDirty) return;
+      if (amiantoPersistInProgress) return;
+      const projectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!projectName) return;
+      updateProjectSaveStatusUI('saving');
+      persistEditorProject({ silent: true, promptForLocation: false })
+        .then((result) => {
+          applyPersistResultToSaveStatus(result);
+        })
+        .catch((err) => {
+          console.warn('[AutoSave] Periodic save failed:', err);
+          updateProjectSaveStatusUI('error', err && err.message ? err.message : 'error');
+        });
+    }, AMIANTO_PERIODIC_AUTOSAVE_MS);
+  }
+
+  function markDialoguesDirty() {
+    if (typeof window.markAmiantoProjectDirty === 'function') {
+      window.markAmiantoProjectDirty();
+    }
+  }
+  window.markDialoguesDirty = markDialoguesDirty;
+
+  // Avvia autosave periodico (cache + .amnt se collegato)
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startAmiantoPeriodicAutosave);
+    } else {
+      startAmiantoPeriodicAutosave();
+    }
+  }
+
+  /** Progetti legacy: script solo in scripts['Hotspot:id'] â†’ hotspot.scripts.onClick */
   function mergeLegacyHotspotScriptsIntoRooms(projectObj) {
     if (!projectObj || !projectObj.scripts || !Array.isArray(projectObj.rooms)) return;
     for (const [key, content] of Object.entries(projectObj.scripts)) {
@@ -11987,737 +15722,66 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
   }
+  window.mergeLegacyHotspotScriptsIntoRooms = mergeLegacyHotspotScriptsIntoRooms;
 
-  // ================================
-  // FIRESTORE PERSISTENCE SYSTEM
-  // ================================
-  // 
-  // AGGIUNTO: Sistema completo di salvataggio persistente su Firestore
-  // 
-  // COSA È GIÀ IMPLEMENTATO:
-  // - Firebase è già configurato in firebase-config.js (window.firebaseDB disponibile)
-  // - serializeProject() esiste e funziona
-  // - applyProjectObject() esiste per caricare progetti
-  // - localStorage/OPFS come cache locale
-  // 
-  // COSA È STATO AGGIUNTO:
-  // - saveProjectToFirestore(): Salva progetto su Firestore
-  // - loadProjectFromFirestore(): Carica progetto da Firestore
-  // - listProjectsFromFirestore(): Lista progetti da Firestore (TODO: integrare in UI)
-  // - autosaveToCache(): Autosave su cache locale come fallback
-  // - Modificato saveCurrentProject(): Ora salva anche su Firestore
-  // - Modificato openProjectByName(): Carica prima da Firestore, poi fallback cache
-  // 
-  // STRUTTURA FIRESTORE:
-  // users/{userId}/projects/{projectId}
-  // {
-  //   name: string,
-  //   projectData: string (JSON serializzato),
-  //   createdAt: timestamp,
-  //   updatedAt: timestamp
-  // }
-  // 
-  // TODO:
-  // - Implementare sistema di projectId univoci (attualmente usa nome normalizzato)
-  // - Integrare listProjectsFromFirestore() nella UI di selezione progetti
-  // - Aggiungere autosave periodico (ogni 30-60 secondi)
-  //
-
-  /**
-   * Salva un progetto su Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto (usa il nome del progetto come ID temporaneo)
-   * @param {Object} projectData - Oggetto progetto completo (già serializzato)
-   * @returns {Promise<boolean>} - true se salvato con successo, false altrimenti
-   * 
-   * GIÀ IMPLEMENTATO: Firebase è già configurato in firebase-config.js
-   * AGGIUNTO: Questa funzione per salvare su Firestore
-   */
-  async function saveProjectToFirestore(userId, projectId, projectData) {
-    try {
-      console.log('[Firestore] Tentativo salvataggio progetto...', { userId, projectId });
-      
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Firestore] Firestore non disponibile (window.firebaseDB è null/undefined)');
-        addDebugMessage('[Firestore] Firestore unavailable, using cache fallback', 'warning');
-        return false;
-      }
-      console.log('[Firestore] Firestore DB disponibile:', !!window.firebaseDB);
-
-      // Verifica che userId e projectId siano validi
-      if (!userId || !projectId) {
-        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
-        addDebugMessage('[Firestore] userId o projectId mancanti', 'error');
-        return false;
-      }
-
-      const projectName = projectData.settings && projectData.settings.name ? projectData.settings.name : projectId;
-      const jsonString = JSON.stringify(projectData);
-      const dataSizeBytes = new Blob([jsonString]).size;
-      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      const dataURLCount = countEmbeddedDataUrls(projectData);
-      console.log('[Firestore] Dati progetto preparati:', { projectName, dataSize: jsonString.length, dataSizeBytes, dataSizeMB: `${dataSizeMB} MB`, dataURLCount });
-
-      if (dataURLCount > 0) {
-        const errorMsg = `Salvataggio Firestore bloccato: ${dataURLCount} asset ancora in base64 (data:…). Carica tutti gli asset su storage prima di salvare.`;
-        console.error('[Firestore] ❌', errorMsg);
-        addDebugMessage(errorMsg, 'error');
-        throw new Error(errorMsg);
-      }
-      
-      // Firestore ha un limite di 1MB per campo
-      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
-      if (dataSizeBytes > FIRESTORE_MAX_SIZE) {
-        const errorMsg = `Project is too large (${dataSizeMB} MB) to save to Firestore (limit: 1MB). Consider reducing the number of frames or splitting the project.`;
-        console.error('[Firestore] ❌', errorMsg);
-        addDebugMessage(errorMsg, 'error');
-        throw new Error(errorMsg);
-      }
-
-      // Struttura dati Firestore: users/{userId}/projects/{projectId}
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      console.log('[Firestore] Reference creata:', projectRef.path);
-
-      // Verifica se il documento esiste già per preservare createdAt
-      const docSnapshot = await projectRef.get();
-      const documentExists = docSnapshot.exists;
-      
-      // Prepara i dati da salvare
-      const firestoreData = {
-        name: projectName,
-        projectData: jsonString, // Salva come stringa JSON per evitare limiti di profondità Firestore
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-      
-      // Aggiungi createdAt solo se il documento non esiste
-      if (!documentExists) {
-        firestoreData.createdAt = firebase.firestore.FieldValue.serverTimestamp();
-        console.log('[Firestore] Creazione nuovo documento');
-      } else {
-        console.log('[Firestore] Aggiornamento documento esistente');
-      }
-
-      console.log('[Firestore] 🔄 Tentativo scrittura su Firestore...');
-      
-      // Usa set con merge per creare o aggiornare
-      await projectRef.set(firestoreData, { merge: true });
-
-      console.log(`[Firestore] ✅ Progetto salvato con successo: ${projectName} (${projectId})`);
-      console.log(`[Firestore] 📊 Dettagli salvataggio:`, {
-        projectId,
-        projectName,
-        dataSize: `${dataSizeMB} MB`,
-        documentExists: documentExists ? 'aggiornato' : 'creato'
-      });
-      addDebugMessage(`[Firestore] Project saved: ${projectName}`, 'success');
-      
-      // Aggiorna i counter dopo salvataggio progetto
-      if (typeof updateProjectSizeIndicator === 'function') {
-        updateProjectSizeIndicator();
-      }
-      
-      return true;
-    } catch (error) {
-      console.error('[Firestore] ❌ Errore durante il salvataggio:', error);
-      console.error('[Firestore] Dettagli errore:', {
-        code: error.code,
-        message: error.message,
-        stack: error.stack
-      });
-      addDebugMessage(`[Firestore] Save error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
-      return false;
-    }
-  }
-
-  /**
-   * Carica un progetto da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto
-   * @returns {Promise<Object|null>} - Oggetto progetto o null se non trovato/errore
-   * 
-   * AGGIUNTO: Questa funzione per caricare da Firestore
-   */
-  async function loadProjectFromFirestore(userId, projectId) {
-    try {
-      console.log('[Firestore] Tentativo caricamento progetto...', { userId, projectId });
-      
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Firestore] Firestore non disponibile');
-        return null;
-      }
-
-      // Verifica che userId e projectId siano validi
-      if (!userId || !projectId) {
-        console.error('[Firestore] userId o projectId mancanti', { userId, projectId });
-        return null;
-      }
-
-      // Verifica che l'utente sia autenticato (per le regole di sicurezza)
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Firestore] Utente non autenticato - impossibile caricare da Firestore');
-        return null;
-      }
-
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid !== userId) {
-        console.error('[Firestore] userId non corrisponde a utente autenticato', {
-          userId,
-          currentAuthUid
-        });
-        return null;
-      }
-
-      console.log('[Firestore] Verifiche superate, accesso a Firestore...');
-
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      console.log('[Firestore] Reference creata:', projectRef.path);
-
-      const doc = await projectRef.get();
-
-      if (!doc.exists) {
-        console.log(`[Firestore] Progetto non trovato: ${projectId}`);
-        return null;
-      }
-
-      const data = doc.data();
-      if (!data || !data.projectData) {
-        console.error('[Firestore] Dati progetto non validi');
-        return null;
-      }
-
-      // Parse del JSON salvato
-      const projectObj = JSON.parse(data.projectData);
-      console.log(`[Firestore] ✅ Progetto caricato con successo: ${data.name || projectId}`);
-      addDebugMessage(`[Firestore] Project loaded: ${data.name || projectId}`, 'success');
-      return projectObj;
-    } catch (error) {
-      console.error('[Firestore] ❌ Errore durante il caricamento:', error);
-      console.error('[Firestore] Dettagli errore:', {
-        code: error.code,
-        message: error.message,
-        stack: error.stack
-      });
-      addDebugMessage(`[Firestore] Load error: ${error.message || error} (${error.code || 'unknown'})`, 'error');
-      return null;
-    }
-  }
-
-  /**
-   * Test connessione Firestore - funzione di debug
-   * AGGIUNTO: Funzione per testare se Firestore funziona correttamente
-   */
-  window.testFirestoreConnection = async function() {
-    console.log('=== TEST CONNESSIONE FIRESTORE ===');
-    
-    // 1. Verifica Firestore disponibile
-    if (!window.firebaseDB) {
-      console.error('❌ window.firebaseDB non disponibile');
-      addDebugMessage('❌ Firestore unavailable', 'error');
-      return false;
-    }
-    console.log('✅ window.firebaseDB disponibile');
-    
-    // 2. Verifica utente autenticato
-    if (!currentUser || !currentUser.uid) {
-      console.error('❌ Utente non autenticato o uid mancante');
-      addDebugMessage('❌ User not authenticated', 'error');
-      return false;
-    }
-    console.log('✅ Utente autenticato:', currentUser.uid);
-    
-    // 3. Test scrittura
-    try {
-      const testRef = window.firebaseDB
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('projects')
-        .doc('_test_connection');
-      
-      const testData = {
-        name: 'Test Connection',
-        projectData: '{"test": true}',
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-      
-      console.log('🔄 Tentativo scrittura test...');
-      await testRef.set(testData);
-      console.log('✅ Scrittura test riuscita!');
-      
-      // 4. Test lettura
-      console.log('🔄 Tentativo lettura test...');
-      const doc = await testRef.get();
-      if (doc.exists) {
-        console.log('✅ Lettura test riuscita!', doc.data());
-        addDebugMessage('✅ Test Firestore: connessione OK', 'success');
-        
-        // Pulisci documento di test
-        await testRef.delete();
-        console.log('🧹 Documento di test eliminato');
-        return true;
-      } else {
-        console.error('❌ Documento test non trovato dopo scrittura');
-        return false;
-      }
-    } catch (error) {
-      console.error('❌ Errore durante test:', error);
-      console.error('Dettagli:', {
-        code: error.code,
-        message: error.message
-      });
-      addDebugMessage(`❌ Firestore test failed: ${error.message} (${error.code})`, 'error');
-      return false;
-    }
-  };
-
-  /**
-   * Lista tutti i progetti di un utente da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti con metadata
-   * 
-   * AGGIUNTO: Questa funzione per listare progetti da Firestore
-   * TODO: Integrare questa funzione nella UI di selezione progetti
-   */
-  /**
-   * Lista progetti da Firestore
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti caricati da Firestore
-   * @throws {Error} - Lancia errori invece di ritornare array vuoto
-   */
-  async function listProjectsFromFirestore(userId) {
-    if (!window.firebaseDB) {
-      const error = new Error('Firestore database not available');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    if (!userId) {
-      const error = new Error('User ID is required');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    // Verifica che l'utente sia autenticato
-    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      const error = new Error('User not authenticated');
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    const currentAuthUid = window.firebaseAuth.currentUser.uid;
-    if (currentAuthUid !== userId) {
-      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
-      console.error('[Firestore] listProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    try {
-      const projectsRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects');
-
-      const projects = [];
-      let lastDoc = null;
-      let hasMore = true;
-      const batchSize = 100; // Firestore default limit
-
-      // Implementa paginazione per recuperare TUTTI i progetti
-      // Usa documentId come campo di ordinamento (sempre disponibile)
-      try {
-        const firebaseObj = window.firebase || firebase;
-        const FieldPath = firebaseObj.firestore.FieldPath;
-        
-        while (hasMore) {
-          let query = projectsRef.orderBy(FieldPath.documentId()).limit(batchSize);
-          
-          if (lastDoc) {
-            query = query.startAfter(lastDoc);
-          }
-
-          const snapshot = await query.get();
-          
-          if (snapshot.empty) {
-            hasMore = false;
-            break;
-          }
-
-          snapshot.forEach(doc => {
-            const data = doc.data();
-            projects.push({
-              id: doc.id,
-              name: data.name || doc.id,
-              updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-              createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-            });
-          });
-
-          // Se abbiamo meno documenti del batch size, non ci sono più documenti
-          if (snapshot.size < batchSize) {
-            hasMore = false;
-          } else {
-            // Prendi l'ultimo documento per la prossima query
-            lastDoc = snapshot.docs[snapshot.docs.length - 1];
-          }
-        }
-      } catch (orderByError) {
-        // Fallback: se orderBy fallisce, prova una query semplice
-        console.warn('[Firestore] Errore con orderBy, uso query semplice:', orderByError);
-        const snapshot = await projectsRef.get();
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          projects.push({
-            id: doc.id,
-            name: data.name || doc.id,
-            updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-            createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-          });
-        });
-      }
-
-      console.log(`[Firestore] Recuperati ${projects.length} progetti totali con paginazione`);
-      return projects;
-    } catch (error) {
-      // Distingui tra errori di permesso e altri errori
-      if (error.code === 'permission-denied') {
-        console.error('[Firestore] Permission denied error:', error);
-        console.error('[Firestore] Check Firestore security rules for user:', userId);
-        const permissionError = new Error(`Permission denied: ${error.message}`);
-        permissionError.code = 'permission-denied';
-        throw permissionError;
-      }
-      
-      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[Firestore] Network error:', error);
-        const networkError = new Error(`Network error: ${error.message}`);
-        networkError.code = 'network-error';
-        throw networkError;
-      }
-
-      console.error('[Firestore] Unexpected error during listing:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Normalizza un progetto per garantire struttura coerente
-   * @param {Object} project - Progetto da normalizzare
-   * @param {number} index - Indice opzionale per progetti senza nome
-   * @returns {Object} - Progetto normalizzato
-   */
-  function normalizeProject(project, index = null) {
-    if (!project || typeof project !== 'object') {
-      return {
-        settings: { name: `Project ${index !== null ? index + 1 : 'Unknown'}` },
-        updatedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        source: 'unknown'
-      };
-    }
-
-    return {
-      settings: project.settings || { name: project.name || `Project ${index !== null ? index + 1 : 'Unknown'}` },
-      updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
-      createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
-      source: project.source || 'unknown',
-      id: project.id || null
-    };
-  }
-
-  /**
-   * Carica progetti dalla cache localStorage
-   * @param {string} username - Username dell'utente
-   * @returns {Array} - Array di progetti normalizzati o array vuoto
-   */
-  function loadProjectsFromCache(username) {
-    if (!username) {
-      console.warn('[Cache] Username non disponibile per caricamento cache');
-      return [];
-    }
-
-    try {
-      const cacheKey = `amiantoProjects_${username}`;
-      const cachedData = localStorage.getItem(cacheKey);
-      
-      if (!cachedData) {
-        console.log('[Cache] Nessun dato in cache');
-        return [];
-      }
-
-      const projects = JSON.parse(cachedData);
-      
-      if (!Array.isArray(projects)) {
-        console.error('[Cache] Dati cache non sono un array:', typeof projects);
-        return [];
-      }
-
-      // Normalizza tutti i progetti
-      const normalizedProjects = projects.map((p, i) => normalizeProject(p, i));
-      console.log('[Cache] ✅ Caricati', normalizedProjects.length, 'progetti dalla cache');
-      return normalizedProjects;
-    } catch (error) {
-      console.error('[Cache] ❌ Errore parsing cache:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Salva progetti in cache localStorage
-   * @param {string} username - Username dell'utente
-   * @param {Array} projects - Array di progetti da salvare
-   */
-  function saveProjectsToCache(username, projects) {
-    if (!username) {
-      console.warn('[Cache] Username non disponibile per salvataggio cache');
-      return;
-    }
-
-    if (!Array.isArray(projects)) {
-      console.error('[Cache] Tentativo di salvare dati non-array in cache');
-      return;
-    }
-
-    try {
-      const cacheKey = `amiantoProjects_${username}`;
-      localStorage.setItem(cacheKey, JSON.stringify(projects));
-      console.log('[Cache] ✅ Salvati', projects.length, 'progetti in cache');
-    } catch (error) {
-      console.error('[Cache] ❌ Errore salvataggio cache:', error);
-    }
-  }
-
-  /**
-   * FUNZIONE PRINCIPALE: Ottiene progetti per la UI
-   * Questa è l'UNICA funzione che la UI deve usare per ottenere progetti
-   * Gestisce internamente cache e fallback
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti normalizzati (sempre un array, anche vuoto)
-   */
   async function getProjectsForUI(userId) {
-    if (!userId) {
-      console.error('[getProjectsForUI] userId mancante');
-      return [];
-    }
-
-    if (!currentUser || !currentUser.username) {
-      console.error('[getProjectsForUI] currentUser non disponibile');
-      return [];
-    }
-
-    const username = currentUser.username;
-
-    // STEP 1: Verifica se la cache esiste ed è valida
-    const cachedProjects = loadProjectsFromCache(username);
-    
-    // Se la cache esiste e ha progetti, usala immediatamente
-    // (ma aggiorna in background se possibile)
-    if (cachedProjects.length > 0) {
-      console.log('[getProjectsForUI] Cache trovata con', cachedProjects.length, 'progetti');
-      
-      // Prova ad aggiornare in background (non blocca il ritorno)
-      loadProjectsDirectlyFromFirestore(userId)
-        .then(firestoreProjects => {
-          if (Array.isArray(firestoreProjects) && firestoreProjects.length > 0) {
-            const normalized = firestoreProjects.map((p, i) => normalizeProject(p, i));
-            saveProjectsToCache(username, normalized);
-            console.log('[getProjectsForUI] Cache aggiornata in background');
-          }
-        })
-        .catch(error => {
-          console.warn('[getProjectsForUI] Errore aggiornamento background (non critico):', error);
-        });
-      
-      return cachedProjects;
-    }
-
-    // STEP 2: Cache vuota o non valida, carica da Firestore
-    console.log('[getProjectsForUI] Cache vuota o non valida, caricamento da Firestore...');
-    
-    try {
-      const firestoreProjects = await loadProjectsDirectlyFromFirestore(userId);
-      
-      if (!Array.isArray(firestoreProjects)) {
-        console.error('[getProjectsForUI] Firestore ha restituito dati non-array');
-        return [];
-      }
-
-      // Normalizza progetti
-      const normalizedProjects = firestoreProjects.map((p, i) => normalizeProject(p, i));
-      
-      // Salva in cache
-      saveProjectsToCache(username, normalizedProjects);
-      
-      console.log('[getProjectsForUI] ✅ Caricati', normalizedProjects.length, 'progetti da Firestore');
-      return normalizedProjects;
-    } catch (error) {
-      console.error('[getProjectsForUI] ❌ Errore caricamento da Firestore:', error);
-      
-      // Distingui errori critici
-      if (error.code === 'permission-denied') {
-        console.error('[getProjectsForUI] Permission denied - verifica regole Firestore per utente:', userId);
-      } else if (error.code === 'network-error') {
-        console.error('[getProjectsForUI] Network error - verifica connessione');
-      }
-      
-      // Ritorna array vuoto invece di lanciare errore
-      // La UI può gestire lista vuota mostrando messaggio appropriato
-      return [];
-    }
+    if (!currentUser || !currentUser.username) return [];
+    return loadProjectsFromCache(currentUser.username);
   }
 
-  /**
-   * Carica e renderizza progetti sempre da Firestore (NO cache) nella tab Projects
-   * Questa funzione viene chiamata quando si entra nella tab Projects
-   */
   async function loadAndRenderProjectsTab() {
     const container = document.getElementById('projects-list-container');
     const currentProjectInfo = document.getElementById('current-project-info');
     const currentProjectName = document.getElementById('current-project-name');
     const currentProjectUpdated = document.getElementById('current-project-updated');
-    
-    if (!container) {
-      console.error('[ProjectsTab] Container not found');
-      return;
-    }
-    
-    // Mostra loading
+    if (!container) return;
+
     container.innerHTML = `
       <div class="text-center py-4">
         <div class="spinner-border text-primary" role="status">
           <span class="visually-hidden">Loading...</span>
         </div>
-        <p class="text-muted mt-3">Loading projects from Firestore...</p>
+        <p class="text-muted mt-3">Loading projects...</p>
       </div>
     `;
-    
+
     try {
-      // Usa AppState.user come fonte primaria, fallback a currentUser, poi a firebaseAuth
-      let userId = null;
-      let username = null;
-      
-      console.log('[ProjectsTab] Verifica utente:', {
-        appStateUser: AppState.user,
-        currentUser: currentUser,
-        firebaseAuth: !!window.firebaseAuth,
-        firebaseAuthCurrentUser: window.firebaseAuth?.currentUser
-      });
-      
-      if (AppState.user && AppState.user.uid) {
-        userId = AppState.user.uid;
-        username = AppState.user.username;
-        console.log('[ProjectsTab] Usando AppState.user:', userId);
-      } else if (currentUser && currentUser.uid) {
-        userId = currentUser.uid;
-        username = currentUser.username;
-        console.log('[ProjectsTab] Usando currentUser:', userId);
-      } else if (window.firebaseAuth && window.firebaseAuth.currentUser) {
-        const fbUser = window.firebaseAuth.currentUser;
-        userId = fbUser.uid;
-        username = (fbUser.email || '').split('@')[0] || `user_${fbUser.uid.substring(0, 6)}`;
-        console.log('[ProjectsTab] Usando firebaseAuth.currentUser:', userId);
-      }
-      
-      if (!userId) {
-        console.warn('[ProjectsTab] Nessun utente trovato');
-        container.innerHTML = `
-          <div class="alert alert-warning" role="alert">
-            <strong>Please login to view projects</strong><br>
-            <small>No authenticated user found. Please refresh the page or login again.</small>
-          </div>
-        `;
-        return;
-      }
-      
-      console.log('[ProjectsTab] Caricamento progetti per userId:', userId);
-      
-      // Carica SEMPRE direttamente da Firestore (no cache)
-      const projects = await loadProjectsDirectlyFromFirestore(userId);
-      
-      // Renderizza lista progetti
+      const projects = await getProjectsForUI(currentUser?.uid);
       renderProjectsListInTab(projects, container);
-      
-      // Aggiorna info progetto corrente
+
       const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
       if (activeProjectName && currentProjectInfo && currentProjectName && currentProjectUpdated) {
-        const project = projects.find(p => {
-          const name = (p && p.settings && p.settings.name) ? p.settings.name : '';
-          return name === activeProjectName;
-        });
-        
+        const project = projects.find(p => p.settings?.name === activeProjectName || p.name === activeProjectName);
         if (project) {
-          currentProjectName.textContent = activeProjectName;
-          const updated = project.updatedAt || project.createdAt || '';
-          if (updated) {
-            const updatedDate = new Date(updated);
-            currentProjectUpdated.textContent = `Last updated: ${updatedDate.toLocaleString()}`;
-          } else {
-            currentProjectUpdated.textContent = '';
-          }
           currentProjectInfo.style.display = 'block';
-          
-          // Abilita altre tab
-          enableOtherTabs(true);
-        } else {
-          currentProjectInfo.style.display = 'none';
-          enableOtherTabs(false);
+          currentProjectName.textContent = activeProjectName;
+          currentProjectUpdated.textContent = project.updatedAt
+            ? `Updated: ${new Date(project.updatedAt).toLocaleString()}`
+            : '';
         }
-      } else {
-        if (currentProjectInfo) currentProjectInfo.style.display = 'none';
-        enableOtherTabs(false);
       }
-      
     } catch (error) {
-      console.error('[ProjectsTab] Errore caricamento progetti:', error);
-      container.innerHTML = `
-        <div class="alert alert-danger" role="alert">
-          <strong>Error loading projects:</strong><br>
-          ${error.message || error}
-          ${error.code ? ` (${error.code})` : ''}
-        </div>
-      `;
-      enableOtherTabs(false);
+      console.error('[ProjectsTab] Errore:', error);
+      container.innerHTML = `<div class="alert alert-danger">Error loading projects</div>`;
     }
   }
-  
-  // WeakMap per memorizzare gli event handler dei container (evita memory leak)
+
   const containerHandlers = new WeakMap();
-  
-  /**
-   * Renderizza lista progetti nella tab Projects
-   */
+
   function renderProjectsListInTab(projects, container) {
     if (!container) return;
-    
+
     const hasProjects = Array.isArray(projects) && projects.length > 0;
-    
+
     if (hasProjects) {
       const projectsHtml = projects.map((p) => {
         const normalized = normalizeProject(p);
         const name = normalized.settings.name;
         const updated = normalized.updatedAt || normalized.createdAt || '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        
+        const updatedShort = updated ? new Date(updated).toLocaleString() : '';
         const isActive = name === localStorage.getItem('amiantoActiveProjectName');
-        
+        const filePath = normalized.filePath || getProjectFilePath(name);
+
         return `
           <div class="list-group-item bg-secondary text-light mb-2 ${isActive ? 'border border-success' : ''}" data-project-name="${name}">
             <div class="d-flex justify-content-between align-items-start">
@@ -12725,131 +15789,93 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 <strong>${name}</strong>
                 ${isActive ? ' <span class="badge bg-success">Active</span>' : ''}
                 ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
+                ${filePath ? `<br><small class="text-muted" title="${filePath}">File: ${filePath}</small>` : ''}
               </div>
               <div class="btn-group btn-group-sm ms-2">
                 <button class="btn btn-success" data-action="open" data-project-name="${name}" ${isActive ? 'disabled' : ''}>
-                  <i class="fas fa-folder-open"></i> ${isActive ? 'Active' : 'Open'}
+                  ${isActive ? 'Active' : 'Open'}
                 </button>
                 <button class="btn btn-outline-danger" data-action="delete" data-project-name="${name}">
-                  <i class="fas fa-trash"></i>
+                  Delete
                 </button>
               </div>
             </div>
           </div>
         `;
       }).join('');
-      
-      container.innerHTML = `
-        <div class="list-group">
-          ${projectsHtml}
-        </div>
-      `;
+
+      container.innerHTML = `<div class="list-group">${projectsHtml}</div>`;
     } else {
       container.innerHTML = `
         <div class="text-center py-4">
-          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+          <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `;
     }
-    
-    // Aggiungi event listeners ai pulsanti usando delegazione eventi (più efficiente e evita duplicati)
-    // Rimuovi listener precedenti se esistono
+
     const existingHandler = containerHandlers.get(container);
-    if (existingHandler) {
-      container.removeEventListener('click', existingHandler);
-    }
-    
+    if (existingHandler) container.removeEventListener('click', existingHandler);
+
     const clickHandler = async (e) => {
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
-      
       e.preventDefault();
       e.stopPropagation();
       const action = btn.getAttribute('data-action');
       const projectName = btn.getAttribute('data-project-name');
-        
+
       if (action === 'open' && projectName) {
         try {
-          showNotification(`Loading project "${projectName}"...`, 'info');
+          showNotification(`Loading "${projectName}"...`, 'info');
           await openProjectByName(projectName);
-          // Ricarica la lista dopo apertura
           await loadAndRenderProjectsTab();
-          showNotification(`Project "${projectName}" opened successfully!`, 'success');
+          showNotification(`Project "${projectName}" opened`, 'success');
         } catch (error) {
-          console.error('[ProjectsTab] Errore apertura progetto:', error);
+          console.error('[ProjectsTab] Errore apertura:', error);
           showNotification('Error opening project', 'error');
         }
       } else if (action === 'delete' && projectName) {
-        if (confirm(`Delete project "${projectName}"? This action cannot be undone.`)) {
-          try {
-            await deleteProjectByName(projectName);
-            // Ricarica la lista dopo eliminazione
-            await loadAndRenderProjectsTab();
-            showNotification(`Project "${projectName}" deleted`, 'info');
-          } catch (error) {
-            console.error('[ProjectsTab] Errore eliminazione progetto:', error);
-            showNotification('Error deleting project', 'error');
-          }
+        try {
+          await deleteProjectByName(projectName);
+          await loadAndRenderProjectsTab();
+        } catch (error) {
+          console.error('[ProjectsTab] Errore eliminazione:', error);
+          showNotification('Error deleting project', 'error');
         }
       }
     };
-    
+
     container.addEventListener('click', clickHandler);
     containerHandlers.set(container, clickHandler);
   }
-  
-  /**
-   * Abilita/disabilita altre tab (tutte tranne Projects)
-   */
+
   function enableOtherTabs(enabled) {
-    const tabsToDisable = ['resources', 'rooms', 'inventory', 'characters', 'gui', 'scripts', 'play'];
-    tabsToDisable.forEach(tabId => {
+    ['resources', 'rooms', 'inventory', 'characters', 'animations', 'gui', 'cursors', 'scripts', 'dialogues'].forEach(tabId => {
       const button = document.querySelector(`[data-section="${tabId}"]`);
       if (button) {
         button.disabled = !enabled;
-        if (!enabled) {
-          button.classList.add('disabled');
-        } else {
-          button.classList.remove('disabled');
-        }
+        button.classList.toggle('disabled', !enabled);
       }
     });
+    const playtestButton = document.getElementById('nav-playtest-btn');
+    if (playtestButton) {
+      playtestButton.disabled = !enabled;
+      playtestButton.classList.toggle('disabled', !enabled);
+    }
   }
 
-  /**
-   * Renderizza la lista progetti nel container specificato
-   * @param {Array} projects - Array di progetti normalizzati
-   * @param {HTMLElement} container - Container dove renderizzare (es. modal-body)
-   */
   function renderProjectsList(projects, container) {
-    if (!container) {
-      console.error('[renderProjectsList] Container non fornito');
-      return;
-    }
-
-    if (!Array.isArray(projects)) {
-      console.error('[renderProjectsList] projects non è un array');
-      projects = [];
-    }
+    if (!container) return;
+    if (!Array.isArray(projects)) projects = [];
 
     const hasProjects = projects.length > 0;
-    
-    // Costruisci HTML progetti
     let projectsHtml = '';
     if (hasProjects) {
       projectsHtml = projects.map((p, i) => {
         const normalized = normalizeProject(p, i);
         const name = normalized.settings.name;
         const updated = normalized.updatedAt || normalized.createdAt || '';
-        const updatedShort = updated ? new Date(updated).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) : '';
-        
+        const updatedShort = updated ? new Date(updated).toLocaleString() : '';
         return `
           <li class="list-group-item bg-secondary text-light d-flex justify-content-between align-items-center project-item" data-project-name="${name}">
             <div class="flex-grow-1">
@@ -12857,253 +15883,180 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               ${updatedShort ? `<br><small class="text-muted">Updated: ${updatedShort}</small>` : ''}
             </div>
             <button class="btn btn-success btn-sm ms-2" data-action="open" data-project-name="${name}">
-              <i class="fas fa-folder-open"></i> Open
+              Open
             </button>
           </li>
         `;
       }).join('');
     }
 
-    // Aggiorna contenuto container
     container.innerHTML = `
       ${hasProjects ? `
-        <div class="mb-3">
-          <p class="text-muted">Select an existing project or create a new one:</p>
-        </div>
+        <div class="mb-3"><p class="text-muted">Select an existing project or create a new one:</p></div>
         <div class="mb-3" style="max-height: 400px; overflow-y: auto;">
-          <ul class="list-group">
-            ${projectsHtml}
-          </ul>
+          <ul class="list-group">${projectsHtml}</ul>
         </div>
       ` : `
         <div class="text-center py-4">
-          <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
-          <p class="text-muted">You don't have any projects yet. Create your first project to get started!</p>
+          <p class="text-muted">No projects yet. Create a new one (.amnt) or load a project file.</p>
         </div>
       `}
+      <div class="mb-3">
+        <label class="form-label text-muted" for="new-project-name-input">New project name</label>
+        <input type="text" class="form-control form-control-lg bg-dark text-light border-secondary" id="new-project-name-input" placeholder="My Adventure" autocomplete="off">
+      </div>
       <div class="d-grid gap-2">
-        <button class="btn btn-primary btn-lg" id="btn-create-new-project">
-          <i class="fas fa-plus"></i> Create New Project
+        <button class="btn btn-primary btn-lg" id="btn-create-new-project" type="button">
+          Create Project
+        </button>
+        <button class="btn btn-outline-light btn-lg" id="btn-load-project-modal" type="button">
+          Load Project
         </button>
       </div>
     `;
-
-    console.log('[renderProjectsList] ✅ Lista renderizzata con', projects.length, 'progetti');
   }
 
-  /**
-   * Carica direttamente i progetti da Firestore (solo metadata, senza dipendere da localStorage)
-   * Questa funzione è ottimale per PC nuovi senza cache, garantisce sempre dati aggiornati
-   * 
-   * RIFATTORIZZATA: Ora è una funzione pura che SOLO legge da Firestore
-   * Nessun accesso a DOM o localStorage
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<Array>} - Array di progetti con metadata normalizzati
-   * @throws {Error} - Lancia errori invece di ritornare array vuoto
-   */
-  async function loadProjectsDirectlyFromFirestore(userId) {
-    if (!window.firebaseDB) {
-      const error = new Error('Firestore database not available');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+  async function registerImportedProject(jsonString) {
+    ensureCurrentUser();
+    let projectObj;
+    try {
+      projectObj = JSON.parse(jsonString);
+    } catch (_) {
+      return;
+    }
+    const name = projectObj?.settings?.name;
+    if (!name) return;
+
+    const arr = loadProjectsFromCache(currentUser.username);
+    if (findProjectCacheIndex(arr, { name }) < 0) {
+      arr.push(normalizeProject({
+        settings: { name, id: projectObj.settings.id },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        source: 'import'
+      }));
+      saveProjectsToCache(currentUser.username, arr);
+      updateAppState({ projects: arr });
     }
 
-    if (!userId) {
-      const error = new Error('User ID is required');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+    localStorage.setItem(`amiantoProject_${currentUser.username}:${name}`, jsonString);
+    localStorage.setItem('amiantoActiveProjectName', name);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    if (projectObj.settings?.id) {
+      localStorage.setItem('amiantoActiveProjectId', projectObj.settings.id);
+    }
+  }
+
+  window.loadProjectFromFile = async function loadProjectFromFile() {
+    ensureCurrentUser();
+
+    let text = null;
+    let filePath = null;
+
+    let fileHandle = null;
+
+    if (window.amiantoNativeFs) {
+      filePath = await window.amiantoNativeFs.showOpenDialog();
+      if (!filePath) return;
+      text = await readLargeTextFile(filePath);
+    } else if (window.showOpenFilePicker) {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'Amianto Project', accept: { 'application/json': ['.amnt', '.json'] } }],
+        multiple: false
+      });
+      fileHandle = handle;
+      const file = await handle.getFile();
+      text = await file.text();
+      filePath = file.name;
+    } else {
+      const input = document.getElementById('project-file-input');
+      if (!input) {
+        showNotification('File loading is not supported in this browser', 'warning');
+        return;
+      }
+      text = await new Promise((resolve, reject) => {
+        input.onchange = async () => {
+          const file = input.files && input.files[0];
+          input.value = '';
+          if (!file) { reject(new DOMException('Aborted', 'AbortError')); return; }
+          filePath = file.name;
+          try { resolve(await file.text()); } catch (err) { reject(err); }
+        };
+        input.click();
+      });
     }
 
-    // Verifica che l'utente sia autenticato
-    if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-      const error = new Error('User not authenticated');
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
-    }
-
-    const currentAuthUid = window.firebaseAuth.currentUser.uid;
-    if (currentAuthUid !== userId) {
-      const error = new Error(`User ID mismatch: expected ${userId}, got ${currentAuthUid}`);
-      console.error('[FirestoreDirect] loadProjectsDirectlyFromFirestore error:', error);
-      throw error;
+    if (!text || !String(text).trim()) {
+      showNotification('Selected project file is empty or unreadable', 'danger');
+      return;
     }
 
     try {
-      console.log('[FirestoreDirect] Caricamento diretto progetti da Firestore...');
-      
-      // Lista progetti da Firestore (solo metadata, veloce)
-      const firestoreProjects = await listProjectsFromFirestore(userId);
-      console.log('[FirestoreDirect] Trovati', firestoreProjects.length, 'progetti su Firestore');
-      
-      // Normalizza progetti usando funzione centralizzata
-      const projectsList = firestoreProjects.map((fp, i) => normalizeProject({
-        settings: { name: fp.name },
-        updatedAt: fp.updatedAt || null,
-        createdAt: fp.createdAt || null,
-        source: 'firestore',
-        id: fp.id
-      }, i));
-      
-      console.log('[FirestoreDirect] ✅ Lista progetti caricata direttamente da Firestore:', projectsList.length);
-      return projectsList;
-    } catch (error) {
-      // Distingui tra errori di permesso e altri errori
-      if (error.code === 'permission-denied') {
-        console.error('[FirestoreDirect] Permission denied error:', error);
-        const permissionError = new Error(`Permission denied: ${error.message}`);
-        permissionError.code = 'permission-denied';
-        throw permissionError;
-      }
-      
-      if (error.code === 'unavailable' || error.message?.includes('network') || error.message?.includes('Network')) {
-        console.error('[FirestoreDirect] Network error:', error);
-        const networkError = new Error(`Network error: ${error.message}`);
-        networkError.code = 'network-error';
-        throw networkError;
-      }
-
-      console.error('[FirestoreDirect] Unexpected error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Sincronizza progetti da Firestore a localStorage (solo background)
-   * 
-   * RIFATTORIZZATA: Questa funzione serve SOLO per aggiornare la cache in background
-   * NON deve essere usata per il rendering UI - usa getProjectsForUI() invece
-   * 
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @returns {Promise<void>} - Non restituisce dati per la UI
-   * @throws {Error} - Lancia errori in caso di fallimento critico
-   */
-  async function syncProjectsFromFirestore(userId) {
-    if (!currentUser || !currentUser.username) {
-      const error = new Error('Current user not available');
-      console.error('[Sync] syncProjectsFromFirestore error:', error);
-      throw error;
-    }
-
-    const username = currentUser.username;
-    console.log('[Sync] Inizio sincronizzazione progetti da Firestore...', { userId, username });
-
-    // Carica lista progetti da Firestore
-    const firestoreProjects = await listProjectsFromFirestore(userId);
-    console.log('[Sync] Progetti trovati su Firestore:', firestoreProjects.length);
-
-    // Carica progetti locali esistenti usando funzione centralizzata
-    const localProjects = loadProjectsFromCache(username);
-    console.log('[Sync] Progetti locali esistenti:', localProjects.length);
-
-    // Crea una mappa dei progetti locali per confronto rapido
-    const localProjectsMap = new Map();
-    localProjects.forEach((p, i) => {
-      const normalized = normalizeProject(p, i);
-      if (normalized.settings && normalized.settings.name) {
-        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        localProjectsMap.set(projectId, normalized);
-      }
-    });
-
-    // Sincronizza ogni progetto da Firestore
-    const syncedProjects = [];
-    let syncedCount = 0;
-    let newCount = 0;
-    let updatedCount = 0;
-
-    for (const firestoreProject of firestoreProjects) {
+      showNotification('Loading project…', 'info');
+      await importAmntContent(text, filePath);
+    } catch (amntErr) {
+      if (amntErr && amntErr.name === 'AbortError') return;
+      console.error('[Load] importAmntContent failed:', amntErr);
+      // Legacy plain amianto-game JSON (not .amnt package)
       try {
-        const projectId = firestoreProject.id;
-        const projectName = firestoreProject.name;
-
-        // Carica i dati completi del progetto da Firestore
-        const projectData = await loadProjectFromFirestore(userId, projectId);
-        
-        if (!projectData) {
-          console.warn(`[Sync] Impossibile caricare dati completi per progetto: ${projectName}`);
-          continue;
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.format === 'amianto-amnt') {
+          throw amntErr;
         }
-
-        // Normalizza progetto usando funzione centralizzata
-        const projectEntry = normalizeProject({
-          settings: projectData.settings || { name: projectName },
-          updatedAt: firestoreProject.updatedAt || null,
-          createdAt: firestoreProject.createdAt || null,
-          source: 'firestore',
-          id: projectId
-        });
-
-        // Controlla se il progetto esiste già localmente
-        const localProject = localProjectsMap.get(projectId);
-        
-        if (localProject) {
-          // Progetto esiste localmente: confronta timestamp e mantieni il più recente
-          const localUpdated = localProject.updatedAt ? new Date(localProject.updatedAt).getTime() : 0;
-          const firestoreUpdated = projectEntry.updatedAt ? new Date(projectEntry.updatedAt).getTime() : 0;
-          
-          if (firestoreUpdated >= localUpdated) {
-            // Firestore è più recente o uguale: usa Firestore
-            syncedProjects.push(projectEntry);
-            updatedCount++;
-            
-            // Salva anche il JSON completo in cache locale
-            const jsonString = JSON.stringify(projectData);
-            const projectKey = `amiantoProject_${username}:${projectName}`;
-            localStorage.setItem(projectKey, jsonString);
-            
-            console.log(`[Sync] Progetto aggiornato da Firestore: ${projectName}`);
-          } else {
-            // Locale è più recente: mantieni locale
-            syncedProjects.push(localProject);
-            console.log(`[Sync] Progetto locale più recente mantenuto: ${projectName}`);
-          }
+        if (parsed && parsed.format === 'amianto-game') {
+          await window.importProjectFromJson(text);
+          await registerImportedProject(text);
         } else {
-          // Nuovo progetto da Firestore
-          syncedProjects.push(projectEntry);
-          newCount++;
-          
-          // Salva il JSON completo in cache locale
-          const jsonString = JSON.stringify(projectData);
-          const projectKey = `amiantoProject_${username}:${projectName}`;
-          localStorage.setItem(projectKey, jsonString);
-          
-          console.log(`[Sync] Nuovo progetto sincronizzato da Firestore: ${projectName}`);
+          throw amntErr;
         }
-
-        syncedCount++;
-      } catch (error) {
-        console.error(`[Sync] Errore sincronizzazione progetto ${firestoreProject.name}:`, error);
-        // Continua con gli altri progetti anche se uno fallisce
+      } catch (fallbackErr) {
+        console.error('[Load] Project load failed:', fallbackErr);
+        showNotification(
+          'Failed to load project: ' + (fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr),
+          'danger'
+        );
+        return;
       }
     }
 
-    // Aggiungi progetti locali che non sono su Firestore (mantieni backup locale)
-    localProjects.forEach((localProject, i) => {
-      const normalized = normalizeProject(localProject, i);
-      if (normalized.settings && normalized.settings.name) {
-        const projectId = normalized.settings.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        const existsInFirestore = firestoreProjects.some(fp => {
-          const fpId = fp.id || fp.name.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-          return fpId === projectId;
-        });
-        
-        if (!existsInFirestore) {
-          // Progetto locale non su Firestore: mantienilo (potrebbe essere non ancora sincronizzato)
-          syncedProjects.push(normalized);
-          console.log(`[Sync] Progetto locale mantenuto (non su Firestore): ${normalized.settings.name}`);
+    const loadedName = localStorage.getItem('amiantoActiveProjectName');
+    if (loadedName && fileHandle) {
+      projectFileHandles.set(loadedName, fileHandle);
+    }
+
+    enableOtherTabs(true);
+    await loadAndRenderProjectsTab();
+    showNotification('Project loaded', 'success');
+  };
+
+  /** Legge file di testo grandi via IPC a chunk (Electron). */
+  async function readLargeTextFile(filePath) {
+    const fsApi = window.amiantoNativeFs;
+    if (!fsApi) throw new Error('Native FS unavailable');
+
+    if (typeof fsApi.readFileChunkedBegin === 'function') {
+      const { id, length } = await fsApi.readFileChunkedBegin(filePath);
+      try {
+        const CHUNK = 512 * 1024;
+        const parts = [];
+        let done = false;
+        while (!done) {
+          const next = await fsApi.readFileChunkedNext(id, CHUNK);
+          if (next.chunk) parts.push(next.chunk);
+          done = !!next.done;
         }
+        const text = parts.join('');
+        if (typeof length === 'number' && length > 0 && text.length !== length) {
+          console.warn('[Load] Chunked read length mismatch:', text.length, 'vs', length);
+        }
+        return text;
+      } catch (err) {
+        try { await fsApi.readFileChunkedAbort(id); } catch (_) {}
+        throw err;
       }
-    });
+    }
 
-    // Salva lista sincronizzata usando funzione centralizzata
-    saveProjectsToCache(username, syncedProjects);
-
-    console.log(`[Sync] ✅ Sincronizzazione completata: ${syncedCount} progetti sincronizzati (${newCount} nuovi, ${updatedCount} aggiornati)`);
-    addDebugMessage(`Sincronizzati ${syncedCount} progetti da Firestore`, 'success');
-    
-    // IMPORTANTE: Questa funzione NON restituisce dati per la UI
-    // Usa getProjectsForUI() per ottenere progetti per il rendering
+    return await fsApi.readFile(filePath);
   }
 
   /**
@@ -13111,7 +16064,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    * @param {string} projectName - Nome del progetto
    * @param {string} jsonString - JSON serializzato del progetto
    * 
-   * GIÀ IMPLEMENTATO: localStorage è già usato per cache
+   * GIÃ€ IMPLEMENTATO: localStorage Ã¨ giÃ  usato per cache
    * AGGIUNTO: Questa funzione centralizza l'autosave su cache
    */
   function autosaveToCache(projectName, jsonString) {
@@ -13136,8 +16089,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }
   }
 
-  // Save current project for current user
-  // MODIFICATO: Ora salva anche su Firestore oltre a localStorage/OPFS
+  // Save current project for current user (localStorage + OPFS)
   /**
    * Converte un dataURL in un File object per l'upload
    * @param {string} dataURL - Data URL dell'immagine
@@ -13162,7 +16114,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica su Supabase
+   * Raccoglie tutti gli asset dal progetto che sono ancora dataURL e li carica nello storage locale
    * @param {Object} projectObj - Oggetto progetto serializzato
    * @param {string} projectId - ID del progetto
    * @returns {Promise<Object>} - Progetto aggiornato con assetId invece di dataURL
@@ -13185,15 +16137,15 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
     // Funzione helper per processare un asset
     const processAsset = async (assetValue, assetType, assetName, subfolder = null, existingAssetId = null, overwrite = false) => {
-      // Se è già un assetId (prefisso "asset:"), salta
+      // Se Ã¨ giÃ  un assetId (prefisso "asset:"), salta
       if (typeof assetValue === 'string' && assetValue.startsWith('asset:')) {
         return assetValue;
       }
       
-      // Se è un oggetto Image, convertilo prima in dataURL
+      // Se Ã¨ un oggetto Image, convertilo prima in dataURL
       let dataURL = null;
       if (assetValue && typeof assetValue === 'object' && (assetValue.src || (assetValue.width && assetValue.height))) {
-        // È un oggetto Image, convertilo in dataURL
+        // Ãˆ un oggetto Image, convertilo in dataURL
         try {
           dataURL = imageToDataURL(assetValue);
           if (!dataURL) {
@@ -13209,14 +16161,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       } else if (typeof assetValue === 'string' && assetValue.startsWith('data:image/')) {
         dataURL = assetValue;
+      } else if (typeof assetValue === 'string' && assetValue.startsWith('blob:')) {
+        console.warn(`[Asset] blob URL non persistibile per ${assetName}`);
+        errorCount++;
+        return null;
       } else if (assetValue === null || assetValue === undefined) {
-        // Valore null/undefined, mantieni così
+        // Valore null/undefined, mantieni cosÃ¬
         return assetValue;
       } else {
-        // Non è né un assetId, né un dataURL, né un Image - potrebbe essere un valore non-immagine
-        // Verifica se è un oggetto con proprietà img (come i frame dei character)
+        // Non Ã¨ nÃ© un assetId, nÃ© un dataURL, nÃ© un Image - potrebbe essere un valore non-immagine
+        // Verifica se Ã¨ un oggetto con proprietÃ  img (come i frame dei character)
         if (assetValue && typeof assetValue === 'object' && assetValue.img) {
-          // È un oggetto frame con proprietà img, processa l'immagine
+          // Ãˆ un oggetto frame con proprietÃ  img, processa l'immagine
           const imgDataURL = imageToDataURL(assetValue.img);
           if (imgDataURL) {
             dataURL = imgDataURL;
@@ -13227,7 +16183,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return assetValue; // Mantieni originale se fallisce
           }
         } else {
-          // Non è un asset immagine, mantieni come è
+          // Non Ã¨ un asset immagine, mantieni come Ã¨
           return assetValue;
         }
       }
@@ -13243,12 +16199,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             return dataURL; // Mantieni dataURL originale se fallisce
           }
 
-          // Se esiste già un assetId per questo asset, usalo
-          // IMPORTANTE: Sovrascrivi solo se è un dataURL nuovo/modificato, non se è già un assetId
+          // Se esiste giÃ  un assetId per questo asset, usalo
+          // IMPORTANTE: Sovrascrivi solo se Ã¨ un dataURL nuovo/modificato, non se Ã¨ giÃ  un assetId
           const finalAssetId = existingAssetId || null;
           // Sovrascrivi solo se:
-          // 1. È esplicitamente richiesto (overwrite=true)
-          // 2. O se esiste già un assetId E il valore corrente è un dataURL (modificato)
+          // 1. Ãˆ esplicitamente richiesto (overwrite=true)
+          // 2. O se esiste giÃ  un assetId E il valore corrente Ã¨ un dataURL (modificato)
           const shouldOverwrite = overwrite || (!!existingAssetId && dataURL && typeof assetValue === 'string' && assetValue.startsWith('data:image/'));
 
           const { assetId } = await uploadImage(file, projectId, assetType, { 
@@ -13258,13 +16214,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           });
           
           if (shouldOverwrite && existingAssetId) {
-            console.log(`[Asset] ✅ Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+            console.log(`[Asset] âœ… Asset sovrascritto: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
           } else {
-            console.log(`[Asset] ✅ Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
+            console.log(`[Asset] âœ… Asset salvato: ${assetName} -> asset:${assetId}${subfolder ? ` (in ${subfolder})` : ''}`);
           }
           savedCount++;
           
-          // Se è un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
+          // Se Ã¨ un character frame, traccia l'assetId per possibile cleanup se il salvataggio fallisce
           if (assetType === 'character' && assetId) {
             unsavedCharacterAssetIds.add(assetId);
             console.log(`[Asset] Frame character tracciato per cleanup (assetId: ${assetId})`);
@@ -13272,7 +16228,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           
           return `asset:${assetId}`;
         } catch (error) {
-          console.error(`[Asset] ❌ Errore salvataggio asset ${assetName}:`, error);
+          console.error(`[Asset] âŒ Errore salvataggio asset ${assetName}:`, error);
           errorCount++;
           return dataURL; // Mantieni dataURL originale se fallisce
         }
@@ -13326,6 +16282,35 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         }
+
+        if (gui.type === 'DialogBox' && gui.settings && typeof gui.settings === 'object') {
+          const st = gui.settings;
+          if (st.balloon && typeof st.balloon === 'string' && st.balloon.startsWith('data:image/')) {
+            st.balloon = await processAsset(st.balloon, 'gui', `gui_${gui.id}_dialog_balloon`);
+          }
+          const cf = st.customFont;
+          if (cf && typeof cf === 'string' && cf.startsWith('data:') && !cf.startsWith('data:image/')) {
+            let ext = 'ttf';
+            if (cf.includes('woff2') || cf.includes('font/woff2')) ext = 'woff2';
+            else if (cf.includes('woff') || cf.includes('font/woff')) ext = 'woff';
+            else if (cf.includes('otf') || cf.includes('font/otf')) ext = 'otf';
+            try {
+              const file = await dataURLtoFile(cf, `gui_${gui.id}_dialog_font.${ext}`);
+              if (file) {
+                const existingId = (typeof cf === 'string' && cf.startsWith('asset:'))
+                  ? cf.replace('asset:', '')
+                  : null;
+                const { assetId } = await uploadImage(file, projectId, 'gui', {
+                  assetId: existingId,
+                  overwriteExisting: true
+                });
+                st.customFont = `asset:${assetId}`;
+              }
+            } catch (fontErr) {
+              console.error('[Asset] Dialog font upload failed:', fontErr);
+            }
+          }
+        }
       }
     }
 
@@ -13338,9 +16323,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         const characterName = char.name || char.id;
         
         // Verifica che il character esista ancora in characterFrames
-        // Se non esiste, significa che è stato eliminato e non dovremmo processare i suoi frame
+        // Se non esiste, significa che Ã¨ stato eliminato e non dovremmo processare i suoi frame
         if (!characterFrames.has(characterName)) {
-          console.warn(`[Asset] ⚠️ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
+          console.warn(`[Asset] âš ï¸ Character "${characterName}" non trovato in characterFrames, salto processamento frame (probabilmente eliminato)`);
           const clearDirs = (dirs) => {
             if (!dirs) return;
             for (const dirData of Object.values(dirs)) {
@@ -13448,22 +16433,132 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     }
 
-    // Processa cursors
-    if (updatedProject.cursors && Array.isArray(updatedProject.cursors)) {
-      for (const cursor of updatedProject.cursors) {
-        if (cursor.image) {
-          cursor.image = await processAsset(cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
+    // Processa room animation frames (catalogo Animations tab)
+    if (updatedProject.roomAnimations && Array.isArray(updatedProject.roomAnimations)) {
+      for (const anim of updatedProject.roomAnimations) {
+        if (!anim || !anim.id || !Array.isArray(anim.frames)) continue;
+        const safeAnimName = String(anim.name || anim.id).replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+        const animSubfolder = `animations/${safeAnimName}`;
+        const liveAnim = roomAnimationsCatalog.get(anim.id);
+
+        for (let i = 0; i < anim.frames.length; i++) {
+          const frameRef = anim.frames[i];
+          if (!frameRef) continue;
+
+          const liveFrame = liveAnim && liveAnim.frames ? liveAnim.frames[i] : null;
+          if (liveFrame && liveFrame.img) {
+            const mapped = imageAssetMap.get(liveFrame.img);
+            if (mapped && mapped.assetId) {
+              anim.frames[i] = `asset:${mapped.assetId}`;
+              continue;
+            }
+          }
+
+          let frameToProcess = frameRef;
+          if (liveFrame && liveFrame.img && (
+            typeof frameRef !== 'string' ||
+            frameRef.startsWith('blob:') ||
+            frameRef.startsWith('data:image/')
+          )) {
+            frameToProcess = liveFrame.img;
+          }
+
+          let existingAssetId = null;
+          if (typeof frameRef === 'string' && frameRef.startsWith('asset:')) {
+            existingAssetId = frameRef.replace('asset:', '');
+          } else {
+            existingAssetId = `animframe_${String(anim.id).replace(/[^a-z0-9_-]/gi, '_')}_${i}`;
+          }
+
+          const needsUpload = typeof frameRef === 'string' && (
+            frameRef.startsWith('data:image/') || frameRef.startsWith('blob:')
+          ) || (frameToProcess && typeof frameToProcess === 'object');
+
+          const converted = await processAsset(
+            frameToProcess,
+            'animation',
+            `room_anim_${anim.id}_frame_${i}`,
+            animSubfolder,
+            existingAssetId,
+            needsUpload
+          );
+
+          if (converted) {
+            anim.frames[i] = converted;
+            if (liveFrame && liveFrame.img && typeof converted === 'string' && converted.startsWith('asset:')) {
+              imageAssetMap.set(liveFrame.img, {
+                assetId: converted.replace('asset:', ''),
+                type: 'animation',
+                projectId
+              });
+            }
+          } else {
+            anim.frames[i] = null;
+          }
+        }
+        anim.frames = anim.frames.filter(Boolean);
+      }
+    }
+
+    // Processa inventory (background, toggle icon, item images)
+    const inv = updatedProject.inventory;
+    if (inv && typeof inv === 'object' && !Array.isArray(inv)) {
+      const invFolder = 'inventory';
+      if (inv.background || inv.backgroundRef) {
+        const converted = await processAsset(
+          inv.background || inv.backgroundRef,
+          'inventory',
+          'inventory_background',
+          invFolder
+        );
+        inv.background = converted;
+        if (typeof converted === 'string' && converted.startsWith('asset:')) inv.backgroundRef = converted;
+      }
+      if (inv.toggleIcon || inv.toggleIconRef) {
+        const converted = await processAsset(
+          inv.toggleIcon || inv.toggleIconRef,
+          'inventory',
+          'inventory_toggle_icon',
+          invFolder
+        );
+        inv.toggleIcon = converted;
+        if (typeof converted === 'string' && converted.startsWith('asset:')) inv.toggleIconRef = converted;
+      }
+      if (Array.isArray(inv.items)) {
+        for (const item of inv.items) {
+          if (!item) continue;
+          const src = item.image || item.imageRef;
+          if (!src) continue;
+          const converted = await processAsset(
+            src,
+            'inventory',
+            `inventory_item_${item.id || item.name || 'unknown'}`,
+            invFolder
+          );
+          item.image = converted;
+          if (typeof converted === 'string' && converted.startsWith('asset:')) item.imageRef = converted;
         }
       }
     }
 
-    console.log(`[Asset] 📊 Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
+    // Processa cursors
+    if (updatedProject.cursors && Array.isArray(updatedProject.cursors)) {
+      for (const cursor of updatedProject.cursors) {
+        const src = cursor.cursorImage || cursor.image;
+        if (!src) continue;
+        const converted = await processAsset(cursor.cursorImage || cursor.image, 'cursor', `cursor_${cursor.id || 'unknown'}`);
+        cursor.cursorImage = converted;
+        if (cursor.image !== undefined) cursor.image = converted;
+      }
+    }
+
+    console.log(`[Asset] ðŸ“Š Salvataggio asset completato: ${savedCount} salvati, ${errorCount} errori`);
     
     // Verifica finale: controlla che tutti gli asset siano stati salvati correttamente
     if (errorCount > 0) {
-      console.warn(`[Asset] ⚠️ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
+      console.warn(`[Asset] âš ï¸ ${errorCount} asset non sono stati salvati correttamente. Verifica i log sopra per dettagli.`);
     } else {
-      console.log(`[Asset] ✅ Tutti gli asset sono stati salvati con successo su Supabase`);
+      console.log(`[Asset] âœ… Tutti gli asset sono stati salvati con successo nello storage locale`);
     }
     
     // Controllo finale: verifica se ci sono ancora dataURL o oggetti Image nel progetto e convertili
@@ -13478,14 +16573,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           continue;
         }
         
-        // Se è un array, processa ogni elemento
+        // Se Ã¨ un array, processa ogni elemento
         if (Array.isArray(value)) {
           for (let i = 0; i < value.length; i++) {
             const item = value[i];
             if (item && typeof item === 'object') {
-              // Se è un oggetto Image, processalo direttamente
+              // Se Ã¨ un oggetto Image, processalo direttamente
               if (item.src || (item.width && item.height)) {
-                console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
+                console.log(`[Asset] ðŸ”„ Conversione oggetto Image rimanente in ${currentPath}[${i}]`);
                 const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
                 if (converted && converted.startsWith('asset:')) {
                   value[i] = converted;
@@ -13497,7 +16592,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             } else if (typeof item === 'string' && item.startsWith('data:image/')) {
               // Trovato un dataURL in un array, convertilo
-              console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}[${i}]`);
+              console.log(`[Asset] ðŸ”„ Conversione dataURL rimanente in ${currentPath}[${i}]`);
               const converted = await processAsset(item, 'unknown', `${currentPath}[${i}]`);
               if (converted && converted.startsWith('asset:')) {
                 value[i] = converted;
@@ -13506,11 +16601,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
           }
         } 
-        // Se è un oggetto, verifica se è un oggetto Image
+        // Se Ã¨ un oggetto, verifica se Ã¨ un oggetto Image
         else if (typeof value === 'object') {
-          // Se è un oggetto Image, processalo direttamente
+          // Se Ã¨ un oggetto Image, processalo direttamente
           if (value.src || (value.width && value.height)) {
-            console.log(`[Asset] 🔄 Conversione oggetto Image rimanente in ${currentPath}`);
+            console.log(`[Asset] ðŸ”„ Conversione oggetto Image rimanente in ${currentPath}`);
             const converted = await processAsset(value, 'unknown', currentPath);
             if (converted && converted.startsWith('asset:')) {
               obj[key] = converted;
@@ -13521,9 +16616,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             await finalConversion(value, currentPath);
           }
         } 
-        // Se è una stringa dataURL, convertila
+        // Se Ã¨ una stringa dataURL, convertila
         else if (typeof value === 'string' && value.startsWith('data:image/')) {
-          console.log(`[Asset] 🔄 Conversione dataURL rimanente in ${currentPath}`);
+          console.log(`[Asset] ðŸ”„ Conversione dataURL rimanente in ${currentPath}`);
           const converted = await processAsset(value, 'unknown', currentPath);
           if (converted && converted.startsWith('asset:')) {
             obj[key] = converted;
@@ -13534,225 +16629,466 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
     
     // Esegui la conversione finale su tutto il progetto
-    console.log('[Asset] 🔍 Controllo finale per dataURL rimanenti...');
+    console.log('[Asset] ðŸ” Controllo finale per dataURL rimanenti...');
     await finalConversion(updatedProject, 'project');
-    console.log(`[Asset] ✅ Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
+    console.log(`[Asset] âœ… Controllo finale completato: ${savedCount} asset totali salvati, ${errorCount} errori`);
     
     return updatedProject;
   }
 
-  window.saveCurrentProject = async function saveCurrentProject() {
-    if (!currentUser) {
-      showNotification('Please login to save projects', 'warning');
-      return;
-    }
+  // ================================
+  // .AMNT PROJECT FILE (single file)
+  // ================================
 
-    // Verifica che ci sia un progetto aperto
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (!activeProjectName) {
-      showNotification('No project is currently open. Please open or create a project first.', 'warning');
-      return;
-    }
+  const projectFileHandles = new Map();
 
-    let projectObj = window.serializeProject();
-    const projectName = (projectObj.settings && projectObj.settings.name) ? String(projectObj.settings.name) : activeProjectName;
-    
-    // Verifica che il progetto serializzato corrisponda al progetto attivo
-    if (projectName !== activeProjectName && projectName !== 'amianto-project') {
-      showNotification('Project name mismatch. Please open the project you want to save.', 'warning');
-      return;
-    }
-    
-    // TODO: Implementare sistema di projectId univoci
-    // Attualmente usa il nome del progetto normalizzato come ID temporaneo.
-    // In futuro, generare ID univoci (UUID) e salvare mapping nome->ID in Firestore.
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    // Le regole di sicurezza controllano request.auth.uid == userId
-    const userId = currentUser.uid;
-    if (!userId) {
-      console.error('[Firestore] currentUser.uid non disponibile - impossibile salvare su Firestore');
-      addDebugMessage('[Firestore] User not authenticated correctly', 'error');
-      // Continua con cache locale come fallback
-    }
-
-    // 0. SALVA TUTTI GLI ASSET NON ANCORA CARICATI
-    showNotification('Saving all assets to storage...', 'info');
-    
-    // DEBUG: Verifica foreground prima del salvataggio asset
-    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
-      projectObj.rooms.forEach(room => {
-        if (Array.isArray(room.foregrounds)) {
-          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground prima del salvataggio asset`);
-        }
-      });
-    }
-    
-    try {
-      console.log('[Save] 🔄 Inizio salvataggio asset su Supabase...');
-      projectObj = await saveAllAssetsToStorage(projectObj, projectId);
-      console.log('[Save] ✅ Tutti gli asset salvati su Supabase');
-      
-      // Verifica che non ci siano più dataURL nel progetto (dovrebbero essere tutti convertiti in assetId)
-      const projectJsonString = JSON.stringify(projectObj);
-      const remainingDataURLs = (projectJsonString.match(/data:image\/[^;]+;base64,/g) || []).length;
-      const assetIdCount = (projectJsonString.match(/asset:[^"]+/g) || []).length;
-      
-      console.log('[Save] 📊 Statistiche conversione asset:', {
-        dataURLRimanenti: remainingDataURLs,
-        assetIdTotali: assetIdCount,
-        conversioneCompleta: remainingDataURLs === 0
-      });
-      
-      if (remainingDataURLs > 0) {
-        const warnMsg = `Salvataggio Firestore bloccato: ${remainingDataURLs} asset ancora in base64. Usa Save dopo aver caricato tutti gli asset su storage.`;
-        console.warn(`[Save] ⚠️ ${warnMsg}`);
-        addDebugMessage(warnMsg, 'error');
-        showNotification(warnMsg, 'warning');
-        const dataURLMatches = projectJsonString.match(/data:[^;]+;base64,[^"]+/g);
-        if (dataURLMatches && dataURLMatches.length > 0) {
-          console.warn('[Save] DataURL trovati (primi 100 caratteri):', dataURLMatches.slice(0, 3).map(url => url.substring(0, 100) + '...'));
-        }
-      } else {
-        console.log('[Save] ✅ Nessun dataURL rimanente nel progetto - tutti gli asset sono stati convertiti in assetId');
-      }
-      
-      // Dopo il salvataggio riuscito di tutti gli asset, pulisci i set dei frame non salvati
-      // Tutti i frame che erano nel progetto sono stati salvati con successo
-      unsavedCharacterFrames.clear();
-      unsavedCharacterAssetIds.clear();
-      // Rimuovi anche eventuali frame salvati in sessionStorage (da sessioni precedenti)
-      sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
-      console.log('[Save] Set frame non salvati pulito (progetto salvato con successo)');
-    } catch (error) {
-      console.error('[Save] Errore salvataggio asset:', error);
-      showNotification('Warning: Some assets could not be saved', 'warning');
-      // Se il salvataggio fallisce, i frame rimangono in unsavedCharacterFrames per cleanup successivo
-    }
-
-    // DEBUG: Verifica foreground dopo il salvataggio asset e prima di Firestore
-    if (projectObj.rooms && Array.isArray(projectObj.rooms)) {
-      projectObj.rooms.forEach(room => {
-        if (Array.isArray(room.foregrounds)) {
-          console.log(`[Save] Room ${room.id}: ${room.foregrounds.length} foreground nel JSON da salvare su Firestore`, 
-            room.foregrounds.map(f => ({ id: f.id, name: f.name, image: f.image ? f.image.substring(0, 50) + '...' : 'null' })));
-        } else {
-          console.warn(`[Save] ⚠️ Room ${room.id}: foregrounds non è un array!`, typeof room.foregrounds, room.foregrounds);
-        }
-      });
-    }
-
-    // 1. SALVATAGGIO FIRESTORE (fonte ufficiale) — payload slim, no base64
-    let firestoreSuccess = false;
-    const embeddedDataUrls = countEmbeddedDataUrls(projectObj);
-    if (userId && embeddedDataUrls > 0) {
-      console.warn(`[Save] Firestore saltato: ${embeddedDataUrls} dataURL nel progetto`);
-    } else if (userId) {
-      console.log('[Save] 🔄 Tentativo salvataggio su Firestore...', { userId, projectId, projectName });
-      
-      const firestorePayload = prepareProjectPayloadForFirestore(projectObj);
-      const projectJsonPreview = JSON.stringify(firestorePayload);
-      const projectSizeBytes = new Blob([projectJsonPreview]).size;
-      const projectSizeMB = (projectSizeBytes / (1024 * 1024)).toFixed(2);
-      console.log(`[Save] 📦 Dimensione payload Firestore: ${projectSizeMB} MB (${projectSizeBytes} bytes)`);
-      
-      firestoreSuccess = await saveProjectToFirestore(userId, projectId, firestorePayload);
-      
-      if (firestoreSuccess) {
-        console.log('[Save] ✅ Salvataggio Firestore completato con successo');
-      } else {
-        console.warn('[Save] ⚠️ Salvataggio Firestore fallito, uso cache locale come fallback');
-      }
-    } else {
-      console.warn('[Save] ⚠️ userId non disponibile, salto Firestore');
-    }
-
-    // 2. CACHE LOCALE (backup temporaneo) - GIÀ IMPLEMENTATO, ora centralizzato
-    // Usa il progetto aggiornato con assetId invece di dataURL
-    const jsonString = JSON.stringify(projectObj, null, 2);
-    autosaveToCache(projectName, jsonString);
-
-    // 3. MIRROR IN LOCALSTORAGE (usato dal runtime) - GIÀ IMPLEMENTATO
-    localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
-
-    // 4. LIGHTWEIGHT ENTRY PER LISTING - Aggiorna cache usando funzione centralizzata
-    const userProjects = loadProjectsFromCache(currentUser.username);
-    const idx = userProjects.findIndex(p => p && p.settings && p.settings.name === projectName);
-    const entry = normalizeProject({ 
-      settings: projectObj.settings, 
-      updatedAt: new Date().toISOString(),
-      createdAt: projectObj.createdAt || new Date().toISOString(),
-      source: firestoreSuccess ? 'firestore' : 'cache' // Traccia la fonte
-    });
-    if (idx >= 0) userProjects[idx] = entry; else userProjects.push(entry);
-    saveProjectsToCache(currentUser.username, userProjects);
-
-    // 5. STORE FULL JSON BACKUP LOCALE - GIÀ IMPLEMENTATO
-    try {
-      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-      localStorage.setItem(projectKey, jsonString);
-      localStorage.setItem('amiantoActiveProjectName', projectName);
-      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-    } catch (_) {}
-
-    // 6. PERSIST TO OPFS (silent) - GIÀ IMPLEMENTATO
-    saveProjectJsonToOPFS(jsonString, projectName);
-
-    // 7. OFFER FILE SAVE (may prompt user) - GIÀ IMPLEMENTATO
-    // Nota: saveProjectJsonToFile apre un dialog, quindi non lo chiamiamo automaticamente
-    // saveProjectJsonToFile(jsonString, projectName);
-
-    // Messaggio di successo con indicazione della fonte
-    if (firestoreSuccess) {
-      showNotification('Project saved successfully to Firestore!', 'success');
-    } else if (embeddedDataUrls > 0) {
-      showNotification('Progetto salvato in locale; Firestore bloccato (converti gli asset base64).', 'warning');
-    } else {
-      showNotification('Project saved to cache (Firestore unavailable)', 'warning');
-    }
-    
-    // Aggiorna indicatore dimensione progetto dopo il salvataggio
-    updateProjectSizeIndicator();
+  function hasLinkedAmntFilePath(projectName) {
+    if (!projectName) return false;
+    if (projectFileHandles.has(projectName)) return true;
+    const path = getProjectFilePath(projectName);
+    return !!(path && window.amiantoNativeFs);
   }
 
+  function scheduleAmiantoDiskPersist() {
+    const projectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!projectName || !hasLinkedAmntFilePath(projectName)) return;
+    if (amiantoPersistInProgress) return; // verrà ripianificato a fine save se ancora dirty
+    if (amiantoDiskSaveTimer) clearTimeout(amiantoDiskSaveTimer);
+    amiantoDiskSaveTimer = setTimeout(() => {
+      amiantoDiskSaveTimer = null;
+      if (amiantoPersistInProgress) return;
+      if (!window.__amiantoProjectDirty) return;
+      updateProjectSaveStatusUI('saving');
+      persistEditorProject({ silent: true, promptForLocation: false })
+        .then((result) => {
+          if (typeof applyPersistResultToSaveStatus === 'function') {
+            applyPersistResultToSaveStatus(result);
+          }
+        })
+        .catch((err) => {
+          console.warn('[AutoSave] Failed to write .amnt:', err);
+          if (typeof updateProjectSaveStatusUI === 'function') {
+            updateProjectSaveStatusUI('disk-failed', err && err.message ? err.message : 'error');
+          }
+        });
+    }, AMIANTO_DISK_SAVE_DEBOUNCE_MS);
+  }
+
+  function getProjectFilePathKey(projectName) {
+    return `amiantoProjectFile_${currentUser?.username || 'Local'}:${projectName}`;
+  }
+
+  function setProjectFilePath(projectName, filePath) {
+    if (!projectName || !filePath) return;
+    localStorage.setItem(getProjectFilePathKey(projectName), filePath);
+    localStorage.setItem('amiantoActiveProjectFile', filePath);
+  }
+
+  function getProjectFilePath(projectName) {
+    if (!projectName) return localStorage.getItem('amiantoActiveProjectFile');
+    return localStorage.getItem(getProjectFilePathKey(projectName));
+  }
+
+  function rememberProjectFilePathInCache(projectName, filePath) {
+    if (!currentUser || !projectName || !filePath) return;
+    const list = loadProjectsFromCache(currentUser.username);
+    const idx = findProjectCacheIndex(list, { name: projectName });
+    if (idx >= 0) {
+      list[idx].filePath = filePath;
+      saveProjectsToCache(currentUser.username, list);
+      updateAppState({ projects: list });
+    }
+  }
+
+  function migrateProjectFilePath(oldName, newName) {
+    if (!oldName || !newName || oldName === newName) return;
+    const oldKey = getProjectFilePathKey(oldName);
+    const path = localStorage.getItem(oldKey);
+    if (!path) return;
+    setProjectFilePath(newName, path);
+    try { localStorage.removeItem(oldKey); } catch (_) {}
+    rememberProjectFilePathInCache(newName, path);
+  }
+
+  function collectAssetIdsFromProject(projectObj) {
+    const ids = new Set();
+    const visit = (val) => {
+      if (typeof val === 'string' && val.startsWith('asset:')) {
+        ids.add(val.slice(6));
+      } else if (val && typeof val === 'object') {
+        if (Array.isArray(val)) val.forEach(visit);
+        else Object.values(val).forEach(visit);
+      }
+    };
+    visit(projectObj);
+    return ids;
+  }
+
+  async function pickProjectSaveLocation(projectName) {
+    if (!window.AmiantoAmnt) {
+      showNotification('Project format module not loaded', 'error');
+      return null;
+    }
+    const defaultName = window.AmiantoAmnt.defaultFileName(projectName);
+
+    if (window.amiantoNativeFs) {
+      const filePath = await window.amiantoNativeFs.showSaveDialog(defaultName);
+      return filePath ? { type: 'path', value: filePath } : null;
+    }
+
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [{ description: 'Amianto Project', accept: { 'application/json': ['.amnt'] } }]
+        });
+        return { type: 'handle', value: handle };
+      } catch (err) {
+        if (err && err.name === 'AbortError') return null;
+        throw err;
+      }
+    }
+
+    showNotification('Choose a save location is not supported in this browser. Use Export after creating.', 'warning');
+    return null;
+  }
+
+  async function writeAmntContent(projectName, text, location) {
+    if (location?.type === 'path' && window.amiantoNativeFs) {
+      await writeLargeTextFile(location.value, text);
+      setProjectFilePath(projectName, location.value);
+      rememberProjectFilePathInCache(projectName, location.value);
+      return location.value;
+    }
+    if (location?.type === 'handle') {
+      const writable = await location.value.createWritable();
+      await writable.write(new Blob([String(text || '')], { type: 'application/json' }));
+      await writable.close();
+      projectFileHandles.set(projectName, location.value);
+      return location.value.name || window.AmiantoAmnt.defaultFileName(projectName);
+    }
+    const savedPath = getProjectFilePath(projectName)
+      || localStorage.getItem('amiantoActiveProjectFile');
+    if (savedPath && window.amiantoNativeFs) {
+      await writeLargeTextFile(savedPath, text);
+      setProjectFilePath(projectName, savedPath);
+      return savedPath;
+    }
+    const handle = projectFileHandles.get(projectName);
+    if (handle) {
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([String(text || '')], { type: 'application/json' }));
+      await writable.close();
+      return handle.name || window.AmiantoAmnt.defaultFileName(projectName);
+    }
+    return null;
+  }
+
+  async function buildAmntPackageFromEditor(projectObj) {
+    const source = projectObj || window.serializeProject();
+    const prepared = prepareProjectPayloadForFirestore(source);
+    const projectId = prepared.settings?.id || getActiveProjectId();
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    const assets = (storage && storage.exportAllAssetsForProject && projectId)
+      ? await storage.exportAllAssetsForProject(projectId)
+      : [];
+    const referenced = collectAssetIdsFromProject(prepared);
+    const exported = new Set(assets.map(a => a && a.assetId).filter(Boolean));
+    const missing = [...referenced].filter(id => !exported.has(id));
+    if (missing.length > 0) {
+      console.warn('[Save] Asset refs in project missing from IndexedDB export:', missing.slice(0, 20));
+      addDebugMessage(
+        `[Save] Warning: ${missing.length} asset(s) referenced in project were not found in local storage. Re-save images or use Save Project again.`,
+        'warning'
+      );
+    }
+    return window.AmiantoAmnt.createPackage(prepared, assets);
+  }
+
+  async function saveProjectAsAmnt(projectName, projectObj, location) {
+    const pkg = await buildAmntPackageFromEditor(projectObj);
+    const text = window.AmiantoAmnt.stringify(pkg, true);
+    return await writeAmntContent(projectName, text, location);
+  }
+
+  async function readProjectFileContent(filePath) {
+    if (filePath && window.amiantoNativeFs) {
+      return await readLargeTextFile(filePath);
+    }
+    return null;
+  }
+
+  async function importAmntContent(text, filePath) {
+    const { project, assets } = window.AmiantoAmnt.parse(text);
+    migrateLegacyInventoryRefsOnLoad(project);
+    const projectName = project?.settings?.name;
+    if (!projectName) throw new Error('Project file has no name');
+
+    const projectId = project.settings.id || normalizeProjectIdFromName(projectName);
+    project.settings.id = projectId;
+
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (storage) {
+      if (typeof storage.init === 'function') {
+        await storage.init();
+      }
+      if (storage.importAssetsFromPackage && assets.length) {
+        const imported = await storage.importAssetsFromPackage(projectId, assets);
+        console.log('[Load] Imported ' + imported + ' asset(s) from .amnt into IndexedDB');
+      }
+    } else if (assets.length) {
+      console.warn('[Load] Asset storage unavailable; .amnt assets were not imported');
+    }
+
+    const prepared = prepareProjectPayloadForFirestore(project);
+    await applyProjectObject(prepared);
+    const jsonString = JSON.stringify(prepared, null, 2);
+
+    localStorage.setItem('amiantoActiveProjectName', projectName);
+    localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+    localStorage.setItem('amiantoActiveProjectId', projectId);
+    if (filePath) {
+      setProjectFilePath(projectName, filePath);
+      rememberProjectFilePathInCache(projectName, filePath);
+    }
+
+    autosaveToCache(projectName, jsonString);
+
+    const arr = loadProjectsFromCache(currentUser.username);
+    const idx = findProjectCacheIndex(arr, { name: projectName });
+    const entry = normalizeProject({
+      settings: project.settings,
+      id: projectId,
+      updatedAt: new Date().toISOString(),
+      createdAt: project.createdAt || new Date().toISOString(),
+      source: filePath ? 'amnt' : 'import',
+      filePath: filePath || null
+    });
+    if (idx >= 0) {
+      arr[idx] = { ...arr[idx], ...entry };
+    } else {
+      arr.push(entry);
+    }
+    saveProjectsToCache(currentUser.username, arr);
+    updateAppState({ projects: arr });
+
+    if (window.amiantoResources && typeof window.amiantoResources.refresh === 'function') {
+      await window.amiantoResources.refresh();
+    }
+    if (window.amiantoResources && typeof window.amiantoResources.refreshSounds === 'function') {
+      await window.amiantoResources.refreshSounds();
+    }
+
+    enableOtherTabs(true);
+    scheduleProjectSizeIndicatorRefresh(400);
+    return projectName;
+  }
+
+  async function persistEditorProject(options = {}) {
+    const interactive = options.interactive === true;
+    const silent = options.silent === true;
+    const promptForLocation = options.promptForLocation !== false;
+
+    if (amiantoPersistInProgress) {
+      if (interactive) showNotification('Save already in progress...', 'info');
+      return { ok: false, reason: 'in-progress' };
+    }
+
+    amiantoPersistInProgress = true;
+    try {
+      ensureCurrentUser();
+
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        if (interactive) {
+          showNotification('No project is currently open. Please open or create a project first.', 'warning');
+        }
+        return { ok: false, reason: 'no-project' };
+      }
+
+      saveCurrentScriptIfNeeded({ markDirty: false });
+      syncEditorScriptsToRoomsBeforeSerialize();
+      syncInventoryScriptAttachments();
+
+      let projectObj = window.serializeProject();
+      if (!projectObj.settings) projectObj.settings = {};
+
+      const renameFrom = window.__amiantoProjectRenameFrom || null;
+      if (renameFrom && renameFrom !== activeProjectName) {
+        migrateProjectFilePath(renameFrom, activeProjectName);
+      }
+
+      const projectId = getStableProjectId(projectObj.settings, activeProjectName);
+      projectObj.settings.id = projectId;
+      projectObj.settings.name = activeProjectName;
+      const projectName = activeProjectName;
+      localStorage.setItem('amiantoActiveProjectId', projectId);
+
+      if (interactive && !silent) showNotification('Saving assets...', 'info');
+      try {
+        projectObj = await saveAllAssetsToStorage(projectObj, projectId);
+        unsavedCharacterFrames.clear();
+        unsavedCharacterAssetIds.clear();
+        sessionStorage.removeItem('amiantoUnsavedFramesToDelete');
+      } catch (error) {
+        console.error('[Save] Errore salvataggio asset:', error);
+        if (interactive) showNotification('Some assets could not be saved', 'warning');
+      }
+
+      const savePayload = prepareProjectPayloadForFirestore(projectObj);
+      const jsonString = JSON.stringify(savePayload, null, 2);
+      window.__amiantoLastFirestorePayloadBytes = new Blob([JSON.stringify(savePayload)]).size;
+      window.__amiantoLastCacheSaveAt = new Date().toISOString();
+      autosaveToCache(projectName, jsonString);
+      localStorage.setItem('amiantoLastSavedProjectJson', jsonString);
+
+      const linkedFilePath = getProjectFilePath(projectName);
+      const userProjects = loadProjectsFromCache(currentUser.username);
+      let idx = findProjectCacheIndex(userProjects, { id: projectId, name: projectName });
+      if (idx < 0 && renameFrom) {
+        idx = findProjectCacheIndex(userProjects, { id: projectId, name: renameFrom });
+      }
+      const entry = normalizeProject({
+        settings: projectObj.settings,
+        id: projectId,
+        updatedAt: new Date().toISOString(),
+        createdAt: projectObj.createdAt || new Date().toISOString(),
+        source: linkedFilePath ? 'amnt' : 'local',
+        filePath: linkedFilePath || null
+      });
+      if (idx >= 0) userProjects[idx] = { ...userProjects[idx], ...entry };
+      else userProjects.push(entry);
+      saveProjectsToCache(currentUser.username, userProjects);
+      updateAppState({ projects: userProjects });
+
+      if (renameFrom && renameFrom !== projectName) {
+        removeProjectLocalBackup(currentUser.username, renameFrom);
+      }
+
+      try {
+        localStorage.setItem(`amiantoProject_${currentUser.username}:${projectName}`, jsonString);
+        localStorage.setItem('amiantoActiveProjectName', projectName);
+        localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
+        localStorage.setItem('amiantoActiveProjectId', projectId);
+      } catch (_) {}
+
+      saveProjectJsonToOPFS(jsonString, projectName);
+
+      let amntLocation = null;
+      const hasLinkedPath = hasLinkedAmntFilePath(projectName);
+      const hasFileHandle = projectFileHandles.has(projectName);
+      const expectsDiskWrite = hasLinkedPath || hasFileHandle || !!promptForLocation;
+      if (!hasLinkedPath && !hasFileHandle && promptForLocation) {
+        amntLocation = await pickProjectSaveLocation(projectName);
+      }
+
+      let filePath = null;
+      try {
+        if (hasLinkedPath || hasFileHandle || amntLocation) {
+          filePath = await saveProjectAsAmnt(projectName, projectObj, amntLocation);
+        }
+        if (filePath) {
+          rememberProjectFilePathInCache(projectName, filePath);
+          const list = loadProjectsFromCache(currentUser.username);
+          const ci = findProjectCacheIndex(list, { name: projectName });
+          if (ci >= 0) {
+            list[ci].filePath = filePath;
+            list[ci].source = 'amnt';
+            saveProjectsToCache(currentUser.username, list);
+            updateAppState({ projects: list });
+          }
+          clearAmiantoProjectDirty();
+          window.__amiantoLastDiskSaveAt = new Date().toISOString();
+          updateProjectSaveStatusUI('saved', window.__amiantoLastDiskSaveAt);
+          if (interactive && !silent) {
+            showNotification(`Project saved to ${filePath}`, 'success');
+          } else if (!silent) {
+            addDebugMessage(`Auto-saved to ${filePath}`, 'success');
+          }
+        } else {
+          // Cache-only success: clear dirty only when no linked disk file was expected
+          if (!expectsDiskWrite || (!hasLinkedPath && !hasFileHandle && !amntLocation)) {
+            clearAmiantoProjectDirty();
+            updateProjectSaveStatusUI('cache-saved', window.__amiantoLastCacheSaveAt);
+          } else {
+            // Expected disk write but got no path (cancelled picker, etc.)
+            window.__amiantoProjectDirty = true;
+            updateProjectSaveStatusUI('dirty');
+          }
+          if (interactive && !silent) {
+            showNotification('Project saved to browser cache. Choose a .amnt file location on next save to write a disk file.', 'warning');
+          }
+        }
+      } catch (amntErr) {
+        console.error('[Save] .amnt write failed:', amntErr);
+        // Keep dirty so beforeunload still warns; cache is OK but disk is not
+        window.__amiantoProjectDirty = true;
+        updateProjectSaveStatusUI(
+          'disk-failed',
+          amntErr && amntErr.message ? amntErr.message : String(amntErr)
+        );
+        if (interactive) {
+          showNotification('Cache updated but .amnt file write failed: ' + (amntErr.message || amntErr), 'danger');
+        }
+        return { ok: false, reason: 'disk-failed', error: amntErr, cacheSaved: true };
+      }
+
+      updateProjectSizeIndicator();
+      return { ok: true, diskPath: filePath, cacheOnly: !filePath };
+    } finally {
+      amiantoPersistInProgress = false;
+      // Se l'utente ha modificato qualcosa durante il save, riprogramma l'autosave
+      if (window.__amiantoProjectDirty && typeof scheduleAmiantoDiskPersist === 'function') {
+        scheduleAmiantoDiskPersist();
+      }
+    }
+  }
+
+  window.saveCurrentProject = async function saveCurrentProject() {
+    await persistEditorProject({ interactive: true, promptForLocation: true });
+  };
+
+  window.addEventListener('beforeunload', (event) => {
+    if (!window.__amiantoProjectDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
   // Create new project
-  // MODIFICATO: Ora crea e apre il progetto nell'editor, e lo salva su Firestore
   window.createNewProject = async function(projectNameFromModal = null, showSuccessNotification = true) {
-    if (!currentUser) {
-      showNotification('Please login to create projects', 'warning');
-      return;
-    }
+    ensureCurrentUser();
 
-    // Blocca durante la sincronizzazione
-    if (isSyncingProjects) {
-      showNotification('Please wait for synchronization to complete before creating a project', 'warning');
-      return;
-    }
-
-    // Se il nome progetto viene passato come parametro (dal modale), usalo
-    // Altrimenti chiedi all'utente
     let projectName = projectNameFromModal;
     if (!projectName) {
-      projectName = prompt('Enter project name:');
+      projectName = await askProjectNameDialog('Enter project name:');
     }
-    if (!projectName || !projectName.trim()) return;
+    if (!projectName || !String(projectName).trim()) {
+      return { ok: false, reason: 'empty-name' };
+    }
 
-    const trimmedName = projectName.trim();
+    const trimmedName = String(projectName).trim();
 
-    // Crea progetto completo con struttura corretta
+    const existing = loadProjectsFromCache(currentUser.username);
+    if (findProjectCacheIndex(existing, { name: trimmedName }) >= 0) {
+      showNotification('A project named "' + trimmedName + '" already exists', 'warning');
+      return { ok: false, reason: 'duplicate' };
+    }
+
     const newProject = {
       format: 'amianto-game',
       version: 1,
       meta: {
         exportedAt: new Date().toISOString(),
         editor: 'Amianto Editor',
-        editorVersion: '0.1'
+        editorVersion: '1.0.0'
       },
       settings: {
+        id: trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_'),
         name: trimmedName,
         canvasWidth: 800,
-        canvasHeight: 600
+        canvasHeight: 600,
+        roomTransition: 'none',
+        roomTransitionDuration: 600
       },
       rooms: [
         {
@@ -13761,12 +17097,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           background: null,
           foregrounds: [],
           sceneObjects: [],
+          animationInstances: [],
           walkableArea: [],
           hotspots: []
         }
       ],
       guis: [],
       characters: [],
+      roomAnimations: [],
       inventory: [],
       scripts: {},
       attachments: {},
@@ -13775,6 +17113,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         definitions: [],
         state: {}
       },
+      dialogues: [],
       resourcesCatalog: [],
       eventConditions: {
         objects: {},
@@ -13785,83 +17124,157 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
     };
 
-    // Apri il progetto nell'editor
     await applyProjectObject(newProject);
 
-    // Imposta come progetto attivo
+    const projectId = newProject.settings.id;
+
     localStorage.setItem('amiantoActiveProjectName', trimmedName);
     localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-    
-    // Aggiorna indicatore dimensione progetto
+    localStorage.setItem('amiantoActiveProjectId', projectId);
+
     updateProjectSizeIndicator();
 
-    // Aggiungi alla lista progetti utente usando funzione centralizzata
     const userProjects = loadProjectsFromCache(currentUser.username);
     const entry = normalizeProject({
       settings: newProject.settings,
+      id: projectId,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      source: 'local'
     });
     userProjects.push(entry);
     saveProjectsToCache(currentUser.username, userProjects);
+    updateAppState({ projects: userProjects });
 
-    // Salva su Firestore se l'utente è autenticato
-    const userId = currentUser.uid;
-    if (userId && window.firebaseDB) {
-      const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-      await saveProjectToFirestore(userId, projectId, newProject);
-    }
+    try {
+      const prepared = prepareProjectPayloadForRestore(newProject);
+      autosaveToCache(trimmedName, JSON.stringify(prepared, null, 2));
+    } catch (_) {}
 
-    // Abilita altre tab ora che c'è un progetto aperto
     enableOtherTabs(true);
-    
-    // Mostra notifica solo se richiesto (non quando viene chiamato dal modale)
-    if (showSuccessNotification) {
-      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
+
+    // .amnt su disco: opzionale (dopo che il progetto e gia aperto in editor)
+    let diskOk = false;
+    try {
+      await ensureNativeDialogsCanOpen();
+      const saveLocation = await pickProjectSaveLocation(trimmedName);
+      if (saveLocation) {
+        const filePath = await saveProjectAsAmnt(trimmedName, newProject, saveLocation);
+        if (filePath) {
+          rememberProjectFilePathInCache(trimmedName, filePath);
+          diskOk = true;
+          addDebugMessage('Project file created: ' + filePath, 'success');
+        }
+      } else {
+        showNotification('Project created in editor. Use Save Project to write a .amnt file.', 'info');
+      }
+    } catch (err) {
+      console.error('[Create] Failed to write .amnt file:', err);
+      showNotification('Project created but file save failed: ' + (err && err.message ? err.message : err), 'warning');
     }
+
+    if (showSuccessNotification) {
+      showNotification(
+        diskOk
+          ? 'Project "' + trimmedName + '" created and saved!'
+          : 'Project "' + trimmedName + '" created and opened!',
+        'success'
+      );
+    }
+    return { ok: true, name: trimmedName, projectId, diskOk };
   };
+
+  async function ensureNativeDialogsCanOpen() {
+    const sel = document.getElementById('projectSelectionModal');
+    if (sel && sel.classList.contains('show')) {
+      try {
+        const bsInst = bootstrap.Modal.getInstance(sel);
+        if (bsInst) {
+          await new Promise(function(resolve) {
+            var done = false;
+            var finish = function() { if (done) return; done = true; resolve(); };
+            sel.addEventListener('hidden.bs.modal', finish, { once: true });
+            bsInst.hide();
+            setTimeout(finish, 450);
+          });
+        } else {
+          sel.classList.remove('show');
+          sel.style.display = 'none';
+          document.querySelectorAll('.modal-backdrop').forEach(function(b) { b.remove(); });
+          document.body.classList.remove('modal-open');
+          await new Promise(function(r) { setTimeout(r, 200); });
+        }
+      } catch (_) {}
+    }
+    try { hideLoadingOverlay(); } catch (_) {}
+  }
+
+  function askProjectNameDialog(message) {
+    return new Promise(function(resolve) {
+      const existing = document.getElementById('amiantoAskNameModal');
+      if (existing) existing.remove();
+
+      let settled = false;
+      const finish = function(value) {
+        if (settled) return;
+        settled = true;
+        try { bs.hide(); } catch (_) {}
+        setTimeout(function() { try { el.remove(); } catch (_) {} }, 400);
+        resolve(value);
+      };
+
+      const el = document.createElement('div');
+      el.className = 'modal fade';
+      el.id = 'amiantoAskNameModal';
+      el.tabIndex = -1;
+      el.innerHTML =
+        '<div class="modal-dialog modal-dialog-centered">' +
+        '<div class="modal-content bg-dark text-light">' +
+        '<div class="modal-header border-secondary">' +
+        '<h5 class="modal-title"></h5>' +
+        '<button type="button" class="btn-close btn-close-white" data-amianto-cancel="1" aria-label="Close"></button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<input type="text" class="form-control bg-dark text-light border-secondary" id="amianto-ask-name-input" placeholder="My Adventure" autocomplete="off">' +
+        '</div>' +
+        '<div class="modal-footer border-secondary">' +
+        '<button type="button" class="btn btn-secondary" data-amianto-cancel="1">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="amianto-ask-name-ok">Create</button>' +
+        '</div></div></div>';
+
+      document.body.appendChild(el);
+      el.querySelector('.modal-title').textContent = message || 'Project name';
+
+      const bs = new bootstrap.Modal(el, { backdrop: 'static', keyboard: true });
+      const getInput = function() { return el.querySelector('#amianto-ask-name-input'); };
+
+      el.querySelector('#amianto-ask-name-ok').addEventListener('click', function() {
+        const v = (getInput().value || '').trim();
+        finish(v || null);
+      });
+      el.querySelectorAll('[data-amianto-cancel]').forEach(function(btn) {
+        btn.addEventListener('click', function() { finish(null); });
+      });
+      getInput().addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          const v = (getInput().value || '').trim();
+          finish(v || null);
+        }
+      });
+
+      bs.show();
+      setTimeout(function() { getInput().focus(); }, 200);
+    });
+  }
 
   // ================================
   // ASSET MANAGEMENT SYSTEM
   // ================================
-  // 
-  // Sistema completo per gestione asset (immagini) usando Firebase Storage
-  // 
-  // STRUTTURA STORAGE:
-  // projects/{projectId}/images/filename.png
-  // projects/{projectId}/gui/filename.png
-  // projects/{projectId}/audio/filename.mp3
-  // 
-  // STRUTTURA FIRESTORE:
-  // users/{userId}/projects/{projectId}/assets/{assetId}
-  // {
-  //   assetId: string,
-  //   name: string,
-  //   type: 'background' | 'foreground' | 'sprite' | 'gui' | 'character' | 'cursor',
-  //   storagePath: string,
-  //   projectId: string,
-  //   createdAt: timestamp
-  // }
-  // 
-  // NOTA: Le immagini NON vengono più salvate come base64 nel JSON del progetto.
-  // Vengono salvati solo gli assetId che vengono poi risolti in URL da Firebase Storage.
-  // 
-  // STATO IMPLEMENTAZIONE:
-  // ✅ IMPLEMENTATO:
-  //   - Upload background images
-  //   - Upload foreground layers
-  //   - Upload scene objects (sprites)
-  //   - Serializzazione con assetId
-  //   - Caricamento e risoluzione assetId in URL
-  //   - Gestione errori con fallback locale
-  // 
-  // ⚠️ TODO: not yet implemented:
-  //   - Upload GUI background images
-  //   - Upload GUI button background images
-  //   - Upload character animation frames
-  //   - Upload cursor images
-  //   - Export progetti come ZIP con asset inclusi
-  //   - Re-link asset in runtime.html per esecuzione jailed/iframe
+  //
+  // Sistema per gestione asset (immagini/audio) usando storage locale (IndexedDB).
+  // Le immagini NON vengono salvate come base64 nel JSON del progetto:
+  // vengono salvati solo gli assetId risolti via assetStorage.resolveAssetUrl.
 
   /**
    * Genera un assetId univoco
@@ -13872,8 +17285,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Determina la cartella Storage in base al tipo di asset
-   * Mappatura per Supabase Storage: backgrounds, foregrounds, sprites, audio
+   * Determina la cartella storage in base al tipo di asset
    * @param {string} assetType - Tipo di asset (background, foreground, sprite, gui, character, cursor, audio)
    * @returns {string} - Nome della cartella (backgrounds, foregrounds, sprites, audio)
    */
@@ -13895,6 +17307,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return 'audio';
       case 'resource':
         return 'resources';
+      case 'animation':
+        return 'animations';
       default:
         // Per categorie non riconosciute, usa la categoria stessa (normalizzata)
         return assetType ? assetType.toLowerCase() : 'sprites';
@@ -13902,13 +17316,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   /**
-   * Carica un'immagine su Supabase Storage
-   * 
-   * FALLBACK: Se Supabase non è disponibile:
-   * - Mostra errore chiaro all'utente
-   * - Blocca l'upload del nuovo asset
-   * - Non blocca il caricamento di asset esistenti (che hanno URL validi)
-   * - Non blocca il salvataggio del progetto (gli asset già caricati hanno URL persistenti)
+   * Carica un'immagine nello storage locale
    * 
    * @param {File} file - File immagine da caricare
    * @param {string} projectId - ID del progetto
@@ -13918,12 +17326,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function uploadImageToStorage(file, projectId, assetType, assetId = null, overwriteExisting = false, fileNameOverride = null, subfolder = null) {
     try {
-      // Verifica che Supabase Storage sia disponibile
-      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-        const errorMsg = 'Supabase Storage non disponibile. Impossibile caricare asset. Verifica la configurazione SUPABASE_URL e SUPABASE_ANON_KEY in supabase.js';
-        console.error('[Asset] ❌', errorMsg);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.isAvailable()) {
+        const errorMsg = 'Storage non disponibile. Impossibile caricare asset.';
+        console.error('[Asset] âŒ', errorMsg);
         
-        // Mostra notifica all'utente
         if (typeof showNotification === 'function') {
           showNotification(errorMsg, 'error');
         }
@@ -13936,107 +17343,58 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         assetId = generateAssetId();
       }
 
-      let forcedFileName = fileNameOverride;
-      if (!forcedFileName && overwriteExisting && assetId) {
-        const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop() : 'png';
-        forcedFileName = `${assetId}.${(ext || 'png').toLowerCase()}`;
-      }
+      // Mantieni sempre il nome originale del file (mai assetId.ext)
+      const forcedFileName = fileNameOverride || (file && file.name) || null;
 
       // Determina categoria (backgrounds, foregrounds, sprites, audio)
       const category = getStorageFolderForType(assetType);
       
-      console.log('[Asset] Upload immagine su Supabase...', { projectId, category, assetType, assetId, subfolder });
+      console.log('[Asset] Upload immagine...', { projectId, category, assetType, assetId, subfolder });
 
-      // Usa la funzione uploadAsset da supabase.js
-      const result = await window.supabaseStorage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
+      const result = await storage.uploadAsset(file, projectId, category, assetId, overwriteExisting, forcedFileName, subfolder);
       
-      // Costruisci storagePath per compatibilità con il resto del codice
-      // Usa il fileName generato da Supabase (include assetId)
-      const generatedFileName = result.fileName || forcedFileName || result.url.split('/').pop().split('?')[0];
+      // Costruisci storagePath per compatibilitÃ  con il resto del codice
+      const originalFileName = result.fileName || forcedFileName || (file && file.name) || (result.url && result.url.split('/').pop().split('?')[0]);
       const actualFolder = subfolder || category;
-      const storagePath = `${projectId}/${actualFolder}/${generatedFileName}`;
+      const storagePath = `${projectId}/${actualFolder}/${originalFileName}`;
       
-      console.log('[Asset] ✅ Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: generatedFileName, subfolder });
+      console.log('[Asset] âœ… Immagine caricata con successo:', { assetId, storagePath, downloadURL: result.url, fileName: originalFileName, subfolder });
       
       return {
         assetId,
         storagePath,
         downloadURL: result.url,
-        fileName: generatedFileName, // Nome file generato (con assetId) per risoluzione futura
+        fileName: originalFileName,
         subfolder // Includi subfolder per salvare nei metadati
       };
     } catch (error) {
-      console.error('[Asset] ❌ Errore upload immagine:', error);
+      console.error('[Asset] âŒ Errore upload immagine:', error);
       throw error;
     }
   }
 
   /**
-   * Salva metadata asset in Firestore
+   * Salva metadata asset nello storage locale
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID univoco dell'asset
    * @param {string} name - Nome originale del file
    * @param {string} assetType - Tipo di asset
    * @param {string} storagePath - Percorso Storage
-   * @param {string} fileName - Nome file generato (opzionale, per Supabase)
-   * @param {string} publicUrl - URL pubblico dell'asset (opzionale, per Supabase)
+   * @param {string} fileName - Nome file generato (opzionale)
+   * @param {string} publicUrl - URL pubblico dell'asset (opzionale)
    * @returns {Promise<boolean>} - true se salvato con successo
    */
   async function saveAssetMetadata(projectId, assetId, name, assetType, storagePath, fileName = null, publicUrl = null, subfolder = null) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile');
-        return false;
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.saveAssetMetadata) {
+        return await storage.saveAssetMetadata(projectId, assetId, {
+          assetId, name, type: assetType, storagePath, fileName, publicUrl, subfolder
+        });
       }
-
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return false;
-      }
-
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      // Coerente con la struttura esistente dei progetti
-      const assetRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId);
-
-      const metadata = {
-        assetId,
-        name,
-        type: assetType,
-        storagePath,
-        projectId,
-        // Aggiungi campi per Supabase Storage
-        fileName: fileName || null,
-        publicUrl: publicUrl || null,
-        subfolder: subfolder || null, // Sottocartella opzionale (es: "rooms/roomname")
-        storageProvider: 'supabase', // Indica che usa Supabase Storage
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-
-      await assetRef.set(metadata);
-      
-      console.log('[Asset] ✅ Metadata salvato:', { assetId, projectId, fileName, publicUrl });
       return true;
     } catch (error) {
-      console.error('[Asset] ❌ Errore salvataggio metadata:', error);
-      
-      // Se è un errore di permessi, fornisci informazioni utili
-      if (error.code === 'permission-denied') {
-        console.error('[Asset] ⚠️ Errore permessi Firestore. Verifica che le regole Firestore includano:');
-        console.error('[Asset]   match /users/{userId}/projects/{projectId}/assets/{assetId}');
-        console.error('[Asset]   allow write: if request.auth != null && request.auth.uid == userId;');
-        console.error('[Asset] Vedi FIRESTORE_SETUP.md per istruzioni su come deployare le regole.');
-      }
-      
+      console.error('[Asset] âŒ Errore salvataggio metadata:', error);
       return false;
     }
   }
@@ -14048,56 +17406,19 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
    */
   async function loadProjectAssets(projectId) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile');
-        return [];
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.listProjectAssetMetadata) {
+        return await storage.listProjectAssetMetadata(projectId);
       }
-
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return [];
-      }
-
-      console.log('[Asset] Caricamento asset per progetto:', projectId);
-
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Carica tutti gli asset del progetto
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      const assetsRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets');
-
-      const snapshot = await assetsRef.get();
-      
-      const assets = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        assets.push({
-          assetId: data.assetId || doc.id,
-          name: data.name || '',
-          type: data.type || 'sprite',
-          storagePath: data.storagePath || '',
-          projectId: data.projectId || projectId,
-          createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null
-        });
-      });
-
-      console.log(`[Asset] ✅ Caricati ${assets.length} asset per progetto ${projectId}`);
-      return assets;
+      return [];
     } catch (error) {
-      console.error('[Asset] ❌ Errore caricamento asset:', error);
+      console.error('[Asset] âŒ Errore caricamento asset:', error);
       return [];
     }
   }
 
   /**
-   * Elimina un asset da Supabase Storage dato un'immagine
+   * Elimina un asset dallo storage locale dato un'immagine
    * @param {Image} img - Oggetto Image che rappresenta l'asset
    * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
    */
@@ -14107,245 +17428,107 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return false;
       }
 
-      // Verifica se l'immagine ha un assetId associato
       const assetInfo = imageAssetMap.get(img);
       if (!assetInfo || !assetInfo.assetId) {
-        // Non è un asset caricato su Supabase, potrebbe essere una dataURL o URL esterno
-        console.log('[Asset] Immagine non ha assetId associato, non è necessario eliminarla da Supabase');
-        return true; // Non è un errore, semplicemente non c'è nulla da eliminare
+        console.log('[Asset] Immagine senza assetId associato, nulla da eliminare');
+        return true;
       }
 
       const { assetId, type, projectId, fileName } = assetInfo;
-
-      // Verifica che Supabase Storage sia disponibile
-      if (!window.supabaseStorage || !window.supabaseStorage.isAvailable()) {
-        console.warn('[Asset] Supabase Storage non disponibile, impossibile eliminare asset:', assetId);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.isAvailable || !storage.isAvailable()) {
+        console.warn('[Asset] Storage locale non disponibile, impossibile eliminare asset:', assetId);
         return false;
       }
 
-      // Se non abbiamo fileName o subfolder, cerchiamo prima nei metadata Firestore
       let finalFileName = fileName;
       let subfolder = assetInfo.subfolder || null;
-      let firebaseStoragePath = null; // Path per Firebase Storage legacy
-      let isFirebaseLegacy = false; // Flag per asset legacy Firebase
-      if ((!finalFileName || !subfolder) && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          const userId = window.firebaseAuth.currentUser.uid;
-          const assetRef = window.firebaseDB
-            .collection('users')
-            .doc(userId)
-            .collection('projects')
-            .doc(projectId)
-            .collection('assets')
-            .doc(assetId);
 
-          const doc = await assetRef.get();
-          if (doc.exists) {
-            const data = doc.data();
-            if (data && data.fileName && !finalFileName) {
+      if ((!finalFileName || !subfolder) && storage.getAssetMetadata) {
+        try {
+          const data = await storage.getAssetMetadata(projectId, assetId);
+          if (data) {
+            if (data.fileName && !finalFileName) {
               finalFileName = data.fileName;
-              console.log(`[Asset] fileName recuperato da Firestore per eliminazione: ${finalFileName}`);
             }
-            if (data && data.subfolder && !subfolder) {
+            if (data.subfolder && !subfolder) {
               subfolder = data.subfolder;
-              console.log(`[Asset] subfolder recuperato da Firestore per eliminazione: ${subfolder}`);
-            }
-            // Controlla se è un asset legacy Firebase Storage
-            if (data && data.storagePath && !data.storageProvider) {
-              // Asset legacy: ha storagePath ma non storageProvider (o storageProvider !== 'supabase')
-              firebaseStoragePath = data.storagePath;
-              isFirebaseLegacy = true;
-              console.log(`[Asset] ⚠️ Asset legacy Firebase rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
-            } else if (data && data.storagePath && data.storageProvider && data.storageProvider !== 'supabase') {
-              // Asset con storageProvider diverso da 'supabase'
-              firebaseStoragePath = data.storagePath;
-              isFirebaseLegacy = true;
-              console.log(`[Asset] ⚠️ Asset con storageProvider "${data.storageProvider}" rilevato, eliminerò anche da Firebase Storage: ${firebaseStoragePath}`);
             }
           }
         } catch (metaErr) {
-          console.warn('[Asset] Impossibile recuperare metadata da Firestore per eliminazione asset:', metaErr);
+          console.warn('[Asset] Impossibile recuperare metadata per eliminazione asset:', metaErr);
         }
       }
-      
-      // Se non abbiamo subfolder ma la categoria è background/foreground/sprite, 
-      // costruisci il subfolder dal roomName corrente
+
       if (!subfolder && (type === 'background' || type === 'foreground' || type === 'sprite')) {
         const room = rooms.get(currentRoomId);
         if (room) {
           const roomName = room.name || room.id || currentRoomId;
           subfolder = `rooms/${roomName}`;
-          console.log(`[Asset] subfolder costruito dal roomName corrente: ${subfolder}`);
         }
       }
 
-      // Come ultimo fallback, prova a ricostruire il nome file dall'URL dell'immagine
       if (!finalFileName) {
         if (img.src && img.src.includes('.')) {
           const ext = img.src.split('.').pop().split('?')[0].toLowerCase();
           finalFileName = `${assetId}.${ext}`;
         } else {
-          // Fallback storico: usa png come estensione predefinita
           finalFileName = `${assetId}.png`;
         }
-        console.log(`[Asset] fileName non trovato nei metadata, ricostruito da URL: ${finalFileName}`);
       }
 
-      console.log(`[Asset] Eliminazione asset da Supabase: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
+      console.log(`[Asset] Eliminazione asset locale: ${assetId} (${type}, ${finalFileName}${subfolder ? `, subfolder: ${subfolder}` : ''})`);
 
-      // Elimina da Supabase Storage (passa userId e subfolder per path corretto)
-      let userIdOverride = null;
-      if (window.firebaseAuth && window.firebaseAuth.currentUser) {
-        userIdOverride = window.firebaseAuth.currentUser.uid;
-      }
+      const deleted = await storage.deleteAsset(projectId, type, finalFileName, null, subfolder);
 
-      // PRIMA: elimina da Firebase Storage se è un asset legacy
-      let firebaseDeleted = true; // Default true se non è un asset legacy
-      if (isFirebaseLegacy && firebaseStoragePath && window.firebaseStorage) {
-        try {
-          console.log(`[Asset] Eliminazione asset legacy da Firebase Storage: ${firebaseStoragePath}`);
-          const storageRef = window.firebaseStorage.ref(firebaseStoragePath);
-          await storageRef.delete();
-          firebaseDeleted = true;
-          console.log(`[Asset] ✅ Asset eliminato da Firebase Storage: ${firebaseStoragePath}`);
-        } catch (firebaseError) {
-          console.warn(`[Asset] ⚠️ Errore eliminazione da Firebase Storage (non critico):`, firebaseError);
-          // Non blocchiamo il successo se Firebase Storage fallisce (potrebbe essere già eliminato)
-          firebaseDeleted = false;
-        }
-      }
-
-      // POI: elimina da Supabase Storage (passa userId e subfolder per path corretto)
-      const deleted = await window.supabaseStorage.deleteAsset(projectId, type, finalFileName, userIdOverride, subfolder);
-      
-      // Considera l'eliminazione riuscita se almeno uno dei due storage è stato eliminato
-      // (potrebbe essere solo su Supabase o solo su Firebase legacy)
-      if (deleted || firebaseDeleted) {
-        if (deleted) {
-          console.log(`[Asset] ✅ Asset eliminato da Supabase: ${assetId}`);
-        }
-        if (firebaseDeleted && isFirebaseLegacy) {
-          console.log(`[Asset] ✅ Asset legacy eliminato da Firebase Storage: ${assetId}`);
-        }
-        
-        // Rimuovi anche da imageAssetMap
+      if (deleted) {
+        console.log(`[Asset] âœ… Asset eliminato: ${assetId}`);
         imageAssetMap.delete(img);
-        
-        // Opzionale: elimina anche da Firestore se disponibile
-        if (window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-          try {
-            const userId = window.firebaseAuth.currentUser.uid;
-            const assetRef = window.firebaseDB
-              .collection('users')
-              .doc(userId)
-              .collection('projects')
-              .doc(projectId)
-              .collection('assets')
-              .doc(assetId);
-            
-            await assetRef.delete();
-            console.log(`[Asset] ✅ Metadata eliminato da Firestore: ${assetId}`);
-          } catch (firestoreError) {
-            console.warn(`[Asset] ⚠️ Errore eliminazione metadata Firestore (non critico):`, firestoreError);
-            // Non blocchiamo il successo se Firestore fallisce
-          }
-        }
-        
-        // Aggiorna i counter dopo eliminazione asset
+
         if (typeof updateProjectSizeIndicator === 'function') {
           updateProjectSizeIndicator();
         }
-        
+
         return true;
-      } else {
-        console.warn(`[Asset] ⚠️ Impossibile eliminare asset da Supabase: ${assetId}`);
-        return false;
       }
+
+      console.warn(`[Asset] âš ï¸ Impossibile eliminare asset: ${assetId}`);
+      return false;
     } catch (error) {
-      console.error('[Asset] ❌ Errore eliminazione asset:', error);
+      console.error('[Asset] âŒ Errore eliminazione asset:', error);
       return false;
     }
   }
 
   /**
-   * Risolve un assetId in un URL di download da Supabase Storage
+   * Risolve un assetId in un URL dallo storage locale
    * @param {string} projectId - ID del progetto
    * @param {string} assetId - ID dell'asset
    * @returns {Promise<string|null>} - URL di download o null se non trovato
    */
   async function resolveAssetUrl(projectId, assetId) {
     try {
-      // Verifica che Firestore sia disponibile
-      if (!window.firebaseDB) {
-        console.warn('[Asset] Firestore non disponibile per risolvere asset:', assetId);
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (!storage || !storage.resolveAssetUrl) {
         return null;
       }
 
-      // Verifica che l'utente sia autenticato
-      if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
-        console.warn('[Asset] Utente non autenticato');
-        return null;
+      const url = await storage.resolveAssetUrl(projectId, assetId);
+      if (url) {
+        console.log('[Asset] âœ… Asset risolto da storage locale:', { assetId });
+        return url;
       }
 
-      const userId = window.firebaseAuth.currentUser.uid;
-
-      // Carica metadata asset da Firestore
-      // Struttura: users/{userId}/projects/{projectId}/assets/{assetId}
-      const assetRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId)
-        .collection('assets')
-        .doc(assetId);
-
-      const doc = await assetRef.get();
-      
-      if (!doc.exists) {
-        console.warn('[Asset] Asset non trovato in Firestore:', assetId);
-        return null;
-      }
-
-      const data = doc.data();
-      
-      // Se abbiamo già l'URL pubblico salvato (per Supabase), usalo direttamente
-      if (data.publicUrl) {
-        console.log('[Asset] ✅ Asset risolto da metadata (Supabase):', { assetId, publicUrl: data.publicUrl });
-        return data.publicUrl;
-      }
-
-      // Fallback: prova a ricostruire l'URL da Supabase Storage
-      if (data.fileName && data.type && window.supabaseStorage && window.supabaseStorage.isAvailable()) {
-        const category = getStorageFolderForType(data.type);
-        // Passa userId per asset nuovi (con userId nel path), null per asset legacy
-        const publicUrl = window.supabaseStorage.getAssetPublicUrl(userId, projectId, category, data.fileName);
-        if (publicUrl) {
-          console.log('[Asset] ✅ Asset risolto da Supabase Storage:', { assetId, publicUrl });
-          return publicUrl;
-        }
-      }
-
-      // Se non è un asset Supabase, potrebbe essere un asset Firebase legacy
-      // In questo caso, prova a usare Firebase Storage come fallback
-      if (data.storagePath && window.firebaseStorage) {
-        console.warn('[Asset] ⚠️ Asset legacy Firebase rilevato, uso Firebase Storage come fallback:', assetId);
-        const storageRef = window.firebaseStorage.ref(data.storagePath);
-        const downloadURL = await storageRef.getDownloadURL();
-        console.log('[Asset] ✅ Asset risolto da Firebase Storage (legacy):', { assetId, downloadURL });
-        return downloadURL;
-      }
-
-      console.warn('[Asset] Impossibile risolvere asset:', assetId);
       return null;
     } catch (error) {
-      console.warn('[Asset] ⚠️ Errore risoluzione asset:', assetId, error.message);
+      console.warn('[Asset] âš ï¸ Errore risoluzione asset:', assetId, error.message);
       return null;
     }
   }
 
   /**
-   * Carica un'immagine da un URL (helper per compatibilità)
-   * @param {string} url - URL dell'immagine (può essere dataURL o URL Storage)
+   * Carica un'immagine da un URL (helper per compatibilitÃ )
+   * @param {string} url - URL dell'immagine (puÃ² essere dataURL o URL Storage)
    * @returns {Promise<Image|null>} - Oggetto Image o null se errore
    */
   async function loadImageFromUrl(url) {
@@ -14355,17 +17538,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return;
       }
       
-      // Controlla se l'URL è un URL Firebase Storage diretto senza token
-      // Se è così, potrebbe causare problemi CORS
-      if (url.includes('firebasestorage.googleapis.com') && !url.includes('token=')) {
-        console.warn('[Asset] ⚠️ URL Firebase Storage senza token rilevato. Questo potrebbe causare errori CORS:', url);
-        console.warn('[Asset] Suggerimento: usa assetId invece di URL diretto per evitare problemi CORS');
-      }
-      
       const img = new Image();
-      
-      // Prova prima con crossOrigin per supportare CORS
-      img.crossOrigin = 'anonymous';
+      const skipCors = url.startsWith('data:') || url.startsWith('blob:');
+
+      if (!skipCors) {
+        img.crossOrigin = 'anonymous';
+      }
       
       let resolved = false;
       
@@ -14380,8 +17558,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         if (resolved) return;
         
         // Se fallisce con crossOrigin, prova senza (per dataURL o URL locali)
-        if (img.crossOrigin === 'anonymous' && !url.startsWith('data:')) {
-          console.warn('[Asset] ⚠️ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
+        if (img.crossOrigin === 'anonymous' && !skipCors) {
+          console.warn('[Asset] âš ï¸ Errore caricamento con CORS, riprovo senza crossOrigin:', url);
           
           // Crea una nuova immagine senza crossOrigin
           const imgNoCors = new Image();
@@ -14394,14 +17572,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           imgNoCors.onerror = (error2) => {
             if (!resolved) {
               resolved = true;
-              console.error('[Asset] ❌ Errore definitivo caricamento immagine:', url, error2);
+              console.error('[Asset] âŒ Errore definitivo caricamento immagine:', url, error2);
               resolve(null);
             }
           };
           imgNoCors.src = url;
         } else {
           resolved = true;
-          console.error('[Asset] ❌ Errore caricamento immagine:', url, error);
+          console.error('[Asset] âŒ Errore caricamento immagine:', url, error);
           resolve(null);
         }
       };
@@ -14420,7 +17598,6 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   async function uploadImage(file, projectId, assetType, options = {}) {
     try {
       const { assetId = null, overwriteExisting = false, fileName: fileNameOverride = null, subfolder = null } = options || {};
-      // Upload su Supabase Storage
       const { assetId: finalAssetId, storagePath, downloadURL, fileName, subfolder: resultSubfolder } = await uploadImageToStorage(
         file,
         projectId,
@@ -14431,13 +17608,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         subfolder
       );
       
-      // Salva metadata in Firestore (include fileName e publicUrl per Supabase)
-      // Nota: Se il salvataggio dei metadati fallisce, non blocchiamo l'upload
-      // perché l'asset è già caricato su Supabase Storage
       const metadataSaved = await saveAssetMetadata(projectId, finalAssetId, file.name, assetType, storagePath, fileName, downloadURL, resultSubfolder || subfolder);
       
       if (!metadataSaved) {
-        console.warn('[Asset] ⚠️ Upload completato su Supabase, ma salvataggio metadati Firestore fallito. L\'asset è comunque disponibile.');
+        console.warn('[Asset] âš ï¸ Upload completato, ma salvataggio metadati fallito.');
       }
       
       // Aggiorna i counter dopo upload asset
@@ -14447,7 +17621,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       
       return { assetId: finalAssetId, downloadURL, fileName };
     } catch (error) {
-      console.error('[Asset] ❌ Errore upload immagine completo:', error);
+      console.error('[Asset] âŒ Errore upload immagine completo:', error);
       throw error;
     }
   }
@@ -14476,7 +17650,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (!navigator.storage || !navigator.storage.getDirectory) return false;
       const root = await navigator.storage.getDirectory();
       const dir = await root.getDirectoryHandle('amianto-projects', { create: true });
-      // FileSystemDirectoryHandle.removeEntry è disponibile su alcuni browser
+      // FileSystemDirectoryHandle.removeEntry Ã¨ disponibile su alcuni browser
       if (dir.removeEntry) {
         await dir.removeEntry(sanitizeProjectFileName(projectName));
         return true;
@@ -14491,7 +17665,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   /**
    * Carica un'immagine da URL o assetId
    * @param {string} urlOrAssetId - URL (dataURL o HTTP) oppure assetId con prefisso "asset:"
-   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId è un assetId)
+   * @param {string} projectId - ID del progetto (necessario se urlOrAssetId Ã¨ un assetId)
    * @returns {Promise<Image|null>} - Oggetto Image o null se errore
    */
   async function createImageFromDataUrl(urlOrAssetId, projectId = null) {
@@ -14499,16 +17673,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return null;
     }
 
-    // Se è un assetId (prefisso "asset:"), risolvi da Supabase Storage (o Firebase Storage legacy)
+    // Se Ã¨ un assetId (prefisso "asset:"), risolvi dallo storage locale
     if (urlOrAssetId.startsWith('asset:')) {
       const assetId = urlOrAssetId.replace('asset:', '');
       
       if (!projectId) {
-        // Prova a ottenere projectId dal progetto corrente
-        const projectName = localStorage.getItem('amiantoActiveProjectName');
-        if (projectName) {
-          projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        }
+        projectId = getActiveProjectId();
       }
 
       if (!projectId) {
@@ -14516,7 +17686,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         return null;
       }
 
-      // Risolvi assetId in URL (funziona sia per Supabase che Firebase legacy)
+      // Risolvi assetId in URL
       const downloadURL = await resolveAssetUrl(projectId, assetId);
       if (!downloadURL) {
         console.warn('[Asset] Impossibile risolvere asset:', assetId);
@@ -14527,38 +17697,39 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       return await loadImageFromUrl(downloadURL);
     }
 
-    // Se è un URL Supabase Storage, caricalo direttamente
-    if (urlOrAssetId.includes('supabase.co/storage/v1/object/public/')) {
-      console.log('[Asset] URL Supabase Storage rilevato:', urlOrAssetId);
-      return await loadImageFromUrl(urlOrAssetId);
-    }
-
-    // Se è un URL Firebase Storage diretto senza token, avvisa l'utente
-    if (urlOrAssetId.includes('firebasestorage.googleapis.com') && !urlOrAssetId.includes('token=')) {
-      console.error('[Asset] ❌ URL Firebase Storage diretto rilevato (senza token). Questo causerà errori CORS.');
-      console.error('[Asset] URL problematico:', urlOrAssetId);
-      console.error('[Asset] Suggerimento: il progetto potrebbe essere stato salvato con URL diretti invece di assetId.');
-      console.error('[Asset] Prova a ricaricare l\'immagine dal progetto per generare un nuovo assetId.');
-      
-      // Prova comunque a caricarlo (potrebbe funzionare se le regole CORS sono configurate)
-      const img = await loadImageFromUrl(urlOrAssetId);
-      if (!img) {
-        showNotification('CORS error: image could not be loaded. Re-import the image from the project.', 'error');
-      }
-      return img;
-    }
-
-    // Fallback: tratta come URL normale (dataURL o HTTP)
+    // Fallback: tratta come URL normale (dataURL, blob: o HTTP)
     return await loadImageFromUrl(urlOrAssetId);
   }
 
   async function applyProjectObject(projectObj) {
     try {
       mergeLegacyHotspotScriptsIntoRooms(projectObj);
+      migrateLegacyInventoryRefsOnLoad(projectObj);
+      migrateEmbeddedAssetsOnProjectLoad(projectObj);
+
+      // Invalida caricamenti async del progetto precedente e azzera stato editor
+      projectLoadGeneration += 1;
+      const loadGen = projectLoadGeneration;
+      resetEditorRoomGlobals();
 
       // Ottieni projectId dal progetto (necessario per risolvere assetId)
       const projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : 'amianto-project';
-      const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+      const projectId = (projectObj.settings && projectObj.settings.id)
+        ? String(projectObj.settings.id)
+        : normalizeProjectIdFromName(projectName);
+
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && storage.reassignAssetsToProject) {
+        try {
+          const referencedAssetIds = collectAssetIdsFromProject(projectObj);
+          const reassigned = await storage.reassignAssetsToProject(projectId, [...referencedAssetIds]);
+          if (reassigned > 0) {
+            console.log(`[Load] ${reassigned} asset(s) reindexed under projectId "${projectId}"`);
+          }
+        } catch (reindexErr) {
+          console.warn('[Load] Asset reindex skipped:', reindexErr);
+        }
+      }
       
       // Pulisci mappa asset prima di caricare nuovo progetto
       imageAssetMap.clear();
@@ -14566,6 +17737,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       // Settings / viewport
       if (projectObj && projectObj.settings) {
         const s = projectObj.settings;
+        const stableId = (s && s.id) ? String(s.id) : normalizeProjectIdFromName(projectName);
+        if (stableId) {
+          s.id = stableId;
+          localStorage.setItem('amiantoActiveProjectId', stableId);
+        }
         // aggiorna viewport
         if (s.canvasWidth && s.canvasHeight) {
           gameViewport.width = Number(s.canvasWidth) || gameViewport.width;
@@ -14578,6 +17754,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         // persisti impostazioni progetto
         localStorage.setItem('amiantoProjectSettings', JSON.stringify(s));
+        if (typeof syncShowCursorActionTextCheckbox === 'function') {
+          syncShowCursorActionTextCheckbox(s);
+        }
       }
 
       // Rooms
@@ -14610,6 +17789,16 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 enabled
               };
             }) : [],
+            animationInstances: Array.isArray(r.animationInstances) ? r.animationInstances.map(inst => ({
+              id: inst.id || uid('ainst'),
+              animationId: inst.animationId,
+              name: inst.name || inst.id || 'Animation',
+              x: Number(inst.x) || 0,
+              y: Number(inst.y) || 0,
+              layer: inst.layer === 'foreground' ? 'foreground' : 'background',
+              visible: inst.visible !== false,
+              autoPlay: inst.autoPlay === true
+            })) : [],
             walkableArea: Array.isArray(r.walkableArea) ? r.walkableArea.map(p => ({ x: Number(p.x)||0, y: Number(p.y)||0 })) : [],
             hotspots: Array.isArray(r.hotspots) ? r.hotspots.map(h => {
               const hotspotObj = {
@@ -14619,7 +17808,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 visible: (typeof h.visible === 'boolean') ? h.visible : true
               };
               
-              // ⚠️ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
+              // âš ï¸ NORMALIZZAZIONE: Preserva struttura scripts.onClick se presente e normalizza enabled
               // BUG FIX: Inizializza sempre la struttura scripts.onClick per garantire consistenza
               hotspotObj.scripts = {};
           if (h.scripts && h.scripts.onClick) {
@@ -14636,17 +17825,17 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             
             const hasCode = onClickData.code && typeof onClickData.code === 'string' && onClickData.code.trim() !== '';
                 
-                // AUTOMATIZZAZIONE: Se c'è codice, enabled deve essere sempre true
-                // L'obiettivo è eliminare il blocco "enabled = false" per hotspot con codice
+                // AUTOMATIZZAZIONE: Se c'Ã¨ codice, enabled deve essere sempre true
+                // L'obiettivo Ã¨ eliminare il blocco "enabled = false" per hotspot con codice
                 let normalizedEnabled;
                 if (hasCode) {
-                  // Se c'è codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
+                  // Se c'Ã¨ codice, forza sempre enabled=true (ignorando eventuale enabled=false salvato)
                   normalizedEnabled = true;
                   if (typeof onClickData.enabled === 'boolean' && onClickData.enabled === false) {
                     console.warn(`[Serialize] [AUTO-ENABLE] Hotspot ${h.id} ha codice ma enabled=false salvato, forzo enabled=true`);
                   }
                 } else {
-                  // Se non c'è codice, enabled può essere false
+                  // Se non c'Ã¨ codice, enabled puÃ² essere false
                   normalizedEnabled = (typeof onClickData.enabled === 'boolean') ? onClickData.enabled : false;
                 }
                 
@@ -14655,7 +17844,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   enabled: normalizedEnabled
                 };
               } else {
-                // Se non c'è script, imposta struttura vuota e disabilitata
+                // Se non c'Ã¨ script, imposta struttura vuota e disabilitata
                 hotspotObj.scripts.onClick = {
                   code: '',
                   enabled: false
@@ -14673,8 +17862,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           rooms.set(roomId, roomVal);
           // carica immagini async (background, foregrounds, scene objects)
           Promise.resolve().then(async () => {
+            if (isStaleProjectLoad(loadGen)) return;
             if (r.background) {
               const img = await createImageFromDataUrl(r.background, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 // Verifica che l'immagine sia completamente caricata
                 const width = img.naturalWidth || img.width;
@@ -14682,11 +17873,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 
                 if (width && height) {
                   roomVal.background = img;
-                  // Se è la stanza corrente, aggiorna anche il background globale
+                  // Se Ã¨ la stanza corrente, aggiorna anche il background globale
                   if (roomId === currentRoomId) {
                     background = img;
                   }
-                  // Se è un assetId, registra nella mappa
+                  // Se Ã¨ un assetId, registra nella mappa
                   if (r.background && r.background.startsWith('asset:')) {
                     const assetId = r.background.replace('asset:', '');
                     imageAssetMap.set(img, { assetId, type: 'background', projectId });
@@ -14704,15 +17895,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             }
             if (Array.isArray(r.foregrounds)) {
+              if (isStaleProjectLoad(loadGen)) return;
               console.log(`[Load] Caricamento ${r.foregrounds.length} foreground per room ${roomId}`, r.foregrounds);
               const out = [];
               for (const f of r.foregrounds) {
+                if (isStaleProjectLoad(loadGen)) return;
                 if (!f || !f.image) {
                   console.warn(`[Load] Foreground senza image, skip:`, f);
                   continue;
                 }
                 
                 const img = await createImageFromDataUrl(f.image, projectId);
+                if (isStaleProjectLoad(loadGen)) return;
                 if (!img) {
                   console.warn(`[Load] Impossibile caricare immagine foreground:`, f.image);
                   continue;
@@ -14728,8 +17922,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                   img: img,
                   x: Number(x) || 0,
                   y: Number(y) || 0,
-                  offsetX: Number(x) || 0, // Mantieni per compatibilità
-                  offsetY: Number(y) || 0, // Mantieni per compatibilità
+                  offsetX: Number(x) || 0, // Mantieni per compatibilitÃ 
+                  offsetY: Number(y) || 0, // Mantieni per compatibilitÃ 
                   rotationRad: Number(f.rotationRad) || 0,
                   scaleX: (typeof f.scaleX === 'number') ? Number(f.scaleX) : 1,
                   scaleY: (typeof f.scaleY === 'number') ? Number(f.scaleY) : 1,
@@ -14738,37 +17932,41 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 
                 out.push(foregroundObj);
                 
-                // Se è un assetId, registra nella mappa
+                // Se Ã¨ un assetId, registra nella mappa
                 if (f.image && f.image.startsWith('asset:')) {
                   const assetId = f.image.replace('asset:', '');
                   imageAssetMap.set(img, { assetId, type: 'foreground', projectId });
                 }
                 
-                console.log(`[Load] ✓ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
+                console.log(`[Load] âœ“ Foreground caricato: ${foregroundObj.name} (id: ${foregroundObj.id}, image: ${f.image.substring(0, 50)}...)`);
               }
               
               console.log(`[Load] Foreground caricati per room ${roomId}: ${out.length}/${r.foregrounds.length}`);
               roomVal.foregrounds = out;
               
-              // IMPORTANTE: Se questa è la room corrente, aggiorna anche lo stato globale
-              if (roomId === currentRoomId) {
+              // IMPORTANTE: Se questa Ã¨ la room corrente, aggiorna anche lo stato globale
+              if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 foregrounds = out;
-                console.log(`[Load] ✓ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
+                console.log(`[Load] âœ“ Foreground sincronizzati nello stato globale per room corrente: ${foregrounds.length} layer`);
               }
               
-              refreshForegroundListUI();
-              redraw();
+              if (!isStaleProjectLoad(loadGen)) {
+                refreshForegroundListUI();
+                redraw();
+              }
             } else {
-              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non è un array o è vuoto)`);
+              console.log(`[Load] Nessun foreground nella room ${roomId} (r.foregrounds non Ã¨ un array o Ã¨ vuoto)`);
             }
             if (Array.isArray(r.sceneObjects)) {
               for (let i = 0; i < r.sceneObjects.length; i++) {
+                if (isStaleProjectLoad(loadGen)) return;
                 const src = r.sceneObjects[i];
                 const dst = roomVal.sceneObjects[i];
                 if (src && src.image) {
                   const img = await createImageFromDataUrl(src.image, projectId);
+                  if (isStaleProjectLoad(loadGen)) return;
                   dst.img = img;
-                  // Se è un assetId, registra nella mappa
+                  // Se Ã¨ un assetId, registra nella mappa
                   if (img && src.image.startsWith('asset:')) {
                     const assetId = src.image.replace('asset:', '');
                     imageAssetMap.set(img, { assetId, type: 'sprite', projectId });
@@ -14776,26 +17974,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 }
               }
               // ricrea lista oggetti
-              if (roomId === currentRoomId) {
+              if (!isStaleProjectLoad(loadGen) && roomId === currentRoomId) {
                 sceneObjects = roomVal.sceneObjects;
+                animationInstances = roomVal.animationInstances;
                 refreshSceneObjectsListUI();
+                refreshRoomAnimationInstancesListUI();
                 redraw();
               }
             }
-            refreshHotspotsListUI();
+              if (!isStaleProjectLoad(loadGen)) {
+                refreshHotspotsListUI();
+                scheduleProjectSizeIndicatorRefresh(300);
+              }
           });
         }
       } else {
         // assicura almeno una stanza
         const rid = uid('room');
-        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
+        rooms.set(rid, { id: rid, name: 'Room 1', background: null, foregrounds: [], sceneObjects: [], animationInstances: [], walkableArea: [], hotspots: [], scalingForegroundY: null, scalingBackgroundY: null, scalingMinScale: 0.5, scalingMaxScale: 1.5 });
       }
-      // Seleziona prima stanza e sincronizza riferimenti
+      // Seleziona prima stanza e sincronizza riferimenti (walkable/hotspot del progetto corrente)
       const firstRoom = rooms.keys().next().value;
       currentRoomId = firstRoom;
       bindRoomRefs();
+      if (isStaleProjectLoad(loadGen)) return;
       refreshForegroundListUI();
       refreshSceneObjectsListUI();
+      refreshRoomAnimationInstancesListUI();
       refreshHotspotsListUI();
       refreshRoomsSelector();
       try { refreshStartRoomSelector(); } catch(_) {}
@@ -14819,22 +18024,47 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 const assetId = b.backgroundImage.replace('asset:', '');
                 imageAssetMap.set(btnBg, { assetId, type: 'gui', projectId });
               }
-              buttons.push({
+              const btnOut = {
                 id: b.id || uid('btn'),
                 name: b.name || 'Button',
                 x: Number(b.x)||0, y: Number(b.y)||0, w: Number(b.w)||0, h: Number(b.h)||0,
                 text: b.text || '',
-                backgroundImage: btnBg
-              });
+                backgroundImage: btnBg,
+                role: b.role === 'saveSlot' ? 'saveSlot' : (b.role || 'button')
+              };
+              if (btnOut.role === 'saveSlot') {
+                btnOut.slotKey = String(b.slotKey != null && b.slotKey !== '' ? b.slotKey : '1');
+              }
+              buttons.push(btnOut);
             }
           }
           
           const loadedGuiType = (g.type === 'Inventory') ? 'OverlayCustom' : (g.type || 'MainInterface');
+          const loadedSettings = g.settings ? { ...g.settings } : {};
+          if (loadedGuiType === 'DialogBox') {
+            if (loadedSettings.balloon) {
+              try {
+                const balloonImg = await createImageFromDataUrl(loadedSettings.balloon, projectId);
+                if (balloonImg && loadedSettings.balloon.startsWith('asset:')) {
+                  const assetId = loadedSettings.balloon.replace('asset:', '');
+                  imageAssetMap.set(balloonImg, { assetId, type: 'gui', projectId });
+                }
+                loadedSettings.balloonImage = balloonImg;
+              } catch (e) {
+                console.warn('[GUI] Dialog balloon load failed:', e);
+              }
+            }
+            try {
+              await hydrateDialogBoxFont(loadedSettings, projectId);
+            } catch (e) {
+              console.warn('[GUI] Dialog font hydrate failed:', e);
+            }
+          }
           guis.push({
             id: g.id || uid('gui'),
             name: g.name || 'GUI',
             type: loadedGuiType,
-            settings: g.settings || {},
+            settings: loadedSettings,
             background: guiBg,
             buttons: buttons
           });
@@ -14852,6 +18082,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           typeSel.value = guis[0].type || 'MainInterface';
         }
         renderGuiSettingsPanel(guis[0].type || 'MainInterface', guis[0].settings || {});
+        updateGuiToolbarForType(guis[0].type || 'MainInterface');
         refreshGuiButtonsList();
       } catch(_) {}
 
@@ -14866,7 +18097,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         
         if (Array.isArray(projectObj.characters)) {
           for (const ch of projectObj.characters) {
-            const characterName = ch.name || ch.id || uid('char');
+            // Canonico: id === name (se entrambi presenti e diversi, vince name)
+            let characterName = String(ch.name || ch.id || '').trim();
+            if (!characterName) characterName = uid('char');
+            if (ch.id && ch.name && String(ch.id) !== String(ch.name)) {
+              console.warn(`[Load] Character id "${ch.id}" ≠ name "${ch.name}" — forzato id=name "${characterName}"`);
+            }
             const directions = await loadCharacterDirectionsFromData(ch.directions, projectId, characterName);
             const animations = {};
             if (ch.animations && typeof ch.animations === 'object') {
@@ -14878,23 +18114,28 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
                 }
               }
             }
-            const charData = { directions, animations, currentFrame: 0 };
+            const charData = {
+              id: characterName,
+              name: characterName,
+              directions,
+              animations,
+              currentFrame: 0
+            };
             // Load pivot if it exists
             if (ch.pivotX !== undefined && ch.pivotY !== undefined) {
               charData.pivotX = Number(ch.pivotX) || 0;
               charData.pivotY = Number(ch.pivotY) || 0;
             }
-            // Load spawnSettings if it exists
-            if (ch.spawnSettings) {
-              charData.spawnSettings = {
-                isPlayer: ch.spawnSettings.isPlayer === true,
-                autoSpawn: ch.spawnSettings.autoSpawn === true,
-                roomId: ch.spawnSettings.roomId || null,
-                x: typeof ch.spawnSettings.x === 'number' ? ch.spawnSettings.x : 0,
-                y: typeof ch.spawnSettings.y === 'number' ? ch.spawnSettings.y : 0,
-                direction: ch.spawnSettings.direction || 'south',
-                moveSpeed: typeof ch.spawnSettings.moveSpeed === 'number' && ch.spawnSettings.moveSpeed > 0 ? ch.spawnSettings.moveSpeed : 100
-              };
+            charData.spawnSettings = normalizeCharacterSpawnSettings(ch.spawnSettings);
+            if (ch.portraits && typeof ch.portraits === 'object') {
+              const portraits = {};
+              Object.keys(ch.portraits).forEach(moodKey => {
+                const ref = ch.portraits[moodKey];
+                if (typeof ref === 'string' && ref.trim()) {
+                  portraits[String(moodKey).trim()] = ref.trim();
+                }
+              });
+              if (Object.keys(portraits).length) charData.portraits = portraits;
             }
             characterFrames.set(characterName, charData);
           }
@@ -14902,6 +18143,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         refreshCharactersListUI();
       } catch(error) {
         console.error('[Load] Errore caricamento character:', error);
+      }
+
+      // Room animations catalog
+      try {
+        await loadRoomAnimationsCatalogFromData(projectObj.roomAnimations, projectId);
+      } catch (error) {
+        console.error('[Load] Errore caricamento room animations:', error);
       }
 
       // Inventory (layout + items)
@@ -14943,10 +18191,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               h: Number(s.h) || 0
             }));
           }
-          if (invData.background) {
-            const bgRef = invData.background;
+          const bgRef = invData.backgroundRef || invData.background;
+          if (bgRef) {
             Promise.resolve().then(async () => {
+              if (isStaleProjectLoad(loadGen)) return;
               const img = await createImageFromDataUrl(bgRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 inventoryDefinition.background = img;
                 if (typeof bgRef === 'string' && bgRef.startsWith('asset:')) {
@@ -14956,10 +18206,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
               }
             });
           }
-          if (invData.toggleIcon) {
-            const iconRef = invData.toggleIcon;
+          const iconRef = invData.toggleIconRef || invData.toggleIcon;
+          if (iconRef) {
             Promise.resolve().then(async () => {
+              if (isStaleProjectLoad(loadGen)) return;
               const img = await createImageFromDataUrl(iconRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (img) {
                 inventoryDefinition.toggleIcon = img;
                 if (typeof iconRef === 'string' && iconRef.startsWith('asset:')) {
@@ -14975,17 +18227,18 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           const entry = {
             id: item.id || uid('invitem'),
             name: item.name || 'Item',
-            scriptName: item.scriptName || item.name || 'Item',
+            scriptName: item.scriptName != null ? String(item.scriptName) : '',
             image: null,
-            _imageRef: item.image || null
+            _imageRef: item.imageRef || item.image || null
           };
           inventoryItems.push(entry);
-          if (item.scriptName) inventoryScripts.set(entry.name, item.scriptName);
         });
         Promise.resolve().then(async () => {
           for (const item of inventoryItems) {
+            if (isStaleProjectLoad(loadGen)) return;
             if (item._imageRef) {
               item.image = await createImageFromDataUrl(item._imageRef, projectId);
+              if (isStaleProjectLoad(loadGen)) return;
               if (item.image && typeof item._imageRef === 'string' && item._imageRef.startsWith('asset:')) {
                 imageAssetMap.set(item.image, { assetId: item._imageRef.replace('asset:', ''), type: 'inventory', projectId });
               }
@@ -14993,6 +18246,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             delete item._imageRef;
             syncInventoryItemScript(item);
           }
+          if (isStaleProjectLoad(loadGen)) return;
           refreshInventoryItemsListUI();
           refreshInventorySlotsListUI();
           applyInventoryRectsToUI();
@@ -15010,9 +18264,9 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       try {
         jsScripts.clear();
         
-        // ⚠️ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
-        // Questo assicura che anche se la cache del browser non è stata svuotata,
-        // l'editor sarà vuoto quando si crea un nuovo progetto
+        // âš ï¸ PULIZIA EDITOR: Pulisci l'editor degli script quando si carica un nuovo progetto
+        // Questo assicura che anche se la cache del browser non Ã¨ stata svuotata,
+        // l'editor sarÃ  vuoto quando si crea un nuovo progetto
         currentScriptName = null;
         ensureLargeScriptEditor();
         ensureScriptEditor();
@@ -15057,7 +18311,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           selector.appendChild(opt0);
         }
         
-        // ⚠️ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
+        // âš ï¸ PULIZIA: Rimuovi tutti gli script da localStorage che non appartengono a questo progetto
         // Questo previene che script di progetti eliminati compaiano in progetti nuovi
         try {
           const projectScriptNames = new Set();
@@ -15121,10 +18375,23 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         roomScripts.clear();
         characterScripts.clear();
         inventoryScripts.clear();
-        hotspotScripts.clear(); // ⚠️ hotspotScripts Map non più usata per gli hotspot (script salvati in hotspot.scripts.onClick)
+        hotspotScripts.clear(); // âš ï¸ hotspotScripts Map non piÃ¹ usata per gli hotspot (script salvati in hotspot.scripts.onClick)
         if (projectObj.attachments && typeof projectObj.attachments === 'object') {
           const A = projectObj.attachments;
-          if (A.roomScripts && typeof A.roomScripts === 'object') Object.entries(A.roomScripts).forEach(([k,v]) => { if (k && v) roomScripts.set(String(k), String(v)); });
+          if (A.roomScripts && typeof A.roomScripts === 'object') {
+            Object.entries(A.roomScripts).forEach(([k, v]) => {
+              if (!k || v == null) return;
+              if (typeof v === 'object' && !Array.isArray(v)) {
+                const entry = {};
+                Object.keys(v).forEach(ek => {
+                  if (v[ek]) entry[ek] = String(v[ek]);
+                });
+                if (Object.keys(entry).length) roomScripts.set(String(k), entry);
+              } else if (v) {
+                roomScripts.set(String(k), String(v));
+              }
+            });
+          }
           if (A.objectScripts && typeof A.objectScripts === 'object') Object.entries(A.objectScripts).forEach(([k,v]) => { if (k && v) objectScripts.set(String(k), String(v)); });
           if (A.characterScripts && typeof A.characterScripts === 'object') {
             Object.entries(A.characterScripts).forEach(([k,v]) => { 
@@ -15133,8 +18400,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
           if (A.inventoryScripts && typeof A.inventoryScripts === 'object') Object.entries(A.inventoryScripts).forEach(([k,v]) => { if (k && v) inventoryScripts.set(String(k), String(v)); });
           if (A.guiScripts && typeof A.guiScripts === 'object') Object.entries(A.guiScripts).forEach(([k,v]) => { if (k && v) guiScripts.set(String(k), String(v)); });
-          // ⚠️ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
+          // âš ï¸ A.hotspotScripts rimosso: gli script degli hotspot sono ora salvati direttamente in hotspot.scripts.onClick
         }
+        inventoryItems.forEach(item => {
+          if (String(item.scriptName || '').trim()) syncInventoryItemScript(item);
+        });
       } catch(_) {}
       
       // Variables (Game State)
@@ -15155,6 +18425,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           }
         }
       } catch(_) {}
+
+      // Branching dialogues (graph)
+      try {
+        window.projectDialogues = [];
+        if (Array.isArray(projectObj.dialogues)) {
+          window.projectDialogues = projectObj.dialogues
+            .map(d => normalizeDialogueForSerialize(d))
+            .filter(Boolean);
+        }
+        if (typeof window.renderDialoguesEditor === 'function') {
+          window.renderDialoguesEditor();
+        }
+      } catch (_) {
+        window.projectDialogues = [];
+      }
       
       // Event Conditions
       try {
@@ -15203,7 +18488,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
       } catch(_) {}
 
-      // ⚠️ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
+      // âš ï¸ PULIZIA AUTOMATICA HOTSPOT: Forza enabled=true per tutti gli hotspot con codice
       // Questo assicura che gli hotspot con codice siano sempre attivi, anche se il progetto salvato aveva enabled=false
       try {
         let cleanedCount = 0;
@@ -15243,17 +18528,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         }
         
         if (cleanedCount > 0) {
-          console.log(`[Cleanup] ✅ Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
+          console.log(`[Cleanup] âœ… Pulizia completata: ${cleanedCount} hotspot abilitati automaticamente`);
         }
       } catch (cleanupError) {
         console.warn('[Cleanup] Errore durante pulizia hotspot:', cleanupError);
       }
 
-      // Cursors contestuali
+      // Category cursors
       try {
         contextualCursors = [];
         if (Array.isArray(projectObj.cursors)) {
           for (const c of projectObj.cursors) {
+            // Skip legacy per-target cursor entries (targetType/targetId without category)
+            const category = c.category || null;
+            if (!category || !CURSOR_CATEGORIES.includes(category)) continue;
+
             const cursorImg = c.cursorImage ? await createImageFromDataUrl(c.cursorImage, projectId) : null;
             if (cursorImg && c.cursorImage && c.cursorImage.startsWith('asset:')) {
               const assetId = c.cursorImage.replace('asset:', '');
@@ -15261,21 +18550,26 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
             }
             contextualCursors.push({
               id: c.id || uid('cursor'),
-              targetType: c.targetType || 'hotspot',
-              targetId: c.targetId || '',
+              category,
               cursorImage: cursorImg,
               actionText: c.actionText || '',
-              scriptName: c.scriptName || ''
+              scriptName: c.scriptName || '',
+              pivotX: typeof c.pivotX === 'number' ? c.pivotX : 0,
+              pivotY: typeof c.pivotY === 'number' ? c.pivotY : 0
             });
           }
         }
+        selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
         refreshCursorsList();
       } catch(_) {}
 
-      // Centra la preview rooms/inventory dopo il caricamento (evita pan obsoleto fuori schermo)
+      // Zoom 100% con (0,0) in alto a sinistra dopo il caricamento
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => resetEditorViewCentered({ fit: true }));
+        requestAnimationFrame(() => alignEditorViewTopLeft());
       });
+
+      // Ricarica risorse/suoni del progetto attivo (evita catalogo del progetto precedente)
+      await refreshResourcesForActiveProject();
       
       // Aggiorna l'albero degli script per riflettere gli script del progetto caricato
       rebuildScriptsTree();
@@ -15290,6 +18584,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       }
       
       showNotification('Project loaded', 'success');
+      scheduleProjectSizeIndicatorRefresh(600);
     } catch (err) {
       addDebugMessage('Failed to apply project: ' + (err && err.message ? err.message : err), 'error');
       showNotification('Error loading project', 'danger');
@@ -15299,73 +18594,63 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   window.importProjectFromJson = async function(jsonString) {
     try {
       const obj = JSON.parse(jsonString);
+      // Pacchetto .amnt: progetto + asset embedded — non trattarlo come amianto-game nudo
+      if (obj && obj.format === 'amianto-amnt') {
+        await importAmntContent(jsonString, null);
+        return;
+      }
+      migrateLegacyInventoryRefsOnLoad(obj);
       await applyProjectObject(obj);
+      scheduleProjectSizeIndicatorRefresh(400);
     } catch (err) {
       addDebugMessage('Invalid project JSON: ' + (err && err.message ? err.message : err), 'error');
       showNotification('Invalid project JSON', 'danger');
     }
   };
 
-  // MODIFICATO: Ora carica prima da Firestore, poi fallback su cache locale
   async function openProjectByName(projectName) {
-    if (!currentUser) { 
-      showNotification('Please login to open projects', 'warning'); 
-      return; 
-    }
+    ensureCurrentUser();
     if (!projectName) return;
 
-    // Blocca durante la sincronizzazione
-    if (isSyncingProjects) {
-      showNotification('Please wait for synchronization to complete before opening a project', 'warning');
-      return;
+    const userProjects = loadProjectsFromCache(currentUser.username);
+    const cacheIdx = findProjectCacheIndex(userProjects, { name: projectName });
+    const linkedFilePath = getProjectFilePath(projectName)
+      || (cacheIdx >= 0 && userProjects[cacheIdx].filePath)
+      || null;
+
+    let linkedFileError = null;
+    if (linkedFilePath) {
+      try {
+        const text = await readProjectFileContent(linkedFilePath);
+        if (text) {
+          await importAmntContent(text, linkedFilePath);
+          showNotification(`Project "${projectName}" opened`, 'success');
+          return;
+        }
+        linkedFileError = new Error('Linked .amnt file is empty or unreadable');
+      } catch (err) {
+        linkedFileError = err;
+        console.warn('[Load] Failed to open linked .amnt file, trying cache:', err);
+      }
     }
 
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    // Le regole di sicurezza controllano request.auth.uid == userId
-    const userId = currentUser.uid;
+    let projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
 
     let projectObj = null;
     let loadedFrom = null;
 
-    // 1. PROVA FIRESTORE PRIMA (fonte ufficiale) - AGGIUNTO
-    // Verifica che l'utente sia autenticato e che Firestore sia disponibile
-    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      const currentAuthUid = window.firebaseAuth.currentUser.uid;
-      if (currentAuthUid === userId) {
-        console.log('[Load] Tentativo caricamento da Firestore...', { userId, projectId });
-        projectObj = await loadProjectFromFirestore(userId, projectId);
-        if (projectObj) {
-          loadedFrom = 'firestore';
-          console.log('[Load] ✅ Caricato da Firestore');
-          addDebugMessage('Loaded from Firestore', 'success');
-        } else {
-          console.log('[Load] Progetto non trovato su Firestore, uso fallback');
-        }
-      } else {
-        console.warn('[Load] UID non corrisponde, salto Firestore', { userId, currentAuthUid });
-      }
-    } else {
-      console.log('[Load] Firestore non disponibile o utente non autenticato, uso fallback');
-    }
-
-    // 2. FALLBACK: OPFS - GIÀ IMPLEMENTATO
-    if (!projectObj) {
-      const json = await loadProjectJsonFromOPFS(projectName);
-      if (json) {
-        try {
-          projectObj = JSON.parse(json);
-          loadedFrom = 'opfs';
-          console.log('[Load] Caricato da OPFS');
-          addDebugMessage('Loaded from OPFS (fallback)', 'info');
-        } catch (e) {
-          console.error('[Load] Errore parsing OPFS:', e);
-        }
+    const jsonFromOpfs = await loadProjectJsonFromOPFS(projectName);
+    if (jsonFromOpfs) {
+      try {
+        projectObj = JSON.parse(jsonFromOpfs);
+        loadedFrom = 'opfs';
+        console.log('[Load] Caricato da OPFS');
+        addDebugMessage('Loaded from OPFS', 'info');
+      } catch (e) {
+        console.error('[Load] Errore parsing OPFS:', e);
       }
     }
 
-    // 3. FALLBACK: LOCALSTORAGE CACHE - GIÀ IMPLEMENTATO
     if (!projectObj) {
       const key = `amiantoProject_${currentUser.username}:${projectName}`;
       const json = localStorage.getItem(key);
@@ -15374,19 +18659,25 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           projectObj = JSON.parse(json);
           loadedFrom = 'cache';
           console.log('[Load] Caricato da cache locale');
-          addDebugMessage('Loaded from cache (fallback)', 'warning');
+          addDebugMessage('Loaded from cache', 'info');
         } catch (e) {
           console.error('[Load] Errore parsing cache:', e);
         }
       }
     }
 
-    // 4. FALLBACK FINALE: Progetto vuoto - GIÀ IMPLEMENTATO
     if (!projectObj) {
+      if (linkedFileError) {
+        showNotification(
+          'Failed to load project file: ' + (linkedFileError.message || linkedFileError),
+          'danger'
+        );
+        return;
+      }
       projectObj = {
         format: 'amianto-game',
         version: 1,
-        settings: { name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
+        settings: { id: projectId, name: projectName, canvasWidth: gameViewport.width, canvasHeight: gameViewport.height },
         rooms: [],
         guis: [],
         characters: [],
@@ -15401,8 +18692,35 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       addDebugMessage('Created new empty project', 'info');
     }
 
+    mergeLegacyHotspotScriptsIntoRooms(projectObj);
+
+    // Salva walkable/hotspot della stanza corrente nel progetto in uscita prima di sostituire lo stato
+    if (currentRoomId && rooms && rooms.has(currentRoomId)) {
+      const leaving = rooms.get(currentRoomId);
+      if (leaving) {
+        leaving.walkableArea = Array.isArray(walkableArea) ? walkableArea.slice() : [];
+        leaving.hotspots = Array.isArray(hotspots) ? hotspots : [];
+      }
+    }
+
+    // Stabilizza progetti legacy: assicura settings.id persistito (deve coincidere con IndexedDB)
+    try {
+      if (!projectObj.settings) projectObj.settings = {};
+      if (!projectObj.settings.id) {
+        projectObj.settings.id = projectId;
+      }
+      projectId = getStableProjectId(projectObj.settings, projectName);
+      projectObj.settings.id = projectId;
+    } catch (_) {}
+
     // Applica il progetto caricato
     await applyProjectObject(projectObj);
+
+    try {
+      window.__amiantoLastFirestorePayloadBytes = measureFirestorePayloadBytes(window.serializeProject());
+      clearAmiantoProjectDirty();
+      window.__amiantoLastCacheSaveAt = new Date().toISOString();
+    } catch (_) {}
 
     // IMPORTANTE: Salva il progetto attivo PRIMA di qualsiasi altra operazione
     // Questo assicura che il listener hide.bs.modal possa rilevarlo
@@ -15415,15 +18733,24 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     
     // Aggiorna indicatore dimensione progetto
     updateProjectSizeIndicator();
+    updateProjectSaveStatusUI('saved', window.__amiantoLastCacheSaveAt);
     
     // Mostra notifica con fonte di caricamento
-    if (loadedFrom === 'firestore') {
-      showNotification(`Project "${projectName}" loaded from Firestore`, 'success');
-    } else if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
+    if (loadedFrom === 'cache' || loadedFrom === 'opfs') {
       showNotification(`Project "${projectName}" loaded from ${loadedFrom}`, 'info');
     }
     
-    // Il modale verrà chiuso dal chiamante dopo questa funzione completa
+    // Il modale verrÃ  chiuso dal chiamante dopo questa funzione completa
+  }
+
+  let projectSizeIndicatorTimer = null;
+
+  function scheduleProjectSizeIndicatorRefresh(delayMs = 400) {
+    if (projectSizeIndicatorTimer) clearTimeout(projectSizeIndicatorTimer);
+    projectSizeIndicatorTimer = setTimeout(() => {
+      projectSizeIndicatorTimer = null;
+      updateProjectSizeIndicator();
+    }, delayMs);
   }
 
   // Funzione per aggiornare l'indicatore della dimensione del progetto
@@ -15442,38 +18769,66 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         indicator.style.display = 'none';
         return;
       }
-      
-      // Calcola dimensione Firestore (progetto serializzato)
+
       const projectObj = window.serializeProject();
-      const jsonString = JSON.stringify(projectObj);
-      const dataSizeBytes = new Blob([jsonString]).size;
-      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
-      const dataSizeKB = (dataSizeBytes / 1024).toFixed(1);
-      
-      // Calcola percentuale rispetto al limite Firestore (1MB)
-      const FIRESTORE_MAX_SIZE = 1048487; // ~1MB in bytes
-      const percentageUsed = ((dataSizeBytes / FIRESTORE_MAX_SIZE) * 100).toFixed(1);
-      
-      // Mostra dimensione Firestore in KB o MB
-      let sizeDisplay;
-      if (dataSizeBytes >= 1024 * 1024) {
-        sizeDisplay = `Firestore: ${dataSizeMB} MB (${percentageUsed}%)`;
-      } else {
-        sizeDisplay = `Firestore: ${dataSizeKB} KB (${percentageUsed}%)`;
+      const preparedPayload = prepareProjectPayloadForFirestore(projectObj);
+      const payloadBytes = new Blob([JSON.stringify(preparedPayload)]).size;
+      const embeddedInPayload = collectEmbeddedDataUrlStats(preparedPayload);
+      const pendingBytes = measurePendingAssetDataUrlBytes(projectObj);
+      const pendingCount = countPendingAssetDataUrls(projectObj);
+      const isDirty = !!window.__amiantoProjectDirty;
+
+      const PAYLOAD_MAX_SIZE = 1048487; // ~1MB in bytes
+      const percentageUsed = parseFloat(((payloadBytes / PAYLOAD_MAX_SIZE) * 100).toFixed(1));
+
+      const dirtySuffix = isDirty ? ' *' : '';
+      const parts = [`Payload: ${formatProjectSizeLabel(payloadBytes)} (${percentageUsed}%)${dirtySuffix}`];
+      if (pendingBytes > 0) {
+        const assetLabel = pendingCount === 1 ? '1 asset' : `${pendingCount} asset`;
+        parts.push(`da caricare: ${formatProjectSizeLabel(pendingBytes)} (${assetLabel})`);
       }
-      
-      sizeText.textContent = sizeDisplay;
-      
-      // Colore Firestore in base alla percentuale
-      if (percentageUsed >= 90) {
-        sizeText.style.color = '#ff6b6b'; // Rosso per >90%
-      } else if (percentageUsed >= 75) {
-        sizeText.style.color = '#ffa500'; // Arancione per 75-90%
-      } else {
-        sizeText.style.color = '#aaa'; // Grigio per <75%
+      if (embeddedInPayload.embeddedAssetCount > 0) {
+        parts.push(`âš  ${embeddedInPayload.embeddedAssetCount} embedded`);
       }
-      
+
+      sizeText.textContent = parts.join(' Â· ');
+      let titleBase = 'Payload: dimensione del JSON canonico del progetto. * = modifiche non salvate.';
+      if (pendingBytes > 0) {
+        titleBase += ' "Da caricare": base64 negli asset live non ancora su storage.';
+      }
+      if (embeddedInPayload.embeddedAssetCount > 0) {
+        titleBase += ` âš  ${embeddedInPayload.embeddedAssetCount} base64 ancora nel payload preparato (${formatProjectSizeLabel(embeddedInPayload.embeddedBytes)}) â€” salva con upload prima di esportare.`;
+      }
+      indicator.title = titleBase;
+
+      if (percentageUsed >= 90 || pendingBytes > 512 * 1024) {
+        sizeText.style.color = '#ff6b6b';
+      } else if (percentageUsed >= 75 || pendingBytes > 0) {
+        sizeText.style.color = '#ffa500';
+      } else {
+        sizeText.style.color = '#aaa';
+      }
+
       indicator.style.display = 'block';
+
+      const projectId = (projectObj.settings && projectObj.settings.id)
+        ? String(projectObj.settings.id)
+        : activeProjectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
+
+      const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+      if (storage && typeof storage.getProjectStorageSize === 'function') {
+        const storageResult = await storage.getProjectStorageSize(projectId);
+        const totalBytes = typeof storageResult === 'number' ? storageResult : (storageResult?.totalBytes || 0);
+        const fileCount = typeof storageResult === 'object' && storageResult
+          ? (storageResult.fileCount || 0)
+          : ((storage.listProjectAssetMetadata ? await storage.listProjectAssetMetadata(projectId) : []).length);
+        if (totalBytes > 0) {
+          const storageLabel = formatProjectSizeLabel(totalBytes);
+          const fileLabel = fileCount === 1 ? '1 file' : `${fileCount} file`;
+          sizeText.textContent = `${parts.join(' Â· ')} Â· Storage: ${storageLabel} (${fileLabel})`;
+          indicator.title = (indicator.title || '') + ` Storage locale: ${storageLabel}, ${fileLabel}.`;
+        }
+      }
     } catch (error) {
       console.warn('[ProjectSize] Errore aggiornamento indicatore:', error);
     }
@@ -15482,172 +18837,31 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // Esponi funzione globalmente
   window.updateProjectSizeIndicator = updateProjectSizeIndicator;
 
-  /**
-   * Elimina completamente un progetto da Firestore, incluse tutte le subcollezioni
-   * IMPORTANTE: In Firestore, eliminare un documento padre NON elimina automaticamente le subcollezioni
-   * Questa funzione elimina prima tutte le subcollezioni, poi il documento principale
-   * @param {string} userId - ID utente (uid di Firebase)
-   * @param {string} projectId - ID progetto
-   * @returns {Promise<boolean>} - true se eliminato con successo, false altrimenti
-   */
-  async function deleteProjectFromFirestoreCompletely(userId, projectId) {
-    if (!userId || !projectId || !window.firebaseDB) {
-      console.warn('[Firestore] Parametri mancanti per eliminazione completa progetto');
-      return false;
-    }
-
-    try {
-      // Ottieni riferimento a Firebase per accedere a batch()
-      const firebaseObj = window.firebase || firebase;
-      if (!firebaseObj) {
-        console.error('[Firestore] Firebase non disponibile');
-        return false;
-      }
-
-      const projectRef = window.firebaseDB
-        .collection('users')
-        .doc(userId)
-        .collection('projects')
-        .doc(projectId);
-
-      // STEP 1: Elimina tutte le subcollezioni (es: assets)
-      // Firestore non supporta eliminazione ricorsiva automatica, quindi dobbiamo farlo manualmente
-      const subcollections = ['assets']; // Aggiungi altre subcollezioni se necessario
-      
-      for (const subcollectionName of subcollections) {
-        try {
-          const subcollectionRef = projectRef.collection(subcollectionName);
-          
-          // Elenca tutti i documenti nella subcollezione
-          // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
-          const snapshot = await subcollectionRef.get({ source: 'server' });
-          
-          if (!snapshot.empty) {
-            console.log(`[Firestore] Eliminazione ${snapshot.size} documenti dalla subcollezione '${subcollectionName}'...`);
-            
-            // Elimina tutti i documenti in batch (Firestore supporta batch fino a 500 operazioni)
-            const BATCH_SIZE = 500;
-            const batches = [];
-            let currentBatch = window.firebaseDB.batch();
-            let operationCount = 0;
-            
-            snapshot.forEach((doc) => {
-              currentBatch.delete(doc.ref);
-              operationCount++;
-              
-              if (operationCount >= BATCH_SIZE) {
-                batches.push(currentBatch);
-                currentBatch = window.firebaseDB.batch();
-                operationCount = 0;
-              }
-            });
-            
-            // Aggiungi l'ultimo batch se ha operazioni
-            if (operationCount > 0) {
-              batches.push(currentBatch);
-            }
-            
-            // Esegui tutti i batch
-            for (const batch of batches) {
-              await batch.commit();
-            }
-            
-            console.log(`[Firestore] ✅ Subcollezione '${subcollectionName}' eliminata completamente`);
-          } else {
-            console.log(`[Firestore] Subcollezione '${subcollectionName}' già vuota`);
-          }
-        } catch (subError) {
-          console.error(`[Firestore] Errore eliminazione subcollezione '${subcollectionName}':`, subError);
-          // Continua anche se una subcollezione fallisce
-        }
-      }
-
-      // STEP 2: Verifica che il documento esista prima di eliminarlo
-      // Usa source: 'server' per forzare lettura dal server (non dalla cache offline)
-      const projectDoc = await projectRef.get({ source: 'server' });
-      
-      if (!projectDoc.exists) {
-        console.log(`[Firestore] Progetto ${projectId} non esiste già su Firestore`);
-        return true; // Considera come successo se non esiste
-      }
-
-      // STEP 3: Elimina il documento principale
-      await projectRef.delete();
-      
-      // STEP 4: Verifica che l'eliminazione sia stata applicata (forza lettura dal server)
-      // Questo previene problemi con la cache offline di Firestore
-      // Attendi un breve momento per permettere la propagazione
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const verifyDoc = await projectRef.get({ source: 'server' });
-      
-      if (verifyDoc.exists) {
-        console.error(`[Firestore] ⚠️ ATTENZIONE: Il progetto ${projectId} esiste ancora dopo l'eliminazione!`);
-        addDebugMessage(`[Firestore] ⚠️ Project may not have been permanently deleted`, 'warning');
-        return false;
-      }
-      
-      console.log(`[Firestore] ✅ Progetto ${projectId} eliminato permanentemente da Firestore`);
-      return true;
-    } catch (error) {
-      console.error('[Firestore] Errore eliminazione completa progetto:', error);
-      addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
-      return false;
-    }
-  }
-
-  // MODIFICATO: Ora elimina anche da Firestore (con eliminazione completa delle subcollezioni)
   async function deleteProjectByName(projectName) {
-    if (!currentUser) { showNotification('Please login to delete projects', 'warning'); return; }
+    ensureCurrentUser();
     if (!projectName) return;
-    if (!confirm(`Delete project "${projectName}"? This action cannot be undone.`)) return;
-    
-    const projectId = projectName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-    
-    // IMPORTANTE: Per Firestore dobbiamo usare SEMPRE uid (non username)
-    const userId = currentUser.uid;
+    if (!(await showConfirmDialog({
+      title: 'Remove Project',
+      message: `Remove "${projectName}" from the editor?\n\n` +
+        'Local cache, IndexedDB assets, and editor backups will be deleted.\n' +
+        'Your .amnt file on disk (if any) will NOT be deleted — remove it manually if needed.',
+      danger: true
+    }))) return;
 
-    // 1. ELIMINA COMPLETAMENTE DA FIRESTORE (incluse subcollezioni) - MODIFICATO
-    if (userId && window.firebaseDB) {
+    const projectId = getProjectIdFromCacheByName(projectName) || normalizeProjectIdFromName(projectName);
+
+    const storage = window.getAmiantoAssetStorage && window.getAmiantoAssetStorage();
+    if (storage && storage.deleteProjectFolder) {
       try {
-        const deleted = await deleteProjectFromFirestoreCompletely(userId, projectId);
-        if (deleted) {
-          console.log(`[Firestore] Progetto eliminato permanentemente: ${projectName}`);
-          addDebugMessage(`[Firestore] Project permanently deleted: ${projectName}`, 'success');
-        } else {
-          console.error(`[Firestore] Impossibile eliminare permanentemente il progetto: ${projectName}`);
-          addDebugMessage(`[Firestore] Could not permanently delete project: ${projectName}`, 'error');
-          // Continua comunque con l'eliminazione locale
+        await storage.deleteProjectFolder(projectId);
+        if (typeof updateProjectSizeIndicator === 'function') {
+          updateProjectSizeIndicator();
         }
       } catch (error) {
-        console.error('[Firestore] Errore eliminazione:', error);
-        addDebugMessage(`[Firestore] Delete error: ${error.message || error}`, 'error');
-        // Continua comunque con l'eliminazione locale
+        console.error('[Asset] Errore eliminazione asset progetto:', error);
       }
     }
 
-    // 1.5. ELIMINA CARTELLA PROGETTO DA SUPABASE STORAGE (se disponibile) - AGGIUNTO
-    if (userId && window.supabaseStorage && window.supabaseStorage.deleteProjectFolder) {
-      try {
-        const deleted = await window.supabaseStorage.deleteProjectFolder(projectId);
-        if (deleted) {
-          console.log(`[Supabase] Cartella progetto eliminata: ${projectName}`);
-          addDebugMessage(`[Supabase] Project folder deleted: ${projectName}`, 'success');
-          
-          // Aggiorna i counter dopo eliminazione cartella progetto
-          if (typeof updateProjectSizeIndicator === 'function') {
-            updateProjectSizeIndicator();
-          }
-        } else {
-          console.warn(`[Supabase] Impossibile eliminare cartella progetto: ${projectName}`);
-          addDebugMessage(`[Supabase] Could not delete project folder: ${projectName}`, 'warning');
-        }
-      } catch (error) {
-        console.error('[Supabase] Errore eliminazione cartella progetto:', error);
-        addDebugMessage(`[Supabase] Folder delete error: ${error.message || error}`, 'error');
-      }
-    }
-    
-    // 2. Carica il JSON del progetto per ottenere la lista degli script da rimuovere - GIÀ IMPLEMENTATO
     const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
     let scriptsToRemove = [];
     try {
@@ -15658,123 +18872,62 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           scriptsToRemove = Object.keys(projectObj.scripts);
         }
       }
-    } catch(_) {}
-    
-    // 3. Rimuovi dalla lista progetti usando funzione centralizzata
+    } catch (_) {}
+
     const list = loadProjectsFromCache(currentUser.username);
-    const filtered = list.filter(p => !(p && p.settings && p.settings.name === projectName));
-    saveProjectsToCache(currentUser.username, filtered);
-    
-    // 4. Rimuovi backup locale - GIÀ IMPLEMENTATO
-    try { localStorage.removeItem(projectKey); } catch(_) {}
-    try { localStorage.removeItem(`${projectKey}_meta`); } catch(_) {} // Rimuovi anche metadata cache
-    
-    // 5. Rimuovi tutti gli script associati al progetto da localStorage - GIÀ IMPLEMENTATO
-    scriptsToRemove.forEach(scriptName => {
-      try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
+    const filtered = list.filter((p) => {
+      if (!p) return false;
+      const pName = (p.settings && p.settings.name) ? p.settings.name : '';
+      const pId = p.id || (p.settings && p.settings.id) || normalizeProjectIdFromName(pName);
+      if (pName === projectName) return false;
+      if (projectId && pId === projectId) return false;
+      return true;
     });
-    
-    // 6. Se è il progetto corrente aperto, pulisci anche jsScripts in memoria - GIÀ IMPLEMENTATO
-    const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (currentProjectName === projectName) {
-      jsScripts.clear();
-      // Pulisci anche le mappe di attachment
-      objectScripts.clear();
-      roomScripts.clear();
-      characterScripts.clear();
-      inventoryScripts.clear();
-      hotspotScripts.clear();
-      if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
-      // Ricostruisci la lista script nell'UI
-      refreshScriptSelector();
-      rebuildScriptsTree();
+    saveProjectsToCache(currentUser.username, filtered);
+    updateAppState({ projects: filtered });
+
+    const wasActiveProject = localStorage.getItem('amiantoActiveProjectName') === projectName
+      || (projectId && localStorage.getItem('amiantoActiveProjectId') === projectId);
+
+    removeProjectFromEditorCache(projectName, projectId);
+
+    scriptsToRemove.forEach((scriptName) => {
+      try { localStorage.removeItem(`script-${scriptName}`); } catch (_) {}
+    });
+
+    if (wasActiveProject) {
+      clearInMemoryProjectState();
     }
-    
-    // 7. Rimuovi file OPFS se possibile - GIÀ IMPLEMENTATO
-    try { await deleteProjectFileFromOPFS(projectName); } catch(_) {}
-    
-    // 8. Se è il progetto corrente aperto, rimuovi anche il progetto attivo
-    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
-    if (activeProjectName === projectName) {
-      localStorage.removeItem('amiantoActiveProjectName');
-      localStorage.removeItem('amiantoActiveProjectOwner');
-      // Nascondi indicatore dimensione progetto
-      const indicator = document.getElementById('projectSizeIndicator');
-      if (indicator) {
-        indicator.style.display = 'none';
-      }
-    }
-    
-    // 9. Verifica se ci sono ancora progetti dopo la cancellazione
-    // Sincronizza con Firestore per avere la lista aggiornata
-    let remainingProjects = [];
-    if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      try {
-        await syncProjectsFromFirestore(userId);
-        remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      } catch (error) {
-        console.error('[Delete] Errore sincronizzazione dopo cancellazione:', error);
-        // Fallback: usa la lista locale già filtrata
-        remainingProjects = filtered;
-      }
-    } else {
-      // Fallback: usa la lista locale già filtrata
-      remainingProjects = filtered;
-    }
-    
-    showNotification('Project deleted', 'success');
-    
-    // 10. Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
+
+    try { await deleteProjectFileFromOPFS(projectName); } catch (_) {}
+
+    const remainingProjects = filtered;
+
+    showNotification(
+      'Project removed from editor. The .amnt file on disk was not deleted.',
+      'success'
+    );
+
     if (remainingProjects.length === 0) {
-      console.log('[Delete] Nessun progetto rimasto, mostro modale selezione');
-      // Rimuovi progetto attivo se ancora presente
+      clearEditorWorkspaceAfterProjectRemoved();
       localStorage.removeItem('amiantoActiveProjectName');
       localStorage.removeItem('amiantoActiveProjectOwner');
-      // Pulisci l'editor
-      rooms = new Map();
-      currentRoomId = null;
-      background = null;
-      foregrounds = [];
-      sceneObjects = [];
-      guis = [];
-      characters = [];
-      contextualCursors = [];
-      
-      // Disabilita altre tab (non c'è più un progetto aperto)
-      enableOtherTabs(false);
-      
-      // Torna alla tab Projects
+      localStorage.removeItem('amiantoActiveProjectId');
+
       if (typeof showSectionById === 'function') {
         showSectionById('projects', false);
       } else {
-        // Fallback: usa il bottone direttamente
-        const projectsButton = document.querySelector(`[data-section="projects"]`);
-        if (projectsButton) {
-          projectsButton.click();
-        }
+        const projectsButton = document.querySelector('[data-section="projects"]');
+        if (projectsButton) projectsButton.click();
       }
-      
-      // Mostra il modale (forzato, anche se c'era un progetto attivo)
+
       await showProjectSelectionModal(true);
     }
   }
 
   // Show project list (modal)
   window.showProjectList = async function() {
-    if (!currentUser) {
-      showNotification('Please login to view projects', 'warning');
-      return;
-    }
-    
-    // Ricarica progetti da Firestore per avere dati aggiornati
-    if (currentUser.uid && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-      try {
-        console.log('[ProjectList] Ricarica progetti da Firestore...');
-        await syncProjectsFromFirestore(currentUser.uid);
-      } catch (error) {
-        console.error('[ProjectList] Errore ricarica progetti:', error);
-      }
-    }
+    ensureCurrentUser();
     
     const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
     // Crea modale
@@ -15786,7 +18939,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     modal.setAttribute('aria-hidden', 'true');
     const count = userProjects.length;
     const itemsHtml = count === 0 ? `
-      <div class="text-center text-muted py-4">Nessun progetto trovato. Crea un nuovo progetto dal menu Profilo > File.</div>
+      <div class="text-center text-muted py-4">No projects found. Create a new project from Profile &gt; File menu.</div>
     ` : userProjects.map((p, i) => {
       const name = (p && p.settings && p.settings.name) ? p.settings.name : `Project ${i+1}`;
       const updated = (p && (p.updatedAt || p.createdAt)) ? (p.updatedAt || p.createdAt) : '';
@@ -15851,13 +19004,13 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         try {
           await openProjectByName(name);
           
-          // Chiudi il modale DOPO che il progetto è stato caricato con successo
+          // Chiudi il modale DOPO che il progetto Ã¨ stato caricato con successo
           const inst = bootstrap.Modal.getInstance(modal);
           if (inst) {
             inst.hide();
-            // Il listener hidden.bs.modal già presente rimuoverà il modale dal DOM
+            // Il listener hidden.bs.modal giÃ  presente rimuoverÃ  il modale dal DOM
           } else {
-            // Fallback: chiudi manualmente se Bootstrap non è disponibile
+            // Fallback: chiudi manualmente se Bootstrap non Ã¨ disponibile
             modal.classList.remove('show');
             modal.style.display = 'none';
             document.body.classList.remove('modal-open');
@@ -15885,8 +19038,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         // Verifica se ci sono ancora progetti dopo l'eliminazione
         const remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
         if (remainingProjects.length === 0) {
-          // Se non ci sono più progetti, chiudi il modale "My Projects"
-          // Il modale di selezione verrà mostrato automaticamente da deleteProjectByName
+          // Se non ci sono piÃ¹ progetti, chiudi il modale "My Projects"
+          // Il modale di selezione verrÃ  mostrato automaticamente da deleteProjectByName
           const projectListModal = document.getElementById('projectListModal');
           if (projectListModal) {
             const bsModal = bootstrap.Modal.getInstance(projectListModal);
@@ -15907,72 +19060,12 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     }, { capture: true });
     // New / Import
     modal.querySelector('#btn-new-project')?.addEventListener('click', async () => {
-      const projectName = prompt('Enter project name:');
+      const projectName = await showInputPrompt({ title: 'New Project', message: 'Enter project name:', defaultValue: '' });
       if (!projectName || !projectName.trim()) return;
 
-      const trimmedName = projectName.trim();
+      const created = await window.createNewProject(projectName.trim(), true);
+      if (!created || !created.ok) return;
 
-      // Crea progetto completo con struttura corretta
-      const newProject = {
-        format: 'amianto-game',
-        version: 1,
-        meta: {
-          exportedAt: new Date().toISOString(),
-          editor: 'Amianto Editor',
-          editorVersion: '0.1'
-        },
-        settings: {
-          name: trimmedName,
-          canvasWidth: 800,
-          canvasHeight: 600
-        },
-        rooms: [],
-        guis: [],
-        characters: [],
-        inventory: [],
-        scripts: {},
-        attachments: {},
-        cursors: [],
-        variables: {
-          definitions: [],
-          state: {}
-        },
-        eventConditions: {
-          objects: {},
-          hotspots: {},
-          characters: {},
-          guiButtons: {},
-          inventory: {}
-        }
-      };
-
-      // Apri il progetto nell'editor
-      await applyProjectObject(newProject);
-
-      // Imposta come progetto attivo
-      localStorage.setItem('amiantoActiveProjectName', trimmedName);
-      localStorage.setItem('amiantoActiveProjectOwner', currentUser.username);
-
-      // Aggiungi alla lista progetti utente
-      const arr = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      const entry = {
-        settings: newProject.settings,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      arr.push(entry);
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(arr));
-
-      // Salva su Firestore se l'utente è autenticato
-      const userId = currentUser.uid;
-      if (userId && window.firebaseDB) {
-        const projectId = trimmedName.replace(/[^a-z0-9-_\s]/gi, '_').toLowerCase().replace(/\s+/g, '_');
-        await saveProjectToFirestore(userId, projectId, newProject);
-      }
-
-      showNotification(`Project "${trimmedName}" created and opened!`, 'success');
-      
-      // Chiudi il modale
       const inst = bootstrap.Modal.getInstance(modal);
       if (inst) inst.hide();
     });
@@ -15985,9 +19078,21 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
         });
         const file = await handle.getFile();
         const text = await file.text();
-        await importProjectFromJson(text);
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch (_) {}
+        if (parsed && parsed.format === 'amianto-amnt') {
+          await importAmntContent(text, null);
+        } else {
+          await importProjectFromJson(text);
+        }
         const nameGuess = (() => {
-          try { const o = JSON.parse(text); return (o && o.settings && o.settings.name) ? o.settings.name : null; } catch (_) { return null; }
+          try {
+            const o = parsed || JSON.parse(text);
+            if (o && o.format === 'amianto-amnt' && o.project && o.project.settings) {
+              return o.project.settings.name || null;
+            }
+            return (o && o.settings && o.settings.name) ? o.settings.name : null;
+          } catch (_) { return null; }
         })();
         if (nameGuess) {
           // aggiungi alla lista utente se manca
@@ -16012,145 +19117,295 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
 
   // Delete current project
   window.deleteCurrentProject = async function() {
-    if (!currentUser) {
-      showNotification('Please login to delete projects', 'warning');
-      return;
-    }
+    ensureCurrentUser();
 
-    // Ottieni il nome del progetto da localStorage o dal campo input (se esiste)
     let projectName = localStorage.getItem('amiantoActiveProjectName');
     if (!projectName) {
       const projectNameInput = document.getElementById('projectName');
       projectName = projectNameInput ? projectNameInput.value : null;
     }
     if (!projectName) {
-      // Fallback: cerca nell'oggetto serializzato
       try {
         const projectObj = window.serializeProject();
         projectName = projectObj.settings && projectObj.settings.name ? projectObj.settings.name : null;
       } catch (_) {}
     }
     if (!projectName) {
-      projectName = 'Untitled Project';
-    }
-    if (confirm(`Are you sure you want to delete project "${projectName}"?`)) {
-      // Carica il JSON del progetto per ottenere la lista degli script da rimuovere
-      const projectKey = `amiantoProject_${currentUser.username}:${projectName}`;
-      let scriptsToRemove = [];
-      try {
-        const projectJson = localStorage.getItem(projectKey);
-        if (projectJson) {
-          const projectObj = JSON.parse(projectJson);
-          if (projectObj.scripts && typeof projectObj.scripts === 'object') {
-            scriptsToRemove = Object.keys(projectObj.scripts);
-          }
-        }
-      } catch(_) {}
-      
-      // Rimuovi dalla lista progetti
-      const userProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-      const filteredProjects = userProjects.filter(p => p.settings.name !== projectName);
-      localStorage.setItem(`amiantoProjects_${currentUser.username}`, JSON.stringify(filteredProjects));
-      
-      // Rimuovi il backup locale del progetto
-      try { localStorage.removeItem(projectKey); } catch(_) {}
-      
-      // Rimuovi tutti gli script associati al progetto da localStorage
-      scriptsToRemove.forEach(scriptName => {
-        try { localStorage.removeItem(`script-${scriptName}`); } catch(_) {}
-      });
-      
-      // Se è il progetto corrente aperto, pulisci anche jsScripts in memoria
-      const currentProjectName = localStorage.getItem('amiantoActiveProjectName');
-      if (currentProjectName === projectName) {
-        jsScripts.clear();
-        // Pulisci anche le mappe di attachment
-        objectScripts.clear();
-        roomScripts.clear();
-        characterScripts.clear();
-        inventoryScripts.clear();
-        hotspotScripts.clear();
-        if (typeof guiScripts !== 'undefined' && guiScripts.clear) guiScripts.clear();
-        // Ricostruisci la lista script nell'UI
-        refreshScriptSelector();
-        rebuildScriptsTree();
-        
-        // Rimuovi progetto attivo
-        localStorage.removeItem('amiantoActiveProjectName');
-        localStorage.removeItem('amiantoActiveProjectOwner');
-      }
-      
-      // Verifica se ci sono ancora progetti dopo la cancellazione
-      // Sincronizza con Firestore per avere la lista aggiornata
-      const userId = currentUser.uid;
-      let remainingProjects = [];
-      if (userId && window.firebaseDB && window.firebaseAuth && window.firebaseAuth.currentUser) {
-        try {
-          await syncProjectsFromFirestore(userId);
-          remainingProjects = JSON.parse(localStorage.getItem(`amiantoProjects_${currentUser.username}`) || '[]');
-        } catch (error) {
-          console.error('[DeleteCurrent] Errore sincronizzazione dopo cancellazione:', error);
-          // Fallback: usa la lista locale già filtrata
-          remainingProjects = filteredProjects;
-        }
-      } else {
-        // Fallback: usa la lista locale già filtrata
-        remainingProjects = filteredProjects;
-      }
-      
-      showNotification('Project deleted successfully!', 'success');
-      
-      // Se non ci sono più progetti, mostra il modale di selezione e torna alla tab Projects
-      if (remainingProjects.length === 0) {
-        console.log('[DeleteCurrent] Nessun progetto rimasto, mostro modale selezione');
-        // Rimuovi progetto attivo se ancora presente
-        localStorage.removeItem('amiantoActiveProjectName');
-        localStorage.removeItem('amiantoActiveProjectOwner');
-        // Pulisci l'editor
-        rooms = new Map();
-        currentRoomId = null;
-        background = null;
-        foregrounds = [];
-        sceneObjects = [];
-        guis = [];
-        characters = [];
-        contextualCursors = [];
-        
-        // Disabilita altre tab (non c'è più un progetto aperto)
-        enableOtherTabs(false);
-        
-        // Torna alla tab Projects
-        if (typeof showSectionById === 'function') {
-          showSectionById('projects', false);
-        } else {
-          // Fallback: usa il bottone direttamente
-          const projectsButton = document.querySelector(`[data-section="projects"]`);
-          if (projectsButton) {
-            projectsButton.click();
-          }
-        }
-        
-        // Mostra il modale (forzato, anche se c'era un progetto attivo)
-        await showProjectSelectionModal(true);
-      }
-    }
-  };
-
-  // Export project (placeholder)
-  window.exportProject = function() {
-    if (!currentUser) {
-      showNotification('Please login to export projects', 'warning');
+      showNotification('No project is open to delete', 'warning');
       return;
     }
-    const jsonString = window.serializeProjectToJsonString(true);
-    const obj = window.serializeProject();
-    const fileName = (obj.settings && obj.settings.name ? obj.settings.name : 'amianto-project') + '.amianto.json';
-    downloadBlob(jsonString, fileName, 'application/json');
-    showNotification('Project exported as JSON', 'success');
+
+    await deleteProjectByName(projectName);
+    await loadAndRenderProjectsTab();
   };
 
+  // Export project as .amnt (full bundle)
+  window.exportProject = async function() {
+    ensureCurrentUser();
+    if (!window.AmiantoAmnt) {
+      showNotification('Project format module not loaded', 'error');
+      return;
+    }
+
+    const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+    if (!activeProjectName) {
+      showNotification('No project is currently open', 'warning');
+      return;
+    }
+
+    let projectObj = window.serializeProject();
+    try {
+      projectObj = await saveAllAssetsToStorage(projectObj, getStableProjectId(projectObj.settings, activeProjectName));
+    } catch (_) {}
+
+    const pkg = await buildAmntPackageFromEditor(projectObj);
+    const text = window.AmiantoAmnt.stringify(pkg, true);
+    const defaultName = window.AmiantoAmnt.defaultFileName(activeProjectName);
+
+    const location = await pickProjectSaveLocation(activeProjectName);
+    if (location) {
+      const written = await writeAmntContent(activeProjectName, text, location);
+      showNotification(written ? `Exported to ${written}` : 'Project exported', 'success');
+      return;
+    }
+
+    downloadBlob(text, defaultName, 'application/json');
+    showNotification('Project exported as .amnt', 'success');
+  };
+
+  /**
+   * Export a single self-contained HTML game (runtime + project + assets).
+   * Open the file in a browser — no editor required.
+   */
+  /**
+   * Export standalone HTML game.
+   * Electron path (required for large projects):
+   *   1) package .amnt from editor
+   *   2) write temp .amnt (chunked IPC)
+   *   3) Node CLI builds HTML (separate process) → out.html
+   */
+  window.exportStandaloneGame = async function exportStandaloneGame() {
+    let progressVisible = false;
+    const setProgress = async (message, percent, step) => {
+      if (!progressVisible) {
+        showExportProgressOverlay(message, percent);
+        progressVisible = true;
+      } else {
+        updateExportProgress(message, percent, step ? { step } : undefined);
+      }
+      await yieldToUi();
+    };
+    const finishProgress = async (message, ok) => {
+      if (!progressVisible) return;
+      updateExportProgress(message, 100, { step: ok ? 'Done' : 'Failed' });
+      await yieldToUi();
+      await new Promise((r) => setTimeout(r, ok ? 500 : 3200));
+      hideExportProgressOverlay();
+      progressVisible = false;
+    };
+
+    const nativeFs = window.amiantoNativeFs;
+    const safeBase = (window.AmiantoStandaloneExport && window.AmiantoStandaloneExport.safeFileBase)
+      ? window.AmiantoStandaloneExport.safeFileBase
+      : (name) => String(name || 'game').replace(/[^\w\-]+/g, '_');
+
+    try {
+      ensureCurrentUser();
+      if (!window.AmiantoAmnt) {
+        showNotification('Project format module not loaded — restart the app', 'error');
+        return { ok: false, error: 'amnt_missing' };
+      }
+
+      const activeProjectName = localStorage.getItem('amiantoActiveProjectName');
+      if (!activeProjectName) {
+        showNotification('Open a project before exporting the game', 'warning');
+        return { ok: false, error: 'no_project' };
+      }
+
+      const defaultName = `${safeBase(activeProjectName)}.html`;
+
+      // Export HTML requires the desktop app (Electron) for large projects
+      if (!window.amiantoElectron || !nativeFs) {
+        showNotification(
+          'Export Game richiede l\'app desktop. Chiudi il browser e avvia: npm start',
+          'error'
+        );
+        return { ok: false, error: 'electron_required' };
+      }
+
+      const hasExport =
+        typeof nativeFs.exportGame === 'function' ||
+        typeof nativeFs.exportStandaloneHtml === 'function';
+      if (
+        typeof nativeFs.showSaveDialog !== 'function' ||
+        typeof nativeFs.writeFileChunkedBegin !== 'function' ||
+        !hasExport
+      ) {
+        showNotification(
+          'Modulo export obsoleto — chiudi TUTTE le finestre Amianto e rilancia npm start',
+          'error'
+        );
+        return { ok: false, error: 'preload_outdated', version: window.amiantoExportApiVersion };
+      }
+
+      let htmlPath = null;
+      try {
+        htmlPath = await nativeFs.showSaveDialog(defaultName, { kind: 'html' });
+      } catch (dialogErr) {
+        showNotification('Save dialog failed: ' + (dialogErr.message || dialogErr), 'error');
+        return { ok: false, error: 'dialog_failed' };
+      }
+      if (!htmlPath) {
+        showNotification('Export cancelled', 'info');
+        return { ok: false, error: 'cancelled' };
+      }
+
+      await setProgress('Preparing project…', 10, 'Step 1/5');
+      let projectObj = (typeof buildPlaytestProjectPayload === 'function')
+        ? buildPlaytestProjectPayload()
+        : window.serializeProject();
+      if (!projectObj || typeof projectObj !== 'object') {
+        await finishProgress('Export failed: could not serialize project', false);
+        showNotification('Export failed: could not serialize project', 'error');
+        return { ok: false, error: 'serialize_failed' };
+      }
+      projectObj.format = 'amianto-game';
+      if (projectObj.version == null) projectObj.version = 1;
+
+      await setProgress('Syncing assets…', 25, 'Step 2/5');
+      try {
+        projectObj = await saveAllAssetsToStorage(
+          projectObj,
+          getStableProjectId(projectObj.settings, activeProjectName)
+        );
+        if (projectObj) {
+          projectObj.format = 'amianto-game';
+          if (typeof reinjectHotspotScriptsForPlaytest === 'function') {
+            reinjectHotspotScriptsForPlaytest(projectObj);
+          }
+        }
+      } catch (assetErr) {
+        console.warn('[ExportGame] saveAllAssetsToStorage:', assetErr);
+      }
+
+      await setProgress('Packaging .amnt…', 40, 'Step 3/5');
+      const pkg = await buildAmntPackageFromEditor(projectObj);
+      if (!pkg || !pkg.project) {
+        await finishProgress('Export failed: empty package', false);
+        showNotification('Export failed: empty package', 'error');
+        return { ok: false, error: 'package_empty' };
+      }
+      pkg.project.format = 'amianto-game';
+      if (typeof reinjectHotspotScriptsForPlaytest === 'function') {
+        reinjectHotspotScriptsForPlaytest(pkg.project);
+      }
+
+      const assetCount = Array.isArray(pkg.assets) ? pkg.assets.length : 0;
+      const referencedIds = collectAssetIdsFromProject(pkg.project);
+      if (assetCount === 0 && referencedIds.size > 0) {
+        await finishProgress('Export failed: no assets embedded', false);
+        showNotification(
+          'Export failed: images missing from package. Save Project, then export again.',
+          'error'
+        );
+        return { ok: false, error: 'assets_missing' };
+      }
+
+      const tempDir = await nativeFs.getTempDir();
+      const tempAmntPath =
+        String(tempDir).replace(/[/\\]+$/, '') +
+        (String(tempDir).includes('\\') ? '\\' : '/') +
+        `amianto-export-${Date.now()}.amnt`;
+
+      try {
+        await setProgress(
+          assetCount ? `Writing package (${assetCount} assets)…` : 'Writing package…',
+          55,
+          'Step 4/5'
+        );
+        const amntText = window.AmiantoAmnt.stringify(pkg, false);
+        await writeLargeTextFile(tempAmntPath, amntText, {
+          onProgress: async (written, total) => {
+            const ratio = total > 0 ? written / total : 1;
+            await setProgress(
+              `Writing package… ${Math.round(ratio * 100)}%`,
+              55 + Math.round(ratio * 15),
+              'Step 4/5'
+            );
+          }
+        });
+
+        await setProgress('Building HTML (export engine)…', 78, 'Step 5/5');
+        const exportFn = nativeFs.exportGame || nativeFs.exportStandaloneHtml;
+        const result = await exportFn({
+          amntPath: tempAmntPath,
+          htmlPath: htmlPath,
+          title: activeProjectName
+        });
+
+        const bytes = (result && result.bytes) || 0;
+        const mb = (bytes / (1024 * 1024)).toFixed(1);
+        await finishProgress(`Exported (${mb} MB)`, true);
+        showNotification(`Game exported (${mb} MB): ${htmlPath}`, 'success');
+        return { ok: true, bytes, path: htmlPath, mode: 'cli' };
+      } finally {
+        try { await nativeFs.deleteFile(tempAmntPath); } catch (_) {}
+      }
+    } catch (err) {
+      console.error('[ExportGame] Failed:', err);
+      const msg = err && err.message ? err.message : String(err);
+      try {
+        await finishProgress('Export failed: ' + msg, false);
+      } catch (_) {
+        hideExportProgressOverlay();
+      }
+      showNotification('Export failed: ' + msg, 'error');
+      return { ok: false, error: msg };
+    }
+  };
+
+  /** Scrive HTML grandi a chunk via IPC (un solo invoke fallisce oltre pochi MB). */
+  async function writeLargeTextFile(filePath, content, options) {
+    const text = String(content || '');
+    const fsApi = window.amiantoNativeFs;
+    if (!fsApi) throw new Error('Native FS unavailable');
+    const onProgress = options && typeof options.onProgress === 'function' ? options.onProgress : null;
+
+    if (typeof fsApi.writeFileChunkedBegin === 'function') {
+      const CHUNK = 512 * 1024; // 512 KB per messaggio IPC
+      const total = text.length;
+      const id = await fsApi.writeFileChunkedBegin(filePath);
+      try {
+        let lastUi = 0;
+        for (let i = 0; i < total; i += CHUNK) {
+          await fsApi.writeFileChunkedAppend(id, text.slice(i, i + CHUNK));
+          const written = Math.min(total, i + CHUNK);
+          // Throttle UI updates (~every 1MB or last chunk)
+          if (onProgress && (written - lastUi >= 1024 * 1024 || written >= total)) {
+            lastUi = written;
+            await onProgress(written, total);
+          }
+        }
+        return await fsApi.writeFileChunkedEnd(id);
+      } catch (err) {
+        try {
+          if (typeof fsApi.writeFileChunkedAbort === 'function') {
+            await fsApi.writeFileChunkedAbort(id);
+          } else {
+            await fsApi.writeFileChunkedEnd(id);
+          }
+        } catch (_) {}
+        throw err;
+      }
+    }
+
+    if (onProgress) await onProgress(text.length, text.length);
+    await fsApi.writeFile(filePath, text);
+    return { bytes: new Blob([text]).size, filePath };
+  }
+
   // Debug function to test coordinate conversion
-  window.debugCoordinateConversion = function() {
+  window.debugCoordinateConversion = async function() {
     window.debugCoordinates = true;
     console.log('Debug mode enabled. Click on the canvas to see coordinate conversion details.');
     console.log('Canvas internal dimensions:', canvas.width, 'x', canvas.height);
@@ -16171,8 +19426,8 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   };
 
   // Multiple GUI management functions
-  window.createGUI = function() {
-    const name = prompt('Enter GUI name:', `GUI ${guis.length + 1}`);
+  window.createGUI = async function() {
+    const name = await showInputPrompt({ title: 'New GUI', message: 'Enter GUI name:', defaultValue: `GUI ${guis.length + 1}` });
     if (!name) return;
     
     const newGui = {
@@ -16190,7 +19445,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`GUI "${name}" created`, 'success');
   };
 
-  window.renameGUI = function() {
+  window.renameGUI = async function() {
     if (!currentGuiId) {
       showNotification('No GUI selected', 'warning');
       return;
@@ -16199,7 +19454,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const gui = guis.find(g => g.id === currentGuiId);
     if (!gui) return;
     
-    const newName = prompt('Enter new GUI name:', gui.name);
+    const newName = await showInputPrompt({ title: 'Rename GUI', message: 'Enter new GUI name:', defaultValue: gui.name });
     if (!newName || newName === gui.name) return;
     
     gui.name = newName;
@@ -16207,7 +19462,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     showNotification(`GUI renamed to "${newName}"`, 'success');
   };
 
-  window.deleteGUI = function() {
+  window.deleteGUI = async function() {
     if (!currentGuiId) {
       showNotification('No GUI selected', 'warning');
       return;
@@ -16216,7 +19471,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     const gui = guis.find(g => g.id === currentGuiId);
     if (!gui) return;
     
-    if (!confirm(`Delete GUI "${gui.name}"? This action cannot be undone.`)) return;
+    if (!(await showConfirmDialog({ title: 'Delete GUI', message: `Delete GUI "${gui.name}"? This action cannot be undone.`, danger: true }))) return;
     
     guis = guis.filter(g => g.id !== currentGuiId);
     
@@ -16239,6 +19494,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       guiBackground = null;
       guiButtons = [];
       selectedGuiButtonId = null;
+      updateGuiToolbarForType('MainInterface');
       redraw();
       return;
     }
@@ -16260,9 +19516,10 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (gui.type === 'Inventory') gui.type = guiType;
     if (typeSel) typeSel.value = guiType;
     renderGuiSettingsPanel(guiType, gui.settings || {});
+    updateGuiToolbarForType(guiType);
     
     redraw();
-    refreshGUIButtonsList();
+    refreshGuiButtonsList();
     showNotification(`Switched to GUI "${gui.name}"`, 'info');
   };
 
@@ -16331,73 +19588,141 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (g) {
         typeSelInit.value = g.type || 'MainInterface';
         renderGuiSettingsPanel(g.type || 'MainInterface', g.settings || {});
+        updateGuiToolbarForType(g.type || 'MainInterface');
       }
     }
   } catch(_) {}
 
-  // Contextual cursors management functions
-  window.createCursor = function() {
-    const targetType = document.getElementById('cursor-target-type').value;
-    const targetId = document.getElementById('cursor-target-selector').value;
-    const actionText = document.getElementById('cursor-action-text').value;
-    
-    if (!targetId) {
-      showNotification('Please select a target object', 'warning');
+  // Category cursors management
+  function getCursorByCategory(category) {
+    return contextualCursors.find(c => c.category === category) || null;
+  }
+
+  function updateCursorPivotLabel(cursor) {
+    const label = document.getElementById('cursor-pivot-label');
+    if (!label) return;
+    if (!cursor) {
+      label.textContent = '—';
       return;
     }
-    
+    const px = typeof cursor.pivotX === 'number' ? cursor.pivotX : 0;
+    const py = typeof cursor.pivotY === 'number' ? cursor.pivotY : 0;
+    label.textContent = `(${px}, ${py})`;
+  }
+
+  function applyCursorCssStyle(cursor) {
+    if (cursor && cursor.cursorImage && cursor.cursorImage.src) {
+      const px = typeof cursor.pivotX === 'number' ? cursor.pivotX : 0;
+      const py = typeof cursor.pivotY === 'number' ? cursor.pivotY : 0;
+      canvas.style.cursor = `url(${cursor.cursorImage.src}) ${px} ${py}, auto`;
+      return true;
+    }
+    return false;
+  }
+
+  window.createCursor = function() {
+    const categoryEl = document.getElementById('cursor-category');
+    const category = categoryEl ? categoryEl.value : 'default';
+    if (!CURSOR_CATEGORIES.includes(category)) {
+      showNotification('Invalid cursor category', 'warning');
+      return;
+    }
+
+    if (getCursorByCategory(category)) {
+      showNotification(`A cursor for category "${category}" already exists`, 'warning');
+      return;
+    }
+
+    const actionTextEl = document.getElementById('cursor-action-text');
     const newCursor = {
       id: uid('cursor'),
-      targetType: targetType,
-      targetId: targetId,
+      category,
       cursorImage: null,
-      actionText: actionText || '',
-      scriptName: ''
+      actionText: actionTextEl ? (actionTextEl.value || '') : '',
+      scriptName: '',
+      pivotX: 0,
+      pivotY: 0
     };
-    
+
     contextualCursors.push(newCursor);
+    selectedCursorId = newCursor.id;
     refreshCursorsList();
-    showNotification(`Cursor created for ${targetType}: ${targetId}`, 'success');
+    redraw();
+    showNotification(`Cursor created for category: ${category}`, 'success');
   };
 
-  window.editCursor = function() {
+  window.onCursorCategoryChange = async function() {
+    const categoryEl = document.getElementById('cursor-category');
+    const category = categoryEl ? categoryEl.value : null;
+    if (!category || !CURSOR_CATEGORIES.includes(category)) return;
+
+    if (!selectedCursorId) return;
+
+    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
+    if (!cursor) return;
+    if (cursor.category === category) return;
+
+    const existing = getCursorByCategory(category);
+    if (existing && existing.id !== cursor.id) {
+      showNotification(`Category "${category}" is already used by another cursor`, 'warning');
+      categoryEl.value = cursor.category;
+      return;
+    }
+
+    cursor.category = category;
+    refreshCursorsList();
+    redraw();
+    showNotification(`Cursor category set to: ${category}`, 'info');
+  };
+
+  window.editCursor = async function() {
+    // Kept for compatibility — meta updates happen via updateSelectedCursorMeta / select
+    window.updateSelectedCursorMeta();
+  };
+
+  window.updateSelectedCursorMeta = async function() {
+    if (!selectedCursorId) return;
+    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
+    if (!cursor) return;
+    const actionTextEl = document.getElementById('cursor-action-text');
+    if (actionTextEl) cursor.actionText = actionTextEl.value || '';
+    refreshCursorsList();
+  };
+
+  window.deleteCursor = async function() {
     if (!selectedCursorId) {
       showNotification('No cursor selected', 'warning');
       return;
     }
-    
-    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
-    if (!cursor) return;
-    
-    // Update cursor properties from form
-    cursor.targetType = document.getElementById('cursor-target-type').value;
-    cursor.targetId = document.getElementById('cursor-target-selector').value;
-    cursor.actionText = document.getElementById('cursor-action-text').value;
-    
-    refreshCursorsList();
-    showNotification(`Cursor updated for ${cursor.targetType}: ${cursor.targetId}`, 'success');
-  };
 
-  window.deleteCursor = function() {
-    if (!selectedCursorId) {
-      showNotification('No cursor selected', 'warning');
-      return;
-    }
-    
     const cursor = contextualCursors.find(c => c.id === selectedCursorId);
     if (!cursor) return;
-    
-    if (!confirm(`Delete cursor for ${cursor.targetType}: ${cursor.targetId}?`)) return;
-    
+
+    if (!(await showConfirmDialog({ title: 'Delete Cursor', message: `Delete cursor for category "${cursor.category}"?`, danger: true }))) return;
+
     contextualCursors = contextualCursors.filter(c => c.id !== selectedCursorId);
-    selectedCursorId = null;
+    selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
     refreshCursorsList();
+    redraw();
     showNotification('Cursor deleted', 'success');
+  };
+
+  window.clearCursorImage = function() {
+    if (!selectedCursorId) {
+      showNotification('Select a cursor first', 'warning');
+      return;
+    }
+    const cursor = contextualCursors.find(c => c.id === selectedCursorId);
+    if (!cursor) return;
+    cursor.cursorImage = null;
+    refreshCursorsList();
+    redraw();
+    showNotification('Cursor image cleared', 'info');
   };
 
   window.uploadCursorImage = async function() {
     if (!selectedCursorId) {
-      showNotification('Select a cursor first', 'warning');
+      showNotification('Select or create a cursor first', 'warning');
       return;
     }
 
@@ -16405,7 +19730,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     if (!cursor) return;
 
     if (!currentUser) {
-      showNotification('Please log in', 'warning');
+      showNotification('Open a project first', 'warning');
       return;
     }
     if (!getActiveProjectId()) {
@@ -16420,8 +19745,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       const img = await loadImageFromResourceEntry(resource);
       if (!img) throw new Error('Failed to load image from Resources');
       cursor.cursorImage = img;
-      showNotification(`Cursor set: ${cursor.targetType} / ${cursor.targetId}`, 'success');
+      // Keep existing pivot if set; otherwise default click point to (0,0)
+      if (cursor.pivotX === undefined || cursor.pivotY === undefined) {
+        cursor.pivotX = 0;
+        cursor.pivotY = 0;
+      }
+      showNotification(`Cursor image set for category: ${cursor.category}`, 'success');
       refreshCursorsList();
+      redraw();
     } catch (error) {
       console.error('[Asset] Errore cursore da Resources:', error);
       showNotification(`Error: ${error.message}`, 'error');
@@ -16433,122 +19764,61 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     btnCursorBrowse.addEventListener('click', () => window.uploadCursorImage());
   }
 
-  updateCursorTargets = function() {
-    const targetType = document.getElementById('cursor-target-type').value;
-    const selector = document.getElementById('cursor-target-selector');
-    
-    let placeholderText = 'Select target...';
-    let hasOptions = false;
-    
-    switch (targetType) {
-      case 'hotspot':
-        if (hotspots.length === 0) {
-          placeholderText = 'No hotspots available';
-        } else {
-          placeholderText = 'Select hotspot...';
-          hasOptions = true;
-        }
-        break;
-        
-      case 'character':
-        const characters = document.querySelectorAll('#characters-list .list-group-item strong');
-        if (characters.length === 0) {
-          placeholderText = 'No characters available';
-        } else {
-          placeholderText = 'Select character...';
-          hasOptions = true;
-        }
-        break;
-        
-      case 'scene-object':
-        if (sceneObjects.length === 0) {
-          placeholderText = 'No scene objects available';
-        } else {
-          placeholderText = 'Select scene object...';
-          hasOptions = true;
-        }
-        break;
-    }
-    
-    selector.innerHTML = `<option value="">${placeholderText}</option>`;
-    
-    if (hasOptions) {
-      switch (targetType) {
-        case 'hotspot':
-          hotspots.forEach(hotspot => {
-            const opt = document.createElement('option');
-            opt.value = hotspot.id;
-            opt.textContent = hotspot.name || hotspot.id;
-            selector.appendChild(opt);
-          });
-          break;
-          
-        case 'character':
-          document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-            const name = s.textContent.trim();
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            selector.appendChild(opt);
-          });
-          break;
-          
-        case 'scene-object':
-          sceneObjects.forEach(obj => {
-            const opt = document.createElement('option');
-            opt.value = obj.id;
-            opt.textContent = obj.name || obj.id;
-            selector.appendChild(opt);
-          });
-          break;
-      }
-    }
-  };
+  // Legacy no-op: targets are no longer used
+  updateCursorTargets = function() {};
   window.updateCursorTargets = updateCursorTargets;
 
   window.attachScriptToCursor = function() {
-    const cursorId = document.getElementById('cursor-script-target').value;
+    const cursorId = document.getElementById('cursor-script-target')
+      ? document.getElementById('cursor-script-target').value
+      : selectedCursorId;
     if (!cursorId) {
       showNotification('Please select a cursor', 'warning');
       return;
     }
-    
+
     const scriptName = document.getElementById('script-selector').value;
     if (!scriptName) {
       showNotification('Please select a script', 'warning');
       return;
     }
-    
+
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
+
     cursor.scriptName = scriptName;
     refreshCursorsList();
-    showNotification(`Script "${scriptName}" attached to cursor ${cursor.targetType}: ${cursor.targetId}`, 'success');
+    showNotification(`Script "${scriptName}" attached to cursor category: ${cursor.category}`, 'success');
   };
 
   function refreshCursorsList() {
     const list = document.getElementById('cursors-list');
     if (!list) return;
-    
+
     list.innerHTML = '';
-    
-    contextualCursors.forEach(cursor => {
+
+    // Sort by category order
+    const sorted = [...contextualCursors].sort((a, b) => {
+      return CURSOR_CATEGORIES.indexOf(a.category) - CURSOR_CATEGORIES.indexOf(b.category);
+    });
+
+    sorted.forEach(cursor => {
       const item = document.createElement('div');
       item.className = `list-group-item list-group-item-action ${selectedCursorId === cursor.id ? 'active' : ''}`;
       item.dataset.cursorId = cursor.id;
-      
-      const hasImage = cursor.cursorImage ? '✅' : '❌';
-      const hasScript = cursor.scriptName ? '📜' : '';
-      
+
+      const hasImage = cursor.cursorImage ? 'Has image' : 'No image';
+      const hasScript = cursor.scriptName ? ' · Has script' : '';
+      const label = CURSOR_CATEGORY_LABELS[cursor.category] || cursor.category;
+
       item.innerHTML = `
         <div class="d-flex justify-content-between align-items-center">
           <div>
-            <strong>${cursor.targetType}: ${cursor.targetId}</strong>
+            <strong>${label}</strong>
             <br>
             <small class="text-muted">
-              ${hasImage} Image ${hasScript} Script
-              ${cursor.actionText ? `| "${cursor.actionText}"` : ''}
+              ${hasImage}${hasScript}${cursor.actionText ? ` | "${cursor.actionText}"` : ''}
+              · click (${typeof cursor.pivotX === 'number' ? cursor.pivotX : 0}, ${typeof cursor.pivotY === 'number' ? cursor.pivotY : 0})
             </small>
           </div>
           <div class="btn-group btn-group-sm" role="group">
@@ -16557,106 +19827,113 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
           </div>
         </div>
       `;
-      
+
       item.addEventListener('click', () => selectCursor(cursor.id));
       list.appendChild(item);
     });
+
+    const selected = selectedCursorId
+      ? contextualCursors.find(c => c.id === selectedCursorId)
+      : null;
+    const categoryEl = document.getElementById('cursor-category');
+    const actionEl = document.getElementById('cursor-action-text');
+    if (selected) {
+      if (categoryEl) categoryEl.value = selected.category;
+      if (actionEl) actionEl.value = selected.actionText || '';
+      updateCursorPivotLabel(selected);
+    } else {
+      updateCursorPivotLabel(null);
+      if (actionEl) actionEl.value = '';
+    }
   }
 
   function selectCursor(cursorId) {
     selectedCursorId = cursorId;
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
-    // Update form with cursor data
-    document.getElementById('cursor-target-type').value = cursor.targetType;
-    document.getElementById('cursor-target-selector').value = cursor.targetId;
-    document.getElementById('cursor-action-text').value = cursor.actionText || '';
-    
-    // Update target selector
-    updateCursorTargets();
-    document.getElementById('cursor-target-selector').value = cursor.targetId;
-    
+
+    const categoryEl = document.getElementById('cursor-category');
+    const actionEl = document.getElementById('cursor-action-text');
+    if (categoryEl) categoryEl.value = cursor.category;
+    if (actionEl) actionEl.value = cursor.actionText || '';
+    updateCursorPivotLabel(cursor);
+
     refreshCursorsList();
-    showNotification(`Selected cursor for ${cursor.targetType}: ${cursor.targetId}`, 'info');
+    redraw();
+    showNotification(`Selected cursor: ${cursor.category}`, 'info');
   }
 
   window.selectCursor = selectCursor;
 
-  window.deleteCursorById = function(cursorId) {
+  window.deleteCursorById = async function(cursorId) {
     const cursor = contextualCursors.find(c => c.id === cursorId);
     if (!cursor) return;
-    
-    if (!confirm(`Delete cursor for ${cursor.targetType}: ${cursor.targetId}?`)) return;
-    
+
+    if (!(await showConfirmDialog({ title: 'Delete Cursor', message: `Delete cursor for category "${cursor.category}"?`, danger: true }))) return;
+
     contextualCursors = contextualCursors.filter(c => c.id !== cursorId);
-    if (selectedCursorId === cursorId) selectedCursorId = null;
+    if (selectedCursorId === cursorId) {
+      selectedCursorId = contextualCursors.length ? contextualCursors[0].id : null;
+    }
     refreshCursorsList();
+    redraw();
     showNotification('Cursor deleted', 'success');
   };
 
   function refreshCursorScriptTargets() {
     const sel = document.getElementById('cursor-script-target');
     if (!sel) return;
-    
+
     sel.innerHTML = '<option value="">Select cursor...</option>';
-    
-    // Add available cursors
+
     contextualCursors.forEach(cursor => {
       const opt = document.createElement('option');
       opt.value = cursor.id;
-      opt.textContent = `${cursor.targetType}: ${cursor.targetId}`;
+      opt.textContent = CURSOR_CATEGORY_LABELS[cursor.category] || cursor.category;
       sel.appendChild(opt);
     });
   }
 
-  // Contextual cursor detection function
+  // Category cursor hint while hovering interactive elements on the rooms canvas
   function checkContextualCursor(e) {
+    const activeTab = window.__amiantoTabs ? window.__amiantoTabs.getCurrentTab() : 'rooms';
+    if (activeTab === 'cursors' || activeTab === 'characters' || activeTab === 'animations' || activeTab === 'inventory') {
+      return;
+    }
+
     const { x, y } = eventToRoomCoordinates(e.clientX, e.clientY);
-    let foundCursor = null;
-    
-    // Check hotspots
-    hotspots.forEach(hotspot => {
+    let hoveringInteractive = false;
+
+    for (const hotspot of hotspots) {
       if (isPointInHotspot(x, y, hotspot)) {
-        const cursor = contextualCursors.find(c => c.targetType === 'hotspot' && c.targetId === hotspot.id);
-        if (cursor) foundCursor = cursor;
+        hoveringInteractive = true;
+        break;
       }
-    });
-    
-    // Check characters
-    if (!foundCursor) {
-      document.querySelectorAll('#characters-list .list-group-item strong').forEach(s => {
-        const charName = s.textContent.trim();
-        // Simple character hit detection (you might want to improve this)
-        const charRect = getCharacterBounds(charName);
-        if (charRect && x >= charRect.x && x <= charRect.x + charRect.w && y >= charRect.y && y <= charRect.y + charRect.h) {
-          const cursor = contextualCursors.find(c => c.targetType === 'character' && c.targetId === charName);
-          if (cursor) foundCursor = cursor;
-        }
-      });
     }
-    
-    // Check scene objects
-    if (!foundCursor) {
-      sceneObjects.forEach(obj => {
+
+    if (!hoveringInteractive) {
+      for (const obj of sceneObjects) {
         if (x >= obj.x && x <= obj.x + obj.w && y >= obj.y && y <= obj.y + obj.h) {
-          const cursor = contextualCursors.find(c => c.targetType === 'scene-object' && c.targetId === obj.id);
-          if (cursor) foundCursor = cursor;
+          hoveringInteractive = true;
+          break;
         }
-      });
+      }
     }
-    
-    // Apply cursor if found
-    if (foundCursor && foundCursor.cursorImage) {
-      canvas.style.cursor = `url(${foundCursor.cursorImage.src}) 0 0, auto`;
-    } else {
-      canvas.style.cursor = 'default';
+
+    let category = hoveringInteractive ? 'use' : 'default';
+    if (hoveringInteractive && !getCursorByCategory('use')) {
+      category = getCursorByCategory('look') ? 'look' : 'default';
+    }
+
+    const cursor = getCursorByCategory(category) || getCursorByCategory('default');
+    if (!applyCursorCssStyle(cursor)) {
+      canvas.style.cursor = hoveringInteractive ? 'pointer' : 'default';
     }
   }
 
   function isPointInHotspot(x, y, hotspot) {
     if (!hotspot.points || hotspot.points.length < 3) return false;
-    
+
     // Simple point-in-polygon test
     let inside = false;
     for (let i = 0, j = hotspot.points.length - 1; i < hotspot.points.length; j = i++) {
@@ -16675,8 +19952,33 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   }
 
   // Initialize cursor system
+  function syncShowCursorActionTextCheckbox(settings) {
+    const el = document.getElementById('show-cursor-action-text');
+    if (!el) return;
+    const src = settings || (() => {
+      try { return JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) { return null; }
+    })();
+    el.checked = !!(src && src.showCursorActionText);
+  }
+
+  window.onShowCursorActionTextChange = function onShowCursorActionTextChange() {
+    const el = document.getElementById('show-cursor-action-text');
+    let settings = null;
+    try { settings = JSON.parse(localStorage.getItem('amiantoProjectSettings') || 'null'); } catch (_) {}
+    if (!settings || typeof settings !== 'object') settings = {};
+    settings.showCursorActionText = !!(el && el.checked);
+    localStorage.setItem('amiantoProjectSettings', JSON.stringify(settings));
+    showNotification(
+      settings.showCursorActionText
+        ? 'Action text on hover enabled (save project to keep)'
+        : 'Action text on hover disabled (save project to keep)',
+      'info'
+    );
+  };
+
   function initializeCursorSystem() {
-    updateCursorTargets();
+    syncShowCursorActionTextCheckbox();
+    refreshCursorsList();
   }
 
   initializeCursorSystem();
@@ -16731,7 +20033,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     });
   }
 
-  // Inizializza il resize handle quando il DOM è pronto
+  // Inizializza il resize handle quando il DOM Ã¨ pronto
   initializeConsoleResize();
 
   // ============================================
@@ -16739,11 +20041,11 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
   // ============================================
   function initializeConsoleLogToggle() {
     const toggleBtn = document.getElementById('console-log-toggle');
-    const toggleIcon = document.getElementById('console-log-toggle-icon');
+    const toggleLabel = document.getElementById('console-log-toggle-icon');
     const logsContainer = document.getElementById('logs-container');
     const resizeHandle = document.getElementById('console-resize-handle');
     
-    if (!toggleBtn || !toggleIcon || !logsContainer || !resizeHandle) {
+    if (!toggleBtn || !toggleLabel || !logsContainer || !resizeHandle) {
       return;
     }
 
@@ -16764,16 +20066,14 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
       if (visible) {
         logsContainer.style.display = 'flex';
         resizeHandle.style.display = 'flex';
-        toggleIcon.classList.remove('fa-eye-slash');
-        toggleIcon.classList.add('fa-eye');
-        toggleBtn.title = 'Nascondi console log';
+        toggleLabel.textContent = 'Hide';
+        toggleBtn.title = 'Hide console logs';
         if (wrapper) wrapper.classList.remove('console-hidden');
       } else {
         logsContainer.style.display = 'none';
         resizeHandle.style.display = 'none';
-        toggleIcon.classList.remove('fa-eye');
-        toggleIcon.classList.add('fa-eye-slash');
-        toggleBtn.title = 'Mostra console log';
+        toggleLabel.textContent = 'Show';
+        toggleBtn.title = 'Show console logs';
         if (wrapper) wrapper.classList.add('console-hidden');
       }
     }
@@ -16799,7 +20099,7 @@ addDebugMessage('Testing character click' + (who ? `: ${who}` : ''), 'info');
     };
   }
 
-  // Inizializza il toggle quando il DOM è pronto
+  // Inizializza il toggle quando il DOM Ã¨ pronto
   initializeConsoleLogToggle();
 
   // Gestione sottomenu File nel dropdown del profilo

@@ -1,6 +1,6 @@
 # 🎮 Funzioni da Implementare - Amianto Editor
 
-> **Aggiornamento: Maggio 2026** — Questo file elenca API **target** (wishlist + core). Per lo **stato reale nel codice** e il piano di unificazione editor/runtime vedi anche [`ROADMAP.md`](ROADMAP.md) e [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md).
+> **Aggiornamento: Luglio 2026** — Questo file elenca API **target** (wishlist + backlog). Per lo **stato reale nel runtime** vedi [`README.md`](README.md), tab **Docs** in-app (`JS/docs-panel.js`), [`ROADMAP.md`](ROADMAP.md) e [`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md). L'editor è **offline**; progetti in file **`.amnt`**; asset in IndexedDB.
 
 ## Legenda stato
 
@@ -11,24 +11,26 @@
 | ❌ | Non implementato |
 | 📋 | Backlog / bassa priorità |
 
-**Dove girano gli script:** Play Test → iframe → `runtime.js` (`compileScript` + `GameAPI`). Il vecchio `sandboxApi` in `main.js` **non è collegato**.
+**Dove girano gli script:** Play Test → iframe → `runtime.js` (`getScriptApiBindings` + `buildHandlerExecutionScope` + `GameAPI`). Il vecchio `sandboxApi` in `main.js` è stato **rimosso** (Fase D).
 
 ---
 
 ## 📊 Riepilogo rapido (runtime)
 
-| Categoria | ✅ Runtime | 🟡 Da portare (Fase B) | ❌ Backlog |
-|-----------|------------|------------------------|------------|
-| Eventi core | 6 handler | hover, pause, inventory click | `on_game_end`, … |
+| Categoria | ✅ Runtime | 🟡 Parziale | ❌ Backlog |
+|-----------|------------|-------------|------------|
+| Eventi | 8 handler (`on_use_with`, …) | — | hover, pause, `on_game_end`, … |
 | Base / log | `print`, `show_message`, `move_object` | — | — |
-| Stanze | `load_room`, `getCurrentRoom` | `get_room_objects`, `set_room_background` | `unload_room`, … |
-| Variabili | `getVariable`, `setVariable` | `get_var`, `Game.getVar` | array/object vars |
-| Personaggi | 5 API movimento/spawn | AI patrol/follow | health, talk state |
-| Inventario | — | 5 API base | slot, peso, sort |
-| Oggetti scena | enable/disable, `move_object` | spawn/despawn/rotate/scale | proprietà custom |
-| Dialoghi / audio / save | — | — | tutta la sezione |
+| Stanze | `load_room`, `get_current_room`, `get_room_objects`, `set_room_background` | — | `unload_room`, transizioni |
+| Variabili | `get_var` / `Game.getVar`, `set_var`, `has_var`, `toggle_var` | — | array/object vars |
+| Personaggi | spawn, walk, `play_character_animation`, … | — | AI patrol/follow, health |
+| Animazioni stanza | `play_animation`, `stop_animation` | — | — |
+| Inventario | 5 API + carried item + use-with | GUI drag&drop, tooltip | peso, sort avanzato |
+| Oggetti scena | spawn/despawn/rotate/scale/visible, enable/disable | — | proprietà custom |
+| Dialoghi | `show_dialogue`, `end_dialogue` | — | scelte ramificate, mood |
+| Audio / FX | `play_music`, `play_sound`, stop | upload Resources | volumi, fade, save slot |
 
-**Infrastruttura ✅ (Fase A):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`.
+**Infrastruttura ✅ (Fasi A–D):** `getScriptApiBindings()`, `buildScriptExecutor()`, `exposeScriptGlobals()`, scope handler.
 
 ---
 
@@ -41,10 +43,12 @@
 // ✅ Runtime
 on_game_start()                    // All'avvio del gioco
 on_room_change(oldRoom, newRoom)   // Cambio di stanza (nome handler ufficiale)
-on_object_click(objectId, x, y)    // Click su oggetto
-on_character_click(characterId)    // Click su personaggio
-on_hotspot_click(hotspotId)        // Click su hotspot
+on_object_click(objectId, x, y, usedItemId?) // Click su oggetto (+ 4° arg se use-with)
+on_character_click(characterId, x, y, usedItemId?) // Click su personaggio (+ 4° arg se use-with)
+on_hotspot_click(hotspotId, x, y, usedItemId?)   // Click su hotspot (+ 4° arg se use-with)
 on_gui_click(buttonId)             // Click su pulsante GUI (non on_gui_button_click)
+on_use_with(targetType, targetId, x, y) // Script oggetto inventario: combinazione (return true se ok)
+on_inventory_use_with(itemId, targetType, targetId, x, y) // Fallback globale use-with (return true se ok)
 
 // ❌ Non implementati
 on_game_end()                      // Alla fine del gioco
@@ -57,8 +61,7 @@ on_object_drag(objectId, x, y)     // Trascinamento oggetto
 on_character_talk(characterId)     // Dialogo con personaggio
 on_hotspot_hover(hotspotId)        // Hover su hotspot
 on_gui_button_click(buttonId)      // Alias non usato; usare on_gui_click
-on_inventory_item_use(itemId)      // Uso oggetto inventario
-on_inventory_item_click(itemId)    // Click su oggetto inventario
+on_inventory_item_click(itemId)    // Click su slot inventario (selezione visuale, no handler dedicato)
 on_cursor_change(cursorType)       // Cambio cursore
 ```
 
@@ -66,12 +69,15 @@ on_cursor_change(cursorType)       // Cambio cursore
 
 #### Gestione Inventario
 ```javascript
-// 🟡 Solo in main.js sandboxApi (NON runtime) — prossimo: Fase B.1
+// ✅ Runtime (GameAPI)
 add_to_inventory(itemId, quantity) // Aggiungi oggetto all'inventario
 remove_from_inventory(itemId, quantity) // Rimuovi oggetto dall'inventario
 has_item(itemId)                   // Verifica se l'oggetto è nell'inventario
 get_item_count(itemId)             // Ottieni quantità oggetto
 clear_inventory()                  // Svuota inventario
+get_carried_item()                 // Oggetto attualmente in mano (use-with) o null
+set_carried_item(itemId)           // Seleziona oggetto per use-with
+clear_carried_item()               // Deseleziona oggetto in mano
 
 // ❌ Backlog
 get_inventory_items()              // Ottieni lista completa inventario
@@ -86,14 +92,19 @@ get_item_in_slot(slotIndex)        // Ottieni oggetto in slot specifico
 move_item_to_slot(itemId, slot)    // Sposta oggetto in slot specifico
 ```
 
-### 🗣️ **Sistema Dialoghi** — ❌ Non implementato (Fase 2.4 roadmap)
+### 🗣️ **Sistema Dialoghi** — 🟡 Parziale (runtime maggio 2026)
+
+Richiede una GUI di tipo **DialogBox** nel progetto (colori, balloon opzionale, effetto `appear`). Il balloon segue il personaggio in play test.
 
 #### Dialoghi Base
 ```javascript
-// ❌ Tutti in backlog
-start_dialogue(characterId)        // Inizia dialogo con personaggio
-end_dialogue()                     // Termina dialogo corrente
-show_dialogue_text(text, speaker)  // Mostra testo dialogo
+// ✅ Runtime (GameAPI + getScriptApiBindings)
+show_dialogue(characterIdOrName, text)  // Balloon sul personaggio; click per chiudere; coda comandi
+show_dialogue_text(text, speaker)       // Alias roadmap (ordine invertito)
+end_dialogue()                          // Chiude subito il dialogo attivo
+
+// ❌ Backlog
+start_dialogue(characterId)        // Sessione dialogo ramificata
 show_dialogue_choices(choices)     // Mostra scelte dialogo
 get_dialogue_response()             // Ottieni risposta del giocatore
 
@@ -109,26 +120,54 @@ change_reputation(faction, amount)  // Modifica reputazione
 get_all_reputations()              // Ottieni tutte le reputazioni
 ```
 
-### 🎵 **Sistema Audio** — ❌ Non implementato (Fase 3.1 roadmap)
+### 🎵 **Sistema Audio** — 🟡 Parziale (runtime luglio 2026)
 
 #### Gestione Suoni
 ```javascript
-// ❌ Tutti in backlog
-play_music(trackId, loop)           // Riproduci musica
-stop_music()                        // Ferma musica
-pause_music()                       // Metti in pausa musica
-resume_music()                      // Riprendi musica
-set_music_volume(volume)            // Imposta volume musica
-fade_music_in(duration)             // Fade in musica
-fade_music_out(duration)            // Fade out musica
+// ✅ Runtime (GameAPI)
+play_music(trackId, loop?)            // Musica di sottofondo (una traccia)
+stop_music()                          // Ferma musica
+play_sound(soundId, loop?)            // Effetto sonoro (sovrapponibili)
+stop_sound(soundId?)                  // Ferma SFX in loop (o tutti se omesso)
 
-// Effetti sonori
-play_sound(soundId, volume)         // Riproduci effetto sonoro
-play_sound_at_position(soundId, x, y) // Riproduci suono in posizione
-stop_sound(soundId)                 // Ferma effetto sonoro
-set_sound_volume(soundId, volume)   // Imposta volume suono
-play_ambient_sound(soundId)         // Riproduci suono ambientale
-stop_ambient_sound(soundId)         // Ferma suono ambientale
+// ❌ Backlog
+pause_music()                         // Metti in pausa musica
+resume_music()                        // Riprendi musica
+set_music_volume(volume)              // Imposta volume musica
+fade_music_in(duration)               // Fade in musica
+fade_music_out(duration)              // Fade out musica
+play_sound_at_position(soundId, x, y) // Suono posizionale
+set_sound_volume(soundId, volume)     // Volume per suono
+play_ambient_sound(soundId)           // Suono ambientale
+stop_ambient_sound(soundId)           // Ferma ambientale
+```
+
+Import file in **Resources → Sounds**. Riferimento: nome file, asset id, `asset:…`.
+
+### 🎬 **Animazioni di stanza** — ✅ Runtime + editor (luglio 2026)
+
+Animazioni ambiente/sfondo (acqua, fuoco, bandiere) distinte dalle animazioni **personaggio**.
+
+#### Editor
+```text
+Tab Animations → catalogo project.roomAnimations[] (frame, fps, layer, loop)
+Tab Rooms → Room Animations → istanze room.animationInstances[] (x, y, autoPlay)
+Primo frame trascinabile sul canvas
+```
+
+#### Script
+```javascript
+// ✅ Runtime
+play_animation(instanceIdOrName, loop?)  // Avvia/riavvia istanza nella stanza corrente
+stop_animation(instanceIdOrName?)        // Ferma una o tutte le istanze
+
+// loop: true/'loop' = infinito; false/'once' = un ciclo; N = N cicli (come audio)
+```
+
+**JSON progetto:**
+```json
+"roomAnimations": [{ "id": "anim_1", "name": "waterfall", "fps": 8, "loop": true, "layer": "background", "frames": ["asset:..."] }],
+"rooms": [{ "animationInstances": [{ "id": "ainst_1", "animationId": "anim_1", "name": "water_main", "x": 100, "y": 50, "autoPlay": true }] }]
 ```
 
 ### 🎨 **Sistema Visivo** — ❌ Non implementato (Fase 3.2 roadmap)
@@ -165,11 +204,11 @@ move_object(objectId, x, y)         // Sposta oggetto
 enableObject(objectId)              // Abilita oggetto (GameAPI)
 disableObject(objectId)             // Disabilita / nasconde (GameAPI)
 
-// 🟡 Solo main.js legacy — Fase B.2
+// ✅ Runtime
 spawn_object(objectId, x, y)        // Spawna oggetto
 despawn_object(objectId)            // Rimuovi oggetto
 rotate_object(objectId, angle)      // Ruota oggetto
-scale_object(objectId, scale)       // Scala oggetto
+scale_object(objectId, scaleX, scaleY) // Scala oggetto
 set_object_visible(objectId, visible) // Mostra/nascondi oggetto
 
 // ❌ Backlog — proprietà oggetti
@@ -203,12 +242,10 @@ disableHotspot(hotspotIdOrName)     // Disattiva click (visible=false)
 ```javascript
 // ✅ Runtime
 load_room(roomId)                   // Carica stanza (ID o nome)
-getCurrentRoom()                    // Stanza corrente (anche come parametro compile)
-
-// 🟡 Fase B — da portare in runtime
-get_current_room()                  // Alias snake_case di getCurrentRoom
-get_room_objects(roomId)            // Oggetti stanza corrente
-set_room_background(roomId, image)  // Imposta sfondo stanza
+get_current_room()                  // Stanza corrente
+getCurrentRoom()                    // Alias camelCase
+get_room_objects()                  // Oggetti stanza corrente
+set_room_background(image)          // Imposta sfondo stanza corrente
 
 // ❌ Backlog
 unload_room(roomId)                 // Scarica stanza
@@ -259,15 +296,14 @@ stop_character_ai(characterId)       // Ferma AI personaggio
 
 #### Stato del Gioco
 ```javascript
-// ✅ Runtime (nomi camelCase in GameAPI)
-getVariable(name)                   // Leggi variabile
-setVariable(name, value)            // Scrivi variabile
-
-// 🟡 Solo editor UI / main.js — Fase B alias
-get_game_variable(name)             // → getVariable / Game.getVar
-set_game_variable(name, value)      // → setVariable / Game.setVar
-get_var(name) / set_var(name, value)
+// ✅ Runtime
+getVariable(name) / setVariable(name, value)  // camelCase
+get_var(name) / set_var(name, value)          // snake_case
 Game.getVar / Game.setVar / Game.hasVar / Game.toggleVar
+
+// ❌ Alias documentati solo in backlog
+get_game_variable(name)             // Usare get_var / Game.getVar
+set_game_variable(name, value)      // Usare set_var / Game.setVar
 
 // ❌ Backlog
 get_all_game_variables()            // Ottieni tutte le variabili
@@ -325,6 +361,9 @@ format_time(seconds)                 // Formatta tempo
 ```javascript
 // ✅ Runtime
 show_message(text)                    // Overlay messaggio (coda comandi)
+show_dialogue(character, text)        // Balloon DialogBox sul personaggio (click per chiudere)
+show_dialogue_text(text, speaker)     // Alias (testo, personaggio)
+end_dialogue()                        // Chiude dialogo attivo
 print(...)                            // Log script
 
 // ❌ Backlog
@@ -439,22 +478,17 @@ if_loading_complete(action)                       // Se caricamento è completat
 
 ## 📝 Note per l'Implementazione
 
-### Priorità aggiornate (maggio 2026)
+### Priorità aggiornate (giugno 2026)
 
-1. **Immediata — Fase B** ([`API_UNIFICATION_CHECKLIST.md`](API_UNIFICATION_CHECKLIST.md)):
-   - Inventario runtime (5 API)
-   - Oggetti dinamici (spawn, despawn, rotate, scale, visible)
-   - `get_room_objects`, `set_room_background`
-   - Alias `get_var` / `Game.getVar`
-2. **Alta — Gameplay:** cursori contestuali, inventario GUI visuale, dialoghi base
-3. **Media:** audio, transizioni, salvataggi gioco
+1. **Immediata — Qualità:** test manuali Fase E; sync inventario `UPDATE_CONTEXT`; `GAME_API_COMPLETIONS` completo
+2. **Alta — Gameplay:** cursori contestuali in **runtime**, inventario GUI (drag&drop), `show_dialogue_choices`
+3. **Media:** API audio runtime, transizioni (`fade_in`), salvataggi gioco
 4. **Bassa:** utility math, debug avanzato, condizionali helper, particelle
 
 ### Considerazioni Tecniche
-- Aggiungere ogni nuova API in **tre punti:** `GameAPI`, `getScriptApiBindings()`, test Play Test
-- Non duplicare logica in `main.js` `sandboxApi` (rimuovere dopo Fase B)
-- `compileScript` usa `buildScriptExecutor` — estendere solo `getScriptApiBindings()`
-- Handler: in futuro estendere `scriptScope` con tutte le API (Fase C checklist)
+- Ogni nuova API: `GameAPI` → `getScriptApiBindings()` → `GAME_API_COMPLETIONS` → test Play Test
+- Non reintrodurre logica script in `main.js` (solo UI editor)
+- Handler: `buildHandlerExecutionScope()` espone già tutte le binding
 
 ### Struttura attuale (runtime)
 ```javascript
@@ -468,4 +502,4 @@ GameAPI.add_to_inventory = function(itemId, quantity) { /* gameState.inventory *
 
 ---
 
-*Ultimo aggiornamento: Maggio 2026 — allineato a Fase A unificazione API e stato reale `runtime.js`.*
+*Ultimo aggiornamento: Luglio 2026 — Animazioni stanza (tab Animations + `play_animation`); audio base (`play_music`/`play_sound`); Fasi A–D API; 8 eventi; inventario/use-with runtime; tab Resources.*
